@@ -2,7 +2,7 @@ id: display
 name: OpenMasjid Display
 tagline: Run prayer timetables, cameras and HDMI on every screen in your masjid — over your network
 category: displays
-version: 0.4.0
+version: 0.4.1
 author: hasan-ismail
 license: AGPL-3.0
 icon: icon.svg

@@ -10,7 +10,7 @@
 # Screens find this server automatically from the address you open the panel with.
 services:
   app:
-    image: ghcr.io/hasan-ismail/openmasjiddisplay:0.4.0
+    image: ghcr.io/hasan-ismail/openmasjiddisplay:0.4.1
     restart: unless-stopped
     environment:
       PORT: "8080"

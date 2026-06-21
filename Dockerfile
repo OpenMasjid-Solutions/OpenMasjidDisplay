@@ -56,14 +56,24 @@ RUN npm ci --omit=dev
 COPY --from=server /server/dist ./dist
 COPY --from=web /web/dist ./public
 
-# The RTSP server runs inside this container too, so a masjid installs and
-# updates exactly one thing. The app launches and supervises it (mediamtxServer.ts).
+# The RTSP server runs inside this container too, so a masjid installs and updates
+# exactly one thing. The app launches and supervises it (mediamtxServer.ts). We ship
+# MediaMTX's OWN default config — it includes the `all_others` path that lets the
+# timetable renderer publish into MediaMTX and each screen's path relay from it — and
+# tune only what we need through MTX_* env vars below (these override the file).
 COPY --from=mediamtx /mediamtx /usr/local/bin/mediamtx
-COPY docker/mediamtx.yml /app/mediamtx.yml
+COPY --from=mediamtx /mediamtx.yml /app/mediamtx.yml
 
 ENV PORT=8080 \
     DATA_DIR=/data \
-    PUBLIC_DIR=/app/public
+    PUBLIC_DIR=/app/public \
+    MTX_API=yes \
+    MTX_APIADDRESS=127.0.0.1:9997 \
+    MTX_RTSPTRANSPORTS=tcp \
+    MTX_RTMP=no \
+    MTX_HLS=no \
+    MTX_WEBRTC=no \
+    MTX_SRT=no
 EXPOSE 8080 8554
 VOLUME ["/data"]
 
