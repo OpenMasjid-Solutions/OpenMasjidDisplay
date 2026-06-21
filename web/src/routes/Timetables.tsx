@@ -138,6 +138,21 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((p) => ({ ...p, [k]: v }));
   const popout = tt && !fullPage ? () => window.open(`${window.location.pathname}?edit=${tt.id}`, '_blank') : undefined;
 
+  // The screens rotate the layout every 15 min when "Rotate layouts" is on; in the
+  // editor we can't wait 15 min, so cycle the preview through the three layouts
+  // quickly so you can see what it'll do. (The live display still uses the 15-min clock.)
+  const CAROUSEL_LAYOUTS: TimetableLayout[] = ['centered', 'clockTop', 'split'];
+  const [demoIdx, setDemoIdx] = useState(0);
+  useEffect(() => {
+    if (!f.layoutCarousel) return;
+    const t = setInterval(() => setDemoIdx((i) => (i + 1) % CAROUSEL_LAYOUTS.length), 4000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f.layoutCarousel]);
+  const previewBody = f.layoutCarousel
+    ? { ...formBody(f), layout: CAROUSEL_LAYOUTS[demoIdx], layoutCarousel: false }
+    : formBody(f);
+
   const themePrimary = state.themes.find((t) => t.id === f.themeId)?.palette.primary ?? '#22D3EE';
 
   const save = async () => {
@@ -291,9 +306,17 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
   const content = (
       <div className="studio">
         <div className="studio__preview">
-          <LivePreview body={formBody(f)} portrait={f.orientation === 'portrait'} onEditCommit={editLabel} onPopout={popout} />
+          <LivePreview body={previewBody} portrait={f.orientation === 'portrait'} onEditCommit={editLabel} onPopout={popout} />
           <p className="hint" style={{ textAlign: 'center', marginBlockStart: '0.5rem' }}>
-            <IconClock size={12} /> Live preview — click a name, the masjid title or the footer to rename it.
+            {f.layoutCarousel ? (
+              <>
+                <IconClock size={12} /> Rotating preview — your screens cycle these every 15 min. Click a name, the masjid title or the footer to rename it.
+              </>
+            ) : (
+              <>
+                <IconClock size={12} /> Live preview — click a name, the masjid title or the footer to rename it.
+              </>
+            )}
           </p>
         </div>
 
@@ -312,7 +335,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
           </Field>
           <div className="toggle-row row-between" style={{ marginBlockEnd: '0.9rem' }}>
             <span className="label" style={{ margin: 0 }}>
-              Rotate layouts over the day <span className="hint">— gently prevents TV burn-in</span>
+              Rotate layouts over the day <span className="hint">— cycles centered / clock-on-top / split every 15 min (prevents TV burn-in)</span>
             </span>
             <Toggle checked={f.layoutCarousel} onChange={(v) => set('layoutCarousel', v)} label="Rotate layouts over the day" />
           </div>
