@@ -2,8 +2,9 @@ name: Build image
 
 # Builds this app's Dockerfile multi-arch (amd64 + arm64) and pushes to GHCR as
 #   ghcr.io/<owner>/<repo-name>:<manifest version>   (+ :latest)
-# The repo is named OpenMasjidDisplay, so the image is
-#   ghcr.io/hasan-ismail/openmasjiddisplay
+# The owner is taken from the repo (lowercased), so under the OpenMasjid-Solutions
+# org the image is
+#   ghcr.io/openmasjid-solutions/openmasjiddisplay
 # which is what docker-compose.yml references.
 #
 # After the first run, make the GHCR package Public (owner -> Packages -> package
@@ -68,4 +69,4 @@ jobs:
       #   if: startsWith(github.ref, 'refs/tags/v')
       #   env:
       #     GH_TOKEN: ${{ secrets.CATALOG_DISPATCH_TOKEN }}
-      #   run: gh api repos/hasan-ismail/OpenMasjidAPPS/dispatches -f event_type=rebuild-catalog
+      #   run: gh api repos/OpenMasjid-Solutions/OpenMasjidAPPS/dispatches -f event_type=rebuild-catalog

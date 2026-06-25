@@ -33,7 +33,7 @@ ENV NODE_ENV=production
 
 LABEL org.opencontainers.image.title="OpenMasjid Display" \
       org.opencontainers.image.description="Prayer timetables, cameras and HDMI to every screen in your masjid, over RTSP." \
-      org.opencontainers.image.source="https://github.com/hasan-ismail/OpenMasjidDisplay" \
+      org.opencontainers.image.source="https://github.com/OpenMasjid-Solutions/OpenMasjidDisplay" \
       org.opencontainers.image.licenses="AGPL-3.0"
 
 # ffmpeg encodes the timetable video; fonts let resvg draw Latin + Arabic text

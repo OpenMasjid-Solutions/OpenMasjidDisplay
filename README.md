@@ -6,7 +6,7 @@
 
 **Run prayer timetables, cameras and HDMI on every screen in your masjid — over your network.**
 
-An app for [OpenMasjidOS](https://github.com/hasan-ismail/OpenMasjidOS). Free and open source (AGPL-3.0).
+An app for [OpenMasjidOS](https://github.com/OpenMasjid-Solutions/OpenMasjidOS). Free and open source (AGPL-3.0).
 
 </div>
 
@@ -74,14 +74,14 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 This app installs from the OpenMasjidOS **App Store**. Once it's in the catalog, open your dashboard → App
 Store → **OpenMasjid Display** → Install. **There's nothing to fill in** — it's a one-click install.
 
-To add it to the catalog, open a PR to [OpenMasjidAPPS](https://github.com/hasan-ismail/OpenMasjidAPPS)
+To add it to the catalog, open a PR to [OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS)
 adding this entry to `registry.yaml`:
 
 ```yaml
   - id: display
-    repo: hasan-ismail/OpenMasjidDisplay
+    repo: OpenMasjid-Solutions/OpenMasjidDisplay
     # Immutable pin: a tag/branch can be moved to backdoored content, a commit SHA can't.
-    commit: <40-char commit SHA of the release>   # preferred over a movable `ref: v0.20.7`
+    commit: <40-char commit SHA of the release>   # preferred over a movable `ref: v0.20.8`
 ```
 
 ### No install-time settings

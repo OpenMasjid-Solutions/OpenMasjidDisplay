@@ -1,6 +1,6 @@
 # Architecture
 
-OpenMasjid Display is a **single container** (`ghcr.io/hasan-ismail/openmasjiddisplay`) — one image to
+OpenMasjid Display is a **single container** (`ghcr.io/openmasjid-solutions/openmasjiddisplay`) — one image to
 install and update. Inside it run three cooperating parts:
 
 | Part | Role |
