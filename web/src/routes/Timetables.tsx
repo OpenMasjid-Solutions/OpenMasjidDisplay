@@ -424,10 +424,11 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
                 <option value="portrait">Portrait</option>
               </select>
             </Field>
-            <Field label="Picture quality" hint="720p is best for a Raspberry Pi">
+            <Field label="Picture quality" hint="720p is best for a Raspberry Pi. 4K needs a powerful machine and a 4K screen.">
               <select className="select" value={f.quality} onChange={(e) => set('quality', e.target.value as Form['quality'])}>
                 <option value="720p">720p</option>
-                <option value="1080p">1080p</option>
+                <option value="1080p">1080p (Full HD)</option>
+                <option value="2160p">2160p (4K)</option>
               </select>
             </Field>
           </div>

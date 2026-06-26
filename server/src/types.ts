@@ -8,7 +8,7 @@
  * settings only seed sensible defaults on first run.
  */
 
-export type Quality = '720p' | '1080p';
+export type Quality = '720p' | '1080p' | '2160p';
 export type Orientation = 'landscape' | 'portrait';
 /** Arrangement preset for the on-screen layout (see render/svg.ts). */
 export type TimetableLayout = 'centered' | 'clockTop' | 'split';

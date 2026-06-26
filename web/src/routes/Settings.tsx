@@ -49,7 +49,8 @@ export function SettingsPage({ state, refetch }: Props) {
           <Field label="Default picture quality" hint="Used for new timetables. 720p is best for a Raspberry Pi.">
             <select className="select" value={quality} onChange={(e) => setQuality(e.target.value as Settings['defaultQuality'])}>
               <option value="720p">720p</option>
-              <option value="1080p">1080p</option>
+              <option value="1080p">1080p (Full HD)</option>
+              <option value="2160p">2160p (4K)</option>
             </select>
           </Field>
           <Field label="Schedule time zone" hint="Used to run schedule rules.">

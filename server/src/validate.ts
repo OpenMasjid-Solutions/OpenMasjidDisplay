@@ -208,7 +208,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     accent,
     textColor,
     orientation: oneOf(o.orientation, ['landscape', 'portrait'] as const, base?.orientation ?? 'landscape') as Orientation,
-    quality: oneOf(o.quality, ['720p', '1080p'] as const, base?.quality ?? '720p') as Quality,
+    quality: oneOf(o.quality, ['720p', '1080p', '2160p'] as const, base?.quality ?? '720p') as Quality,
     layout: oneOf(o.layout, ['centered', 'clockTop', 'split'] as const, base?.layout ?? 'centered'),
     layoutCarousel: o.layoutCarousel === undefined ? base?.layoutCarousel ?? false : bool(o.layoutCarousel, false),
     masjidName: str(o.masjidName, base?.masjidName ?? 'Our Masjid', 80) || 'Our Masjid',
@@ -270,7 +270,7 @@ export function normSource(input: unknown, base?: Source): Source {
     type: oneOf(o.type, ['camera', 'hdmi'] as const, base?.type ?? 'camera'),
     url,
     mode: oneOf(o.mode, ['direct', 'normalize'] as const, base?.mode ?? 'direct'),
-    quality: oneOf(o.quality, ['720p', '1080p'] as const, base?.quality ?? '720p') as Quality,
+    quality: oneOf(o.quality, ['720p', '1080p', '2160p'] as const, base?.quality ?? '720p') as Quality,
     enabled: o.enabled === undefined ? base?.enabled ?? true : bool(o.enabled, true),
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };
@@ -311,7 +311,7 @@ export function normSchedule(input: unknown, base?: ScheduleRule): ScheduleRule 
 export function normSettings(input: unknown, base: Settings): Settings {
   const o = asObj(input);
   return {
-    defaultQuality: oneOf(o.defaultQuality, ['720p', '1080p'] as const, base.defaultQuality) as Quality,
+    defaultQuality: oneOf(o.defaultQuality, ['720p', '1080p', '2160p'] as const, base.defaultQuality) as Quality,
     scheduleTimezone: str(o.scheduleTimezone, base.scheduleTimezone, 64).trim(),
     volunteerEnabled: o.volunteerEnabled === undefined ? base.volunteerEnabled ?? false : bool(o.volunteerEnabled, false),
   };

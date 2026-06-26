@@ -198,7 +198,8 @@ function SourceModal({ src, onClose, onSaved }: { src: Source | null; onClose: (
         <Field label="Picture quality" hint="Used when re-encoding. 720p is best for a Raspberry Pi.">
           <select className="select" value={quality} onChange={(e) => setQuality(e.target.value as Source['quality'])}>
             <option value="720p">720p</option>
-            <option value="1080p">1080p</option>
+            <option value="1080p">1080p (Full HD)</option>
+            <option value="2160p">2160p (4K)</option>
           </select>
         </Field>
       </div>

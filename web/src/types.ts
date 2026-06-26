@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 // Client-side mirror of the server domain types (see server/src/types.ts).
 
-export type Quality = '720p' | '1080p';
+export type Quality = '720p' | '1080p' | '2160p';
 export type Orientation = 'landscape' | 'portrait';
 export type TimetableLayout = 'centered' | 'clockTop' | 'split';
 export type Lang = 'en' | 'ar' | 'ur';

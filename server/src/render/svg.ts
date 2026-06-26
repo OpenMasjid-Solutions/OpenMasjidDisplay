@@ -31,8 +31,8 @@ export interface Dims {
 }
 
 export function dimsFor(orientation: string, quality: string): Dims {
-  const long = quality === '1080p' ? 1920 : 1280;
-  const short = quality === '1080p' ? 1080 : 720;
+  const long = quality === '2160p' ? 3840 : quality === '1080p' ? 1920 : 1280;
+  const short = quality === '2160p' ? 2160 : quality === '1080p' ? 1080 : 720;
   return orientation === 'portrait'
     ? { width: short, height: long }
     : { width: long, height: short };

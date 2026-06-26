@@ -36,7 +36,7 @@ function safeTicker(tt: Timetable): string {
 }
 
 function levelFor(h: number): string {
-  return h >= 1080 ? '4.0' : '3.1';
+  return h >= 2160 ? '5.1' : h >= 1080 ? '4.0' : '3.1';
 }
 
 export interface TickerSpec {
@@ -79,7 +79,7 @@ function timetableVf(d: Dims, ticker: TickerSpec | null): string {
 }
 
 function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null): string[] {
-  const br = d.height >= 1080 ? 3500 : 1800;
+  const br = d.height >= 2160 ? 14000 : d.height >= 1080 ? 3500 : 1800;
   return [
     '-hide_banner', '-loglevel', 'warning',
     '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${d.width}x${d.height}`, '-framerate', '1', '-i', 'pipe:0',
@@ -94,7 +94,7 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null): stri
 }
 
 function transcodeArgs(url: string, d: Dims, target: string): string[] {
-  const br = d.height >= 1080 ? 4500 : 2500;
+  const br = d.height >= 2160 ? 18000 : d.height >= 1080 ? 4500 : 2500;
   return [
     '-hide_banner', '-loglevel', 'warning',
     // Defence-in-depth: even if a non-rtsp URL ever slipped past validation, ffmpeg
