@@ -169,8 +169,9 @@ function fmtClock(hours: number, timeFormat: string, withSeconds = false): Clock
     m = Math.floor((total % 3600) / 60);
     s = total % 60;
   } else {
-    // Minute precision (round) — matches the conventional prayer-time display.
-    let total = Math.round(hours * 60);
+    // Minute precision — FLOOR, never round: a wall clock must not show the next
+    // minute early (rounding made 10:53:40 read as 10:54, i.e. up to a minute fast).
+    let total = Math.floor(hours * 60);
     total = ((total % 1440) + 1440) % 1440;
     h = Math.floor(total / 60);
     m = total % 60;

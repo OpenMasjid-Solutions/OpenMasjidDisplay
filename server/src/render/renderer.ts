@@ -54,8 +54,25 @@ const TICKER_FPS = 20;
 /** Build the video filter. The scrolling ticker is drawn by ffmpeg with drawtext
  *  AFTER fps, so it animates at the output frame rate (smooth) even though the SVG
  *  frames only update once per second. The SVG paints just the strip. */
-function timetableVf(d: Dims, ticker: TickerSpec | null): string {
-  if (!ticker) return 'format=yuv420p,fps=15';
+/** Cap the rasterised frame at 1080p; ffmpeg upscales to the true output size.
+ *  Native-4K rawvideo is ~33 MB/frame — too heavy to render + pipe reliably on a
+ *  small box (the stream never publishes). Vector text rendered at 1080p and
+ *  upscaled with lanczos stays crisp on a wall display, and it always works. */
+export function renderDimsFor(out: Dims): Dims {
+  const cap = 1920;
+  const longest = Math.max(out.width, out.height);
+  if (longest <= cap) return out;
+  const k = cap / longest;
+  return { width: Math.round((out.width * k) / 2) * 2, height: Math.round((out.height * k) / 2) * 2 };
+}
+
+function timetableVf(d: Dims, ticker: TickerSpec | null, inDims?: Dims): string {
+  // Upscale the rasterised frame to the output size first (when capped for 4K), so
+  // the ticker drawtext below lands on the true-resolution canvas and stays sharp.
+  const up = inDims && (inDims.width !== d.width || inDims.height !== d.height)
+    ? `scale=${d.width}:${d.height}:flags=lanczos,`
+    : '';
+  if (!ticker) return `${up}format=yuv420p,fps=15`;
   const { y, bandH, fs } = tickerLayout(d.width, d.height);
   const size = Math.round(fs);
   const speed = clamp(Math.round(ticker.speed || 5), 1, 10); // 1 (slow) … 10 (fast)
@@ -75,15 +92,17 @@ function timetableVf(d: Dims, ticker: TickerSpec | null): string {
     // expansion=none: treat the message file as literal text (no %{...} / escape interpretation).
     dt.push(`drawtext=fontfile='${ticker.fontfile}':textfile='${ticker.textfile}':expansion=none:fontsize=${size}:fontcolor=white:x=${x}:y=${yExpr}`);
   }
-  return `fps=${TICKER_FPS},${dt.join(',')},format=yuv420p`;
+  return `${up}fps=${TICKER_FPS},${dt.join(',')},format=yuv420p`;
 }
 
-function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null): string[] {
+/** @param d output (encoded) dims; @param inDims the rasterised frame dims fed on
+ *  stdin (== d unless capped for 4K, in which case ffmpeg upscales d ← inDims). */
+function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDims: Dims = d): string[] {
   const br = d.height >= 2160 ? 14000 : d.height >= 1080 ? 3500 : 1800;
   return [
     '-hide_banner', '-loglevel', 'warning',
-    '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${d.width}x${d.height}`, '-framerate', '1', '-i', 'pipe:0',
-    '-vf', timetableVf(d, ticker), '-fps_mode', 'cfr',
+    '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${inDims.width}x${inDims.height}`, '-framerate', '1', '-i', 'pipe:0',
+    '-vf', timetableVf(d, ticker, inDims), '-fps_mode', 'cfr',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
     '-profile:v', 'baseline', '-level', levelFor(d.height),
     '-g', '30', '-keyint_min', '30', '-sc_threshold', '0', '-bf', '0',
@@ -277,12 +296,15 @@ class TimetablePipeline extends FfmpegPipeline {
   private tickerText = '';
   private tickerSpeed = 5; // scroll speed is an ffmpeg arg → respawn when it changes
   private readonly tickerFile: string;
+  // The size we actually rasterise (capped at 1080p); ffmpeg upscales to this.dims.
+  private renderDims: Dims = { width: 1280, height: 720 };
 
   constructor(id: string, private readonly getTt: () => Timetable | undefined) {
     super(id);
     this.tickerFile = path.join(config.dataDir, `ticker_${id}.txt`);
     const tt = getTt();
     this.dims = tt ? dimsFor(tt.orientation, tt.quality) : { width: 1280, height: 720 };
+    this.renderDims = renderDimsFor(this.dims);
     this.tickerText = tt ? safeTicker(tt) : '';
     this.tickerSpeed = tt?.tickerSpeed ?? 5;
     this.writeTickerFile();
@@ -304,7 +326,7 @@ class TimetablePipeline extends FfmpegPipeline {
   }
 
   protected args(): string[] {
-    return timetableArgs(this.dims, this.target(), this.tickerSpec());
+    return timetableArgs(this.dims, this.target(), this.tickerSpec(), this.renderDims);
   }
 
   private restartProc(): void {
@@ -355,6 +377,7 @@ class TimetablePipeline extends FfmpegPipeline {
     const want = dimsFor(tt.orientation, tt.quality);
     if (want.width !== this.dims.width || want.height !== this.dims.height) {
       this.dims = want;
+      this.renderDims = renderDimsFor(want);
       this.restartProc();
       return;
     }
@@ -371,14 +394,14 @@ class TimetablePipeline extends FfmpegPipeline {
 
     this.rendering = true;
     this.worker
-      .raw(tt, Date.now())
+      .raw(tt, Date.now(), this.renderDims.width)
       .then((img) => {
         this.rendering = false;
         if (this.stopped) return;
         const s = this.proc?.stdin;
         if (!s || !s.writable) return;
-        // Drop a frame rendered at the previous size during a dims change.
-        if (img.width !== this.dims.width || img.height !== this.dims.height) return;
+        // Drop a frame rendered at the previous (render) size during a dims change.
+        if (img.width !== this.renderDims.width || img.height !== this.renderDims.height) return;
         // Avoid unbounded buffering if ffmpeg stalls.
         if (s.writableLength < img.pixels.length * 4) s.write(img.pixels);
       })

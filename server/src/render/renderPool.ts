@@ -86,9 +86,11 @@ export class RenderWorker {
     });
   }
 
-  /** A full-resolution RGBA frame for the video pipeline. */
-  async raw(tt: Timetable, nowMs: number): Promise<{ width: number; height: number; pixels: Buffer }> {
-    const m = await this.request({ kind: 'raw', tt, nowMs });
+  /** An RGBA frame for the video pipeline. `renderWidth` (optional) rasterises the
+   *  SVG at that width instead of its native size — used to cap 4K at 1080p so the
+   *  frame stays light; ffmpeg upscales it to the true output resolution. */
+  async raw(tt: Timetable, nowMs: number, renderWidth?: number): Promise<{ width: number; height: number; pixels: Buffer }> {
+    const m = await this.request({ kind: 'raw', tt, nowMs, renderWidth });
     return { width: m.width ?? 0, height: m.height ?? 0, pixels: Buffer.from(m.buf as ArrayBuffer) };
   }
 
