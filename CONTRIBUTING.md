@@ -7,19 +7,24 @@ Thanks for helping! A few ground rules.
 
 ## Licensing
 
-This project is licensed **AGPL-3.0-only** (see [`LICENSE`](LICENSE)). By submitting a
-contribution you agree that it is licensed under **AGPL-3.0-only**, and you certify the
-[Developer Certificate of Origin](https://developercertificate.org/) — i.e. the work is
-yours to contribute. Sign your commits off:
+This project is licensed **AGPL-3.0-only** (see [`LICENSE`](LICENSE)) and contributions are
+governed by the **Contributor License Agreement** ([`CLA.md`](CLA.md), the canonical text). By
+submitting a contribution you agree it is licensed under **AGPL-3.0-only**, you certify the
+[Developer Certificate of Origin](https://developercertificate.org/) (the work is yours to
+contribute), and you accept the CLA. Sign your commits off:
 
 ```
 git commit -s -m "..."
 ```
 
-> **Contributor License Agreement.** OpenMasjid-Solutions may ask contributors to accept the
-> organization's CLA so the project can be relicensed or dual-licensed in future. If a CLA is in
-> effect for the org, it applies to contributions here; see the OpenMasjid-Solutions org for the
-> current text.
+**Signing the CLA.** You sign **once**, automatically, on your first pull request: the CLA bot
+comments with a link to [`CLA.md`](CLA.md) and asks you to reply with the exact sentence
+
+> I have read the CLA Document and I hereby sign the CLA
+
+The CLA keeps the public tree AGPL-3.0 while letting OpenMasjid-Solutions also offer
+commercial/dual licenses; you keep your copyright. If you cannot accept the relicensing grant
+(§2 of the CLA), say so in your PR and we'll take it AGPL-only or discuss.
 
 ## Code
 

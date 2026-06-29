@@ -157,3 +157,7 @@ server). In the built container the server launches and supervises MediaMTX itse
 
 [AGPL-3.0](LICENSE). The prayer-time engine is original work reused from the OpenMasjidAPPS
 `prayer-times-display` example by the same author.
+
+Contributions are made under AGPL-3.0 and a **Contributor License Agreement** ([CLA.md](CLA.md))
+that lets the project also offer commercial/dual licenses — the public tree always stays AGPL-3.0.
+The CLA is signed automatically on your first pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
