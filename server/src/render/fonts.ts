@@ -17,7 +17,11 @@ import { makeLog } from '../logger';
 
 const log = makeLog('fonts');
 
-const DIRS = ['/usr/share/fonts', '/usr/local/share/fonts'];
+// `/app/fonts` (our vendored faces) is scanned FIRST so a bundled file wins over the
+// distro's copy of the same family — e.g. our STATIC Noto Naskh Arabic (verified to
+// carry the ﷺ ligature, U+FDFA) is picked ahead of the distro's variable font, which
+// resvg can render that glyph as a tofu box. See assets/fonts/README.md.
+const DIRS = ['/app/fonts', '/usr/share/fonts', '/usr/local/share/fonts'];
 
 // The curated faces, in priority order. Matched on the file's basename (without
 // extension). Keep this small — EVERY file here is parsed on EVERY frame, so a

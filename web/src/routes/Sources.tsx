@@ -189,7 +189,7 @@ function SourceModal({ src, onClose, onSaved }: { src: Source | null; onClose: (
         )}
       </Field>
       <div className="grid2">
-        <Field label="Compatibility" hint="'Most compatible' re-encodes so it plays on more screens (more processor — best on a mini-PC).">
+        <Field label="Compatibility" hint="'Most compatible' re-encodes so it plays on more screens (more processor — best on a mini-PC). UniFi cameras need re-encode.">
           <select className="select" value={mode} onChange={(e) => setMode(e.target.value as Source['mode'])}>
             <option value="direct">Direct (lightest)</option>
             <option value="normalize">Most compatible (re-encode)</option>

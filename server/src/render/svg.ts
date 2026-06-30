@@ -738,24 +738,29 @@ function lightBeams(cel: Celestial, W: number, H: number): string {
 /** A separate Jumu'ah strip, shown on EVERY day (the daily table keeps its own Dhuhr
  *  row). Gold "JUMU'AH" label on the leading side, then the configured time(s) —
  *  numbered ¹ ² when there's more than one Jumu'ah. */
-function jumuahStrip(times: number[], p: Palette, L: Record<string, string>, x: number, y: number, w: number, h: number, timeFormat: string): string {
+// English ordinals for the Jumu'ah label (1st, 2nd, …); other languages use a number.
+const JUMUAH_ORD = ['1st', '2nd', '3rd', '4th', '5th'];
+
+/** A separate Jumu'ah line shown on EVERY day, sitting just below the daily prayers
+ *  (under Isha). NOT its own bubble — just a thin gold hairline separating it — with
+ *  each time clearly labelled "1st Jumu'ah", "2nd Jumu'ah", … (no superscripts). */
+function jumuahStrip(times: number[], p: Palette, L: Record<string, string>, x: number, y: number, w: number, h: number, timeFormat: string, lang: string): string {
   if (!times.length) return '';
   const out: string[] = [];
-  const r = Math.min(w, h) * 0.16;
-  out.push(glass(x, y, w, h, r, { fill: hexToRgba(p.gold, 0.05), stroke: hexToRgba(p.gold, 0.45) }));
-  const pad = h * 0.6;
-  const cy = y + h * 0.64;
-  const label = (L.jumuah ?? "Jumu'ah").toUpperCase();
-  out.push(text(x + pad, cy, label, { size: clamp(h * 0.4, 14, 40), fill: p.gold, family: FONT_DISPLAY, weight: 700, anchor: 'start', letter: 1, editId: 'label.jumuah' }));
-  const sup = ['¹', '²', '³', '⁴'];
-  const timeSize = clamp(h * 0.46, 16, 48);
-  const zoneX = x + w * 0.42;
-  const zoneW = x + w - pad - zoneX;
+  // Separation only: a thin gold hairline across the top (no surrounding bubble).
+  out.push(rect(x, y, w, Math.max(1.5, h * 0.025), 0, hexToRgba(p.gold, 0.5)));
+  const cy = y + h * 0.68;
+  const pad = w * 0.022;
+  const base = L.jumuah ?? "Jumu'ah";
   const n = times.length;
+  const labelFor = (i: number) => (n === 1 ? base : lang === 'en' ? `${JUMUAH_ORD[i] ?? `${i + 1}th`} ${base}` : `${base} ${i + 1}`);
+  const labelSize = clamp(h * 0.4, 14, 38);
+  const timeSize = clamp(h * 0.5, 16, 46);
+  const slotW = w / n;
   times.forEach((t, i) => {
-    const str = (n > 1 ? `${sup[i] ?? i + 1} ` : '') + fmtShort(t, timeFormat);
-    const tx = zoneX + (zoneW / n) * (i + 0.5);
-    out.push(text(tx, cy, str, { size: timeSize, fill: p.text, family: FONT_DISPLAY, weight: 700, anchor: 'middle' }));
+    const slotX = x + slotW * i;
+    out.push(text(slotX + pad, cy, labelFor(i), { size: labelSize, fill: p.gold, family: FONT_DISPLAY, weight: 700, anchor: 'start', letter: 0.5, ...(i === 0 ? { editId: 'label.jumuah' } : {}) }));
+    out.push(text(slotX + slotW - pad, cy, fmtShort(t, timeFormat), { size: timeSize, fill: p.text, family: FONT_DISPLAY, weight: 700, anchor: 'end' }));
   });
   return out.join('');
 }
@@ -1108,11 +1113,15 @@ function spotlightView(
 function sanitizeText(s: string): string {
   return s
     .normalize('NFC')
-    .replace(/[​-‏‪-‮⁦-⁩؜﻿]/g, '') // bidi/zero-width controls
-    .replace(/[“”„‟«»]/g, '"') // smart/guillemet double quotes
+    .replace(/[​-‏‪-‮⁦-⁩؜﻿]/g, '') // bidi / zero-width
+    .replace(/[“”„‟«»]/g, '"') // smart / guillemet double quotes
     .replace(/[‘’‚‛]/g, "'") // smart single quotes
-    .replace(/[–—―]/g, '-') // en/em/horizontal-bar dashes
+    .replace(/[–—―]/g, '-') // en / em / horizontal-bar dashes
     .replace(/…/g, '...') // ellipsis
+    // Whitelist: keep tab/newline, ASCII, Latin-1/Extended-A, the Arabic blocks AND the
+    // Arabic Presentation Forms (U+FB50-FDFF incl. the sallallahu-alayhi-wasallam ligature
+    // U+FDFA, U+FE70-FEFF). Drop anything else the bundled fonts cannot draw (it tofus).
+    .replace(/[^\t\n -~ -ɏ؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/g, '')
     .replace(/[ \t]{2,}/g, ' ') // collapse runs of spaces left by stripped marks
     .trim();
 }
@@ -1460,7 +1469,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   if (jH > 0) {
     const g = Math.min(W, H) * 0.014;
     const stripY = H - P - H * 0.05 - jH + g * 0.5;
-    out.push(jumuahStrip(m.jumuah, p, L, P, stripY, W - 2 * P, jH - g, tt.timeFormat));
+    out.push(jumuahStrip(m.jumuah, p, L, P, stripY, W - 2 * P, jH - g, tt.timeFormat, tt.language));
   }
 
   // ── Footer (hidden when the ticker is running — they share the bottom strip) ──

@@ -36,22 +36,39 @@ function parseClock(s: string): string | null {
   return `${pad2(h)}:${pad2(min)}`;
 }
 
-/** Parse a date cell to "MM-DD", or null. */
+// Month names (full + common abbreviations), so dates like Excel's "1-Jan" parse.
+const MONTH_NAMES: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+  may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+};
+
+/** Parse a date cell to "MM-DD", or null. Accepts YYYY-MM-DD, MM-DD, M/D, and the
+ *  month-NAME forms Excel auto-produces when it reformats a CSV (1-Jan, Jan-1,
+ *  "1 January", 01-Jan-2024, …) — separators -, /, ., or space, optional trailing
+ *  year. (Excel mangling "01-01" → "1-Jan" was breaking every upload.) */
 function parseMonthDay(s: string): string | null {
   const t = s.trim();
-  let mo: number, da: number;
-  let m = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(t); // YYYY-MM-DD
-  if (m) {
-    mo = +m[2];
+  if (!t) return null;
+  let mo: number | null = null;
+  let da: number | null = null;
+  let m: RegExpExecArray | null;
+  if ((m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(t))) {
+    mo = +m[2]; // YYYY-MM-DD
     da = +m[3];
-  } else if ((m = /^(\d{1,2})[-/](\d{1,2})$/.exec(t))) {
-    // MM-DD or M/D
-    mo = +m[1];
+  } else if ((m = /^(\d{1,2})[-/.](\d{1,2})(?:[-/.]\d{2,4})?$/.exec(t))) {
+    mo = +m[1]; // MM-DD or M/D (optional trailing year) — month first
+    da = +m[2];
+  } else if ((m = /^(\d{1,2})[-/.\s]+([A-Za-z]{3,})(?:[-/.\s]+\d{2,4})?$/.exec(t))) {
+    da = +m[1]; // D-Mon (e.g. 1-Jan, "1 January", 01-Jan-2024)
+    mo = MONTH_NAMES[m[2].toLowerCase()] ?? null;
+  } else if ((m = /^([A-Za-z]{3,})[-/.\s]+(\d{1,2})(?:[-/.\s]+\d{2,4})?$/.exec(t))) {
+    mo = MONTH_NAMES[m[1].toLowerCase()] ?? null; // Mon-D (e.g. Jan-1, "January 1")
     da = +m[2];
   } else {
     return null;
   }
-  if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+  if (mo == null || da == null || mo < 1 || mo > 12 || da < 1 || da > 31) return null;
   return `${pad2(mo)}-${pad2(da)}`;
 }
 

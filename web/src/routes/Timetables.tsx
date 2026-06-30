@@ -966,7 +966,12 @@ function JumuahEditor({ times, onChange }: { times: string[]; onChange: (t: stri
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** Days in a 1-based month, leap-aware for February (29 in a leap year, else 28). */
+function daysInMonth(month: number, year: number = new Date().getFullYear()): number {
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
 
 /** In-app monthly grid for setting exact Iqamah clock times across the year. */
 function IqamahYearEditor({ tt, onSaved }: { tt: Timetable; onSaved: (rows: number) => void }) {
@@ -1014,7 +1019,7 @@ function IqamahYearEditor({ tt, onSaved }: { tt: Timetable; onSaved: (rows: numb
             <tr><th>Day</th>{PR.map((pr) => <th key={pr}>{PRAYER_TITLE[pr]}</th>)}</tr>
           </thead>
           <tbody>
-            {Array.from({ length: DAYS_IN_MONTH[month - 1] }, (_, i) => i + 1).map((d) => (
+            {Array.from({ length: daysInMonth(month) }, (_, i) => i + 1).map((d) => (
               <tr key={d}>
                 <td className="iqyear-day">{d}</td>
                 {PR.map((pr) => (

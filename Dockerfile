@@ -58,6 +58,11 @@ RUN npm ci --omit=dev
 COPY --from=server /server/dist ./dist
 COPY --from=web /web/dist ./public
 
+# Vendored fonts (loaded with priority by render/fonts.ts). We bundle a STATIC Noto
+# Naskh Arabic that is verified to contain the ﷺ ligature (U+FDFA); the distro's
+# variable Noto Naskh can drop it to a tofu box under resvg. See assets/fonts/README.md.
+COPY server/assets/fonts /app/fonts
+
 # The RTSP server runs inside this container too, so a masjid installs and updates
 # exactly one thing. The app launches and supervises it (mediamtxServer.ts). We ship
 # MediaMTX's OWN default config — it includes the `all_others` path that lets the
