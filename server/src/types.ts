@@ -104,6 +104,21 @@ export interface IqamahCountdown {
   minutes: number;
 }
 
+/** Per-prayer minutes to add to the calculated Adhan time, for masjids that call the
+ *  Adhan a few minutes after the astronomical time. Applies to the DISPLAYED Adhan (and,
+ *  for offset-mode Iqāmah, shifts the Iqāmah with it) and to the "when does the next
+ *  prayer come in" countdown; Sunrise and the sun/moon position stay on the true
+ *  astronomical times. */
+export type AdhanOffsets = Partial<Record<'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha', number>>;
+
+/** A small, brief pop-up shown when an Adhan time arrives ("It's time for Fajr"), drawn
+ *  over the normal layout (not a full-screen takeover). */
+export interface AdhanPopup {
+  enabled: boolean;
+  /** how many seconds the pop-up stays on screen after the Adhan */
+  seconds: number;
+}
+
 /** Public embeddable web widget: a compact vertical list of just the prayer times +
  *  Jumu'ah (NOT the full TV display), served unauthenticated for this timetable so a
  *  masjid can embed it on their own website. Off by default. */
@@ -185,6 +200,10 @@ export interface Timetable {
   prohibitedNotice?: ProhibitedNotice;
   /** full-screen countdown for the last minutes before each Iqāmah */
   iqamahCountdown?: IqamahCountdown;
+  /** per-prayer minutes added to the calculated Adhan time (precautionary delay) */
+  adhanOffsets?: AdhanOffsets;
+  /** brief "it's time for salah" pop-up when an Adhan arrives */
+  adhanPopup?: AdhanPopup;
   /** public embeddable web widget (prayer times only) for this timetable */
   widget?: TimetableWidget;
   footerNote: string;

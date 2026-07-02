@@ -38,6 +38,8 @@ export interface HadithItem { ar: string; en: string }
 export interface SalahHadith { enabled: boolean; minutes: number; items: HadithItem[] }
 export interface ProhibitedNotice { enabled: boolean; minutes: number; ticker?: boolean }
 export interface IqamahCountdown { enabled: boolean; minutes: number }
+export type AdhanOffsets = Partial<Record<'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha', number>>;
+export interface AdhanPopup { enabled: boolean; seconds: number }
 export interface TimetableWidget { enabled: boolean }
 export interface Timetable {
   id: string;
@@ -86,6 +88,8 @@ export interface Timetable {
   salahHadith?: SalahHadith;
   prohibitedNotice?: ProhibitedNotice;
   iqamahCountdown?: IqamahCountdown;
+  adhanOffsets?: AdhanOffsets;
+  adhanPopup?: AdhanPopup;
   widget?: TimetableWidget;
   footerNote: string;
   createdAt: string;

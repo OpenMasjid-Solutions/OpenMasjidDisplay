@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config';
 import { makeLog } from '../logger';
-import { dimsFor, activeTicker, tickerLayout, TICKER_RED, type Dims } from './svg';
+import { dimsFor, activeTicker, tickerTextColor, tickerLayout, TICKER_RED, type Dims } from './svg';
 import { primaryFontFile } from './fonts';
 import { RenderWorker } from './renderPool';
 import type { Timetable } from '../types';
@@ -47,6 +47,8 @@ export interface TickerSpec {
   speed: number;
   /** a prohibited-time warning → drawn in red (overrides any normal ticker) */
   prohibited: boolean;
+  /** "#rrggbb" text colour matching the themed band (dark on light theme, light on dark) */
+  color: string;
 }
 
 // Ticker cadence: 20 fps (smooth, still light on a 2-core box — the heavy SVG render
@@ -78,6 +80,11 @@ function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d): stri
     ? `scale=${d.width}:${d.height}:flags=lanczos,`
     : '';
   if (!ticker) return `${up}format=yuv420p,fps=15`;
+  // NB: no `fps=` here. The pipeline now feeds genuine CFR frames at TICKER_FPS (the
+  // last render, duplicated in real time between the 1 fps SVG renders), so drawtext
+  // animates on real, evenly-paced frames. A hardware decoder gets a steady frame every
+  // 1/TICKER_FPS s instead of a 1-second BURST of frames (which it renders then stalls
+  // on — "move, stop, move"); software players hid the burst behind their jitter buffer.
   const { y, bandH, fs } = tickerLayout(d.width, d.height);
   const size = Math.round(fs);
   const speed = clamp(Math.round(ticker.speed || 5), 1, 10); // 1 (slow) … 10 (fast)
@@ -95,7 +102,7 @@ function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d): stri
     // frame (no sub-pixel rounding wobble); the tiling copies hide the wrap.
     const x = `w-mod(floor(t*${TICKER_FPS})*${pxPerFrame}\\,${period})${k > 0 ? `-${k}*(${period})` : ''}`;
     // expansion=none: treat the message file as literal text (no %{...} / escape interpretation).
-    const color = ticker.prohibited ? `0x${TICKER_RED.replace('#', '')}` : 'white';
+    const color = ticker.prohibited ? `0x${TICKER_RED.replace('#', '')}` : `0x${ticker.color.replace('#', '')}`;
     dt.push(`drawtext=fontfile='${ticker.fontfile}':textfile='${ticker.textfile}':expansion=none:fontsize=${size}:fontcolor=${color}:x=${x}:y=${yExpr}`);
   }
   return `${up}fps=${TICKER_FPS},${dt.join(',')},format=yuv420p`;
@@ -116,11 +123,16 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
   // a slightly better preset (the heavy work is the 1 fps SVG render, so the encoder has
   // ample headroom). GOP is one keyframe per second at the output fps.
   const ofps = ticker ? TICKER_FPS : 15;
+  // With a ticker we feed genuine CFR frames at TICKER_FPS (the pipeline duplicates the
+  // last render in real time), so the input framerate IS the output framerate and there
+  // is no `fps=` filter. Without a ticker the SVG-per-second feed (1 fps) is upsampled by
+  // the `fps=15` filter as before (static content, no motion to stutter).
+  const inFps = ticker ? TICKER_FPS : 1;
   const br = bitrate > 0 ? bitrate : d.height >= 1080 ? 8000 : 4000;
   const buf = br * 2;
   return [
     '-hide_banner', '-loglevel', 'warning',
-    '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${inDims.width}x${inDims.height}`, '-framerate', '1', '-i', 'pipe:0',
+    '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${inDims.width}x${inDims.height}`, '-framerate', `${inFps}`, '-i', 'pipe:0',
     '-vf', timetableVf(d, ticker, inDims), '-fps_mode', 'cfr',
     '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
     '-profile:v', 'baseline', '-level', levelFor(d.height),
@@ -314,6 +326,7 @@ class TimetablePipeline extends FfmpegPipeline {
   // and respawn ffmpeg so its drawtext filters rebuild.
   private tickerText = '';
   private tickerProhibited = false; // red prohibited-time message → drawtext colour is an ffmpeg arg
+  private tickerColor = '#ffffff'; // themed ticker text colour (ffmpeg arg) → respawn on theme change
   private tickerSpeed = 5; // scroll speed is an ffmpeg arg → respawn when it changes
   private bitrate = 0; // configurable bitrate cap (kbps) — an ffmpeg arg → respawn on change
   private readonly tickerFile: string;
@@ -326,19 +339,21 @@ class TimetablePipeline extends FfmpegPipeline {
     this.tickerFile = path.join(config.dataDir, `ticker_${id}.txt`);
     const tt = getTt();
     this.dims = tt ? dimsFor(tt.orientation, tt.quality) : { width: 1280, height: 720 };
-    this.renderDims = renderDimsFor(this.dims);
     this.bitrate = tt ? brFor(tt, this.dims) : 0;
     const st = tt ? safeTicker(tt) : { text: '', prohibited: false };
     this.tickerText = st.text;
     this.tickerProhibited = st.prohibited;
+    this.tickerColor = tt ? tickerTextColor(tt) : '#ffffff';
     this.tickerSpeed = tt?.tickerSpeed ?? 5;
+    // renderDims depends on tickerText (full-res while a ticker animates), so set it last.
+    this.renderDims = this.computeRenderDims();
     this.writeTickerFile();
   }
 
   private tickerSpec(): TickerSpec | null {
     const font = primaryFontFile();
     if (!this.tickerText || !font) return null;
-    return { text: this.tickerText, textfile: this.tickerFile, fontfile: font, speed: this.tickerSpeed, prohibited: this.tickerProhibited };
+    return { text: this.tickerText, textfile: this.tickerFile, fontfile: font, speed: this.tickerSpeed, prohibited: this.tickerProhibited, color: this.tickerColor };
   }
 
   private writeTickerFile(): void {
@@ -375,87 +390,129 @@ class TimetablePipeline extends FfmpegPipeline {
     }
   }
 
-  // Poll several times a second but render at most once per wall-clock second.
-  // A fixed 1 s loop that skipped a tick whenever a render was still in flight made
-  // the cadence jump to 2 s as soon as one render took >1 s — so the on-screen
-  // countdown ticked down by 2. Polling at 250 ms and gating on the second means we
-  // render again as soon as the previous frame lands, locking the countdown to ~1 s.
+  // The loop paces two jobs at different rates:
+  //  • reconcile + SVG render — at most once per wall-clock second (the heavy work),
+  //  • frame WRITE — at the input framerate (TICKER_FPS with a ticker, else 1/s), by
+  //    repeating the last render so ffmpeg gets a genuine, evenly-paced CFR stream.
+  // A fixed 1 s render loop skipped ticks when a render ran long (countdown jumped by 2);
+  // polling faster and gating the render on the whole second keeps it locked to ~1 s.
   private lastSec = -1;
+  private lastCheck = 0;
+  private lastWriteSlot = -1;
+  /** most recent rendered frame; re-fed to ffmpeg every input-frame slot */
+  private lastFrame: Awaited<ReturnType<RenderWorker['raw']>> | null = null;
+
   private loop(): void {
     if (this.stopped) {
       this.looping = false;
       return;
     }
-    this.frame();
-    this.timer = setTimeout(() => this.loop(), 250);
+    this.tick();
+    // Tick fast enough to feed each TICKER_FPS frame; a plain 1 fps stream needs no rush.
+    const interval = this.tickerText ? Math.max(20, Math.round(1000 / TICKER_FPS)) : 250;
+    this.timer = setTimeout(() => this.loop(), interval);
   }
 
-  private frame(): void {
+  private tick(): void {
     if (this.stopped) return;
+    // Reconcile (respawn checks) + render only ~4×/s — not on every 50 ms ticker frame.
+    const now = Date.now();
+    if (now - this.lastCheck >= 240) {
+      this.lastCheck = now;
+      if (this.reconcileAndRender()) return; // respawned → skip the write this tick
+    }
+    this.writeLatest();
+  }
+
+  /** Respawn checks (ticker text/colour, dims, bitrate, scroll speed) + the
+   *  once-per-second SVG render that updates lastFrame. Returns true if ffmpeg was
+   *  respawned (the caller then skips writing a frame this tick). */
+  private reconcileAndRender(): boolean {
     const tt = this.getTt();
     if (!tt) {
       this.stop();
-      return;
+      return true;
     }
-    // Ticker text or its colour (prohibited↔normal) changed → rewrite the file and
-    // respawn so the drawtext filters (text + fontcolor) rebuild.
     const tk = safeTicker(tt);
     if (tk.text !== this.tickerText || tk.prohibited !== this.tickerProhibited) {
       this.tickerText = tk.text;
       this.tickerProhibited = tk.prohibited;
       this.writeTickerFile();
+      this.renderDims = this.computeRenderDims(); // ticker on/off flips full-res ↔ capped
       this.restartProc();
-      return;
+      return true;
     }
     const want = dimsFor(tt.orientation, tt.quality);
     if (want.width !== this.dims.width || want.height !== this.dims.height) {
       this.dims = want;
-      this.renderDims = renderDimsFor(want);
+      this.renderDims = this.computeRenderDims();
       this.bitrate = brFor(tt, this.dims);
       this.restartProc();
-      return;
+      return true;
     }
-    // Bitrate cap changed in settings → respawn so ffmpeg re-encodes at the new rate.
     const wantBr = brFor(tt, this.dims);
     if (wantBr !== this.bitrate) {
       this.bitrate = wantBr;
       this.restartProc();
-      return;
+      return true;
     }
-    // Ticker scroll speed changed → respawn so the drawtext step rate updates.
     const spd = tt.tickerSpeed ?? 5;
     if (spd !== this.tickerSpeed && this.tickerText) {
       this.tickerSpeed = spd;
       this.restartProc();
-      return;
+      return true;
     }
-    if (this.rendering) return; // a render is still in flight — let it finish
-    const stdin = this.proc?.stdin;
-    if (!stdin || !stdin.writable) return;
-    // At most one render per wall-clock second (the poll runs ~4×/s).
+    // Theme change flips the ticker text colour (an ffmpeg drawtext arg) → respawn.
+    const col = tickerTextColor(tt);
+    if (col !== this.tickerColor && this.tickerText) {
+      this.tickerColor = col;
+      this.restartProc();
+      return true;
+    }
+    if (this.rendering) return false; // a render is still in flight — let it finish
     const sec = Math.floor(Date.now() / 1000);
-    if (sec === this.lastSec) return;
+    if (sec === this.lastSec) return false;
     this.lastSec = sec;
-
     this.rendering = true;
     this.worker
       // Stamp the frame at the whole second so the clock/countdown land exactly on it.
-      // Rasterise at the capped width; ffmpeg upscales to this.dims.
       .raw(tt, sec * 1000, this.renderDims.width)
       .then((img) => {
         this.rendering = false;
         if (this.stopped) return;
-        const s = this.proc?.stdin;
-        if (!s || !s.writable) return;
-        // Drop a frame rendered at the previous (render) size during a dims change.
         if (img.width !== this.renderDims.width || img.height !== this.renderDims.height) return;
-        // Avoid unbounded buffering if ffmpeg stalls.
-        if (s.writableLength < img.pixels.length * 4) s.write(img.pixels);
+        this.lastFrame = img; // the write pump feeds this to ffmpeg
       })
       .catch((err) => {
         this.rendering = false;
         if (!this.stopped) log.debug(`render ${this.id} failed: ${err instanceof Error ? err.message : String(err)}`);
       });
+    return false;
+  }
+
+  /** Feed ffmpeg genuine CFR frames: repeat the latest render once per input-frame slot
+   *  (TICKER_FPS with a ticker, else 1/s). Pacing the writes to wall-clock time is what
+   *  turns the old 1-second BURST of frames into an even stream a hardware decoder can
+   *  play smoothly. ffmpeg assigns PTS by frame count (-framerate), so slot-based pacing
+   *  keeps the video clock ≈ real time. */
+  private writeLatest(): void {
+    const s = this.proc?.stdin;
+    const img = this.lastFrame;
+    if (!s || !s.writable || !img) return;
+    if (img.width !== this.renderDims.width || img.height !== this.renderDims.height) return;
+    const inFps = this.tickerText ? TICKER_FPS : 1;
+    const slot = Math.floor(Date.now() / (1000 / inFps));
+    if (slot === this.lastWriteSlot) return;
+    if (s.writableLength >= img.pixels.length * 3) return; // ffmpeg stalled — don't buffer
+    s.write(img.pixels);
+    this.lastWriteSlot = slot;
+  }
+
+  /** Full resolution while a ticker animates (drawtext stays crisp and there's no
+   *  per-frame upscale, since we feed real TICKER_FPS frames); capped otherwise so the
+   *  once-per-second render stays cheap. */
+  private computeRenderDims(): Dims {
+    return this.tickerText ? this.dims : renderDimsFor(this.dims);
   }
 
   override stop(): void {

@@ -27,6 +27,8 @@ import type {
   HadithItem,
   ProhibitedNotice,
   IqamahCountdown,
+  AdhanOffsets,
+  AdhanPopup,
   TimetableWidget,
 } from './types';
 
@@ -171,6 +173,28 @@ function normIqamahCountdown(v: unknown, base?: IqamahCountdown): IqamahCountdow
     minutes: intIn(o.minutes, base?.minutes ?? 5, 1, 30),
   };
 }
+
+const ADHAN_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
+/** Per-prayer Adhan delay in minutes (0–60). Zeros are omitted to keep the object small. */
+function normAdhanOffsets(v: unknown, base?: AdhanOffsets): AdhanOffsets | undefined {
+  if (v === undefined) return base;
+  const o = asObj(v);
+  const out: AdhanOffsets = {};
+  for (const k of ADHAN_KEYS) {
+    const cur = o[k] !== undefined ? intIn(o[k], base?.[k] ?? 0, 0, 60) : base?.[k] ?? 0;
+    if (cur) out[k] = cur;
+  }
+  return out;
+}
+
+function normAdhanPopup(v: unknown, base?: AdhanPopup): AdhanPopup | undefined {
+  if (v === undefined) return base;
+  const o = asObj(v);
+  return {
+    enabled: bool(o.enabled, base?.enabled ?? false),
+    seconds: intIn(o.seconds, base?.seconds ?? 15, 3, 120),
+  };
+}
 function normWidget(v: unknown, base?: TimetableWidget): TimetableWidget | undefined {
   if (v === undefined) return base;
   const o = asObj(v);
@@ -256,6 +280,8 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     salahHadith: normSalahHadith(o.salahHadith, base?.salahHadith),
     prohibitedNotice: normProhibited(o.prohibitedNotice, base?.prohibitedNotice),
     iqamahCountdown: normIqamahCountdown(o.iqamahCountdown, base?.iqamahCountdown),
+    adhanOffsets: normAdhanOffsets(o.adhanOffsets, base?.adhanOffsets),
+    adhanPopup: normAdhanPopup(o.adhanPopup, base?.adhanPopup),
     widget: normWidget(o.widget, base?.widget),
     footerNote: str(o.footerNote, base?.footerNote ?? '', 160),
     createdAt: base?.createdAt ?? new Date().toISOString(),

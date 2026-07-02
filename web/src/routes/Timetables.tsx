@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, HadithItem, ProhibitedNotice, IqamahCountdown, TimetableWidget } from '../types';
+import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, HadithItem, ProhibitedNotice, IqamahCountdown, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 
@@ -329,6 +329,10 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
   const setPn = (patch: Partial<ProhibitedNotice>) => set('prohibitedNotice', { ...pn, ...patch });
   const ic: IqamahCountdown = f.iqamahCountdown ?? { enabled: false, minutes: 5 };
   const setIc = (patch: Partial<IqamahCountdown>) => set('iqamahCountdown', { ...ic, ...patch });
+  const ao: AdhanOffsets = f.adhanOffsets ?? {};
+  const setAo = (k: keyof AdhanOffsets, v: number) => set('adhanOffsets', { ...ao, [k]: v });
+  const apop: AdhanPopup = f.adhanPopup ?? { enabled: false, seconds: 15 };
+  const setApop = (patch: Partial<AdhanPopup>) => set('adhanPopup', { ...apop, ...patch });
   const wg: TimetableWidget = f.widget ?? { enabled: false };
   const setWg = (patch: Partial<TimetableWidget>) => set('widget', { ...wg, ...patch });
 
@@ -562,6 +566,31 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
             ))}
           </div>
 
+          <h3 className="section-title">Adhan delay</h3>
+          <p className="hint" style={{ marginBlockStart: 0 }}>
+            Minutes to add to each prayer's calculated Adhan time — for masjids that call the Adhan a few minutes
+            after the astronomical time. The displayed Adhan (and any “minutes after Adhan” Iqamah) shifts with it.
+          </p>
+          <div className="list">
+            {(['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const).map((k) => (
+              <div className="row-between" key={k} style={{ padding: '0.3rem 0' }}>
+                <span className="label" style={{ margin: 0, textTransform: 'capitalize' }}>{k}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    max={60}
+                    style={{ width: '5rem' }}
+                    value={ao[k] ?? 0}
+                    onChange={(e) => setAo(k, Math.max(0, Math.min(60, Number(e.target.value) || 0)))}
+                  />
+                  <span className="hint">min</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
           <h3 className="section-title">Jumu'ah times (Fridays)</h3>
           <JumuahEditor times={f.jumuah} onChange={(j) => set('jumuah', j)} />
 
@@ -706,6 +735,19 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
           {ic.enabled && (
             <Field label="Start (minutes before the Iqamah)" hint="The full-screen countdown takes over this many minutes before each prayer's Iqamah time.">
               <input className="input" type="number" min={1} max={30} value={ic.minutes} onChange={(e) => setIc({ minutes: Number(e.target.value) })} />
+            </Field>
+          )}
+        </div>
+
+        <div className="card section">
+          <h3 className="section-title">Adhan pop-up</h3>
+          <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+            <span className="label" style={{ margin: 0 }}>Show a brief “it's time for salah” pop-up when the Adhan comes in</span>
+            <Toggle checked={apop.enabled} onChange={(v) => setApop({ enabled: v })} label="Show an Adhan pop-up" />
+          </div>
+          {apop.enabled && (
+            <Field label="Show for (seconds)" hint="The pop-up appears over the screen the moment each prayer's Adhan time arrives, then fades after this many seconds.">
+              <input className="input" type="number" min={3} max={120} value={apop.seconds} onChange={(e) => setApop({ seconds: Number(e.target.value) })} />
             </Field>
           )}
         </div>

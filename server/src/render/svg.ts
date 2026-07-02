@@ -294,6 +294,14 @@ export function activeTicker(tt: Timetable, now: Date): { text: string; prohibit
   return { text: activeTickerText(tt, m.parts), prohibited: false };
 }
 
+/** The colour ffmpeg's drawtext should paint the scrolling ticker, matching the themed
+ *  band it scrolls over — the live video draws the text with ffmpeg, so it can't read the
+ *  SVG palette and used to be hardcoded white (invisible on the light theme's pale band).
+ *  Returns a "#rrggbb" hex; the renderer converts it to ffmpeg's 0xRRGGBB form. */
+export function tickerTextColor(tt: Timetable): string {
+  return getPalette(tt.themeId, tt.accent).text;
+}
+
 /** The active ticker string for the given instant (text only). */
 export function activeTickerString(tt: Timetable, now: Date): string {
   return activeTicker(tt, now).text;
@@ -473,7 +481,13 @@ function buildModel(tt: Timetable, now: Date): Model {
   // tracks the five daily prayers, Dhuhr included).
   const jumuah = tt.jumuah.map(parseHHMM).filter((x): x is number => x != null).sort((a, b) => a - b);
   const order = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
+  // Per-prayer Adhan delay: the masjid may call the Adhan a few minutes after the
+  // astronomical time. `adj()` gives the DISPLAYED Adhan (astronomical + offset); the
+  // real `times` are kept untouched for the sun/moon position.
+  const ao = tt.adhanOffsets ?? {};
+  const adj = (k: (typeof order)[number]) => times[k] + (ao[k] ?? 0) / 60;
   const eff: Record<string, number> = { ...(times as unknown as Record<string, number>) };
+  for (const k of order) eff[k] = adj(k);
   let activeKey: string | null = null;
   let nextKey: string | null = null;
   let nextHours = 0;
@@ -487,7 +501,7 @@ function buildModel(tt: Timetable, now: Date): Model {
   }
   if (!nextKey) {
     nextKey = 'fajr';
-    nextHours = tomorrowFajr + 24;
+    nextHours = tomorrowFajr + (ao.fajr ?? 0) / 60 + 24;
     activeKey = 'isha';
   }
   if (!activeKey) activeKey = 'isha';
@@ -502,12 +516,12 @@ function buildModel(tt: Timetable, now: Date): Model {
     return iqamahHours(adhan, tt.iqamah[k]);
   };
   const rows: Row[] = [];
-  rows.push({ key: 'fajr', label: 'fajr', adhan: times.fajr, iqamah: iq('fajr', times.fajr) });
+  rows.push({ key: 'fajr', label: 'fajr', adhan: adj('fajr'), iqamah: iq('fajr', adj('fajr')) });
   if (tt.showSunrise) rows.push({ key: 'sunrise', label: 'sunrise', adhan: times.sunrise, iqamah: null, minor: true });
-  rows.push({ key: 'dhuhr', label: 'dhuhr', adhan: times.dhuhr, iqamah: iq('dhuhr', times.dhuhr) });
-  rows.push({ key: 'asr', label: 'asr', adhan: times.asr, iqamah: iq('asr', times.asr) });
-  rows.push({ key: 'maghrib', label: 'maghrib', adhan: times.maghrib, iqamah: iq('maghrib', times.maghrib) });
-  rows.push({ key: 'isha', label: 'isha', adhan: times.isha, iqamah: iq('isha', times.isha) });
+  rows.push({ key: 'dhuhr', label: 'dhuhr', adhan: adj('dhuhr'), iqamah: iq('dhuhr', adj('dhuhr')) });
+  rows.push({ key: 'asr', label: 'asr', adhan: adj('asr'), iqamah: iq('asr', adj('asr')) });
+  rows.push({ key: 'maghrib', label: 'maghrib', adhan: adj('maghrib'), iqamah: iq('maghrib', adj('maghrib')) });
+  rows.push({ key: 'isha', label: 'isha', adhan: adj('isha'), iqamah: iq('isha', adj('isha')) });
 
   // Highlight/countdown fix: while a prayer's Adhan has passed but its Iqāmah hasn't,
   // THAT prayer stays the focus — count down to its Iqāmah, and don't promote the next
@@ -1150,8 +1164,14 @@ function panelTable(b: Box, m: Model, c: Ctx): string {
       out.push(text(colAd, midY, fmtShort(row.adhan, c.timeFormat), { size: nameSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'end' }));
       out.push(text(colIq, midY, fmtShort(row.iqamah, c.timeFormat), { size: nameSize, fill: c.p.primarySoft, family: FONT_DISPLAY, weight: 700, anchor: 'end' }));
     } else {
-      // Sunrise: a single time (no Iqamah), so centre it across the two time columns.
-      out.push(text((colAd + colIq) / 2, midY, fmtShort(row.adhan, c.timeFormat), { size: nameSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle' }));
+      // Sunrise: a single time (no Iqamah), centred BETWEEN the two time values. Both the
+      // Adhan and Iqamah times are right-anchored (at colAd / colIq), so their visual
+      // centres sit half a text-width left of those edges — shift the midpoint left by
+      // that half-width so Sunrise lands truly between them, not skewed right.
+      const tsz = nameSize * 0.92;
+      const tstr = fmtShort(row.adhan, c.timeFormat);
+      const cxSun = (colAd + colIq) / 2 - approxWidth(tstr, tsz) / 2;
+      out.push(text(cxSun, midY, tstr, { size: tsz, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle' }));
     }
   });
   return out.join('');
@@ -1358,10 +1378,16 @@ type Overlay =
 /** The zawāl (pre-Dhuhr) prohibited-to-pray window, if it is active now — its end (the
  *  Dhuhr Adhan) is when prayer is allowed again. Shared by the ring notice and the
  *  bottom red ticker so both cover the exact same window. */
+/** The Dhuhr Adhan as shown on screen (astronomical zenith + any Adhan delay) — the
+ *  moment prayer is allowed again, so it ends the zawāl window. */
+function dhuhrAdhanHours(m: Model): number {
+  return m.rows.find((r) => r.key === 'dhuhr')?.adhan ?? m.times.dhuhr;
+}
+
 function prohibitedWindow(tt: Timetable, m: Model, nowHours: number): { secsLeft: number } | null {
   const pn = tt.prohibitedNotice;
   if (!pn?.enabled) return null;
-  const dhuhr = m.times.dhuhr; // astronomical zenith → the Dhuhr Adhan ends the window
+  const dhuhr = dhuhrAdhanHours(m);
   const win = Math.max(1, pn.minutes) / 60;
   if (nowHours >= dhuhr - win && nowHours < dhuhr) return { secsLeft: Math.max(0, (dhuhr - nowHours) * 3600) };
   return null;
@@ -1369,7 +1395,46 @@ function prohibitedWindow(tt: Timetable, m: Model, nowHours: number): { secsLeft
 
 /** The red scrolling message shown along the bottom during a ticker-mode prohibited window. */
 function prohibitedMessage(tt: Timetable, m: Model): string {
-  return `Prohibited time for prayer — please wait until the Dhuhr adhan (${fmtShort(m.times.dhuhr, tt.timeFormat)})`;
+  return `Prohibited time for prayer — please wait until the Dhuhr adhan (${fmtShort(dhuhrAdhanHours(m), tt.timeFormat)})`;
+}
+
+/** If an Adhan has just arrived (within adhanPopup.seconds of the DISPLAYED Adhan),
+ *  which prayer row — drives the brief "it's time for salah" pop-up. */
+function adhanPopupRow(tt: Timetable, m: Model, nowHours: number): Row | null {
+  const ap = tt.adhanPopup;
+  if (!ap?.enabled) return null;
+  const win = Math.max(1, ap.seconds) / 3600;
+  for (const r of m.rows) {
+    if (r.key === 'sunrise' || r.adhan == null) continue;
+    if (nowHours >= r.adhan && nowHours < r.adhan + win) return r;
+  }
+  return null;
+}
+
+/** A brief, celebratory pop-up when an Adhan comes in: a centred card (Arabic over
+ *  English, gold-accented) over a gentle full-screen dim, shown for the configured
+ *  seconds. Not a permanent takeover — it fades and the normal layout returns. */
+function adhanPopupView(row: Row, c: Ctx, W: number, H: number): string {
+  const out: string[] = [];
+  // Gentle dim so the pop-up reads clearly over any layout or background photo.
+  out.push(rect(0, 0, W, H, 0, 'rgba(0,0,0,0.45)'));
+  const cardW = clamp(Math.min(W, H) * 0.62, 300, 860);
+  const cardH = clamp(Math.min(W, H) * 0.26, 150, 360);
+  const x = (W - cardW) / 2;
+  const y = (H - cardH) / 2;
+  const r = clamp(cardH * 0.16, 16, 46);
+  // Opaque base (nothing bleeds through) + a gold-tinted glass with a gold hairline.
+  out.push(rect(x, y, cardW, cardH, r, hexToRgba(c.p.bg, 0.97)));
+  out.push(glass(x, y, cardW, cardH, r, { raised: true, fill: hexToRgba(c.p.gold, 0.1), stroke: hexToRgba(c.p.gold, 0.55) }));
+  const cx = x + cardW / 2;
+  const eye = clamp(cardH * 0.1, 12, 28);
+  out.push(text(cx, y + cardH * 0.26, (c.L.adhanNow ?? "It's time for").toUpperCase(), { size: eye, fill: c.p.goldSoft, weight: 700, anchor: 'middle', letter: 4 }));
+  // Arabic (gold) over English (light), like the ring — centred.
+  const en = rowName(row, c.L);
+  const ar = c.lang !== 'ar' ? (PRAYER_LABELS.ar[row.label] ?? '') : '';
+  if (ar) out.push(text(cx, y + cardH * 0.6, ar, { size: clamp(cardH * 0.3, 30, 100), fill: c.p.gold, family: FONT_ARABIC, weight: 700, anchor: 'middle' }));
+  out.push(text(cx, y + cardH * (ar ? 0.85 : 0.66), en.toUpperCase(), { size: clamp(cardH * 0.16, 20, 58), fill: c.p.text, family: FONT_DISPLAY, weight: 700, anchor: 'middle', letter: 3 }));
+  return out.join('');
 }
 
 /** Which full-screen overlay (if any) is active right now. Precedence: the zawāl
@@ -1663,6 +1728,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
 
   // ── Scrolling ticker (drawn last, over everything) ───────────────────────────
   if (tickerText) out.push(tickerBand(tickerText, now, p, W, H, !!opts.tickerBandOnly, prohibitedTickerOn));
+
+  // ── Adhan-in pop-up (over everything, incl. the ticker) ──────────────────────
+  const apRow = adhanPopupRow(tt, m, nowHours);
+  if (apRow) out.push(adhanPopupView(apRow, ctx, W, H));
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${out.join('')}</svg>`;
 }
