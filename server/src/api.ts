@@ -291,12 +291,24 @@ export function createApi(deps: Deps) {
       }
       if (pathname === '/api/setup' && method === 'POST') {
         const body = await readBody(req);
-        // The local password is an ALWAYS-AVAILABLE recovery — even under SSO. We do
-        // NOT refuse setup while SSO is configured: if the platform is unreachable
-        // (a restore onto a new box, the OS briefly down), refusing here would leave
-        // no way into the panel. SSO stays the convenient default; this is the way in
-        // when it can't be reached. (Only block when an admin already exists.)
         if (store.db.admin) return sendJson(res, 409, { error: 'The control panel is already set up.' });
+        // The local password is a recovery path — but under OpenMasjidOS SSO the
+        // admin signs in through the dashboard and NEVER sets a local password, so
+        // store.db.admin stays null for the life of the deployment. If we allowed
+        // an anonymous setup while the platform is reachable, any LAN/ingress
+        // visitor could claim a permanent local admin (unauthenticated takeover).
+        // So: when SSO is configured and the platform is reachable, only a caller
+        // the platform recognises as an admin may set a recovery password;
+        // otherwise (platform down — restore/migration/outage) local setup stays
+        // open so nobody is locked out. Standalone (no SSO) is unchanged.
+        if (ssoConfigured()) {
+          const probe = await probePlatform(req);
+          if (probe.reachable && !probe.username) {
+            return sendJson(res, 403, {
+              error: 'Sign in through your OpenMasjidOS dashboard (press Open on the Display app). A recovery password can only be set here if the dashboard is unreachable.',
+            });
+          }
+        }
         const pw = String(body.password ?? '');
         if (pw.length < 8) return sendJson(res, 400, { error: 'Please choose a password of at least 8 characters.' });
         const { hash, salt } = hashPassword(pw);
