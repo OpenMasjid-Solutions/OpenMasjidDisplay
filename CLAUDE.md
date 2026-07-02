@@ -62,3 +62,23 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full contribution + signing flo
 
 When this file and the actual code disagree on a mechanism, **read the code and follow it**, then fix
 this file.
+
+---
+
+## 4. Security invariants — DO NOT REGRESS (v0.39.0 sweep)
+
+- **First-run `/api/setup` under SSO:** when OpenMasjidOS SSO is configured AND the platform is
+  **reachable**, refuse an anonymous local-admin claim (return 403). Under SSO the admin signs in
+  through the dashboard and never sets a local password, so `store.db.admin` stays null for the life
+  of the deployment — an unguarded `/api/setup` is therefore permanently open = unauthenticated admin
+  takeover (attacker can then repoint RTSP sources / reconfigure every screen). The local-password
+  path is a recovery ONLY when the platform is **unreachable** (restore/migration/outage). Keep the
+  `probePlatform(req).reachable` guard; standalone (no-SSO) behaviour is unchanged.
+- **Media pipeline:** keep the stream-scheme **allowlist** and **array-form `spawn`** (never build an
+  ffmpeg/gstreamer command by string-interpolating a stream URL) — that stops SSRF + argument
+  injection via a crafted source.
+- **SSO is an identity assertion, not a credential** — verify it server-to-server against the
+  platform; never trust a browser-supplied identity. Keep the Fabric private-range SSRF guard and
+  audience-bound tokens.
+- Behind the OS proxy you may trust `X-Forwarded-*` **only because the platform's ingress now
+  sanitises them** — never trust them when the app is reached directly.
