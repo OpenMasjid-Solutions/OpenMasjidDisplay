@@ -34,10 +34,10 @@ export interface Announcements {
 }
 export interface TickerMessage { id: string; text: string; start: string; end: string }
 export interface Ticker { enabled: boolean; messages: TickerMessage[] }
-export interface HadithItem { ar: string; en: string; cite?: string }
-export interface SalahHadith { enabled: boolean; minutes: number; items: HadithItem[]; disabledDefaults?: string[] }
-/** A built-in hadith the display ships with (English + citation shown in the checklist). */
-export interface HadithDefault { id: string; en: string; cite: string }
+export interface HadithItem { ar: string; en: string; cite?: string; prayers?: string[] }
+export interface SalahHadith { enabled: boolean; minutes: number; items: HadithItem[]; disabledDefaults?: string[]; defaultPrayers?: Record<string, string[]> }
+/** A built-in hadith the display ships with (English + citation + shipped salah targeting). */
+export interface HadithDefault { id: string; en: string; cite: string; prayers?: string[] }
 export interface ProhibitedNotice { enabled: boolean; minutes: number; ticker?: boolean }
 export interface IqamahCountdown { enabled: boolean; minutes: number }
 export type AdhanOffsets = Partial<Record<'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha', number>>;

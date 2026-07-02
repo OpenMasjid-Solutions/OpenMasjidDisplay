@@ -148,19 +148,39 @@ function normSalahHadith(v: unknown, base?: SalahHadith): SalahHadith | undefine
       if (typeof x === 'string') return { ar: '', en: str(x, '', 800) };
       const io = asObj(x);
       const cite = str(io.cite, '', 120).trim();
-      return { ar: str(io.ar, '', 800), en: str(io.en, '', 800), ...(cite ? { cite } : {}) };
+      const prayers = normPrayerKeys(io.prayers);
+      return { ar: str(io.ar, '', 800), en: str(io.en, '', 800), ...(cite ? { cite } : {}), ...(prayers.length ? { prayers } : {}) };
     })
     .filter((h) => h.ar.trim() !== '' || h.en.trim() !== '');
   // ids of built-in ahadith the admin turned off (kept as-is; unknown ids are harmless).
   const disabledDefaults = Array.isArray(o.disabledDefaults)
     ? o.disabledDefaults.filter((x): x is string => typeof x === 'string').slice(0, 200)
     : base?.disabledDefaults;
+  // per-built-in salah targeting override (id → prayer keys), only kept for non-empty lists.
+  let defaultPrayers: Record<string, string[]> | undefined = base?.defaultPrayers;
+  if (o.defaultPrayers !== undefined) {
+    const src = asObj(o.defaultPrayers);
+    const out: Record<string, string[]> = {};
+    // Keep explicitly-set entries even when empty — an empty list is a real override
+    // meaning "show this built-in after ALL prayers" (vs its shipped salah-specific target).
+    for (const id of Object.keys(src).slice(0, 200)) out[id] = normPrayerKeys(src[id]);
+    defaultPrayers = Object.keys(out).length ? out : undefined;
+  }
   return {
     enabled: bool(o.enabled, base?.enabled ?? false),
     minutes: intIn(o.minutes, base?.minutes ?? 10, 1, 60),
     items,
     ...(disabledDefaults && disabledDefaults.length ? { disabledDefaults } : {}),
+    ...(defaultPrayers ? { defaultPrayers } : {}),
   };
+}
+
+const PRAYER_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
+/** Sanitize a list of salah keys → the valid ones, de-duplicated, in canonical order. */
+function normPrayerKeys(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const set = new Set(v.filter((x): x is string => typeof x === 'string'));
+  return PRAYER_KEYS.filter((k) => set.has(k));
 }
 function normProhibited(v: unknown, base?: ProhibitedNotice): ProhibitedNotice | undefined {
   if (v === undefined) return base;

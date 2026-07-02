@@ -1439,11 +1439,22 @@ function adhanPopupView(row: Row, c: Ctx, W: number, H: number): string {
 }
 
 /** The ahadith to rotate through during salah: the built-in library (minus any the admin
- *  turned off) followed by the admin's own additions. */
+ *  turned off) followed by the admin's own additions. Each carries its salah targeting
+ *  (`prayers`) — a built-in's shipped targeting, overridable per masjid. */
 function hadithPool(sh: SalahHadith): HadithItem[] {
   const off = new Set(sh.disabledDefaults ?? []);
-  const defaults: HadithItem[] = DEFAULT_SALAH_HADITH.filter((d) => !off.has(d.id)).map((d) => ({ ar: d.ar, en: d.en, cite: d.cite }));
+  const defaults: HadithItem[] = DEFAULT_SALAH_HADITH.filter((d) => !off.has(d.id)).map((d) => ({
+    ar: d.ar,
+    en: d.en,
+    cite: d.cite,
+    prayers: sh.defaultPrayers?.[d.id] ?? d.prayers,
+  }));
   return [...defaults, ...sh.items];
+}
+
+/** Does a hadith apply after the given prayer? Empty/absent `prayers` = shown after any. */
+function hadithAppliesTo(h: HadithItem, prayerKey: string): boolean {
+  return !h.prayers?.length || h.prayers.includes(prayerKey);
 }
 
 /** Which full-screen overlay (if any) is active right now. Precedence: the zawāl
@@ -1465,15 +1476,14 @@ function activeOverlay(tt: Timetable, m: Model, nowHours: number, now: Date): Ov
   // 3) Hadith during salah (the minutes after each Iqāmah), rotating every ~15s.
   const sh = tt.salahHadith;
   if (sh?.enabled) {
-    const pool = hadithPool(sh);
-    if (pool.length) {
-      const win = Math.max(1, sh.minutes) / 60;
-      const inSalah = m.rows.some(
-        (r) => r.iqamah != null && r.iqamah <= nowHours && nowHours < r.iqamah + win,
-      );
-      if (inSalah) {
-        const idx = Math.floor(now.getTime() / 15000) % pool.length;
-        return { kind: 'hadith', item: pool[idx] };
+    const win = Math.max(1, sh.minutes) / 60;
+    // Which prayer's post-Iqāmah window are we in? Its key selects prayer-specific ahadith.
+    const inRow = m.rows.find((r) => r.iqamah != null && r.iqamah <= nowHours && nowHours < r.iqamah + win);
+    if (inRow) {
+      const eligible = hadithPool(sh).filter((h) => hadithAppliesTo(h, inRow.key));
+      if (eligible.length) {
+        const idx = Math.floor(now.getTime() / 15000) % eligible.length;
+        return { kind: 'hadith', item: eligible[idx] };
       }
     }
   }

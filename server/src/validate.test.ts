@@ -19,3 +19,20 @@ test('adhan pop-up: seconds clamped to 3–120', () => {
   assert.equal(off?.enabled, false);
   assert.equal(off?.seconds, 15);
 });
+
+test('hadith salah targeting: prayer keys sanitized + canonical order; empty override kept', () => {
+  const sh = normTimetable({
+    salahHadith: {
+      enabled: true,
+      minutes: 10,
+      items: [{ ar: '', en: 'x', prayers: ['asr', 'bogus', 'fajr'] }],
+      defaultPrayers: { 'miss-asr-family-property': [], foo: ['maghrib', 'junk'] },
+    },
+  }).salahHadith!;
+  // invalid key dropped, order canonicalised (fajr before asr)
+  assert.deepEqual(sh.items[0].prayers, ['fajr', 'asr']);
+  // an explicit empty override is preserved (means "show after all prayers")
+  assert.deepEqual(sh.defaultPrayers?.['miss-asr-family-property'], []);
+  // junk key stripped from an override
+  assert.deepEqual(sh.defaultPrayers?.foo, ['maghrib']);
+});

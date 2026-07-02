@@ -333,6 +333,11 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
   const setAllDefaults = (on: boolean) =>
     setSh({ disabledDefaults: on ? [] : state.hadithDefaults.map((h) => h.id) });
   const defaultsOnCount = state.hadithDefaults.filter((h) => defaultOn(h.id)).length;
+  // Per-built-in salah targeting: the admin's override (may be empty = "all") or, if none, the
+  // shipped targeting from the built-in itself.
+  const defaultPrayersMap = sh.defaultPrayers ?? {};
+  const prayersForDefault = (id: string, shipped?: string[]) => defaultPrayersMap[id] ?? shipped ?? [];
+  const setDefaultPrayers = (id: string, keys: string[]) => setSh({ defaultPrayers: { ...defaultPrayersMap, [id]: keys } });
   const pn: ProhibitedNotice = f.prohibitedNotice ?? { enabled: false, minutes: 10 };
   const setPn = (patch: Partial<ProhibitedNotice>) => set('prohibitedNotice', { ...pn, ...patch });
   const ic: IqamahCountdown = f.iqamahCountdown ?? { enabled: false, minutes: 5 };
@@ -734,6 +739,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
                         <span style={{ flex: 1, minWidth: 0 }}>
                           <span style={{ display: 'block', opacity: defaultOn(h.id) ? 1 : 0.5 }}>{h.en}</span>
                           <span className="hint">— {h.cite}</span>
+                          {defaultOn(h.id) && <PrayerPicker value={prayersForDefault(h.id, h.prayers)} onChange={(v) => setDefaultPrayers(h.id, v)} />}
                         </span>
                         <Toggle checked={defaultOn(h.id)} onChange={(v) => toggleDefault(h.id, v)} label={`Toggle: ${h.cite}`} />
                       </div>
@@ -749,6 +755,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
                     <div className="hadith-fields">
                       <textarea className="input" dir="rtl" lang="ar" rows={2} value={it.ar} onChange={(e) => setHadith(i, { ar: e.target.value })} placeholder="النص بالعربية (اختياري)" style={{ resize: 'vertical', fontSize: '1.1rem' }} />
                       <textarea className="input" rows={2} value={it.en} onChange={(e) => setHadith(i, { en: e.target.value })} placeholder="English translation (optional)" style={{ resize: 'vertical' }} />
+                      <PrayerPicker value={it.prayers ?? []} onChange={(v) => setHadith(i, { prayers: v })} />
                     </div>
                     <button type="button" className="icon-btn" onClick={() => delHadith(i)} aria-label="Remove hadith"><IconTrash size={15} /></button>
                   </div>
@@ -1015,6 +1022,44 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
 }
 
 const PRAYER_TITLE: Record<string, string> = { fajr: 'Fajr', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha' };
+
+/** Pick which salawāt a hadith shows after. No chips selected = shown after every prayer. */
+function PrayerPicker({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const keys = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
+  const toggle = (k: string) => {
+    const set = new Set(value);
+    if (set.has(k)) set.delete(k); else set.add(k);
+    onChange(keys.filter((x) => set.has(x))); // keep canonical order
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.3rem', marginBlockStart: '0.4rem' }}>
+      <span className="hint" style={{ marginInlineEnd: '0.2rem' }}>Show after:</span>
+      {keys.map((k) => {
+        const on = value.includes(k);
+        return (
+          <button
+            type="button"
+            key={k}
+            onClick={() => toggle(k)}
+            aria-pressed={on}
+            className="btn btn--sm"
+            style={{
+              padding: '0.15rem 0.55rem',
+              borderRadius: '999px',
+              background: on ? 'var(--color-primary)' : 'transparent',
+              color: on ? '#fff' : 'var(--color-text-dim, inherit)',
+              border: '1px solid var(--color-border, rgba(127,127,127,0.4))',
+              opacity: on ? 1 : 0.7,
+            }}
+          >
+            {PRAYER_TITLE[k]}
+          </button>
+        );
+      })}
+      {value.length === 0 && <span className="hint">every prayer</span>}
+    </div>
+  );
+}
 
 function IqamahRow({ name, rule, onChange, disabled }: { name: string; rule: IqamahRule; onChange: (r: IqamahRule) => void; disabled?: boolean }) {
   return (

@@ -76,6 +76,8 @@ export interface HadithItem {
   en: string;
   /** short source attribution shown under the text (e.g. "al-Tirmidhī:413") */
   cite?: string;
+  /** salawāt to show this after (prayer keys); empty/omitted = shown after any prayer */
+  prayers?: string[];
 }
 
 /** During salah (the minutes after Iqāmah), show a hadith over a dimmed background. The
@@ -89,6 +91,8 @@ export interface SalahHadith {
   items: HadithItem[];
   /** ids of built-in ahadith the admin has turned OFF (all built-ins are on by default) */
   disabledDefaults?: string[];
+  /** per-built-in salah targeting override (id → prayer keys); absent = use the shipped default */
+  defaultPrayers?: Record<string, string[]>;
 }
 
 /** A full-screen notice during the makrūh "prohibited" window before Dhuhr (zawāl),

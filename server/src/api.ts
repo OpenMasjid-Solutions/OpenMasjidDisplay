@@ -164,9 +164,10 @@ function statePayload(store: Store, orchestrator: Orchestrator) {
     tvs: db.tvs,
     schedules: db.schedules,
     themes: THEMES,
-    // The built-in library of ahadith on Salāh (id + English + citation) so the panel can
-    // render the enable/disable checklist. Arabic isn't sent — the panel only toggles them.
-    hadithDefaults: DEFAULT_SALAH_HADITH.map((h) => ({ id: h.id, en: h.en, cite: h.cite })),
+    // The built-in library of ahadith on Salāh (id + English + citation + shipped salah
+    // targeting) so the panel can render the enable/disable checklist and prayer pickers.
+    // Arabic isn't sent — the panel only toggles/targets them.
+    hadithDefaults: DEFAULT_SALAH_HADITH.map((h) => ({ id: h.id, en: h.en, cite: h.cite, prayers: h.prayers })),
     statuses: orchestrator.getStatuses(),
     // The screens connect to rtsp://<this server>:<port>/<screen>. The host is
     // whatever address the panel was opened with (filled in by the browser), so
