@@ -141,8 +141,10 @@ export interface Timetable {
   name: string;
   /** palette preset key (see render/theme.ts) */
   themeId: string;
-  /** optional custom primary colour (hex) overriding the preset */
+  /** optional custom primary/accent colour (hex) overriding the preset (rings, Iqamah, active row) */
   accent?: string;
+  /** optional custom gold accent colour (hex): Arabic names, Jumu'ah, the next-prayer highlight */
+  goldColor?: string;
   /** on-screen text colour: '' = auto (theme, or auto-contrast against a light photo); or a hex */
   textColor?: string;
   orientation: Orientation;

@@ -48,6 +48,8 @@ export interface Timetable {
   name: string;
   themeId: string;
   accent?: string;
+  /** custom gold accent colour (hex): Arabic names, Jumu'ah, next-prayer highlight */
+  goldColor?: string;
   /** on-screen text colour: '' = auto contrast; or a hex */
   textColor?: string;
   orientation: Orientation;

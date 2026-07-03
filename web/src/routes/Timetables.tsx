@@ -178,6 +178,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     : formBody(f);
 
   const themePrimary = state.themes.find((t) => t.id === f.themeId)?.palette.primary ?? '#22D3EE';
+  const themeGold = state.themes.find((t) => t.id === f.themeId)?.palette.gold ?? '#D4AF37';
 
   const save = async () => {
     setBusy(true);
@@ -594,6 +595,16 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           {!f.accent && f.backgroundImage && (
             <p className="hint" style={{ marginBlockStart: '0.4rem' }}>Matched to your wallpaper automatically. Pick a colour above to set your own. (Text colour also adapts to keep it readable.)</p>
           )}
+        </Field>
+
+        <Field label="Gold accent" hint="The second accent colour — Arabic prayer names, Jumu'ah, and the next-prayer highlight. Leave as the theme's gold, or pick your own.">
+          <div className="row" style={{ gap: '0.6rem' }}>
+            <label className="row" style={{ gap: '0.45rem' }}>
+              <input type="color" className="color-input" value={f.goldColor || themeGold} onChange={(e) => set('goldColor', e.target.value)} />
+              <span className="hint">{f.goldColor ? 'Custom gold' : 'Theme gold'}</span>
+            </label>
+            {f.goldColor && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('goldColor', undefined)}>Use theme gold</button>}
+          </div>
         </Field>
 
         <Field label="Text colour" hint="'Auto' keeps your theme's text and flips to dark on a light photo so it stays readable. Or force light/dark/custom.">

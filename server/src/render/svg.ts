@@ -1623,7 +1623,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   // Blink the time colons once a second (dim on odd seconds).
   COLON_DIM = Math.floor(now.getTime() / 1000) % 2 === 1;
   const hasImage = !!opts.bg;
-  let p = applyTextColor(getPalette(tt.themeId, tt.accent), tt.textColor, hasImage, !!opts.bgLight);
+  let p = applyTextColor(getPalette(tt.themeId, tt.accent, tt.goldColor), tt.textColor, hasImage, !!opts.bgLight);
   // Auto accent from the wallpaper (only when no manual accent is set).
   if (!tt.accent && opts.autoAccent && /^#?[0-9a-f]{6}$/i.test(opts.autoAccent)) {
     const a = opts.autoAccent.startsWith('#') ? opts.autoAccent : `#${opts.autoAccent}`;

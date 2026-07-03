@@ -251,6 +251,11 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
   const accent = /^#?[0-9a-fA-F]{6}$/.test(accentRaw)
     ? accentRaw.startsWith('#') ? accentRaw : `#${accentRaw}`
     : undefined;
+  // Custom gold accent (hex) or undefined (= use the theme's gold). Falls back to base.
+  const goldRaw = (o.goldColor === undefined ? base?.goldColor ?? '' : str(o.goldColor, '', 7)).trim();
+  const goldColor = /^#?[0-9a-fA-F]{6}$/.test(goldRaw)
+    ? (goldRaw.startsWith('#') ? goldRaw : `#${goldRaw}`).toLowerCase()
+    : undefined;
   // Text colour: '' = auto-contrast; otherwise a normalized #rrggbb. Falls back to base.
   const tcRaw = (o.textColor === undefined ? base?.textColor ?? '' : str(o.textColor, '', 7)).trim();
   const textColor = /^#?[0-9a-fA-F]{6}$/.test(tcRaw)
@@ -263,6 +268,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     name: str(o.name, base?.name ?? 'Timetable', 80) || 'Timetable',
     themeId: oneOf(o.themeId, THEME_IDS, base?.themeId ?? 'emerald'),
     accent,
+    goldColor,
     textColor,
     orientation: oneOf(o.orientation, ['landscape', 'portrait'] as const, base?.orientation ?? 'landscape') as Orientation,
     // Coerce the fallback too, so a timetable saved at the now-removed 4K downgrades to 1080p.

@@ -150,11 +150,19 @@ function lighten(hex: string, amt: number): string {
 }
 
 /** Resolve a palette by theme id, optionally overriding the primary colour. */
-export function getPalette(themeId: string, accent?: string): Palette {
+/** Normalise a "#rrggbb" (or "rrggbb") hex, or null if it isn't one. */
+function hex6(c: string | undefined): string | null {
+  if (!c || !/^#?[0-9a-f]{6}$/i.test(c.trim())) return null;
+  const t = c.trim();
+  return t.startsWith('#') ? t : `#${t}`;
+}
+
+export function getPalette(themeId: string, accent?: string, gold?: string): Palette {
   const base = (BY_ID.get(themeId) ?? THEMES[0]).palette;
-  if (accent && /^#?[0-9a-f]{6}$/i.test(accent.trim())) {
-    const hex = accent.trim().startsWith('#') ? accent.trim() : `#${accent.trim()}`;
-    return { ...base, primary: hex, primarySoft: lighten(hex, 0.25), pattern: hex };
-  }
-  return base;
+  let p = base;
+  const a = hex6(accent);
+  if (a) p = { ...p, primary: a, primarySoft: lighten(a, 0.25), pattern: a };
+  const g = hex6(gold);
+  if (g) p = { ...p, gold: g, goldSoft: lighten(g, 0.25) };
+  return p;
 }
