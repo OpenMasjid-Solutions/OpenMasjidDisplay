@@ -159,6 +159,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     const t = new URLSearchParams(window.location.search).get('tab');
     return (['general', 'salah', 'appearance', 'during', 'announce', 'sharing'] as const).includes(t as EditorTab) ? (t as EditorTab) : 'general';
   });
+  const [previewOpen, setPreviewOpen] = useState(true);
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((p) => ({ ...p, [k]: v }));
 
   // The screens rotate the layout every 5 min when "Rotate layouts" is on; in the
@@ -906,37 +907,39 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       <div className="editor-bar glass-raised">
         <b className="editor-title">{tt ? 'Edit timetable' : 'New timetable'}</b>
         <span className="spacer" />
+        <button className="btn" onClick={() => setPreviewOpen((o) => !o)} aria-pressed={previewOpen}>{previewOpen ? 'Hide preview' : 'Show preview'}</button>
         <button className="btn" onClick={onClose}>Close</button>
         <button className="btn btn--primary" onClick={save} disabled={busy}>{tt ? 'Save changes' : 'Create'}</button>
       </div>
 
-      <div className="tt-editor">
-        <div className="tt-editor__preview glass-raised">
-          <LivePreview body={previewBody} portrait={f.orientation === 'portrait'} onEditCommit={editLabel} />
-          <p className="hint" style={{ textAlign: 'center', marginBlock: '0.5rem 0' }}>
-            <IconClock size={12} />{' '}
-            {f.layoutCarousel
-              ? 'Rotating preview — screens cycle layouts every 5 min. Click a name, the masjid title or the footer to rename it.'
-              : 'Live preview — click a name, the masjid title or the footer to rename it.'}
-          </p>
-        </div>
+      <div className={`tt-editor${previewOpen ? '' : ' tt-editor--nopreview'}`}>
+        <nav className="tt-editor__tabs" aria-label="Settings categories">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`tt-tab${tab === t.id ? ' is-active' : ''}`}
+              aria-current={tab === t.id ? 'true' : undefined}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
 
-        <div className="tt-editor__body">
-          <nav className="tt-editor__tabs" aria-label="Settings categories">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className={`tt-tab${tab === t.id ? ' is-active' : ''}`}
-                aria-current={tab === t.id ? 'true' : undefined}
-                onClick={() => setTab(t.id)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </nav>
-          <div className="tt-editor__panel">{panels[tab]}</div>
-        </div>
+        <div className="tt-editor__panel">{panels[tab]}</div>
+
+        {previewOpen && (
+          <aside className="tt-editor__preview glass-raised">
+            <LivePreview body={previewBody} portrait={f.orientation === 'portrait'} onEditCommit={editLabel} />
+            <p className="hint" style={{ textAlign: 'center', marginBlock: '0.5rem 0' }}>
+              <IconClock size={12} />{' '}
+              {f.layoutCarousel
+                ? 'Rotating preview — layouts cycle every 5 min. Click a name, the masjid title or the footer to rename it.'
+                : 'Live preview — click a name, the masjid title or the footer to rename it.'}
+            </p>
+          </aside>
+        )}
       </div>
     </div>
   );
