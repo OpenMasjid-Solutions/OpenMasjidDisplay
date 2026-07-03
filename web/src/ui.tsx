@@ -90,13 +90,26 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
   );
 }
 
+/* ── Help (?) tooltip ────────────────────────────────────────────────────── */
+/** A small “?” badge that reveals an explanation on hover/focus (and long-press on
+ *  touch). Keeps the form uncluttered while making help discoverable on every setting. */
+export function Help({ text }: { text: string }) {
+  return (
+    <span className="help" tabIndex={0} role="note" aria-label={text} data-tip={text}>
+      ?
+    </span>
+  );
+}
+
 /* ── Field ───────────────────────────────────────────────────────────────── */
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+// `hint` renders as a “?” tooltip beside the label (keeps rows tidy). Pass `inlineHint`
+// to instead show it as a line under the control (for longer, always-visible notes).
+export function Field({ label, hint, inlineHint, children }: { label: string; hint?: string; inlineHint?: boolean; children: ReactNode }) {
   return (
     <label className="field">
-      <span className="label">{label}</span>
+      <span className="label">{label}{hint && !inlineHint && <Help text={hint} />}</span>
       {children}
-      {hint && <span className="hint">{hint}</span>}
+      {hint && inlineHint && <span className="hint">{hint}</span>}
     </label>
   );
 }

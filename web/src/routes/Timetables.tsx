@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
 import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, HadithItem, ProhibitedNotice, IqamahCountdown, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, copyText, useToast } from '../ui';
@@ -14,9 +14,25 @@ interface Props {
 const METHODS = ['MWL', 'ISNA', 'Egypt', 'Makkah', 'Karachi', 'Custom'] as const;
 export function Timetables({ state, refetch }: Props) {
   const toast = useToast();
-  const [edit, setEdit] = useState<Timetable | 'new' | null>(null);
   const [confirm, setConfirm] = useState<Timetable | null>(null);
   const [tick, setTick] = useState(0);
+  const [creating, setCreating] = useState(false);
+
+  // Editing opens the full-screen editor in a new browser tab (?edit=<id>).
+  const openEditor = (id: string) => window.open(`${window.location.pathname}?edit=${id}`, '_blank');
+  const createNew = async () => {
+    setCreating(true);
+    try {
+      const created = await api.createTimetable(formBody(toForm(null, state)));
+      await refetch();
+      setTick((n) => n + 1);
+      openEditor(created.id);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not create the timetable.', 'error');
+    } finally {
+      setCreating(false);
+    }
+  };
 
   // Refresh the card previews periodically.
   useEffect(() => {
@@ -43,7 +59,7 @@ export function Timetables({ state, refetch }: Props) {
       await refetch();
       setTick((n) => n + 1);
       toast('Duplicated — opening the copy to edit.');
-      setEdit(copy); // jump straight into the copy so the small tweak is one step
+      openEditor(copy.id); // jump straight into the copy so the small tweak is one step
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not duplicate the timetable.', 'error');
     } finally {
@@ -58,7 +74,7 @@ export function Timetables({ state, refetch }: Props) {
           <h1 className="page-title">Timetables</h1>
           <p className="page-sub">Design a prayer display for each look you need. Open one to edit it live.</p>
         </div>
-        <button className="btn btn--primary" onClick={() => setEdit('new')}><IconPlus size={16} /> New timetable</button>
+        <button className="btn btn--primary" disabled={creating} onClick={createNew}>{creating ? <Spinner /> : <IconPlus size={16} />} New timetable</button>
       </div>
 
       <div className="screens-grid">
@@ -77,7 +93,7 @@ export function Timetables({ state, refetch }: Props) {
                 </div>
               </div>
               <div className="row" style={{ gap: '0.2rem' }}>
-                <button className="icon-btn" aria-label="Edit" onClick={() => setEdit(tt)}><IconEdit size={16} /></button>
+                <button className="icon-btn" aria-label="Edit" title="Edit (opens in a new tab)" onClick={() => openEditor(tt.id)}><IconEdit size={16} /></button>
                 <button className="icon-btn" aria-label="Duplicate" title="Duplicate" disabled={dupId === tt.id} onClick={() => duplicate(tt)}>{dupId === tt.id ? <Spinner /> : <IconCopy size={16} />}</button>
                 <button className="icon-btn" aria-label="Delete" onClick={() => setConfirm(tt)}><IconTrash size={16} /></button>
               </div>
@@ -85,19 +101,6 @@ export function Timetables({ state, refetch }: Props) {
           </div>
         ))}
       </div>
-
-      {edit && (
-        <TimetableEditor
-          state={state}
-          tt={edit === 'new' ? null : edit}
-          onClose={() => setEdit(null)}
-          onSaved={async () => {
-            setEdit(null);
-            await refetch();
-            setTick((n) => n + 1);
-          }}
-        />
-      )}
 
       <Modal
         open={!!confirm}
@@ -145,12 +148,18 @@ function formBody(f: Form): Partial<Timetable> {
   } as Partial<Timetable>;
 }
 
-export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { state: AppState; tt: Timetable | null; onClose: () => void; onSaved: () => void; fullPage?: boolean }) {
+type EditorTab = 'general' | 'salah' | 'appearance' | 'during' | 'announce' | 'sharing';
+
+// `fullPage` is accepted (App passes it) but the editor is now always a full-page layout.
+export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppState; tt: Timetable | null; onClose: () => void; onSaved: () => void; fullPage?: boolean }) {
   const toast = useToast();
   const [f, setF] = useState<Form>(() => toForm(tt, state));
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<EditorTab>(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    return (['general', 'salah', 'appearance', 'during', 'announce', 'sharing'] as const).includes(t as EditorTab) ? (t as EditorTab) : 'general';
+  });
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((p) => ({ ...p, [k]: v }));
-  const popout = tt && !fullPage ? () => window.open(`${window.location.pathname}?edit=${tt.id}`, '_blank') : undefined;
 
   // The screens rotate the layout every 5 min when "Rotate layouts" is on; in the
   // editor we can't wait 5 min, so cycle the preview through the three layouts
@@ -349,474 +358,524 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
   const wg: TimetableWidget = f.widget ?? { enabled: false };
   const setWg = (patch: Partial<TimetableWidget>) => set('widget', { ...wg, ...patch });
 
-  const content = (
-      <div className="studio">
-        <div className="studio__preview">
-          <LivePreview body={previewBody} portrait={f.orientation === 'portrait'} onEditCommit={editLabel} onPopout={popout} />
-          <p className="hint" style={{ textAlign: 'center', marginBlockStart: '0.5rem' }}>
-            {f.layoutCarousel ? (
+  const general = (
+    <>
+      <div className="card section">
+        <h3 className="section-title">Masjid & identity</h3>
+        <div className="grid2">
+          <Field label="Name (for you)" hint="A private label for this list — e.g. “Main hall” or “Women's section”. Never shown on screen."><input className="input" value={f.name} onChange={(e) => set('name', e.target.value)} /></Field>
+          <Field label="Masjid name (on screen)" hint="Shown in the header. Tip: you can also click it in the preview above to edit it in place."><input className="input" value={f.masjidName} onChange={(e) => set('masjidName', e.target.value)} /></Field>
+        </div>
+        <Field label="Location (under the name)" hint="A subtitle under the masjid name, e.g. Lansdale, Pennsylvania. Leave blank to hide it."><input className="input" value={f.location} onChange={(e) => set('location', e.target.value)} /></Field>
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Location & time zone</h3>
+        <p className="hint" style={{ marginBlockStart: 0 }}>Prayer times are calculated on the device from your coordinates — no internet needed.</p>
+        <div className="grid2">
+          <Field label="Latitude" hint="Your masjid's latitude, e.g. 40.748222. Use the lookup link below if you're not sure."><input className="input" inputMode="decimal" value={f.latitude} onChange={(e) => set('latitude', e.target.value)} /></Field>
+          <Field label="Longitude" hint="Your masjid's longitude, e.g. -73.891075."><input className="input" inputMode="decimal" value={f.longitude} onChange={(e) => set('longitude', e.target.value)} /></Field>
+        </div>
+        <p className="hint" style={{ marginBlockStart: '-0.2rem', marginBlockEnd: '0.6rem' }}>
+          Don't know yours?{' '}
+          <a href="https://www.latlong.net/convert-address-to-lat-long.html" target="_blank" rel="noopener noreferrer">Look up your address →</a>
+        </p>
+        <div className="grid2">
+          <Field label="Time zone" hint="Pick the closest city/zone so the clock and times match your local time.">
+            <select className="select" value={f.timezone} onChange={(e) => set('timezone', e.target.value)}>
+              {timezoneOptions(f.timezone).map((tz) => <option key={tz.id || 'server'} value={tz.id}>{tz.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Clock format" hint="How the big clock and times read: 12-hour (with AM/PM) or 24-hour.">
+            <select className="select" value={f.timeFormat} onChange={(e) => set('timeFormat', e.target.value as Form['timeFormat'])}>
+              <option value="12h">12-hour</option>
+              <option value="24h">24-hour</option>
+            </select>
+          </Field>
+        </div>
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Dates & language</h3>
+        <Field label="Language (dates & labels)" hint="Sets the language of the dates and on-screen labels. Arabic & Urdu render right-to-left.">
+          <select className="select" value={f.language} onChange={(e) => set('language', e.target.value as Form['language'])}>
+            <option value="en">English</option>
+            <option value="ar">العربية (Arabic)</option>
+            <option value="ur">اردو (Urdu)</option>
+          </select>
+        </Field>
+        <div className="grid2">
+          <Field label="Hijri date adjustment" hint="Shift the Islamic (Hijri) date by ±days to match your local moon-sighting.">
+            <select className="select" value={f.hijriOffset} onChange={(e) => set('hijriOffset', Number(e.target.value))}>
+              {[-3, -2, -1, 0, 1, 2, 3].map((n) => (
+                <option key={n} value={n}>{n === 0 ? 'No change' : `${n > 0 ? '+' : ''}${n} day${Math.abs(n) === 1 ? '' : 's'}`}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Gregorian date adjustment" hint="Shift the Western (Gregorian) date by ±days. Rarely needed — usually leave at 'No change'.">
+            <select className="select" value={f.gregorianOffset} onChange={(e) => set('gregorianOffset', Number(e.target.value))}>
+              {[-3, -2, -1, 0, 1, 2, 3].map((n) => (
+                <option key={n} value={n}>{n === 0 ? 'No change' : `${n > 0 ? '+' : ''}${n} day${Math.abs(n) === 1 ? '' : 's'}`}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Screen & quality</h3>
+        <div className="grid2">
+          <Field label="Orientation" hint="Landscape for a normal TV; portrait for a screen turned on its side.">
+            <select className="select" value={f.orientation} onChange={(e) => set('orientation', e.target.value as Form['orientation'])}>
+              <option value="landscape">Landscape</option>
+              <option value="portrait">Portrait</option>
+            </select>
+          </Field>
+          <Field label="Picture quality" hint="720p is lighter and best for a Raspberry Pi; 1080p is sharper but needs more power/bandwidth.">
+            <select className="select" value={f.quality} onChange={(e) => set('quality', e.target.value as Form['quality'])}>
+              <option value="720p">720p</option>
+              <option value="1080p">1080p (Full HD)</option>
+            </select>
+          </Field>
+        </div>
+        <div className="grid2">
+          <Field label="Bitrate — 720p (kbps)" hint="Video quality at 720p. Higher = sharper but heavier on the network. Blank = default (4000).">
+            <input className="input" type="number" min={500} max={20000} step={250} placeholder="4000" value={f.bitrate720 ?? ''} onChange={(e) => set('bitrate720', e.target.value === '' ? undefined : Number(e.target.value))} />
+          </Field>
+          <Field label="Bitrate — 1080p (kbps)" hint="Video quality at 1080p. Blank = default (8000).">
+            <input className="input" type="number" min={500} max={30000} step={250} placeholder="8000" value={f.bitrate1080 ?? ''} onChange={(e) => set('bitrate1080', e.target.value === '' ? undefined : Number(e.target.value))} />
+          </Field>
+        </div>
+      </div>
+    </>
+  );
+
+  const salah = (
+    <>
+      <div className="card section">
+        <h3 className="section-title">Calculation</h3>
+        <div className="grid2">
+          <Field label="Calculation method" hint="The convention for Fajr/Isha angles used in your region. Choose 'Custom' to set exact angles.">
+            <select className="select" value={f.method} onChange={(e) => set('method', e.target.value as Form['method'])}>
+              {METHODS.map((m) => <option key={m} value={m}>{m === 'Custom' ? 'Custom (set angles)' : m}</option>)}
+            </select>
+          </Field>
+          <Field label="Asr time" hint="Hanafi Asr starts later (shadow = 2× object); Standard (Shafi'i/Maliki/Hanbali) is earlier (shadow = 1×).">
+            <select className="select" value={f.asrMadhab} onChange={(e) => set('asrMadhab', e.target.value as Form['asrMadhab'])}>
+              <option value="Hanafi">Hanafi (later)</option>
+              <option value="Standard">Standard (Shafi'i/Maliki/Hanbali)</option>
+            </select>
+          </Field>
+        </div>
+        {f.method === 'Custom' && (
+          <div className="grid2">
+            <Field label="Fajr angle (°)" hint="Degrees the sun sits below the horizon at Fajr — your local convention, e.g. 18.">
+              <input className="input" type="number" min={0} max={30} step={0.5} value={f.fajrAngle} onChange={(e) => set('fajrAngle', Number(e.target.value))} />
+            </Field>
+            <Field label="Isha angle (°)" hint="Degrees below the horizon at Isha, e.g. 17.">
+              <input className="input" type="number" min={0} max={30} step={0.5} value={f.ishaAngle} onChange={(e) => set('ishaAngle', Number(e.target.value))} />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Iqamah times</h3>
+        <p className="hint" style={{ marginBlockStart: 0 }}>How long after each Adhan the Iqamah is called — a fixed clock time, or “don't show”.</p>
+        {csvActive && (
+          <p className="hint">
+            A yearly CSV is in use, so these per-prayer rules are turned off. Fine-tune the exact times in the
+            table below, or <button type="button" onClick={clearCsv} style={{ background: 'none', border: 0, padding: 0, color: 'var(--color-primary)', textDecoration: 'underline', cursor: 'pointer', font: 'inherit' }}>clear the CSV</button> to use rules again.
+          </p>
+        )}
+        <div className="list">
+          {(['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const).map((k) => (
+            <IqamahRow key={k} name={k} rule={f.iqamah[k]} disabled={csvActive} onChange={(r) => setF((p) => ({ ...p, iqamah: { ...p.iqamah, [k]: r } as IqamahConfig }))} />
+          ))}
+        </div>
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Adhan delay</h3>
+        <p className="hint" style={{ marginBlockStart: 0 }}>
+          Minutes to add to each prayer's calculated Adhan time — for masjids that call the Adhan a few minutes
+          after the astronomical time. The displayed Adhan (and any “minutes after Adhan” Iqamah) shifts with it.
+        </p>
+        <div className="list">
+          {(['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const).map((k) => (
+            <div className="row-between" key={k} style={{ padding: '0.3rem 0' }}>
+              <span className="label" style={{ margin: 0, textTransform: 'capitalize' }}>{k}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  max={60}
+                  style={{ width: '5rem' }}
+                  value={ao[k] ?? 0}
+                  onChange={(e) => setAo(k, Math.max(0, Math.min(60, Number(e.target.value) || 0)))}
+                />
+                <span className="hint">min</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Jumu'ah times (Fridays)</h3>
+        <p className="hint" style={{ marginBlockStart: 0 }}>Shown as a separate strip every day. Add a second time for a second Jumu'ah.</p>
+        <JumuahEditor times={f.jumuah} onChange={(j) => set('jumuah', j)} />
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Exact times for the whole year (CSV)</h3>
+        {tt ? (
+          <div>
+            <p className="hint" style={{ marginBlockStart: 0 }}>
+              Upload one file with a row per day to set exact Iqamah times for the whole year — they override
+              the rules above on matching dates. Download the example to see the format (it comes pre-filled
+              from your rules, ready to tweak).
+            </p>
+            <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
+              <label className="btn btn--primary btn--sm" style={{ cursor: 'pointer' }}>
+                <input type="file" accept=".csv,text/csv" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importCsv(file); e.target.value = ''; }} />
+                Import CSV
+              </label>
+              <a className="btn btn--ghost btn--sm" href={api.iqamahCsvUrl(tt.id, 'template')}>Download example</a>
+              <a className="btn btn--ghost btn--sm" href={api.iqamahCsvUrl(tt.id)}>Export current</a>
+              {csvRows != null && <button type="button" className="btn btn--ghost btn--sm" onClick={clearCsv}>Clear ({csvRows} days)</button>}
+            </div>
+            {csvRows != null && (
+              <p className="hint" style={{ marginBlockStart: '0.5rem' }}>
+                {csvRows} day{csvRows === 1 ? '' : 's'} set. These show on the screens; the live preview here
+                still uses your rules.
+              </p>
+            )}
+            <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.6rem' }} onClick={() => setShowTable((v) => !v)}>
+              {showTable ? 'Hide the table editor' : csvActive ? 'Fine-tune the imported times (by month)' : 'Or edit times in a table (by month)'}
+            </button>
+            {showTable && <IqamahYearEditor tt={tt} existingRows={csvRows} onSaved={(n) => setCsvRows(n || null)} />}
+          </div>
+        ) : (
+          <span className="hint">Create the timetable first, then you can set yearly times.</span>
+        )}
+      </div>
+    </>
+  );
+
+  const appearance = (
+    <>
+      <div className="card section">
+        <h3 className="section-title">Theme & colours</h3>
+        <Field label="Theme colour" hint="A ready-made palette (dark is default). Or pick a custom accent colour below.">
+          <div className="chips">
+            {state.themes.map((th) => (
+              <button
+                key={th.id}
+                type="button"
+                className={`chip${f.themeId === th.id && !f.accent ? ' is-active' : ''}`}
+                onClick={() => setF((p) => ({ ...p, themeId: th.id, accent: undefined }))}
+                title={th.label}
+              >
+                <span className="chip-dot" style={{ background: th.palette.primary, opacity: 1 }} />
+                {th.label}
+              </button>
+            ))}
+          </div>
+          <div className="row" style={{ gap: '0.6rem', marginBlockStart: '0.55rem' }}>
+            <label className="row" style={{ gap: '0.45rem' }}>
+              <input type="color" className="color-input" value={f.accent ?? themePrimary} onChange={(e) => set('accent', e.target.value)} />
+              <span className="hint">Custom colour</span>
+            </label>
+            {f.accent && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('accent', undefined)}>Use theme colour</button>}
+          </div>
+          {!f.accent && f.backgroundImage && (
+            <p className="hint" style={{ marginBlockStart: '0.4rem' }}>Matched to your wallpaper automatically. Pick a colour above to set your own. (Text colour also adapts to keep it readable.)</p>
+          )}
+        </Field>
+
+        <Field label="Text colour" hint="'Auto' keeps your theme's text and flips to dark on a light photo so it stays readable. Or force light/dark/custom.">
+          <div className="chips">
+            <button type="button" className={`chip${!f.textColor ? ' is-active' : ''}`} onClick={() => set('textColor', '')} title="Pick the most readable colour automatically">
+              <span className="chip-dot" style={{ background: 'linear-gradient(135deg,#f5f8ff 50%,#10161d 50%)' }} />
+              Auto
+            </button>
+            <button type="button" className={`chip${f.textColor?.toLowerCase() === '#f5f8ff' ? ' is-active' : ''}`} onClick={() => set('textColor', '#f5f8ff')}>
+              <span className="chip-dot" style={{ background: '#f5f8ff' }} />
+              Light
+            </button>
+            <button type="button" className={`chip${f.textColor?.toLowerCase() === '#10161d' ? ' is-active' : ''}`} onClick={() => set('textColor', '#10161d')}>
+              <span className="chip-dot" style={{ background: '#10161d' }} />
+              Dark
+            </button>
+          </div>
+          <div className="row" style={{ gap: '0.6rem', marginBlockStart: '0.55rem' }}>
+            <label className="row" style={{ gap: '0.45rem' }}>
+              <input type="color" className="color-input" value={f.textColor || '#f5f8ff'} onChange={(e) => set('textColor', e.target.value)} />
+              <span className="hint">Custom colour</span>
+            </label>
+            {f.textColor && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('textColor', '')}>Auto contrast</button>}
+          </div>
+        </Field>
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Background & logo</h3>
+        <Field label="Background" hint="Upload a photo/wallpaper, or leave it on the themed scene. The theme colour auto-matches your photo.">
+          {tt ? (
+            <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
+              <span className="muted" style={{ fontSize: '0.88rem' }}>{f.backgroundImage ? 'Custom image set.' : 'Using the themed scene.'}</span>
+              <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickBackground(file); e.target.value = ''; }} />
+                {f.backgroundImage ? 'Replace image' : 'Upload image'}
+              </label>
+              {f.backgroundImage && <button type="button" className="btn btn--ghost btn--sm" onClick={clearBackground}>Remove</button>}
+            </div>
+          ) : (
+            <span className="hint">Create the timetable first, then you can add a background image.</span>
+          )}
+        </Field>
+
+        <Field label="Masjid logo" hint="Replaces the built-in dome mark in the header. A transparent PNG or SVG looks best.">
+          {tt ? (
+            <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
+              <span className="muted" style={{ fontSize: '0.88rem' }}>{f.logoImage ? 'Custom logo set.' : 'Using the built-in mark.'}</span>
+              <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickLogo(file); e.target.value = ''; }} />
+                {f.logoImage ? 'Replace logo' : 'Upload logo'}
+              </label>
+              {f.logoImage && <button type="button" className="btn btn--ghost btn--sm" onClick={clearLogo}>Remove</button>}
+            </div>
+          ) : (
+            <span className="hint">Create the timetable first, then you can add a logo.</span>
+          )}
+        </Field>
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Show on screen</h3>
+        <p className="hint" style={{ marginBlockStart: 0 }}>Turn individual elements on or off for this display.</p>
+        <div className="toggle-list">
+          <ToggleRow label="Logo" checked={f.showLogo} onChange={(v) => set('showLogo', v)} />
+          <ToggleRow label="Masjid name" checked={f.showName} onChange={(v) => set('showName', v)} />
+          <ToggleRow label="Hijri & Gregorian dates" checked={f.showDates} onChange={(v) => set('showDates', v)} />
+          <ToggleRow label="Countdown to next prayer" checked={f.showCountdown} onChange={(v) => set('showCountdown', v)} />
+          <ToggleRow label="Seconds on the clock" checked={f.showSeconds} onChange={(v) => set('showSeconds', v)} />
+          <ToggleRow label="Sunrise" checked={f.showSunrise} onChange={(v) => set('showSunrise', v)} />
+          <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />
+          <ToggleRow label="Calculation-method footnote" checked={f.showFooter} onChange={(v) => set('showFooter', v)} />
+        </div>
+        <div style={{ marginBlockStart: '0.9rem' }}>
+          <Field label="Footer note (optional)" hint="A small custom line along the bottom. Leave blank to show the calculation-method note instead."><input className="input" value={f.footerNote} onChange={(e) => set('footerNote', e.target.value)} placeholder="e.g. Jumu'ah khutbah at 1:15pm" /></Field>
+        </div>
+      </div>
+    </>
+  );
+
+  const during = (
+    <>
+      <div className="card section">
+        <h3 className="section-title">Countdown to Iqamah</h3>
+        <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+          <span className="label" style={{ margin: 0 }}>Show a full-screen countdown in the last minutes before each Iqamah</span>
+          <Toggle checked={ic.enabled} onChange={(v) => setIc({ enabled: v })} label="Show a countdown to Iqamah" />
+        </div>
+        {ic.enabled && (
+          <Field label="Start (minutes before the Iqamah)" hint="The full-screen countdown takes over this many minutes before each prayer's Iqamah time.">
+            <input className="input" type="number" min={1} max={30} value={ic.minutes} onChange={(e) => setIc({ minutes: Number(e.target.value) })} />
+          </Field>
+        )}
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Adhan pop-up</h3>
+        <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+          <span className="label" style={{ margin: 0 }}>Show a brief “it's time for salah” pop-up when the Adhan comes in</span>
+          <Toggle checked={apop.enabled} onChange={(v) => setApop({ enabled: v })} label="Show an Adhan pop-up" />
+        </div>
+        {apop.enabled && (
+          <Field label="Show for (seconds)" hint="The pop-up appears over the screen the moment each prayer's Adhan time arrives, then fades after this many seconds.">
+            <input className="input" type="number" min={3} max={120} value={apop.seconds} onChange={(e) => setApop({ seconds: Number(e.target.value) })} />
+          </Field>
+        )}
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Prohibited time notice</h3>
+        <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+          <span className="label" style={{ margin: 0 }}>Show a prohibited-time notice before Dhuhr (zawāl / sun at its zenith)</span>
+          <Toggle checked={pn.enabled} onChange={(v) => setPn({ enabled: v })} label="Show the prohibited-time notice" />
+        </div>
+        {pn.enabled && (
+          <>
+            <Field label="Show for (minutes before the Dhuhr Adhan)" hint="During this window the next-prayer ring becomes a “Prohibited time” notice counting down to the Dhuhr Adhan, when prayer is allowed again.">
+              <input className="input" type="number" min={1} max={45} value={pn.minutes} onChange={(e) => setPn({ minutes: Number(e.target.value) })} />
+            </Field>
+            <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
+              <span className="label" style={{ margin: 0 }}>
+                Show as a red scroll message at the bottom <span className="hint">— instead of the ring notice; overrides any ticker for the whole window</span>
+              </span>
+              <Toggle checked={!!pn.ticker} onChange={(v) => setPn({ ticker: v })} label="Show as a bottom scroll message" />
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Hadith during prayer</h3>
+        <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+          <span className="label" style={{ margin: 0 }}>Show a hadith over the screen while the congregation prays</span>
+          <Toggle checked={sh.enabled} onChange={(v) => setSh({ enabled: v })} label="Show a hadith during prayer" />
+        </div>
+        {sh.enabled && (
+          <>
+            <Field label="Show for (minutes after each Iqamah)" hint="How long the hadith stays on screen once a prayer's Iqamah time arrives.">
+              <input className="input" type="number" min={1} max={60} value={sh.minutes} onChange={(e) => setSh({ minutes: Number(e.target.value) })} />
+            </Field>
+
+            {state.hadithDefaults.length > 0 && (
               <>
-                <IconClock size={12} /> Rotating preview — your screens cycle these every 5 min. Click a name, the masjid title or the footer to rename it.
-              </>
-            ) : (
-              <>
-                <IconClock size={12} /> Live preview — click a name, the masjid title or the footer to rename it.
+                <div className="row-between" style={{ marginBlockEnd: '0.3rem' }}>
+                  <span className="label" style={{ margin: 0 }}>Built-in ahadith on Salāh <span className="hint">({defaultsOnCount} of {state.hadithDefaults.length} on)</span></span>
+                  <span style={{ display: 'flex', gap: '0.4rem' }}>
+                    <button type="button" className="btn btn--ghost btn--sm" onClick={() => setAllDefaults(true)}>All on</button>
+                    <button type="button" className="btn btn--ghost btn--sm" onClick={() => setAllDefaults(false)}>All off</button>
+                  </span>
+                </div>
+                <p className="hint" style={{ marginBlockStart: 0, marginBlockEnd: '0.4rem' }}>Turn off any you don't want. (Sourced from the Madani Academy “Salah Workshop”.)</p>
+                <div className="list" style={{ maxHeight: '16rem', overflowY: 'auto' }}>
+                  {state.hadithDefaults.map((h) => (
+                    <div key={h.id} className="toggle-row row-between" style={{ alignItems: 'flex-start', gap: '0.6rem', padding: '0.4rem 0' }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', opacity: defaultOn(h.id) ? 1 : 0.5 }}>{h.en}</span>
+                        <span className="hint">— {h.cite}</span>
+                        {defaultOn(h.id) && <PrayerPicker value={prayersForDefault(h.id, h.prayers)} onChange={(v) => setDefaultPrayers(h.id, v)} />}
+                      </span>
+                      <Toggle checked={defaultOn(h.id)} onChange={(v) => toggleDefault(h.id, v)} label={`Toggle: ${h.cite}`} />
+                    </div>
+                  ))}
+                </div>
               </>
             )}
-          </p>
-        </div>
 
-        <div className="studio__controls">
-          <div className="grid2">
-            <Field label="Name (for you)"><input className="input" value={f.name} onChange={(e) => set('name', e.target.value)} /></Field>
-            <Field label="Masjid name (on screen)"><input className="input" value={f.masjidName} onChange={(e) => set('masjidName', e.target.value)} /></Field>
-          </div>
-          <Field label="Location (under the name)" hint="e.g. Lansdale, Pennsylvania — leave blank to hide"><input className="input" value={f.location} onChange={(e) => set('location', e.target.value)} /></Field>
-
-          <div className="grid2">
-            <Field label="Latitude" hint="e.g. 40.748222"><input className="input" inputMode="decimal" value={f.latitude} onChange={(e) => set('latitude', e.target.value)} /></Field>
-            <Field label="Longitude" hint="e.g. -73.891075"><input className="input" inputMode="decimal" value={f.longitude} onChange={(e) => set('longitude', e.target.value)} /></Field>
-          </div>
-          <p className="hint" style={{ marginBlockStart: '-0.5rem', marginBlockEnd: '0.6rem' }}>
-            Don't know yours?{' '}
-            <a href="https://www.latlong.net/convert-address-to-lat-long.html" target="_blank" rel="noopener noreferrer">Look up your address →</a>
-          </p>
-
-          <div className="grid2">
-            <Field label="Calculation method">
-              <select className="select" value={f.method} onChange={(e) => set('method', e.target.value as Form['method'])}>
-                {METHODS.map((m) => <option key={m} value={m}>{m === 'Custom' ? 'Custom (set angles)' : m}</option>)}
-              </select>
-            </Field>
-            <Field label="Asr time">
-              <select className="select" value={f.asrMadhab} onChange={(e) => set('asrMadhab', e.target.value as Form['asrMadhab'])}>
-                <option value="Hanafi">Hanafi (later)</option>
-                <option value="Standard">Standard (Shafi'i/Maliki/Hanbali)</option>
-              </select>
-            </Field>
-          </div>
-          {f.method === 'Custom' && (
-            <div className="grid2">
-              <Field label="Fajr angle (degrees below horizon)" hint="e.g. 18 — your local convention.">
-                <input className="input" type="number" min={0} max={30} step={0.5} value={f.fajrAngle} onChange={(e) => set('fajrAngle', Number(e.target.value))} />
-              </Field>
-              <Field label="Isha angle (degrees below horizon)" hint="e.g. 17.">
-                <input className="input" type="number" min={0} max={30} step={0.5} value={f.ishaAngle} onChange={(e) => set('ishaAngle', Number(e.target.value))} />
-              </Field>
-            </div>
-          )}
-
-          <div className="grid2">
-            <Field label="Time zone" hint="Pick the closest city/zone.">
-              <select className="select" value={f.timezone} onChange={(e) => set('timezone', e.target.value)}>
-                {timezoneOptions(f.timezone).map((tz) => <option key={tz.id || 'server'} value={tz.id}>{tz.label}</option>)}
-              </select>
-            </Field>
-            <Field label="Clock format">
-              <select className="select" value={f.timeFormat} onChange={(e) => set('timeFormat', e.target.value as Form['timeFormat'])}>
-                <option value="12h">12-hour</option>
-                <option value="24h">24-hour</option>
-              </select>
-            </Field>
-          </div>
-
-          <div className="grid2">
-            <Field label="Orientation">
-              <select className="select" value={f.orientation} onChange={(e) => set('orientation', e.target.value as Form['orientation'])}>
-                <option value="landscape">Landscape</option>
-                <option value="portrait">Portrait</option>
-              </select>
-            </Field>
-            <Field label="Picture quality" hint="720p is best for a Raspberry Pi">
-              <select className="select" value={f.quality} onChange={(e) => set('quality', e.target.value as Form['quality'])}>
-                <option value="720p">720p</option>
-                <option value="1080p">1080p (Full HD)</option>
-              </select>
-            </Field>
-          </div>
-
-          <div className="grid2">
-            <Field label="Bitrate — 720p (kbps)" hint="Higher = sharper but heavier. Blank = default (4000).">
-              <input className="input" type="number" min={500} max={20000} step={250} placeholder="4000" value={f.bitrate720 ?? ''} onChange={(e) => set('bitrate720', e.target.value === '' ? undefined : Number(e.target.value))} />
-            </Field>
-            <Field label="Bitrate — 1080p (kbps)" hint="Blank = default (8000).">
-              <input className="input" type="number" min={500} max={30000} step={250} placeholder="8000" value={f.bitrate1080 ?? ''} onChange={(e) => set('bitrate1080', e.target.value === '' ? undefined : Number(e.target.value))} />
-            </Field>
-          </div>
-
-          <Field label="Theme colour">
-            <div className="chips">
-              {state.themes.map((th) => (
-                <button
-                  key={th.id}
-                  type="button"
-                  className={`chip${f.themeId === th.id && !f.accent ? ' is-active' : ''}`}
-                  onClick={() => setF((p) => ({ ...p, themeId: th.id, accent: undefined }))}
-                  title={th.label}
-                >
-                  <span className="chip-dot" style={{ background: th.palette.primary, opacity: 1 }} />
-                  {th.label}
-                </button>
+            <p className="hint" style={{ marginBlockStart: '0.8rem', marginBlockEnd: '0.4rem' }}>Your own ahadith — the screen rotates through these and the built-ins above. Fill in Arabic, English, or both.</p>
+            <div className="list">
+              {sh.items.map((it, i) => (
+                <div key={i} className="hadith-row">
+                  <div className="hadith-fields">
+                    <textarea className="input" dir="rtl" lang="ar" rows={2} value={it.ar} onChange={(e) => setHadith(i, { ar: e.target.value })} placeholder="النص بالعربية (اختياري)" style={{ resize: 'vertical', fontSize: '1.1rem' }} />
+                    <textarea className="input" rows={2} value={it.en} onChange={(e) => setHadith(i, { en: e.target.value })} placeholder="English translation (optional)" style={{ resize: 'vertical' }} />
+                    <PrayerPicker value={it.prayers ?? []} onChange={(v) => setHadith(i, { prayers: v })} />
+                  </div>
+                  <button type="button" className="icon-btn" onClick={() => delHadith(i)} aria-label="Remove hadith"><IconTrash size={15} /></button>
+                </div>
               ))}
             </div>
-            <div className="row" style={{ gap: '0.6rem', marginBlockStart: '0.55rem' }}>
-              <label className="row" style={{ gap: '0.45rem' }}>
-                <input type="color" className="color-input" value={f.accent ?? themePrimary} onChange={(e) => set('accent', e.target.value)} />
-                <span className="hint">Custom colour</span>
-              </label>
-              {f.accent && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('accent', undefined)}>Use theme colour</button>}
+            <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.5rem' }} onClick={addHadith}><IconPlus size={14} /> Add hadith</button>
+          </>
+        )}
+      </div>
+    </>
+  );
+
+  const announce = (
+    <>
+      <div className="card section">
+        <h3 className="section-title">Announcement slideshow (images)</h3>
+        {tt ? (
+          <>
+            <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+              <span className="label" style={{ margin: 0 }}>
+                Cycle images over the display <span className="hint">— prayer times stay visible</span>
+              </span>
+              <Toggle checked={ann.enabled} onChange={(v) => setAnn({ enabled: v })} label="Cycle announcement images" />
             </div>
-            {!f.accent && f.backgroundImage && (
-              <p className="hint" style={{ marginBlockStart: '0.4rem' }}>Matched to your wallpaper automatically. Pick a colour above to set your own. (Text colour also adapts to keep it readable.)</p>
-            )}
-          </Field>
-
-          <Field label="Text colour">
-            <div className="chips">
-              <button type="button" className={`chip${!f.textColor ? ' is-active' : ''}`} onClick={() => set('textColor', '')} title="Pick the most readable colour automatically">
-                <span className="chip-dot" style={{ background: 'linear-gradient(135deg,#f5f8ff 50%,#10161d 50%)' }} />
-                Auto
-              </button>
-              <button type="button" className={`chip${f.textColor?.toLowerCase() === '#f5f8ff' ? ' is-active' : ''}`} onClick={() => set('textColor', '#f5f8ff')}>
-                <span className="chip-dot" style={{ background: '#f5f8ff' }} />
-                Light
-              </button>
-              <button type="button" className={`chip${f.textColor?.toLowerCase() === '#10161d' ? ' is-active' : ''}`} onClick={() => set('textColor', '#10161d')}>
-                <span className="chip-dot" style={{ background: '#10161d' }} />
-                Dark
-              </button>
-            </div>
-            <div className="row" style={{ gap: '0.6rem', marginBlockStart: '0.55rem' }}>
-              <label className="row" style={{ gap: '0.45rem' }}>
-                <input type="color" className="color-input" value={f.textColor || '#f5f8ff'} onChange={(e) => set('textColor', e.target.value)} />
-                <span className="hint">Custom colour</span>
-              </label>
-              {f.textColor && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('textColor', '')}>Auto contrast</button>}
-            </div>
-            <p className="hint" style={{ marginBlockStart: '0.4rem' }}>Auto keeps your theme's text, and switches to dark text on a light photo so it always stays readable.</p>
-          </Field>
-
-          <Field label="Background">
-            {tt ? (
-              <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
-                <span className="muted" style={{ fontSize: '0.88rem' }}>{f.backgroundImage ? 'Custom image set.' : 'Using the themed scene.'}</span>
-                <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
-                  <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickBackground(file); e.target.value = ''; }} />
-                  {f.backgroundImage ? 'Replace image' : 'Upload image'}
-                </label>
-                {f.backgroundImage && <button type="button" className="btn btn--ghost btn--sm" onClick={clearBackground}>Remove</button>}
-              </div>
-            ) : (
-              <span className="hint">Create the timetable first, then you can add a background image.</span>
-            )}
-          </Field>
-
-          <Field label="Masjid logo" hint="Replaces the built-in dome mark. A transparent PNG or SVG looks best.">
-            {tt ? (
-              <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
-                <span className="muted" style={{ fontSize: '0.88rem' }}>{f.logoImage ? 'Custom logo set.' : 'Using the built-in mark.'}</span>
-                <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
-                  <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickLogo(file); e.target.value = ''; }} />
-                  {f.logoImage ? 'Replace logo' : 'Upload logo'}
-                </label>
-                {f.logoImage && <button type="button" className="btn btn--ghost btn--sm" onClick={clearLogo}>Remove</button>}
-              </div>
-            ) : (
-              <span className="hint">Create the timetable first, then you can add a logo.</span>
-            )}
-          </Field>
-
-          <h3 className="section-title">Show on screen</h3>
-          <div className="toggle-list">
-            <ToggleRow label="Logo" checked={f.showLogo} onChange={(v) => set('showLogo', v)} />
-            <ToggleRow label="Masjid name" checked={f.showName} onChange={(v) => set('showName', v)} />
-            <ToggleRow label="Hijri & Gregorian dates" checked={f.showDates} onChange={(v) => set('showDates', v)} />
-            <ToggleRow label="Countdown to next prayer" checked={f.showCountdown} onChange={(v) => set('showCountdown', v)} />
-            <ToggleRow label="Seconds on the clock" checked={f.showSeconds} onChange={(v) => set('showSeconds', v)} />
-            <ToggleRow label="Sunrise" checked={f.showSunrise} onChange={(v) => set('showSunrise', v)} />
-            <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />
-            <ToggleRow label="Calculation-method footnote" checked={f.showFooter} onChange={(v) => set('showFooter', v)} />
-          </div>
-
-          <div style={{ marginBlockStart: '0.9rem' }}>
-            <Field label="Language (dates)">
-              <select className="select" value={f.language} onChange={(e) => set('language', e.target.value as Form['language'])}>
-                <option value="en">English</option>
-                <option value="ar">العربية (Arabic)</option>
-                <option value="ur">اردو (Urdu)</option>
-              </select>
-            </Field>
-            <Field label="Footer note (optional)"><input className="input" value={f.footerNote} onChange={(e) => set('footerNote', e.target.value)} placeholder="e.g. Jumu'ah khutbah at 1:15pm" /></Field>
-          </div>
-
-          <div className="grid2">
-            <Field label="Hijri date adjustment" hint="Shift the Islamic date for local moon-sighting.">
-              <select className="select" value={f.hijriOffset} onChange={(e) => set('hijriOffset', Number(e.target.value))}>
-                {[-3, -2, -1, 0, 1, 2, 3].map((n) => (
-                  <option key={n} value={n}>{n === 0 ? 'No change' : `${n > 0 ? '+' : ''}${n} day${Math.abs(n) === 1 ? '' : 's'}`}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Gregorian date adjustment" hint="Rarely needed — usually leave at 'No change'.">
-              <select className="select" value={f.gregorianOffset} onChange={(e) => set('gregorianOffset', Number(e.target.value))}>
-                {[-3, -2, -1, 0, 1, 2, 3].map((n) => (
-                  <option key={n} value={n}>{n === 0 ? 'No change' : `${n > 0 ? '+' : ''}${n} day${Math.abs(n) === 1 ? '' : 's'}`}</option>
-                ))}
-              </select>
-            </Field>
-          </div>
-
-          <h3 className="section-title">Iqamah times</h3>
-          {csvActive && (
-            <p className="hint" style={{ marginBlockStart: 0 }}>
-              A yearly CSV is in use, so these per-prayer rules are turned off. Fine-tune the exact times in the
-              table below, or <button type="button" onClick={clearCsv} style={{ background: 'none', border: 0, padding: 0, color: 'var(--color-primary)', textDecoration: 'underline', cursor: 'pointer', font: 'inherit' }}>clear the CSV</button> to use rules again.
-            </p>
-          )}
-          <div className="list">
-            {(['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const).map((k) => (
-              <IqamahRow key={k} name={k} rule={f.iqamah[k]} disabled={csvActive} onChange={(r) => setF((p) => ({ ...p, iqamah: { ...p.iqamah, [k]: r } as IqamahConfig }))} />
-            ))}
-          </div>
-
-          <h3 className="section-title">Adhan delay</h3>
-          <p className="hint" style={{ marginBlockStart: 0 }}>
-            Minutes to add to each prayer's calculated Adhan time — for masjids that call the Adhan a few minutes
-            after the astronomical time. The displayed Adhan (and any “minutes after Adhan” Iqamah) shifts with it.
-          </p>
-          <div className="list">
-            {(['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const).map((k) => (
-              <div className="row-between" key={k} style={{ padding: '0.3rem 0' }}>
-                <span className="label" style={{ margin: 0, textTransform: 'capitalize' }}>{k}</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    max={60}
-                    style={{ width: '5rem' }}
-                    value={ao[k] ?? 0}
-                    onChange={(e) => setAo(k, Math.max(0, Math.min(60, Number(e.target.value) || 0)))}
-                  />
-                  <span className="hint">min</span>
+            <div className="ann-thumbs">
+              {ann.images.map((im) => (
+                <div key={im} className="ann-thumb">
+                  <img src={api.announcementImageUrl(tt.id, im)} alt="Announcement" />
+                  <button type="button" className="ann-thumb__x" onClick={() => removeAnnImage(im)} aria-label="Remove image">×</button>
                 </div>
-              </div>
-            ))}
-          </div>
-
-          <h3 className="section-title">Jumu'ah times (Fridays)</h3>
-          <JumuahEditor times={f.jumuah} onChange={(j) => set('jumuah', j)} />
-
-          <h3 className="section-title">Iqamah times for the whole year (CSV)</h3>
-          {tt ? (
-            <div>
-              <p className="hint" style={{ marginBlockStart: 0 }}>
-                Upload one file with a row per day to set exact Iqamah times for the whole year — they override
-                the rules above on matching dates. Download the example to see the format (it comes pre-filled
-                from your rules, ready to tweak).
-              </p>
-              <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
-                <label className="btn btn--primary btn--sm" style={{ cursor: 'pointer' }}>
-                  <input type="file" accept=".csv,text/csv" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importCsv(file); e.target.value = ''; }} />
-                  Import CSV
-                </label>
-                <a className="btn btn--ghost btn--sm" href={api.iqamahCsvUrl(tt.id, 'template')}>Download example</a>
-                <a className="btn btn--ghost btn--sm" href={api.iqamahCsvUrl(tt.id)}>Export current</a>
-                {csvRows != null && <button type="button" className="btn btn--ghost btn--sm" onClick={clearCsv}>Clear ({csvRows} days)</button>}
-              </div>
-              {csvRows != null && (
-                <p className="hint" style={{ marginBlockStart: '0.5rem' }}>
-                  {csvRows} day{csvRows === 1 ? '' : 's'} set. These show on the screens; the live preview here
-                  still uses your rules.
-                </p>
-              )}
-              <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.6rem' }} onClick={() => setShowTable((v) => !v)}>
-                {showTable ? 'Hide the table editor' : csvActive ? 'Fine-tune the imported times (by month)' : 'Or edit times in a table (by month)'}
-              </button>
-              {showTable && <IqamahYearEditor tt={tt} existingRows={csvRows} onSaved={(n) => setCsvRows(n || null)} />}
+              ))}
+              <label className="ann-add" style={{ cursor: 'pointer' }}>
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) addAnnImage(file); e.target.value = ''; }} />
+                <IconPlus size={18} />
+              </label>
             </div>
-          ) : (
-            <span className="hint">Create the timetable first, then you can set yearly times.</span>
-          )}
-
-          <h3 className="section-title">Announcement slideshow (images)</h3>
-          {tt ? (
-            <>
-              <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
-                <span className="label" style={{ margin: 0 }}>
-                  Cycle images over the display <span className="hint">— prayer times stay visible</span>
-                </span>
-                <Toggle checked={ann.enabled} onChange={(v) => setAnn({ enabled: v })} label="Cycle announcement images" />
-              </div>
-              <div className="ann-thumbs">
-                {ann.images.map((im) => (
-                  <div key={im} className="ann-thumb">
-                    <img src={api.announcementImageUrl(tt.id, im)} alt="Announcement" />
-                    <button type="button" className="ann-thumb__x" onClick={() => removeAnnImage(im)} aria-label="Remove image">×</button>
-                  </div>
-                ))}
-                <label className="ann-add" style={{ cursor: 'pointer' }}>
-                  <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) addAnnImage(file); e.target.value = ''; }} />
-                  <IconPlus size={18} />
-                </label>
-              </div>
-              <div className="grid2" style={{ marginBlockStart: '0.7rem' }}>
-                <Field label="Show timetable for (seconds)"><input className="input" type="number" min={5} max={3600} value={ann.everySeconds} onChange={(e) => setAnn({ everySeconds: Number(e.target.value) })} /></Field>
-                <Field label="Then show images for (seconds)"><input className="input" type="number" min={3} max={1800} value={ann.forSeconds} onChange={(e) => setAnn({ forSeconds: Number(e.target.value) })} /></Field>
-              </div>
-              <div className="grid2">
-                <Field label="Each image shows (seconds)"><input className="input" type="number" min={2} max={600} value={ann.imageSeconds} onChange={(e) => setAnn({ imageSeconds: Number(e.target.value) })} /></Field>
-                <Field label="Active window (optional)" hint="Leave blank for all day.">
-                  <div className="row" style={{ gap: '0.4rem', alignItems: 'center' }}>
-                    <input className="input" type="time" value={ann.start} onChange={(e) => setAnn({ start: e.target.value })} />
-                    <span className="muted">to</span>
-                    <input className="input" type="time" value={ann.end} onChange={(e) => setAnn({ end: e.target.value })} />
-                  </div>
-                </Field>
-              </div>
-            </>
-          ) : (
-            <span className="hint">Create the timetable first, then you can add announcement images.</span>
-          )}
-
-          <h3 className="section-title">Scrolling messages (ticker)</h3>
-          <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
-            <span className="label" style={{ margin: 0 }}>Scroll short messages along the bottom</span>
-            <Toggle checked={tk.enabled} onChange={(v) => setTk({ enabled: v })} label="Scroll messages along the bottom" />
-          </div>
-          {tk.enabled && (
-            <Field label={`Scroll speed — ${f.tickerSpeed ?? 5} / 10`} hint="How fast the messages move across the bottom.">
-              <input
-                type="range"
-                min={1}
-                max={10}
-                step={1}
-                value={f.tickerSpeed ?? 5}
-                onChange={(e) => set('tickerSpeed', Number(e.target.value))}
-                style={{ width: '100%' }}
-                aria-label="Ticker scroll speed"
-              />
-            </Field>
-          )}
-          <div className="list">
-            {tk.messages.map((mm, i) => (
-              <div key={mm.id} className="msg-row">
-                <input className="input" value={mm.text} onChange={(e) => setMsg(i, { text: e.target.value })} placeholder="e.g. Fundraising dinner this Saturday at 7pm" />
-                <input className="input msg-time" type="time" value={mm.start} onChange={(e) => setMsg(i, { start: e.target.value })} title="Show from (optional)" />
-                <input className="input msg-time" type="time" value={mm.end} onChange={(e) => setMsg(i, { end: e.target.value })} title="Show until (optional)" />
-                <button type="button" className="icon-btn" onClick={() => delMsg(i)} aria-label="Remove message"><IconTrash size={15} /></button>
-              </div>
-            ))}
-          </div>
-          <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.5rem' }} onClick={addMsg}><IconPlus size={14} /> Add message</button>
-        </div>
-
-        <div className="card section">
-          <h3 className="section-title">During prayer (hadith)</h3>
-          <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
-            <span className="label" style={{ margin: 0 }}>Show a hadith over the screen while the congregation prays</span>
-            <Toggle checked={sh.enabled} onChange={(v) => setSh({ enabled: v })} label="Show a hadith during prayer" />
-          </div>
-          {sh.enabled && (
-            <>
-              <Field label="Show for (minutes after each Iqamah)" hint="How long the hadith stays on screen once a prayer's Iqamah time arrives.">
-                <input className="input" type="number" min={1} max={60} value={sh.minutes} onChange={(e) => setSh({ minutes: Number(e.target.value) })} />
+            <div className="grid2" style={{ marginBlockStart: '0.7rem' }}>
+              <Field label="Show timetable for (seconds)" hint="How long the normal prayer display shows before the images cycle in."><input className="input" type="number" min={5} max={3600} value={ann.everySeconds} onChange={(e) => setAnn({ everySeconds: Number(e.target.value) })} /></Field>
+              <Field label="Then show images for (seconds)" hint="How long the image slideshow runs before the prayer display returns."><input className="input" type="number" min={3} max={1800} value={ann.forSeconds} onChange={(e) => setAnn({ forSeconds: Number(e.target.value) })} /></Field>
+            </div>
+            <div className="grid2">
+              <Field label="Each image shows (seconds)" hint="How long each individual image stays up during the slideshow."><input className="input" type="number" min={2} max={600} value={ann.imageSeconds} onChange={(e) => setAnn({ imageSeconds: Number(e.target.value) })} /></Field>
+              <Field label="Active window (optional)" hint="Only run the slideshow between these times. Leave blank for all day.">
+                <div className="row" style={{ gap: '0.4rem', alignItems: 'center' }}>
+                  <input className="input" type="time" value={ann.start} onChange={(e) => setAnn({ start: e.target.value })} />
+                  <span className="muted">to</span>
+                  <input className="input" type="time" value={ann.end} onChange={(e) => setAnn({ end: e.target.value })} />
+                </div>
               </Field>
+            </div>
+          </>
+        ) : (
+          <span className="hint">Create the timetable first, then you can add announcement images.</span>
+        )}
+      </div>
 
-              {state.hadithDefaults.length > 0 && (
-                <>
-                  <div className="row-between" style={{ marginBlockEnd: '0.3rem' }}>
-                    <span className="label" style={{ margin: 0 }}>Built-in ahadith on Salāh <span className="hint">({defaultsOnCount} of {state.hadithDefaults.length} on)</span></span>
-                    <span style={{ display: 'flex', gap: '0.4rem' }}>
-                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => setAllDefaults(true)}>All on</button>
-                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => setAllDefaults(false)}>All off</button>
-                    </span>
-                  </div>
-                  <p className="hint" style={{ marginBlockStart: 0, marginBlockEnd: '0.4rem' }}>Turn off any you don't want. (Sourced from the Madani Academy “Salah Workshop”.)</p>
-                  <div className="list" style={{ maxHeight: '16rem', overflowY: 'auto' }}>
-                    {state.hadithDefaults.map((h) => (
-                      <div key={h.id} className="toggle-row row-between" style={{ alignItems: 'flex-start', gap: '0.6rem', padding: '0.4rem 0' }}>
-                        <span style={{ flex: 1, minWidth: 0 }}>
-                          <span style={{ display: 'block', opacity: defaultOn(h.id) ? 1 : 0.5 }}>{h.en}</span>
-                          <span className="hint">— {h.cite}</span>
-                          {defaultOn(h.id) && <PrayerPicker value={prayersForDefault(h.id, h.prayers)} onChange={(v) => setDefaultPrayers(h.id, v)} />}
-                        </span>
-                        <Toggle checked={defaultOn(h.id)} onChange={(v) => toggleDefault(h.id, v)} label={`Toggle: ${h.cite}`} />
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-
-              <p className="hint" style={{ marginBlockStart: '0.8rem', marginBlockEnd: '0.4rem' }}>Your own ahadith — the screen rotates through these and the built-ins above. Fill in Arabic, English, or both.</p>
-              <div className="list">
-                {sh.items.map((it, i) => (
-                  <div key={i} className="hadith-row">
-                    <div className="hadith-fields">
-                      <textarea className="input" dir="rtl" lang="ar" rows={2} value={it.ar} onChange={(e) => setHadith(i, { ar: e.target.value })} placeholder="النص بالعربية (اختياري)" style={{ resize: 'vertical', fontSize: '1.1rem' }} />
-                      <textarea className="input" rows={2} value={it.en} onChange={(e) => setHadith(i, { en: e.target.value })} placeholder="English translation (optional)" style={{ resize: 'vertical' }} />
-                      <PrayerPicker value={it.prayers ?? []} onChange={(v) => setHadith(i, { prayers: v })} />
-                    </div>
-                    <button type="button" className="icon-btn" onClick={() => delHadith(i)} aria-label="Remove hadith"><IconTrash size={15} /></button>
-                  </div>
-                ))}
-              </div>
-              <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.5rem' }} onClick={addHadith}><IconPlus size={14} /> Add hadith</button>
-            </>
-          )}
+      <div className="card section">
+        <h3 className="section-title">Scrolling messages (ticker)</h3>
+        <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+          <span className="label" style={{ margin: 0 }}>Scroll short messages along the bottom</span>
+          <Toggle checked={tk.enabled} onChange={(v) => setTk({ enabled: v })} label="Scroll messages along the bottom" />
         </div>
-
-        <div className="card section">
-          <h3 className="section-title">Countdown to Iqamah</h3>
-          <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
-            <span className="label" style={{ margin: 0 }}>Show a full-screen countdown in the last minutes before each Iqamah</span>
-            <Toggle checked={ic.enabled} onChange={(v) => setIc({ enabled: v })} label="Show a countdown to Iqamah" />
-          </div>
-          {ic.enabled && (
-            <Field label="Start (minutes before the Iqamah)" hint="The full-screen countdown takes over this many minutes before each prayer's Iqamah time.">
-              <input className="input" type="number" min={1} max={30} value={ic.minutes} onChange={(e) => setIc({ minutes: Number(e.target.value) })} />
-            </Field>
-          )}
+        {tk.enabled && (
+          <Field label={`Scroll speed — ${f.tickerSpeed ?? 5} / 10`} hint="How fast the messages move across the bottom.">
+            <input
+              type="range"
+              min={1}
+              max={10}
+              step={1}
+              value={f.tickerSpeed ?? 5}
+              onChange={(e) => set('tickerSpeed', Number(e.target.value))}
+              style={{ width: '100%' }}
+              aria-label="Ticker scroll speed"
+            />
+          </Field>
+        )}
+        <div className="list">
+          {tk.messages.map((mm, i) => (
+            <div key={mm.id} className="msg-row">
+              <input className="input" value={mm.text} onChange={(e) => setMsg(i, { text: e.target.value })} placeholder="e.g. Fundraising dinner this Saturday at 7pm" />
+              <input className="input msg-time" type="time" value={mm.start} onChange={(e) => setMsg(i, { start: e.target.value })} title="Show from (optional)" />
+              <input className="input msg-time" type="time" value={mm.end} onChange={(e) => setMsg(i, { end: e.target.value })} title="Show until (optional)" />
+              <button type="button" className="icon-btn" onClick={() => delMsg(i)} aria-label="Remove message"><IconTrash size={15} /></button>
+            </div>
+          ))}
         </div>
+        <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.5rem' }} onClick={addMsg}><IconPlus size={14} /> Add message</button>
+      </div>
+    </>
+  );
 
-        <div className="card section">
-          <h3 className="section-title">Adhan pop-up</h3>
-          <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
-            <span className="label" style={{ margin: 0 }}>Show a brief “it's time for salah” pop-up when the Adhan comes in</span>
-            <Toggle checked={apop.enabled} onChange={(v) => setApop({ enabled: v })} label="Show an Adhan pop-up" />
-          </div>
-          {apop.enabled && (
-            <Field label="Show for (seconds)" hint="The pop-up appears over the screen the moment each prayer's Adhan time arrives, then fades after this many seconds.">
-              <input className="input" type="number" min={3} max={120} value={apop.seconds} onChange={(e) => setApop({ seconds: Number(e.target.value) })} />
-            </Field>
-          )}
+  const sharing = (
+    <>
+      <div className="card section">
+        <h3 className="section-title">Website widget</h3>
+        <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+          <span className="label" style={{ margin: 0 }}>Let your website embed this timetable's times (just the times, vertical list)</span>
+          <Toggle checked={wg.enabled} onChange={(v) => setWg({ enabled: v })} label="Allow embedding the prayer-times widget" />
         </div>
+        {wg.enabled && (tt ? <WidgetEmbed id={tt.id} /> : (
+          <p className="hint">Save this timetable, then reopen to get the embed code.</p>
+        ))}
+      </div>
 
-        <div className="card section">
-          <h3 className="section-title">Prohibited time notice</h3>
-          <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
-            <span className="label" style={{ margin: 0 }}>Show a prohibited-time notice before Dhuhr (zawāl / sun at its zenith)</span>
-            <Toggle checked={pn.enabled} onChange={(v) => setPn({ enabled: v })} label="Show the prohibited-time notice" />
-          </div>
-          {pn.enabled && (
-            <>
-              <Field label="Show for (minutes before the Dhuhr Adhan)" hint="During this window the next-prayer ring becomes a “Prohibited time” notice counting down to the Dhuhr Adhan, when prayer is allowed again.">
-                <input className="input" type="number" min={1} max={45} value={pn.minutes} onChange={(e) => setPn({ minutes: Number(e.target.value) })} />
-              </Field>
-              <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
-                <span className="label" style={{ margin: 0 }}>
-                  Show as a red scroll message at the bottom <span className="hint">— instead of the ring notice; overrides any ticker for the whole window</span>
-                </span>
-                <Toggle checked={!!pn.ticker} onChange={(v) => setPn({ ticker: v })} label="Show as a bottom scroll message" />
-              </div>
-            </>
-          )}
-        </div>
-
-        {tt && (
-          <div className="card section">
-            <h3 className="section-title">Print</h3>
-            <p className="hint" style={{ marginBlockEnd: '0.6rem' }}>Open a printable month of prayer times — then use your browser's “Save as PDF”.</p>
+      <div className="card section">
+        <h3 className="section-title">Print</h3>
+        {tt ? (
+          <>
+            <p className="hint" style={{ marginBlockStart: 0, marginBlockEnd: '0.6rem' }}>Open a printable month of prayer times — then use your browser's “Save as PDF”.</p>
             <button
               type="button"
               className="btn btn--ghost btn--sm"
@@ -824,53 +883,62 @@ export function TimetableEditor({ state, tt, onClose, onSaved, fullPage }: { sta
             >
               <IconCalendar size={14} /> Print this month
             </button>
-          </div>
+          </>
+        ) : (
+          <span className="hint">Create the timetable first, then you can print a month.</span>
         )}
-
-        <div className="card section">
-          <h3 className="section-title">Website widget</h3>
-          <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
-            <span className="label" style={{ margin: 0 }}>Let your website embed this timetable's times (just the times, vertical list)</span>
-            <Toggle checked={wg.enabled} onChange={(v) => setWg({ enabled: v })} label="Allow embedding the prayer-times widget" />
-          </div>
-          {wg.enabled && (tt ? <WidgetEmbed id={tt.id} /> : (
-            <p className="hint">Save this timetable, then reopen to get the embed code.</p>
-          ))}
-        </div>
       </div>
+    </>
   );
 
-  if (fullPage) {
-    return (
-      <div className="editor-page">
-        <div className="editor-bar glass-raised">
-          <b className="editor-title">{tt ? 'Design timetable' : 'New timetable'}</b>
-          <span className="spacer" />
-          <button className="btn" onClick={onClose}>Close</button>
-          <button className="btn btn--primary" onClick={save} disabled={busy}>{tt ? 'Save changes' : 'Create'}</button>
-        </div>
-        <div className="editor-body">{content}</div>
-      </div>
-    );
-  }
+  const TABS: { id: EditorTab; label: string }[] = [
+    { id: 'general', label: 'General' },
+    { id: 'salah', label: 'Salah times' },
+    { id: 'appearance', label: 'Appearance' },
+    { id: 'during', label: 'During prayer' },
+    { id: 'announce', label: 'Announcements' },
+    { id: 'sharing', label: 'Sharing & print' },
+  ];
+  const panels: Record<EditorTab, ReactNode> = { general, salah, appearance, during, announce, sharing };
 
   return (
-    <Modal
-      open
-      wide
-      windowed
-      onClose={onClose}
-      title={tt ? 'Design timetable' : 'New timetable'}
-      footer={
-        <>
-          <button className="btn" onClick={onClose}>Cancel</button>
-          {popout && <button type="button" className="btn btn--ghost" onClick={popout}>Open in new tab</button>}
-          <button className="btn btn--primary" onClick={save} disabled={busy}>{tt ? 'Save' : 'Create'}</button>
-        </>
-      }
-    >
-      {content}
-    </Modal>
+    <div className="editor-page">
+      <div className="editor-bar glass-raised">
+        <b className="editor-title">{tt ? 'Edit timetable' : 'New timetable'}</b>
+        <span className="spacer" />
+        <button className="btn" onClick={onClose}>Close</button>
+        <button className="btn btn--primary" onClick={save} disabled={busy}>{tt ? 'Save changes' : 'Create'}</button>
+      </div>
+
+      <div className="tt-editor">
+        <div className="tt-editor__preview glass-raised">
+          <LivePreview body={previewBody} portrait={f.orientation === 'portrait'} onEditCommit={editLabel} />
+          <p className="hint" style={{ textAlign: 'center', marginBlock: '0.5rem 0' }}>
+            <IconClock size={12} />{' '}
+            {f.layoutCarousel
+              ? 'Rotating preview — screens cycle layouts every 5 min. Click a name, the masjid title or the footer to rename it.'
+              : 'Live preview — click a name, the masjid title or the footer to rename it.'}
+          </p>
+        </div>
+
+        <div className="tt-editor__body">
+          <nav className="tt-editor__tabs" aria-label="Settings categories">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={`tt-tab${tab === t.id ? ' is-active' : ''}`}
+                aria-current={tab === t.id ? 'true' : undefined}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+          <div className="tt-editor__panel">{panels[tab]}</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
