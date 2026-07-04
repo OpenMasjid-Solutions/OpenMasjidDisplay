@@ -1649,8 +1649,12 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   // "Iqamah in" while inside the current prayer's Adhan->Iqamah window, else "Adhan in".
   const eventWord = (m.countdownToIqamah ? (L.iqamah ?? 'Iqamah') : (L.athan ?? 'Adhan')).toUpperCase();
   // Ring progress: fraction of the current interval (previous Adhan -> next event) elapsed.
+  // When a prayer is active the ring fills from its Adhan. In the gap after Fajr — no
+  // prayer is active (activeKey is null from Sunrise until Dhuhr) — it fills from Sunrise,
+  // so just after Sunrise the ring reads a few percent instead of a full circle (the old
+  // `nextHours - 1` fallback, combined with the midnight wrap below, clamped it to 100%).
   const activeRow = m.rows.find((r) => r.key === m.activeKey);
-  let prevH = activeRow?.adhan ?? m.nextHours - 1;
+  let prevH = activeRow?.adhan ?? m.times.sunrise;
   let now2 = nowHours;
   if (now2 < prevH) now2 += 24;
   let end2 = m.nextHours;
