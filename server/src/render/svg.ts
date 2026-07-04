@@ -430,6 +430,13 @@ function rowName(r: Row, L: Record<string, string>): string {
   return r.jumuahNum ? `${base} ${r.jumuahNum}` : base;
 }
 
+/** English ordinal: 1 → "1st", 2 → "2nd", 3 → "3rd", … */
+function ordinalEn(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
+}
+
 const PRAYER_LABELS: Record<string, Record<string, string>> = {
   en: { fajr: 'Fajr', sunrise: 'Sunrise', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha', jumuah: "Jumu'ah", iqamah: 'Iqāmah', athan: 'Adhan', next: 'Next prayer', prayer: 'Prayer' },
   ar: { fajr: 'الفجر', sunrise: 'الشروق', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
@@ -460,6 +467,9 @@ interface Model {
   /** configured Jumu'ah time(s), decimal hours, sorted — shown as a separate strip
    *  on every day (NOT part of the daily prayer rows). */
   jumuah: number[];
+  /** on Friday, the upcoming Jumu'ah the ring counts down to (1st, then 2nd); null on
+   *  other days or once every Jumu'ah time has passed. */
+  nextJumuah: { time: number; ordinal: number; count: number } | null;
 }
 
 function buildModel(tt: Timetable, now: Date): Model {
@@ -542,11 +552,33 @@ function buildModel(tt: Timetable, now: Date): Model {
   // correct: the ring just counts down to Dhuhr).
   if (activeKey === 'fajr' && !countdownToIqamah && nowHours >= times.sunrise) activeKey = null;
 
+  // The zawāl (prohibited) window before the Dhuhr Adhan: during it, prayer is prohibited,
+  // so the ring stays a "Prohibited time → Dhuhr Adhan" notice — never a Jumu'ah countdown
+  // (which would otherwise fire on a Friday when a Jumu'ah time sits at/just before Dhuhr).
+  const pn = tt.prohibitedNotice;
+  const dhuhrAdhan = adj('dhuhr');
+  const inProhibited = !!pn?.enabled && nowHours >= dhuhrAdhan - Math.max(1, pn.minutes) / 60 && nowHours < dhuhrAdhan;
+
+  // On Friday, the ring counts down to the upcoming Jumu'ah (1st, then 2nd) rather than
+  // skipping over them to Asr. A Jumu'ah becomes the "next" target when one is still to
+  // come today, is due no later than the next daily prayer, and we're not already counting
+  // down to an Iqāmah or inside the zawāl window. The daily TABLE still tracks the five
+  // prayers (Dhuhr stays active through midday); only the ring/countdown switches to Jumu'ah.
+  let nextJumuah: Model['nextJumuah'] = null;
+  if (isFriday && jumuah.length && !countdownToIqamah && !inProhibited) {
+    const upcoming = jumuah.filter((t) => t > nowHours);
+    if (upcoming.length && upcoming[0] <= nextHours) {
+      nextJumuah = { time: upcoming[0], ordinal: jumuah.indexOf(upcoming[0]) + 1, count: jumuah.length };
+      nextHours = upcoming[0];
+    }
+  }
+
   for (const r of rows) {
     if (r.key === activeKey) r.active = true;
-    if (r.key === nextKey) r.next = true;
+    // When the ring is counting to a Jumu'ah, no daily row is the "next" one.
+    if (!nextJumuah && r.key === nextKey) r.next = true;
   }
-  return { parts, times, rows, activeKey, nextKey, nextHours, countdownToIqamah, isFriday, jumuah };
+  return { parts, times, rows, activeKey, nextKey, nextHours, countdownToIqamah, isFriday, jumuah, nextJumuah };
 }
 
 /** One prayer line for the public web widget. */
@@ -605,7 +637,7 @@ export function widgetData(tt: Timetable, now: Date): WidgetData {
         adhan: null,
         iqamah: fmtShort(t, tt.timeFormat),
         active: false,
-        next: false,
+        next: m.nextJumuah?.ordinal === i + 1,
       })),
     ],
   };
@@ -695,12 +727,18 @@ export function widgetPayload(tt: Timetable, now: Date, opts: { date?: string; w
         adhan: null,
         iqamah: fmtShort(t, tt.timeFormat),
         active: false,
-        next: false,
+        // On Friday the ring counts to a Jumu'ah — highlight that row as "next" here too.
+        next: isToday && fm.nextJumuah?.ordinal === i + 1,
       })),
     ];
     if (isToday) {
+      const jm = fm.nextJumuah;
+      const jLabel = (L.jumuah ?? "Jumu'ah") + (jm && jm.count > 1 ? ` ${jm.ordinal}` : '');
       const nr = fm.rows.find((r) => r.next) ?? fm.rows[0];
-      next = { label: rowName(nr, L), inSeconds: Math.max(0, Math.round((fm.nextHours - nowHours) * 3600)) };
+      next = {
+        label: jm ? jLabel : rowName(nr, L),
+        inSeconds: Math.max(0, Math.round((fm.nextHours - nowHours) * 3600)),
+      };
     }
   }
 
@@ -969,6 +1007,8 @@ interface Ctx {
   /** Active zawāl (pre-Dhuhr) prohibited-to-pray window — the ring reframes itself as a
    *  "Prohibited time" notice counting down to when prayer is allowed again (Dhuhr). */
   prohibited?: boolean;
+  /** 1 Hz on/off toggle (even second) — used to flash the prohibited-time ring. */
+  flash?: boolean;
 }
 
 /** Brand panel: logo, masjid name, and a small uppercase location line under it. */
@@ -1093,9 +1133,15 @@ function panelRing(b: Box, c: Ctx): string {
   const sw = Math.max(6, R * 0.13);
   const C = 2 * Math.PI * R;
   const cxs = cx.toFixed(1), cys = ringCy.toFixed(1), rs = R.toFixed(1), sws = sw.toFixed(1);
-  out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${hexToRgba(c.p.primary, 0.15)}" stroke-width="${sws}"/>`);
+  // During the prohibited (zawāl) window the ring turns red and pulses on/off each second
+  // so it clearly reads as a warning, not a normal countdown.
+  const ringCol = c.prohibited ? TICKER_RED : c.p.primary;
+  const ringOpacity = c.prohibited && !c.flash ? 0.35 : 1;
+  out.push(`<g opacity="${ringOpacity}">`);
+  out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${hexToRgba(ringCol, 0.15)}" stroke-width="${sws}"/>`);
   const off = C * (1 - clamp(c.ringProgress, 0.001, 1));
-  out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${c.p.primary}" stroke-width="${sws}" stroke-linecap="round" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 ${cxs} ${cys})"/>`);
+  out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${ringCol}" stroke-width="${sws}" stroke-linecap="round" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 ${cxs} ${cys})"/>`);
+  out.push(`</g>`);
   // Center: Arabic name (gold) over English (dim, letter-spaced).
   if (c.nextArabic) out.push(text(cx, ringCy + R * 0.04, c.nextArabic, { size: clamp(R * 0.48, 18, 60), fill: c.p.gold, family: FONT_ARABIC, weight: 700, anchor: 'middle' }));
   out.push(text(cx, ringCy + R * (c.nextArabic ? 0.4 : 0.08), c.nextLabel.toUpperCase(), { size: clamp(R * 0.22, 12, 32), fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
@@ -1643,11 +1689,15 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
 
   const remMin = (m.nextHours - nowHours) * 60;
   const remainingSec = Math.max(0, Math.round(remMin * 60));
+  // On Friday the ring targets the upcoming Jumu'ah; otherwise the next daily prayer.
+  const jm = m.nextJumuah;
   const nextRow = m.rows.find((r) => r.next) ?? m.rows[0];
-  const nextLabel = rowName(nextRow, L);
-  const nextArabic = PRAYER_LABELS.ar[nextRow.label] ?? '';
-  // "Iqamah in" while inside the current prayer's Adhan->Iqamah window, else "Adhan in".
-  const eventWord = (m.countdownToIqamah ? (L.iqamah ?? 'Iqamah') : (L.athan ?? 'Adhan')).toUpperCase();
+  const jLabel = L.jumuah ?? "Jumu'ah";
+  const nextLabel = jm ? (jm.count > 1 ? `${ordinalEn(jm.ordinal)} ${jLabel}` : jLabel) : rowName(nextRow, L);
+  const nextArabic = jm ? (PRAYER_LABELS.ar.jumuah ?? '') : (PRAYER_LABELS.ar[nextRow.label] ?? '');
+  // "Iqamah in" while inside the current prayer's Adhan->Iqamah window, "Jumu'ah" for a
+  // Jumu'ah countdown, else "Adhan in".
+  const eventWord = jm ? jLabel.toUpperCase() : (m.countdownToIqamah ? (L.iqamah ?? 'Iqamah') : (L.athan ?? 'Adhan')).toUpperCase();
   // Ring progress: fraction of the current interval (previous Adhan -> next event) elapsed.
   // When a prayer is active the ring fills from its Adhan. In the gap after Fajr — no
   // prayer is active (activeKey is null from Sunrise until Dhuhr) — it fills from Sunrise,
@@ -1655,6 +1705,11 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   // `nextHours - 1` fallback, combined with the midnight wrap below, clamped it to 100%).
   const activeRow = m.rows.find((r) => r.key === m.activeKey);
   let prevH = activeRow?.adhan ?? m.times.sunrise;
+  // Between two Jumu'ah times the ring should fill from the previous Jumu'ah, not Dhuhr.
+  if (jm) {
+    const prevJum = m.jumuah.filter((t) => t < jm.time && t <= nowHours).sort((a, b) => b - a)[0];
+    if (prevJum != null) prevH = prevJum;
+  }
   let now2 = nowHours;
   if (now2 < prevH) now2 += 24;
   let end2 = m.nextHours;
@@ -1739,6 +1794,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     showDates: tt.showDates,
     showCountdown: tt.showCountdown,
     prohibited: prohibitedRing,
+    flash: Math.floor(now.getTime() / 1000) % 2 === 0,
   };
 
   if (opts.announcement) {
