@@ -72,6 +72,14 @@ const pad2 = (n: number) => String(n).padStart(2, '0');
 function approxWidth(s: string, size: number): number {
   let w = 0;
   for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0;
+    // Arabic combining marks (harakat/tashkīl, superscript alef, Quranic annotation
+    // marks) carry ~no advance width. Counting a vowelled hadith's marks like letters
+    // roughly doubles its estimated width, so it wraps into a tall narrow block with big
+    // empty side margins. Skip them, and treat base Arabic letters as narrower than Latin
+    // (it's a connected script), so wrapped Arabic actually reaches the sides.
+    if ((cp >= 0x064b && cp <= 0x065f) || cp === 0x0670 || (cp >= 0x06d6 && cp <= 0x06ed) || (cp >= 0x0610 && cp <= 0x061a)) continue;
+    if ((cp >= 0x0600 && cp <= 0x06ff) || (cp >= 0xfb50 && cp <= 0xfeff)) { w += 0.45; continue; }
     if (ch === ':' || ch === '.' || ch === ' ' || ch === "'") w += 0.3;
     else if (/[0-9]/.test(ch)) w += 0.56;
     else if (/[A-Z]/.test(ch)) w += 0.64;
@@ -1202,7 +1210,10 @@ function panelTable(b: Box, m: Model, c: Ctx): string {
     }
     const nameColor = row.active ? c.p.primarySoft : row.next ? c.p.goldSoft : c.p.text;
     const nameSize = clamp(rowH * 0.38, 12, 34);
-    const nx = innerX + (row.active ? b.w * 0.01 : 0);
+    // Every prayer name starts at the SAME x (innerX): the active row's accent bar sits
+    // in the padding well to the left of innerX, so an extra indent for the active row
+    // only knocks it out of the column and reads as a misaligned row.
+    const nx = innerX;
     const en = rowName(row, c.L);
     out.push(text(nx, midY, en, { size: nameSize, fill: nameColor, family: FONT_SANS, weight: 700, anchor: 'start', letter: 0.3, editId: `label.${row.label}` }));
     const ar = PRAYER_LABELS.ar[row.label];
@@ -1323,15 +1334,18 @@ function layoutReference(a: Box, m: Model, c: Ctx): string {
   // the landscape slideshow).
   if (a.w < a.h) return portraitStack(a, m, c);
   // Landscape: two rows of two cards (top: brand + clock, middle: ring + table).
+  // ONE split fraction for both rows so the header lines up exactly with the prayer
+  // table beneath it, and the clock lines up exactly with the ring beneath it.
+  const leftFrac = 0.56;
   const topH = (bodyBottom - a.y) * 0.26;
   const midY = a.y + topH + gap;
   const midH = bodyBottom - midY;
-  const headW = (a.w - gap) * 0.6;
+  const headW = (a.w - gap) * leftFrac;
   out.push(panelHeader({ x: a.x, y: a.y, w: headW, h: topH }, c));
   const clockX = a.x + headW + gap;
   out.push(panelClock({ x: clockX, y: a.y, w: a.x + a.w - clockX, h: topH }, c));
   // Prayer table on the LEFT, the countdown ring on the RIGHT.
-  const tableW = (a.w - gap) * 0.56;
+  const tableW = (a.w - gap) * leftFrac;
   out.push(panelTable({ x: a.x, y: midY, w: tableW, h: midH }, m, c));
   const ringX = a.x + tableW + gap;
   out.push(panelRing({ x: ringX, y: midY, w: a.x + a.w - ringX, h: midH }, c));
@@ -1420,7 +1434,8 @@ function wrapLines(s: string, size: number, maxW: number, maxLines = 6): string[
 /** A full-screen takeover that suppresses the normal layout (and the ffmpeg ticker). */
 type Overlay =
   | { kind: 'iqamah'; secs: number; key: string }
-  | { kind: 'hadith'; item: HadithItem };
+  | { kind: 'hadith'; item: HadithItem }
+  | { kind: 'blackout' };
 
 /** The zawāl (pre-Dhuhr) prohibited-to-pray window, if it is active now — its end (the
  *  Dhuhr Adhan) is when prayer is allowed again. Shared by the ring notice and the
@@ -1519,12 +1534,17 @@ function activeOverlay(tt: Timetable, m: Model, nowHours: number, now: Date): Ov
     );
     if (row) return { kind: 'iqamah', secs: Math.max(0, (row.iqamah! - nowHours) * 3600), key: row.key };
   }
-  // 3) Hadith during salah (the minutes after each Iqāmah), rotating every ~15s.
+  // 3) During salah (the minutes after each Iqāmah): either black the screen out or show a
+  //    rotating hadith. Which prayer's post-Iqāmah window we're in is `inSalah(win)`.
+  const inSalah = (win: number): Row | undefined =>
+    m.rows.find((r) => r.iqamah != null && r.iqamah <= nowHours && nowHours < r.iqamah + win);
+  // Blackout wins over the hadith when both are enabled — a distraction-free black screen.
+  const bo = tt.salahBlackout;
+  if (bo?.enabled && inSalah(Math.max(1, bo.minutes) / 60)) return { kind: 'blackout' };
   const sh = tt.salahHadith;
   if (sh?.enabled) {
-    const win = Math.max(1, sh.minutes) / 60;
-    // Which prayer's post-Iqāmah window are we in? Its key selects prayer-specific ahadith.
-    const inRow = m.rows.find((r) => r.iqamah != null && r.iqamah <= nowHours && nowHours < r.iqamah + win);
+    // Its key selects prayer-specific ahadith; rotate every ~15s.
+    const inRow = inSalah(Math.max(1, sh.minutes) / 60);
     if (inRow) {
       const eligible = hadithPool(sh).filter((h) => hadithAppliesTo(h, inRow.key));
       if (eligible.length) {
@@ -1564,11 +1584,25 @@ function salahHadithView(item: HadithItem, now: Date, clock: ClockText, p: Palet
   // Always render the hadith (Arabic AND English) in Amiri so the card uses ONE typeface —
   // Amiri has full Latin, so the English no longer mixes Amiri + Noto Sans.
   const family = FONT_ARABIC;
-  const maxW = cardW * (isArabic ? 0.78 : 0.86);
+  // Let the text use nearly the full width of the card — a narrow budget made short
+  // ahadith wrap into a tall, skinny block with big empty side margins ("a square").
+  const maxW = cardW * (isArabic ? 0.92 : 0.9);
   const maxH = cardH * 0.74;
-  const lineFactor = isArabic ? 1.75 : 1.4;
+  const lineFactor = isArabic ? 1.7 : 1.4;
+  // Autofit BOTH ways: GROW a short hadith so it fills the card (wrapLines already caps
+  // each line at maxW, so growing only ever adds height), then SHRINK if a long one
+  // still overflows. Result: the text always reaches for the sides instead of hugging
+  // the centre.
+  const fsCap = Math.min(132, cardH * 0.34);
   let fs = clamp(W * 0.04, 22, 76);
   let lines = wrapLines(content, fs, maxW, 14);
+  while (fs < fsCap) {
+    const next = Math.min(fs + 2, fsCap);
+    const nl = wrapLines(content, next, maxW, 14);
+    if (nl.length * next * lineFactor > maxH) break;
+    fs = next;
+    lines = nl;
+  }
   while (lines.length * fs * lineFactor > maxH && fs > 14) {
     fs -= 2;
     lines = wrapLines(content, fs, maxW, 14);
@@ -1590,6 +1624,12 @@ function salahHadithView(item: HadithItem, now: Date, clock: ClockText, p: Palet
   const timeStr = clock.period ? `${clock.time} ${clock.period}` : clock.time;
   out.push(text(W - clamp(W * 0.03, 22, 60), clamp(H * 0.075, 28, 72), timeStr, { size: clamp(W * 0.018, 16, 34), fill: p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'end' }));
   return out.join('');
+}
+
+/** Completely black the screen during salah — no times, no hadith, nothing to distract
+ *  the congregation while they pray. An opaque black rect covers the whole frame. */
+function blackoutView(W: number, H: number): string {
+  return rect(0, 0, W, H, 0, '#000000');
 }
 
 /** Full-screen countdown to a prayer's Iqāmah ("line up for prayer"). */
@@ -1763,6 +1803,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     // theme (dark-on-dark would be unreadable).
     const pS = p.light ? { ...p, text: '#f2f6f3', textDim: '#c8d3cc', textFaint: '#96a69d' } : p;
     if (overlay.kind === 'iqamah') out.push(iqamahCountdownView(overlay.secs, overlay.key, pS, L, W, H));
+    else if (overlay.kind === 'blackout') out.push(blackoutView(W, H));
     else out.push(salahHadithView(overlay.item, now, clock, pS, W, H));
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${out.join('')}</svg>`;
   }

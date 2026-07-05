@@ -118,6 +118,27 @@ export function isAllowedImageMime(mime: string): boolean {
   return mime in EXT_BY_MIME;
 }
 
+/** The TRUE image type from magic bytes — never trust the caller's label. Browsers set a
+ *  data-URI's MIME from the file *extension*, so a JPEG saved as "logo.png" arrives labeled
+ *  image/png; the SVG renderer (resvg) then picks its decoder from that label and fails to
+ *  decode the mismatched bytes → a blank image. Sniffing the bytes fixes that. Returns a
+ *  canonical mime, or null if it isn't an image we can render (resvg has no WebP support, so
+ *  WebP is reported and then refused upstream). */
+export function sniffImageMime(buf: Buffer): string | null {
+  if (buf.length >= 8 && buf.toString('hex', 0, 8) === '89504e470d0a1a0a') return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length >= 6 && (buf.toString('latin1', 0, 6) === 'GIF87a' || buf.toString('latin1', 0, 6) === 'GIF89a')) return 'image/gif';
+  if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  const head = buf.toString('utf8', 0, Math.min(buf.length, 512)).replace(/^﻿/, '').trimStart();
+  if (head.startsWith('<?xml') || head.startsWith('<svg') || /<svg[\s>]/i.test(head)) return 'image/svg+xml';
+  return null;
+}
+
+/** resvg (the display renderer) can decode these; WebP/unknown cannot be shown. */
+export function isRenderableImageMime(mime: string): boolean {
+  return mime === 'image/png' || mime === 'image/jpeg' || mime === 'image/gif' || mime === 'image/svg+xml';
+}
+
 /** Copy an existing upload to a NEW timetable's id (for duplicating a timetable),
  *  returning the new filename — so the copy owns its own files and deleting the
  *  original never affects it. Returns '' if the source is missing. */

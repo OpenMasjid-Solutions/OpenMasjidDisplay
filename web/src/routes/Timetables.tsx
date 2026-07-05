@@ -2,9 +2,10 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
-import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, HadithItem, ProhibitedNotice, IqamahCountdown, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
+import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
+import { readImageForUpload } from '../image';
 
 interface Props {
   state: AppState;
@@ -199,18 +200,13 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
   const pickBackground = (file: File) => {
     if (!tt) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const updated = await api.uploadBackground(tt.id, String(reader.result));
+    readImageForUpload(file, 1920)
+      .then(async (dataUrl) => {
+        const updated = await api.uploadBackground(tt.id, dataUrl);
         set('backgroundImage', updated.backgroundImage);
         toast('Background updated.');
-      } catch (e) {
-        toast(e instanceof Error ? e.message : 'Could not upload the image.', 'error');
-      }
-    };
-    reader.onerror = () => toast('Could not read that image.', 'error');
-    reader.readAsDataURL(file);
+      })
+      .catch((e) => toast(e instanceof Error ? e.message : 'Could not upload the image.', 'error'));
   };
   const clearBackground = async () => {
     if (!tt) return;
@@ -225,18 +221,13 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
   const pickLogo = (file: File) => {
     if (!tt) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const updated = await api.uploadLogo(tt.id, String(reader.result));
+    readImageForUpload(file, 1024)
+      .then(async (dataUrl) => {
+        const updated = await api.uploadLogo(tt.id, dataUrl);
         set('logoImage', updated.logoImage);
         toast('Logo updated.');
-      } catch (e) {
-        toast(e instanceof Error ? e.message : 'Could not upload the logo.', 'error');
-      }
-    };
-    reader.onerror = () => toast('Could not read that image.', 'error');
-    reader.readAsDataURL(file);
+      })
+      .catch((e) => toast(e instanceof Error ? e.message : 'Could not upload the logo.', 'error'));
   };
   const clearLogo = async () => {
     if (!tt) return;
@@ -266,16 +257,26 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     }
   };
 
-  const [csvRows, setCsvRows] = useState<number | null>(tt?.iqamahYear ? Object.keys(tt.iqamahYear).length : null);
-  const csvActive = (csvRows ?? 0) > 0; // a yearly CSV overrides the per-prayer rules
+  // The per-day Iqamah overrides — ONE map keyed "MM-DD", shared by the one-off "Add a
+  // date" editor, the monthly table and CSV import/export so none clobbers another. Managed
+  // only via the dedicated iqamah endpoints (the normal form save never touches iqamahYear).
+  const [iqYear, setIqYear] = useState<IqamahYear>(() => JSON.parse(JSON.stringify(tt?.iqamahYear ?? {})));
+  const iqCount = Object.keys(iqYear).length;
+  const csvActive = iqCount > 0; // any per-day overrides win over the per-prayer rules
   const [showTable, setShowTable] = useState(false);
+  // Persist the whole map (used by the one-off editor and the monthly table).
+  const saveIqYear = async (next: IqamahYear) => {
+    if (!tt) return;
+    await api.saveIqamahYear(tt.id, next);
+    setIqYear(next);
+  };
   const importCsv = (file: File) => {
     if (!tt) return;
     const reader = new FileReader();
     reader.onload = async () => {
       try {
         const r = await api.importIqamahCsv(tt.id, String(reader.result));
-        setCsvRows(r.rows);
+        setIqYear(r.data);
         toast(`Imported Iqamah times for ${r.rows} day${r.rows === 1 ? '' : 's'}.`);
         if (r.errors.length) toast(`${r.errors.length} line(s) were skipped.`, 'error');
       } catch (e) {
@@ -289,7 +290,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     if (!tt) return;
     try {
       await api.clearIqamahCsv(tt.id);
-      setCsvRows(null);
+      setIqYear({});
       toast('Reverted to your Iqamah rules.');
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not clear the CSV.', 'error');
@@ -301,18 +302,13 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const setAnn = (patch: Partial<Announcements>) => set('announcements', { ...ann, ...patch });
   const addAnnImage = (file: File) => {
     if (!tt) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const u = await api.uploadAnnouncement(tt.id, String(reader.result));
+    readImageForUpload(file, 1920)
+      .then(async (dataUrl) => {
+        const u = await api.uploadAnnouncement(tt.id, dataUrl);
         setAnn({ images: u.announcements?.images ?? ann.images });
         toast('Image added.');
-      } catch (e) {
-        toast(e instanceof Error ? e.message : 'Could not upload the image.', 'error');
-      }
-    };
-    reader.onerror = () => toast('Could not read that image.', 'error');
-    reader.readAsDataURL(file);
+      })
+      .catch((e) => toast(e instanceof Error ? e.message : 'Could not upload the image.', 'error'));
   };
   const removeAnnImage = async (fileName: string) => {
     if (!tt) return;
@@ -349,6 +345,16 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const defaultPrayersMap = sh.defaultPrayers ?? {};
   const prayersForDefault = (id: string, shipped?: string[]) => defaultPrayersMap[id] ?? shipped ?? [];
   const setDefaultPrayers = (id: string, keys: string[]) => setSh({ defaultPrayers: { ...defaultPrayersMap, [id]: keys } });
+  // During-salah screen mode: 'normal' (keep showing times), 'hadith' (the overlay below),
+  // or 'blackout' (a completely black screen). Blackout and hadith are mutually exclusive,
+  // so choosing one turns the other off.
+  const bo: SalahBlackout = f.salahBlackout ?? { enabled: false, minutes: sh.minutes };
+  const setBo = (patch: Partial<SalahBlackout>) => set('salahBlackout', { ...bo, ...patch });
+  const salahMode: 'normal' | 'hadith' | 'blackout' = bo.enabled ? 'blackout' : sh.enabled ? 'hadith' : 'normal';
+  const setSalahMode = (mode: 'normal' | 'hadith' | 'blackout') => {
+    setSh({ enabled: mode === 'hadith' });
+    setBo({ enabled: mode === 'blackout' });
+  };
   const pn: ProhibitedNotice = f.prohibitedNotice ?? { enabled: false, minutes: 10 };
   const setPn = (patch: Partial<ProhibitedNotice>) => set('prohibitedNotice', { ...pn, ...patch });
   const ic: IqamahCountdown = f.iqamahCountdown ?? { enabled: false, minutes: 5 };
@@ -531,6 +537,22 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       </div>
 
       <div className="card section">
+        <h3 className="section-title">Iqamah changes on specific dates</h3>
+        {tt ? (
+          <div>
+            <p className="hint" style={{ marginBlockStart: 0 }}>
+              Set a one-off Iqamah time for a particular date (say a special programme, Ramadan, or an
+              early Fajr) — without touching your normal rules. It repeats on that date each year until you
+              remove it.
+            </p>
+            <OneOffIqamahEditor year={iqYear} onSave={saveIqYear} />
+          </div>
+        ) : (
+          <span className="hint">Create the timetable first, then you can add date-specific times.</span>
+        )}
+      </div>
+
+      <div className="card section">
         <h3 className="section-title">Exact times for the whole year (CSV)</h3>
         {tt ? (
           <div>
@@ -546,18 +568,18 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
               </label>
               <a className="btn btn--ghost btn--sm" href={api.iqamahCsvUrl(tt.id, 'template')}>Download example</a>
               <a className="btn btn--ghost btn--sm" href={api.iqamahCsvUrl(tt.id)}>Export current</a>
-              {csvRows != null && <button type="button" className="btn btn--ghost btn--sm" onClick={clearCsv}>Clear ({csvRows} days)</button>}
+              {iqCount > 0 && <button type="button" className="btn btn--ghost btn--sm" onClick={clearCsv}>Clear ({iqCount} days)</button>}
             </div>
-            {csvRows != null && (
+            {iqCount > 0 && (
               <p className="hint" style={{ marginBlockStart: '0.5rem' }}>
-                {csvRows} day{csvRows === 1 ? '' : 's'} set. These show on the screens; the live preview here
+                {iqCount} day{iqCount === 1 ? '' : 's'} set. These show on the screens; the live preview here
                 still uses your rules.
               </p>
             )}
             <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.6rem' }} onClick={() => setShowTable((v) => !v)}>
               {showTable ? 'Hide the table editor' : csvActive ? 'Fine-tune the imported times (by month)' : 'Or edit times in a table (by month)'}
             </button>
-            {showTable && <IqamahYearEditor tt={tt} existingRows={csvRows} onSaved={(n) => setCsvRows(n || null)} />}
+            {showTable && <IqamahYearEditor value={iqYear} existingRows={iqCount} onSave={saveIqYear} />}
           </div>
         ) : (
           <span className="hint">Create the timetable first, then you can set yearly times.</span>
@@ -735,12 +757,31 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       </div>
 
       <div className="card section">
-        <h3 className="section-title">Hadith during prayer</h3>
-        <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
-          <span className="label" style={{ margin: 0 }}>Show a hadith over the screen while the congregation prays</span>
-          <Toggle checked={sh.enabled} onChange={(v) => setSh({ enabled: v })} label="Show a hadith during prayer" />
+        <h3 className="section-title">During prayer (salah)</h3>
+        <p className="hint" style={{ marginBlockStart: 0 }}>What the screens do for a while after each Iqamah, while the congregation prays.</p>
+        <div className="chips" style={{ marginBlockEnd: '0.8rem' }}>
+          {([
+            ['normal', 'Keep showing times'],
+            ['hadith', 'Show a hadith'],
+            ['blackout', 'Black screen'],
+          ] as const).map(([mode, label]) => (
+            <button
+              key={mode}
+              type="button"
+              className={`chip${salahMode === mode ? ' is-active' : ''}`}
+              aria-pressed={salahMode === mode}
+              onClick={() => setSalahMode(mode)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
-        {sh.enabled && (
+        {salahMode === 'blackout' && (
+          <Field label="Black out for (minutes after each Iqamah)" hint="The whole screen goes black once a prayer's Iqamah time arrives, so it isn't a distraction. It comes back on after this many minutes.">
+            <input className="input" type="number" min={1} max={60} value={bo.minutes} onChange={(e) => setBo({ minutes: Number(e.target.value) })} />
+          </Field>
+        )}
+        {salahMode === 'hadith' && (
           <>
             <Field label="Show for (minutes after each Iqamah)" hint="How long the hadith stays on screen once a prayer's Iqamah time arrives.">
               <input className="input" type="number" min={1} max={60} value={sh.minutes} onChange={(e) => setSh({ minutes: Number(e.target.value) })} />
@@ -1184,10 +1225,101 @@ function daysInMonth(month: number, year: number = new Date().getFullYear()): nu
   return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
 }
 
-/** In-app monthly grid for setting exact Iqamah clock times across the year. */
-function IqamahYearEditor({ tt, existingRows, onSaved }: { tt: Timetable; existingRows: number | null; onSaved: (rows: number) => void }) {
+/** The quick way to add a one-off Iqamah change for a specific date — pick a date, type the
+ *  Iqamah time(s) that differ that day, Add. Existing dated entries list below with a remove.
+ *  Reads/writes the SAME shared year map as the CSV + monthly table (via `onSave`), so all
+ *  three stay in step and none overwrites another. */
+function OneOffIqamahEditor({ year, onSave }: { year: IqamahYear; onSave: (next: IqamahYear) => Promise<void> }) {
   const toast = useToast();
-  const [year, setYear] = useState<Record<string, Record<string, string>>>(() => JSON.parse(JSON.stringify(tt.iqamahYear ?? {})));
+  const PR = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
+  const [date, setDate] = useState(''); // YYYY-MM-DD from <input type=date>
+  const [draft, setDraft] = useState<Partial<Record<(typeof PR)[number], string>>>({});
+  const [busy, setBusy] = useState(false);
+
+  const entries = Object.keys(year).sort(); // "MM-DD" keys sort chronologically
+  const label = (mmdd: string) => {
+    const [m, d] = mmdd.split('-').map(Number);
+    return `${MONTHS[(m || 1) - 1]?.slice(0, 3) ?? '??'} ${d || ''}`.trim();
+  };
+
+  const add = async () => {
+    if (!date) return toast('Pick a date first.', 'error');
+    const row: Record<string, string> = {};
+    for (const pr of PR) { const v = draft[pr]; if (v) row[pr] = v; }
+    if (!Object.keys(row).length) return toast('Set at least one Iqamah time for that date.', 'error');
+    const mmdd = date.slice(5); // "MM-DD"
+    const next: IqamahYear = { ...year, [mmdd]: { ...(year[mmdd] ?? {}), ...row } };
+    setBusy(true);
+    try {
+      await onSave(next);
+      setDate('');
+      setDraft({});
+      toast(`Iqamah change saved for ${label(mmdd)}.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save that change.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (mmdd: string) => {
+    const next: IqamahYear = { ...year };
+    delete next[mmdd];
+    setBusy(true);
+    try {
+      await onSave(next);
+      toast(`Removed the change for ${label(mmdd)}.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not remove that change.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      {entries.length > 0 && (
+        <div className="list" style={{ marginBlock: '0.8rem' }}>
+          {entries.map((mmdd) => {
+            const e = year[mmdd] ?? {};
+            const parts = PR.filter((pr) => e[pr]).map((pr) => `${PRAYER_TITLE[pr]} ${e[pr]}`);
+            return (
+              <div key={mmdd} className="oneoff-row">
+                <span className="oneoff-date">{label(mmdd)}</span>
+                <span className="oneoff-times">{parts.length ? parts.join('  ·  ') : '—'}</span>
+                <button type="button" className="icon-btn" onClick={() => remove(mmdd)} disabled={busy} aria-label={`Remove the change for ${label(mmdd)}`}><IconTrash size={15} /></button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="oneoff-add">
+        <label className="field" style={{ margin: 0 }}>
+          <span className="label">Date</span>
+          <input type="date" className="input" value={date} onChange={(ev) => setDate(ev.target.value)} />
+        </label>
+        <div className="oneoff-grid">
+          {PR.map((pr) => (
+            <label key={pr} className="field" style={{ margin: 0 }}>
+              <span className="label">{PRAYER_TITLE[pr]}</span>
+              <input type="time" className="input" value={draft[pr] ?? ''} onChange={(ev) => setDraft((x) => ({ ...x, [pr]: ev.target.value }))} />
+            </label>
+          ))}
+        </div>
+        <button type="button" className="btn btn--primary btn--sm" onClick={add} disabled={busy}><IconPlus size={14} /> Add change</button>
+      </div>
+    </div>
+  );
+}
+
+/** In-app monthly grid for setting exact Iqamah clock times across the year. Edits a copy
+ *  of the shared `value` map (seeded fresh whenever it changes — e.g. after a one-off add or
+ *  a CSV import) and persists via `onSave`, so it never clobbers the other editors. */
+function IqamahYearEditor({ value, existingRows, onSave }: { value: IqamahYear; existingRows: number | null; onSave: (next: IqamahYear) => Promise<void> }) {
+  const toast = useToast();
+  const [year, setYear] = useState<IqamahYear>(() => JSON.parse(JSON.stringify(value)));
+  // Re-seed when the shared map changes underneath us (one-off add, CSV import/clear) so the
+  // grid never saves back a stale copy that would drop those changes.
+  useEffect(() => { setYear(JSON.parse(JSON.stringify(value))); }, [value]);
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [busy, setBusy] = useState(false);
   // True when this timetable already had per-day times when the editor opened (e.g.
@@ -1196,8 +1328,8 @@ function IqamahYearEditor({ tt, existingRows, onSaved }: { tt: Timetable; existi
   const PR = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
   const pad = (n: number) => String(n).padStart(2, '0');
   const key = (d: number) => `${pad(month)}-${pad(d)}`;
-  const get = (d: number, pr: string) => year[key(d)]?.[pr] ?? '';
-  const setCell = (d: number, pr: string, val: string) =>
+  const get = (d: number, pr: (typeof PR)[number]) => year[key(d)]?.[pr] ?? '';
+  const setCell = (d: number, pr: (typeof PR)[number], val: string) =>
     setYear((y) => {
       const k = key(d);
       const row = { ...(y[k] ?? {}) };
@@ -1209,10 +1341,10 @@ function IqamahYearEditor({ tt, existingRows, onSaved }: { tt: Timetable; existi
   const doSave = async () => {
     setBusy(true);
     try {
-      const r = await api.saveIqamahYear(tt.id, year);
-      onSaved(r.rows);
+      await onSave(year);
+      const rows = Object.keys(year).length;
       setConfirmOverride(false);
-      toast(`Saved Iqamah times for ${r.rows} day${r.rows === 1 ? '' : 's'}.`);
+      toast(`Saved Iqamah times for ${rows} day${rows === 1 ? '' : 's'}.`);
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not save the times.', 'error');
     } finally {

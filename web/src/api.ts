@@ -9,6 +9,7 @@ import type {
   Settings,
   ContentRef,
   Hotspot,
+  IqamahYear,
 } from './types';
 
 let onUnauth: () => void = () => {};
@@ -69,7 +70,7 @@ export const api = {
   removeLogo: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/logo`),
 
   importIqamahCsv: (id: string, csvText: string) =>
-    req<{ ok: boolean; rows: number; errors: string[] }>('POST', `/api/timetables/${id}/iqamah-csv`, { data: csvText }),
+    req<{ ok: boolean; rows: number; errors: string[]; data: IqamahYear }>('POST', `/api/timetables/${id}/iqamah-csv`, { data: csvText }),
   clearIqamahCsv: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/iqamah-csv`),
   saveIqamahYear: (id: string, year: Record<string, Record<string, string>>) =>
     req<{ ok: boolean; rows: number }>('PUT', `/api/timetables/${id}/iqamah-year`, { year }),

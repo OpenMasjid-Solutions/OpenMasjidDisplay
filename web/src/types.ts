@@ -36,6 +36,8 @@ export interface TickerMessage { id: string; text: string; start: string; end: s
 export interface Ticker { enabled: boolean; messages: TickerMessage[] }
 export interface HadithItem { ar: string; en: string; cite?: string; prayers?: string[] }
 export interface SalahHadith { enabled: boolean; minutes: number; items: HadithItem[]; disabledDefaults?: string[]; defaultPrayers?: Record<string, string[]> }
+/** Blank the screen entirely during salah (minutes after each Iqāmah). */
+export interface SalahBlackout { enabled: boolean; minutes: number }
 /** A built-in hadith the display ships with (English + citation + shipped salah targeting). */
 export interface HadithDefault { id: string; en: string; cite: string; prayers?: string[] }
 export interface ProhibitedNotice { enabled: boolean; minutes: number; ticker?: boolean }
@@ -90,6 +92,7 @@ export interface Timetable {
   /** ticker scroll speed 1 (slow) … 10 (fast) */
   tickerSpeed?: number;
   salahHadith?: SalahHadith;
+  salahBlackout?: SalahBlackout;
   prohibitedNotice?: ProhibitedNotice;
   iqamahCountdown?: IqamahCountdown;
   adhanOffsets?: AdhanOffsets;

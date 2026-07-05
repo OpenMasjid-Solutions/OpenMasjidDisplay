@@ -95,6 +95,16 @@ export interface SalahHadith {
   defaultPrayers?: Record<string, string[]>;
 }
 
+/** During salah (the minutes after each Iqāmah), black the screen out completely — no
+ *  times, no hadith, nothing — so it isn't a distraction while the congregation prays.
+ *  Mutually exclusive with the salah hadith overlay; if both are somehow on, the
+ *  blackout wins. */
+export interface SalahBlackout {
+  enabled: boolean;
+  /** how many minutes after each Iqāmah to keep the screen black */
+  minutes: number;
+}
+
 /** A full-screen notice during the makrūh "prohibited" window before Dhuhr (zawāl),
  *  counting down to the Dhuhr Adhan. */
 export interface ProhibitedNotice {
@@ -207,6 +217,8 @@ export interface Timetable {
   tickerSpeed?: number;
   /** hadith overlay shown during salah (minutes after each Iqāmah) */
   salahHadith?: SalahHadith;
+  /** blank the screen entirely during salah (minutes after each Iqāmah) */
+  salahBlackout?: SalahBlackout;
   /** "prohibited time" notice before the Dhuhr Adhan (zawāl) */
   prohibitedNotice?: ProhibitedNotice;
   /** full-screen countdown for the last minutes before each Iqāmah */

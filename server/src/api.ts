@@ -33,6 +33,8 @@ import {
   removeAllAnnouncements,
   uploadFilePath,
   isAllowedImageMime,
+  sniffImageMime,
+  isRenderableImageMime,
   copyAsset,
   logoDataUri,
 } from './render/background';
@@ -123,6 +125,17 @@ function readBody(req: IncomingMessage, maxBytes = 1_000_000): Promise<Record<st
     });
     req.on('error', reject);
   });
+}
+
+/** Validate an uploaded image by its BYTES (not the browser's extension-derived label) and
+ *  return the true mime to store — or a friendly error. Browsers label an upload's data-URI
+ *  by file extension, so a JPEG named "logo.png" arrives as image/png and the display's SVG
+ *  renderer then can't decode it (blank). Trusting the bytes fixes that; WebP has no renderer. */
+function checkUploadedImage(buf: Buffer): { mime: string } | { error: string } {
+  const sniffed = sniffImageMime(buf);
+  if (!sniffed) return { error: 'That file isn’t a supported image. Please upload a PNG, JPG, GIF or SVG.' };
+  if (!isRenderableImageMime(sniffed)) return { error: 'WebP images aren’t supported on the display yet — please upload a PNG, JPG, GIF or SVG.' };
+  return { mime: sniffed };
 }
 
 function serveStatic(res: ServerResponse, pathname: string): boolean {
@@ -469,7 +482,9 @@ export function createApi(deps: Deps) {
           if (buf.length > 6_000_000) {
             return sendJson(res, 400, { error: 'That image is too large — please keep it under about 6 MB.' });
           }
-          const file = saveBackground(id, m[1], buf);
+          const chk = checkUploadedImage(buf);
+          if ('error' in chk) return sendJson(res, 400, { error: chk.error });
+          const file = saveBackground(id, chk.mime, buf);
           store.update((db) => void (db.timetables[idx].backgroundImage = file));
           return sendJson(res, 200, store.db.timetables[idx]);
         }
@@ -501,7 +516,9 @@ export function createApi(deps: Deps) {
           if (buf.length > 2_500_000) {
             return sendJson(res, 400, { error: 'That logo is too large — please keep it under about 2 MB.' });
           }
-          const file = saveLogo(id, m[1], buf);
+          const chk = checkUploadedImage(buf);
+          if ('error' in chk) return sendJson(res, 400, { error: chk.error });
+          const file = saveLogo(id, chk.mime, buf);
           store.update((db) => void (db.timetables[idx].logoImage = file));
           return sendJson(res, 200, store.db.timetables[idx]);
         }
@@ -527,7 +544,9 @@ export function createApi(deps: Deps) {
             });
           }
           store.update((db) => void (db.timetables[idx].iqamahYear = parsed.data));
-          return sendJson(res, 200, { ok: true, rows: parsed.rows, errors: parsed.errors.slice(0, 5) });
+          // Return the parsed map too, so the editor can update its shared copy in place
+          // (the one-off editor + monthly table + CSV all edit the same iqamahYear).
+          return sendJson(res, 200, { ok: true, rows: parsed.rows, errors: parsed.errors.slice(0, 5), data: parsed.data });
         }
         if (method === 'GET') {
           const mode = url.searchParams.get('mode');
@@ -583,7 +602,9 @@ export function createApi(deps: Deps) {
         if (buf.length > 6_000_000) {
           return sendJson(res, 400, { error: 'That image is too large — please keep it under about 6 MB.' });
         }
-        const file = saveAnnouncement(id, m[1], buf);
+        const chk = checkUploadedImage(buf);
+        if ('error' in chk) return sendJson(res, 400, { error: chk.error });
+        const file = saveAnnouncement(id, chk.mime, buf);
         store.update((db) => {
           const a = db.timetables[idx].announcements ?? {
             enabled: false, images: [], start: '', end: '', everySeconds: 60, forSeconds: 20, imageSeconds: 8,

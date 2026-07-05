@@ -5,10 +5,12 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import markUrl from './assets/mark.png';
 
 /** Copy text to the clipboard, with a fallback for non-secure contexts (plain HTTP
@@ -91,13 +93,72 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
 }
 
 /* ── Help (?) tooltip ────────────────────────────────────────────────────── */
-/** A small “?” badge that reveals an explanation on hover/focus (and long-press on
- *  touch). Keeps the form uncluttered while making help discoverable on every setting. */
+/** A small “?” badge that reveals an explanation on hover/focus. The tooltip is
+ *  rendered through a PORTAL to <body> with fixed positioning — a plain CSS ::after
+ *  gets clipped by the editor panel's `overflow: auto` (a scroll container clips in
+ *  BOTH axes), so it was cut off near the panel edges. Positioning is measured after
+ *  render and clamped to the viewport, and it flips below the badge when there isn't
+ *  room above. */
 export function Help({ text }: { text: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const tipRef = useRef<HTMLSpanElement>(null);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+
+  const show = useCallback(() => {
+    if (ref.current) setAnchor(ref.current.getBoundingClientRect());
+  }, []);
+  const hide = useCallback(() => setAnchor(null), []);
+
+  // Reposition after the tooltip is in the DOM (we need its measured size), then reveal
+  // it — so it never flashes in the wrong spot.
+  useLayoutEffect(() => {
+    const tip = tipRef.current;
+    if (!tip || !anchor) return;
+    const margin = 8;
+    const tr = tip.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const below = anchor.top - tr.height - margin < margin; // not enough room above → drop below
+    const left = Math.max(margin, Math.min(anchor.left + anchor.width / 2 - tr.width / 2, vw - tr.width - margin));
+    const top = below ? anchor.bottom + margin : anchor.top - tr.height - margin;
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+    tip.style.visibility = 'visible';
+  }, [anchor]);
+
+  // A scroll or resize moves the badge out from under a stale tooltip — just hide it.
+  useEffect(() => {
+    if (!anchor) return;
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    return () => {
+      window.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+    };
+  }, [anchor, hide]);
+
   return (
-    <span className="help" tabIndex={0} role="note" aria-label={text} data-tip={text}>
-      ?
-    </span>
+    <>
+      <span
+        ref={ref}
+        className="help"
+        tabIndex={0}
+        role="note"
+        aria-label={text}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+      >
+        ?
+      </span>
+      {anchor &&
+        createPortal(
+          <span ref={tipRef} className="help-tip" role="tooltip" style={{ visibility: 'hidden' }}>
+            {text}
+          </span>,
+          document.body,
+        )}
+    </>
   );
 }
 
