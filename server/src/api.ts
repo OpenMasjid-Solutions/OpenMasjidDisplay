@@ -59,27 +59,6 @@ const log = makeLog('api');
 // URL actually reaches THIS app before we hand it to the admin as the embed link.
 const WIDGET_APP_MARKER = 'openmasjid-display';
 
-/**
- * Does `jsonUrl` actually serve OUR widget feed? Used to verify that the platform's
- * Cloudflare tunnel really routes the app's public path here before we advertise it
- * as the embed URL — otherwise that URL can land on a DIFFERENT app (path-based
- * ingress isn't guaranteed; see docs/PLATFORM_WIDGET_PATH_INGRESS.md). Fails closed.
- */
-async function widgetPublicWorks(jsonUrl: string): Promise<boolean> {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 4500);
-    const res = await fetch(jsonUrl, { signal: ctrl.signal, headers: { accept: 'application/json' } });
-    clearTimeout(t);
-    if (!res.ok) return false;
-    if (!(res.headers.get('content-type') ?? '').includes('application/json')) return false;
-    const j = (await res.json().catch(() => null)) as { app?: unknown } | null;
-    return !!j && j.app === WIDGET_APP_MARKER;
-  } catch {
-    return false;
-  }
-}
-
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -808,15 +787,14 @@ export function createApi(deps: Deps) {
         if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
         // Behind the admin's Cloudflare tunnel, the app's public base already includes
         // its path (e.g. https://masjid.org/display); the widget lives under /w/<id>.
-        // But the tunnel may not actually route that path HERE (it can land on another
-        // app), so only advertise the public URL once we've VERIFIED it reaches us.
+        // The platform's /api/fabric/site is AUTHORITATIVE: it only returns a publicUrl
+        // when the OS is actually routing this app's path to us (it checks its own
+        // ingress table), so we can trust it directly. We no longer hairpin-probe the
+        // URL from inside the container — that fetch is unreliable (container egress /
+        // DNS / timing) even when real external visitors reach the path fine.
         const site = await siteInfo();
         const publicConfigured = !!site?.enabled && !!site.publicUrl;
-        let publicUrl = '';
-        if (publicConfigured && tt.widget?.enabled) {
-          const candidate = `${site!.publicUrl}/w/${tt.id}`;
-          if (await widgetPublicWorks(`${candidate}.json`)) publicUrl = candidate;
-        }
+        const publicUrl = publicConfigured && tt.widget?.enabled ? `${site!.publicUrl}/w/${tt.id}` : '';
         return sendJson(res, 200, { enabled: !!tt.widget?.enabled, publicUrl, publicConfigured });
       }
       const prevMatch = /^\/api\/preview\/([\w-]+)$/.exec(pathname);
