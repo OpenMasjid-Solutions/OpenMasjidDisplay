@@ -123,6 +123,16 @@ export interface IqamahCountdown {
   minutes: number;
 }
 
+/** A static, plain-language heads-up shown in the bottom band when an upcoming per-day
+ *  Iqāmah change (from iqamahYear) is within `daysBefore` days — e.g. "From Friday, Asr
+ *  will be at 5:30 PM". Sits above the scrolling ticker (both can show at once) and shows
+ *  even when the ticker is off. */
+export interface IqamahChangeNotice {
+  enabled: boolean;
+  /** how many days before the change takes effect to start showing the heads-up */
+  daysBefore: number;
+}
+
 /** Per-prayer minutes to add to the calculated Adhan time, for masjids that call the
  *  Adhan a few minutes after the astronomical time. Applies to the DISPLAYED Adhan (and,
  *  for offset-mode Iqāmah, shifts the Iqāmah with it) and to the "when does the next
@@ -223,6 +233,8 @@ export interface Timetable {
   prohibitedNotice?: ProhibitedNotice;
   /** full-screen countdown for the last minutes before each Iqāmah */
   iqamahCountdown?: IqamahCountdown;
+  /** static heads-up in the bottom band about an upcoming per-day Iqāmah change */
+  iqamahChangeNotice?: IqamahChangeNotice;
   /** per-prayer minutes added to the calculated Adhan time (precautionary delay) */
   adhanOffsets?: AdhanOffsets;
   /** brief "it's time for salah" pop-up when an Adhan arrives */

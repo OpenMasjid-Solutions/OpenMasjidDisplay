@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
-import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
+import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 import { readImageForUpload } from '../image';
@@ -359,6 +359,8 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const setPn = (patch: Partial<ProhibitedNotice>) => set('prohibitedNotice', { ...pn, ...patch });
   const ic: IqamahCountdown = f.iqamahCountdown ?? { enabled: false, minutes: 5 };
   const setIc = (patch: Partial<IqamahCountdown>) => set('iqamahCountdown', { ...ic, ...patch });
+  const icn: IqamahChangeNotice = f.iqamahChangeNotice ?? { enabled: false, daysBefore: 7 };
+  const setIcn = (patch: Partial<IqamahChangeNotice>) => set('iqamahChangeNotice', { ...icn, ...patch });
   const ao: AdhanOffsets = f.adhanOffsets ?? {};
   const setAo = (k: keyof AdhanOffsets, v: number) => set('adhanOffsets', { ...ao, [k]: v });
   const apop: AdhanPopup = f.adhanPopup ?? { enabled: false, seconds: 15 };
@@ -549,6 +551,21 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           </div>
         ) : (
           <span className="hint">Create the timetable first, then you can add date-specific times.</span>
+        )}
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Announce upcoming changes</h3>
+        <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
+          <span className="label" style={{ margin: 0 }}>Show a heads-up on the screens before an Iqamah time changes</span>
+          <Toggle checked={icn.enabled} onChange={(v) => setIcn({ enabled: v })} label="Announce upcoming Iqamah changes" />
+        </div>
+        {icn.enabled ? (
+          <Field label="Start showing (days before)" hint="A plain line like “From Friday, Asr will be at 5:30 PM” appears at the bottom this many days before a change takes effect. It sits alongside any scrolling announcements, and shows even if those are off.">
+            <input className="input" type="number" min={1} max={60} value={icn.daysBefore} onChange={(e) => setIcn({ daysBefore: Number(e.target.value) })} />
+          </Field>
+        ) : (
+          <p className="hint" style={{ marginBlockStart: 0 }}>When on, the screens automatically announce a date-specific change (from above) a few days ahead — no need to type anything.</p>
         )}
       </div>
 

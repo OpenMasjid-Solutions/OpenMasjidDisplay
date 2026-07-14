@@ -28,6 +28,7 @@ import type {
   HadithItem,
   ProhibitedNotice,
   IqamahCountdown,
+  IqamahChangeNotice,
   AdhanOffsets,
   AdhanPopup,
   TimetableWidget,
@@ -208,6 +209,14 @@ function normSalahBlackout(v: unknown, base?: SalahBlackout): SalahBlackout | un
     minutes: intIn(o.minutes, base?.minutes ?? 10, 1, 60),
   };
 }
+function normIqamahChangeNotice(v: unknown, base?: IqamahChangeNotice): IqamahChangeNotice | undefined {
+  if (v === undefined) return base;
+  const o = asObj(v);
+  return {
+    enabled: bool(o.enabled, base?.enabled ?? false),
+    daysBefore: intIn(o.daysBefore, base?.daysBefore ?? 7, 1, 60),
+  };
+}
 
 const ADHAN_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
 /** Per-prayer Adhan delay in minutes (0–60). Zeros are omitted to keep the object small. */
@@ -322,6 +331,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     salahBlackout: normSalahBlackout(o.salahBlackout, base?.salahBlackout),
     prohibitedNotice: normProhibited(o.prohibitedNotice, base?.prohibitedNotice),
     iqamahCountdown: normIqamahCountdown(o.iqamahCountdown, base?.iqamahCountdown),
+    iqamahChangeNotice: normIqamahChangeNotice(o.iqamahChangeNotice, base?.iqamahChangeNotice),
     adhanOffsets: normAdhanOffsets(o.adhanOffsets, base?.adhanOffsets),
     adhanPopup: normAdhanPopup(o.adhanPopup, base?.adhanPopup),
     widget: normWidget(o.widget, base?.widget),

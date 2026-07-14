@@ -567,17 +567,37 @@ function buildModel(tt: Timetable, now: Date): Model {
   const dhuhrAdhan = adj('dhuhr');
   const inProhibited = !!pn?.enabled && nowHours >= dhuhrAdhan - Math.max(1, pn.minutes) / 60 && nowHours < dhuhrAdhan;
 
-  // On Friday, the ring counts down to the upcoming Jumu'ah (1st, then 2nd) rather than
-  // skipping over them to Asr. A Jumu'ah becomes the "next" target when one is still to
-  // come today, is due no later than the next daily prayer, and we're not already counting
-  // down to an Iqāmah or inside the zawāl window. The daily TABLE still tracks the five
-  // prayers (Dhuhr stays active through midday); only the ring/countdown switches to Jumu'ah.
+  // On Friday, Jumu'ah stands in for the Dhuhr jamā'ah, so the next-prayer ring counts down to
+  // the upcoming Jumu'ah (1st, then 2nd) instead of Dhuhr — and NEVER shows Dhuhr at all. But it
+  // must NOT hijack the rest of the day: a Jumu'ah only wins if it falls no later than the next
+  // NON-Dhuhr daily prayer, so a pre-Fajr render still counts to Fajr and a mistyped evening
+  // Jumu'ah can't shadow Asr/Maghrib. It also overrides a Dhuhr-Iqāmah countdown, but not another
+  // prayer's Iqāmah window nor the zawāl (prohibited) notice, which stays as-is. The daily TABLE
+  // still tracks the five prayers (Dhuhr stays active through midday); only the ring switches.
   let nextJumuah: Model['nextJumuah'] = null;
-  if (isFriday && jumuah.length && !countdownToIqamah && !inProhibited) {
+  if (isFriday && jumuah.length && !inProhibited) {
+    // The next daily prayer that ISN'T Dhuhr (Jumu'ah replaces Dhuhr, so it bounds the target).
+    let nnKey = 'fajr';
+    let nnHours = tomorrowFajr + (ao.fajr ?? 0) / 60 + 24;
+    for (const k of order) {
+      if (k !== 'dhuhr' && eff[k] > nowHours) {
+        nnKey = k;
+        nnHours = eff[k];
+        break;
+      }
+    }
     const upcoming = jumuah.filter((t) => t > nowHours);
-    if (upcoming.length && upcoming[0] <= nextHours) {
+    if (upcoming.length && upcoming[0] <= nnHours && (!countdownToIqamah || inWindow?.key === 'dhuhr')) {
+      // Count down to the upcoming Jumu'ah (a Jumu'ah adhan countdown, not a Dhuhr Iqāmah).
       nextJumuah = { time: upcoming[0], ordinal: jumuah.indexOf(upcoming[0]) + 1, count: jumuah.length };
       nextHours = upcoming[0];
+      countdownToIqamah = false;
+    } else if (nextKey === 'dhuhr') {
+      // No Jumu'ah to show, but we'd otherwise point at Dhuhr — skip it (never count to Dhuhr on
+      // a Jumu'ah day) and target the next non-Dhuhr prayer instead.
+      nextKey = nnKey;
+      nextHours = nnHours;
+      countdownToIqamah = false;
     }
   }
 
@@ -1003,6 +1023,8 @@ interface Ctx {
   greg: string;
   hij: string;
   nextLabel: string;
+  /** the "1st"/"2nd" ordinal shown on its own line above a numbered Jumu'ah label; '' otherwise */
+  nextOrdinal: string;
   nextArabic: string;
   eventWord: string;
   /** whole seconds until the next event (Adhan/Iqāmah) — drives the H/M/S countdown */
@@ -1150,9 +1172,21 @@ function panelRing(b: Box, c: Ctx): string {
   const off = C * (1 - clamp(c.ringProgress, 0.001, 1));
   out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${ringCol}" stroke-width="${sws}" stroke-linecap="round" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 ${cxs} ${cys})"/>`);
   out.push(`</g>`);
-  // Center: Arabic name (gold) over English (dim, letter-spaced).
-  if (c.nextArabic) out.push(text(cx, ringCy + R * 0.04, c.nextArabic, { size: clamp(R * 0.48, 18, 60), fill: c.p.gold, family: FONT_ARABIC, weight: 700, anchor: 'middle' }));
-  out.push(text(cx, ringCy + R * (c.nextArabic ? 0.4 : 0.08), c.nextLabel.toUpperCase(), { size: clamp(R * 0.22, 12, 32), fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
+  // Center: Arabic name (gold) over English (dim, letter-spaced). For a numbered Jumu'ah the
+  // "1ST"/"2ND" sits on its OWN line above "JUMU'AH" ("2ND JUMU'AH" on one line was too wide
+  // for the ring). Non-Jumu'ah / single-Jumu'ah output is unchanged (the else branch).
+  const arSize = clamp(R * 0.48, 18, 60);
+  if (c.nextArabic) out.push(text(cx, ringCy + R * 0.04, c.nextArabic, { size: arSize, fill: c.p.gold, family: FONT_ARABIC, weight: 700, anchor: 'middle' }));
+  const lblSize = clamp(R * 0.22, 12, 32);
+  if (c.nextOrdinal) {
+    // Two lines: drop the ordinal CLEAR of the Arabic gloss's descenders (Amiri's jīm reaches
+    // ~0.5em below the baseline), then "JUMU'AH" beneath it.
+    const ordY = ringCy + R * 0.04 + arSize * 0.5 + lblSize * 0.82;
+    out.push(text(cx, ordY, c.nextOrdinal.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
+    out.push(text(cx, ordY + lblSize * 1.05, c.nextLabel.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
+  } else {
+    out.push(text(cx, ringCy + R * (c.nextArabic ? 0.4 : 0.08), c.nextLabel.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
+  }
   // Below the ring: the countdown as big number(s) + small unit word(s). Under a minute
   // it counts seconds; under an hour, minutes; otherwise "1 HOUR" / "1 HOUR 15 MINUTES"
   // (never "1 HOUR 0 MINUTES"). Proper singular/plural throughout.
@@ -1460,6 +1494,121 @@ function prohibitedMessage(tt: Timetable, m: Model): string {
   return `Prohibited time for prayer — please wait until the Dhuhr adhan (${fmtShort(dhuhrAdhanHours(m), tt.timeFormat)})`;
 }
 
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+/** Grammatical list: "A" · "A and B" · "A, B, and C" (Oxford comma). */
+function joinList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+const ICHANGE_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+/** The soonest upcoming per-day Iqāmah change (from tt.iqamahYear) that falls within
+ *  `daysBefore` days, rendered as a ready-to-show sentence — or null if none. A prayer only
+ *  "changes" on a date when it has a DELIBERATE per-day override there that differs BOTH from
+ *  the rule for that same date (≥2 min) AND from the effective time the day before (≥2 min).
+ *  The same-date-vs-rule test makes DST days and seasonal drift (and an unedited full-year
+ *  template, whose rows equal the rule) never trigger it; the vs-day-before test means only
+ *  the ONSET of a multi-day block fires, not every interior day. Only the five daily prayers
+ *  are considered. The sentence is English (like the prohibited-time message); localizing it
+ *  fully is a later i18n pass. */
+function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: number): string | null {
+  const year = tt.iqamahYear;
+  if (!year || tt.latitude == null || tt.longitude == null) return null;
+  const tz = tt.timezone || undefined;
+  const today = localParts(now, tz);
+  const method = tt.method === 'Custom' ? { label: 'Custom', fajr: tt.fajrAngle ?? 18, isha: tt.ishaAngle ?? 17 } : tt.method;
+  const ao = tt.adhanOffsets ?? {};
+  const todayUTC = Date.UTC(today.year, today.month - 1, today.day, 12);
+
+  // Rule-derived prayer times per date, memoized (each date is looked at for both itself
+  // and as the "day before" of the next date).
+  const ptCache = new Map<string, PrayerTimes>();
+  const timesFor = (y: number, mo: number, da: number): PrayerTimes => {
+    const ck = `${y}-${mo}-${da}`;
+    let t = ptCache.get(ck);
+    if (!t) {
+      const off = timezoneOffsetHours(new Date(Date.UTC(y, mo - 1, da, 12)), tz);
+      t = prayerTimes({ year: y, month: mo, day: da }, tt.latitude!, tt.longitude!, off, method, tt.asrMadhab);
+      ptCache.set(ck, t);
+    }
+    return t;
+  };
+  // The RULE Iqāmah (decimal hours) for a date, ignoring any override — the DST-safe baseline
+  // a deliberate override is compared against (both use the same date's UTC offset).
+  const ruleIq = (y: number, mo: number, da: number, key: (typeof ICHANGE_KEYS)[number]): number | null =>
+    iqamahHours(timesFor(y, mo, da)[key] + (ao[key] ?? 0) / 60, tt.iqamah[key]);
+  // Effective Iqāmah on a date: the per-day override if set, else the rule.
+  const effIq = (y: number, mo: number, da: number, key: (typeof ICHANGE_KEYS)[number]): number | null => {
+    const ov = year[`${pad2(mo)}-${pad2(da)}`]?.[key];
+    const ovH = ov ? parseHHMM(ov) : null;
+    return ovH != null ? ovH : ruleIq(y, mo, da, key);
+  };
+
+  // Resolve each MM-DD key to its next future occurrence (year wrap), within the window.
+  const cands: { y: number; mo: number; da: number; daysUntil: number }[] = [];
+  for (const k of Object.keys(year)) {
+    const mm = /^(\d{2})-(\d{2})$/.exec(k);
+    if (!mm) continue;
+    const mo = Number(mm[1]);
+    const da = Number(mm[2]);
+    if (mo < 1 || mo > 12 || da < 1 || da > 31) continue;
+    for (const y of [today.year, today.year + 1]) {
+      const candUTC = Date.UTC(y, mo - 1, da, 12);
+      if (new Date(candUTC).getUTCMonth() !== mo - 1) continue; // Feb-29 in a non-leap year
+      const daysUntil = Math.round((candUTC - todayUTC) / 86400000);
+      if (daysUntil >= 1 && daysUntil <= daysBefore) {
+        cands.push({ y, mo, da, daysUntil });
+        break;
+      }
+    }
+  }
+  cands.sort((a, b) => a.daysUntil - b.daysUntil);
+
+  for (const c of cands) {
+    const prev = new Date(Date.UTC(c.y, c.mo - 1, c.da - 1, 12)); // the calendar day before
+    const py = prev.getUTCFullYear();
+    const pmo = prev.getUTCMonth() + 1;
+    const pda = prev.getUTCDate();
+    const changed: { key: (typeof ICHANGE_KEYS)[number]; hours: number }[] = [];
+    for (const key of ICHANGE_KEYS) {
+      const ov = year[`${pad2(c.mo)}-${pad2(c.da)}`]?.[key];
+      const ovH = ov ? parseHHMM(ov) : null;
+      if (ovH == null) continue; // only a deliberate override can be a "change"
+      const ruleH = ruleIq(c.y, c.mo, c.da, key); // vs the rule for the SAME date (DST/drift-safe)
+      const beforeH = effIq(py, pmo, pda, key); // vs the effective time the day before (onset only)
+      if (ruleH == null) continue;
+      const dRule = Math.abs(Math.round(ovH * 60) - Math.round(ruleH * 60));
+      const dBefore = beforeH == null ? dRule : Math.abs(Math.round(ovH * 60) - Math.round(beforeH * 60));
+      if (dRule >= 2 && dBefore >= 2) changed.push({ key, hours: ovH });
+    }
+    if (!changed.length) continue;
+    // "tomorrow" / a weekday within the coming week (unambiguous) / weekday + date further out.
+    const dow = new Date(Date.UTC(c.y, c.mo - 1, c.da, 12)).getUTCDay();
+    const when = c.daysUntil === 1 ? 'tomorrow' : c.daysUntil <= 6 ? WEEKDAYS[dow] : `${WEEKDAYS[dow]}, ${MONTH_NAMES[c.mo - 1]} ${c.da}`;
+    // English prayer names (the whole sentence is English; a mixed English+Arabic run in one
+    // text element would tofu, since FONT_SANS carries no Arabic).
+    const clauses = changed.map((ch) => `${PRAYER_LABELS.en[ch.key] ?? ch.key} will be at ${fmtShort(ch.hours, tt.timeFormat)}`);
+    return `From ${when}, ${joinList(clauses)}`;
+  }
+  return null;
+}
+
+/** Static heads-up strip about an upcoming Iqāmah change, sitting just above the ticker
+ *  (or footer). Emerald-tinted so it reads as a notice, distinct from the gold Jumu'ah bar
+ *  and the neutral ticker. Autofits the sentence to the width. */
+function iqamahChangeBand(b: Box, sentence: string, p: Palette): string {
+  const out: string[] = [];
+  out.push(glass(b.x, b.y, b.w, b.h, clamp(Math.min(b.w, b.h) * 0.28, 8, 26), { fill: hexToRgba(p.primary, 0.07), stroke: hexToRgba(p.primary, 0.3) }));
+  const pad = b.w * 0.03;
+  const maxW = b.w - 2 * pad;
+  let fs = clamp(b.h * 0.42, 13, 32);
+  while (approxWidth(sentence, fs) > maxW && fs > 11) fs -= 1;
+  out.push(text(b.x + b.w / 2, b.y + b.h * 0.5 + fs * 0.34, sentence, { size: fs, fill: p.text, family: FONT_SANS, weight: 600, anchor: 'middle' }));
+  return out.join('');
+}
+
 /** If an Adhan has just arrived (within adhanPopup.seconds of the DISPLAYED Adhan),
  *  which prayer row — drives the brief "it's time for salah" pop-up. */
 function adhanPopupRow(tt: Timetable, m: Model, nowHours: number): Row | null {
@@ -1733,7 +1882,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   const jm = m.nextJumuah;
   const nextRow = m.rows.find((r) => r.next) ?? m.rows[0];
   const jLabel = L.jumuah ?? "Jumu'ah";
-  const nextLabel = jm ? (jm.count > 1 ? `${ordinalEn(jm.ordinal)} ${jLabel}` : jLabel) : rowName(nextRow, L);
+  // With two or more Jumu'ahs the ordinal sits on its OWN line above "JUMU'AH" (the combined
+  // "2ND JUMU'AH" was too wide for the ring); the label itself is just "JUMU'AH".
+  const nextOrdinal = jm && jm.count > 1 ? ordinalEn(jm.ordinal) : '';
+  const nextLabel = jm ? jLabel : rowName(nextRow, L);
   const nextArabic = jm ? (PRAYER_LABELS.ar.jumuah ?? '') : (PRAYER_LABELS.ar[nextRow.label] ?? '');
   // "Iqamah in" while inside the current prayer's Adhan->Iqamah window, "Jumu'ah" for a
   // Jumu'ah countdown, else "Adhan in".
@@ -1810,8 +1962,13 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
 
   // Working area: inset by P, with a reserved bottom band for the ticker (or the small
   // footer line). The Jumu'ah box now lives INSIDE each layout, not a global bottom bar.
-  const bottomBand = tickerText ? tickerLayout(W, H).bandH : tt.showFooter ? clamp(H * 0.05, 24, 60) : P;
-  const area: Box = { x: P, y: P, w: W - 2 * P, h: H - P - bottomBand };
+  // An upcoming-Iqāmah-change heads-up (if any) stacks ABOVE that core strip and reserves
+  // its own height, so it shows alongside the ticker AND when the ticker is off.
+  const bottomCore = tickerText ? tickerLayout(W, H).bandH : tt.showFooter ? clamp(H * 0.05, 24, 60) : P;
+  const icn = tt.iqamahChangeNotice;
+  const iqChange = icn?.enabled ? upcomingIqamahChange(tt, now, icn.daysBefore) : null;
+  const annH = iqChange ? clamp(H * 0.06, 30, 80) : 0;
+  const area: Box = { x: P, y: P, w: W - 2 * P, h: H - P - bottomCore - annH };
   const ctx: Ctx = {
     p,
     L,
@@ -1826,6 +1983,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     greg,
     hij,
     nextLabel,
+    nextOrdinal,
     nextArabic,
     eventWord,
     remainingSec,
@@ -1853,6 +2011,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
         : `${METHODS[tt.method]?.label ?? tt.method} · Asr: ${tt.asrMadhab}`;
     out.push(text(W / 2, H - P * 0.5, tt.footerNote || methodNote, { size: clamp(Math.min(W, H) * 0.014, 11, 20), fill: p.textFaint, anchor: 'middle', letter: 0.5, editId: 'footerNote' }));
   }
+
+  // ── Upcoming-Iqāmah-change heads-up (static; sits just above the ticker/footer, and
+  //    shows even when the ticker is off) ────────────────────────────────────────
+  if (iqChange) out.push(iqamahChangeBand({ x: P, y: H - bottomCore - annH, w: W - 2 * P, h: annH }, iqChange, p));
 
   // ── Scrolling ticker (drawn last, over everything) ───────────────────────────
   if (tickerText) out.push(tickerBand(tickerText, now, p, W, H, !!opts.tickerBandOnly, prohibitedTickerOn));

@@ -42,6 +42,8 @@ export interface SalahBlackout { enabled: boolean; minutes: number }
 export interface HadithDefault { id: string; en: string; cite: string; prayers?: string[] }
 export interface ProhibitedNotice { enabled: boolean; minutes: number; ticker?: boolean }
 export interface IqamahCountdown { enabled: boolean; minutes: number }
+/** Static heads-up about an upcoming per-day Iqāmah change, shown a few days before. */
+export interface IqamahChangeNotice { enabled: boolean; daysBefore: number }
 export type AdhanOffsets = Partial<Record<'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha', number>>;
 export interface AdhanPopup { enabled: boolean; seconds: number }
 export interface TimetableWidget { enabled: boolean }
@@ -95,6 +97,7 @@ export interface Timetable {
   salahBlackout?: SalahBlackout;
   prohibitedNotice?: ProhibitedNotice;
   iqamahCountdown?: IqamahCountdown;
+  iqamahChangeNotice?: IqamahChangeNotice;
   adhanOffsets?: AdhanOffsets;
   adhanPopup?: AdhanPopup;
   widget?: TimetableWidget;
