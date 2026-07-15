@@ -149,6 +149,8 @@ export interface Settings {
   defaultQuality: Quality;
   scheduleTimezone: string;
   volunteerEnabled: boolean;
+  /** also serve the volunteer page on the main address / over remote access (default on) */
+  volunteerRemote: boolean;
 }
 
 export interface TvStatus {

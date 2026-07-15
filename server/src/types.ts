@@ -303,6 +303,10 @@ export interface Settings {
   scheduleTimezone: string;
   /** allow the simple mobile volunteer page (PIN-gated) on its own port */
   volunteerEnabled: boolean;
+  /** also serve the volunteer page on the main control-panel port (under /volunteer), so it's
+   *  reachable over the OpenMasjidOS remote-access tunnel — not just the local network. When
+   *  off, the volunteer page stays on its own LAN port only. Default on. */
+  volunteerRemote: boolean;
 }
 
 /** A hashed credential (scrypt). Used for the admin password and the volunteer PIN. */

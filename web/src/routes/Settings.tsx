@@ -241,9 +241,9 @@ function VolunteerPanel({ state, refetch }: Props) {
   // Public address behind the OS remote-access tunnel (the volunteer page now rides the main
   // port under /volunteer). Empty unless remote access is on.
   const [publicUrl, setPublicUrl] = useState('');
-  useEffect(() => {
-    api.volunteerInfo().then((r) => setPublicUrl(r.publicUrl)).catch(() => setPublicUrl(''));
-  }, []);
+  const [remote, setRemote] = useState(state.settings.volunteerRemote);
+  const loadInfo = () => api.volunteerInfo().then((r) => setPublicUrl(r.publicUrl)).catch(() => setPublicUrl(''));
+  useEffect(() => { void loadInfo(); }, []);
 
   const save = async (nextEnabled: boolean) => {
     setBusy(true);
@@ -263,6 +263,19 @@ function VolunteerPanel({ state, refetch }: Props) {
     }
   };
 
+  const saveRemote = async (v: boolean) => {
+    setRemote(v); // optimistic
+    try {
+      await api.saveSettings({ volunteerRemote: v });
+      await refetch();
+      await loadInfo(); // the public URL is gated on this setting server-side
+      toast(v ? 'Volunteer page is now reachable over remote access.' : 'Volunteer page is now local-network only.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save.', 'error');
+      setRemote(state.settings.volunteerRemote); // revert on failure
+    }
+  };
+
   return (
     <div className="panel glass">
       <h3 className="section-title" style={{ marginTop: 0 }}>Volunteer page (mobile)</h3>
@@ -277,6 +290,14 @@ function VolunteerPanel({ state, refetch }: Props) {
           {!pinSet && <span className="hint"> — set a PIN first</span>}
         </span>
         <Toggle checked={enabled} onChange={(v) => save(v)} label="Enable the volunteer page" />
+      </div>
+
+      <div className="toggle-row row-between" style={{ marginBlockEnd: '0.9rem' }}>
+        <span className="label" style={{ margin: 0 }}>
+          Reachable over remote access
+          <span className="hint"> — also serves it on the control-panel address so your OpenMasjidOS tunnel can reach it. Turn off to keep it on the local network only.</span>
+        </span>
+        <Toggle checked={remote} onChange={(v) => saveRemote(v)} label="Reachable over remote access" />
       </div>
 
       <div className="grid2">

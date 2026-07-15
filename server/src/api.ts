@@ -224,8 +224,11 @@ export function createApi(deps: Deps) {
       // routing of the second port. Any volunteer path (optionally behind the /<appId> tunnel
       // prefix) is handed to the volunteer handler, which does its OWN PIN auth and never
       // exposes an admin endpoint (so this can't become an admin bypass). Its bundle assets
-      // ride the main /<appId>/assets/… path, handled by serveStatic below.
+      // ride the main /<appId>/assets/… path, handled by serveStatic below. Gated by the
+      // `volunteerRemote` setting (default on) — turn it off to keep the volunteer page on its
+      // own LAN port only (then it's 404 here, and unreachable through the tunnel).
       if (/^(?:\/[a-z0-9-]+)?\/(volunteer(?:\/.*)?|api\/volunteer\/.+)$/.test(pathname)) {
+        if (!store.db.settings.volunteerRemote) return sendJson(res, 404, { error: 'Not found.' });
         return volunteer(req, res);
       }
 
@@ -819,10 +822,11 @@ export function createApi(deps: Deps) {
       // The volunteer page's PUBLIC address behind the tunnel: the app's public base + /volunteer
       // (it now rides the main port). Same authoritative /api/fabric/site source as the widget.
       if (pathname === '/api/volunteer-info' && method === 'GET') {
-        const site = await siteInfo();
+        const remote = store.db.settings.volunteerRemote;
+        const site = remote ? await siteInfo() : null;
         const publicConfigured = !!site?.enabled && !!site.publicUrl;
         const publicUrl = publicConfigured ? `${site!.publicUrl}/volunteer` : '';
-        return sendJson(res, 200, { publicUrl, publicConfigured });
+        return sendJson(res, 200, { publicUrl, publicConfigured, remote });
       }
       const prevMatch = /^\/api\/preview\/([\w-]+)$/.exec(pathname);
       if (prevMatch && method === 'GET') {

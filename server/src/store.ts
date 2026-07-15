@@ -124,6 +124,7 @@ function freshDB(): DB {
       defaultQuality: config.seed.quality as Quality,
       scheduleTimezone: config.seed.timezone,
       volunteerEnabled: false,
+      volunteerRemote: true,
     },
     timetables: [seededTimetable()],
     sources: [],
