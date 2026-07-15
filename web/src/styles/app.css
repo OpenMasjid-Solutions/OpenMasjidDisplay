@@ -82,16 +82,16 @@ h1, h2, h3, p { margin: 0; }
 
 /* ── Top-right account/profile menu ─────────────────────────────────────── */
 .profile { position: relative; flex-shrink: 0; }
-/* Rounded-square account chip with an accent-tinted user glyph — matches the OpenMasjidOS
-   dashboard's profile button and the sibling apps (a distinct account avatar, not a plain
-   circle). */
+/* Round account avatar with an accent ring + accent-tinted user glyph — matches the
+   OpenMasjidOS dashboard and the sibling apps (a circle, not a square). */
 .profile-btn {
-  width: 2.4rem; height: 2.4rem; border-radius: 0.7rem; border: 0; padding: 0;
+  width: 2.4rem; height: 2.4rem; border-radius: 999px; padding: 0;
+  border: 1.5px solid var(--color-primary);
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--color-primary); cursor: pointer;
-  transition: color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-settle);
+  transition: color var(--dur-micro) ease, border-color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-settle);
 }
-.profile-btn:hover { color: var(--color-btn-hover, var(--color-ink)); }
+.profile-btn:hover { color: var(--color-btn-hover, var(--color-ink)); border-color: var(--color-btn-hover, var(--color-primary)); }
 .profile-btn:active { transform: scale(0.94); }
 .profile-menu {
   position: absolute; inset-inline-end: 0; inset-block-start: calc(100% + 0.5rem);
