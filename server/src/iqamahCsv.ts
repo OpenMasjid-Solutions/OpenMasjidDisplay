@@ -8,8 +8,11 @@
  * per-prayer rules for matching dates; other days fall back to the rules.
  *
  * Accepted columns (header, case-insensitive): date, fajr, dhuhr, asr, maghrib,
- * isha, jumuah. The date may be YYYY-MM-DD, MM-DD or M/D; times may be 24h "HH:MM"
- * or 12h "h:MM am/pm". Everything is normalised to "MM-DD" keys and "HH:MM" 24h.
+ * isha, jumuah. The date may be YYYY-MM-DD, MM-DD or M/D; a time may be 24h "HH:MM"
+ * or 12h "h:MM am/pm", OR a signed offset from that prayer's adhan — "+5" / "-3"
+ * (minutes). The offset form is meant for Maghrib, whose adhan drifts with sunset all
+ * year, so a fixed clock time would be wrong; "+5" keeps Iqamah 5 min after the adhan
+ * every day. Clock times normalise to "HH:MM" 24h; offsets to "+N" / "-N".
  */
 import type { IqamahYear, Timetable } from './types';
 import { prayerTimes, iqamahHours, timezoneOffsetHours, localParts } from './prayer/engine';
@@ -34,6 +37,20 @@ function parseClock(s: string): string | null {
   }
   if (h > 23) return null;
   return `${pad2(h)}:${pad2(min)}`;
+}
+
+/** Parse a signed offset from the adhan, "+5" / "-3" (optionally "min"), to "+N" / "-N"
+ *  (minutes, clamped to ±120), or null. An explicit sign is required so it can never be
+ *  confused with a clock time. */
+function parseOffset(s: string): string | null {
+  const m = /^\s*([+-])\s*(\d{1,3})\s*(?:m|min|mins|minutes)?\s*$/i.exec(s);
+  if (!m) return null;
+  return `${m[1]}${Math.min(120, +m[2])}`;
+}
+
+/** A prayer cell: a clock time OR a signed adhan offset (see the file header). */
+function parseCell(raw: string): string | null {
+  return parseClock(raw) ?? parseOffset(raw);
 }
 
 // Month names (full + common abbreviations), so dates like Excel's "1-Jan" parse.
@@ -119,8 +136,8 @@ export function parseIqamahCsv(text: string): ParsedCsv {
       if (idx == null) continue;
       const raw = cells[idx] ?? '';
       if (!raw) continue;
-      const clk = parseClock(raw);
-      if (clk) entry[p] = clk;
+      const val = parseCell(raw);
+      if (val) entry[p] = val;
       else if (errors.length < 10) errors.push(`Line ${i + 1}: couldn't read ${p} time "${raw}".`);
     }
     if (Object.keys(entry).length > 0) {
@@ -146,8 +163,8 @@ export function normalizeIqamahYear(input: unknown): IqamahYear {
     for (const p of PRAYERS) {
       const raw = row[p];
       if (typeof raw === 'string' && raw.trim()) {
-        const clk = parseClock(raw);
-        if (clk) entry[p] = clk;
+        const val = parseCell(raw);
+        if (val) entry[p] = val;
       }
     }
     if (Object.keys(entry).length > 0) {
@@ -199,7 +216,17 @@ export function templateCsv(tt: Timetable): string {
       const off = timezoneOffsetHours(noon, tz);
       const parts = localParts(noon, tz);
       const t = prayerTimes(parts, tt.latitude!, tt.longitude!, off, method, tt.asrMadhab);
-      const iq = (k: keyof typeof tt.iqamah, adhan: number) => fmtHHMM(iqamahHours(adhan, tt.iqamah[k]));
+      // For an OFFSET-mode prayer (e.g. Maghrib = adhan+5), emit the offset itself ("+5")
+      // rather than a frozen clock time — so the exported/template value tracks the drifting
+      // adhan all year instead of pinning that one date's time.
+      const iq = (k: keyof typeof tt.iqamah, adhan: number) => {
+        const rule = tt.iqamah[k];
+        if (rule?.mode === 'offset') {
+          const o = rule.offset ?? 0;
+          return `${o < 0 ? '-' : '+'}${Math.abs(o)}`;
+        }
+        return fmtHHMM(iqamahHours(adhan, rule));
+      };
       lines.push(
         [key, iq('fajr', t.fajr), iq('dhuhr', t.dhuhr), iq('asr', t.asr), iq('maghrib', t.maghrib), iq('isha', t.isha), ''].join(','),
       );

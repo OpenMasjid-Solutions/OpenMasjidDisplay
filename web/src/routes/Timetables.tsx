@@ -576,7 +576,8 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             <p className="hint" style={{ marginBlockStart: 0 }}>
               Upload one file with a row per day to set exact Iqamah times for the whole year — they override
               the rules above on matching dates. Download the example to see the format (it comes pre-filled
-              from your rules, ready to tweak).
+              from your rules, ready to tweak). Tip: for Maghrib you can enter an offset like <b>+5</b> or
+              <b> -3</b> instead of a clock time, so it stays that many minutes from the adhan as sunset drifts.
             </p>
             <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
               <label className="btn btn--primary btn--sm" style={{ cursor: 'pointer' }}>
@@ -1318,7 +1319,13 @@ function OneOffIqamahEditor({ year, onSave }: { year: IqamahYear; onSave: (next:
           {PR.map((pr) => (
             <label key={pr} className="field" style={{ margin: 0 }}>
               <span className="label">{PRAYER_TITLE[pr]}</span>
-              <input type="time" className="input" value={draft[pr] ?? ''} onChange={(ev) => setDraft((x) => ({ ...x, [pr]: ev.target.value }))} />
+              {pr === 'maghrib' ? (
+                // Maghrib's adhan drifts with sunset, so allow a signed offset ("+5"/"-3")
+                // as well as a fixed clock time.
+                <input type="text" inputMode="text" className="input" placeholder="+5 or 6:35 PM" value={draft[pr] ?? ''} onChange={(ev) => setDraft((x) => ({ ...x, [pr]: ev.target.value }))} />
+              ) : (
+                <input type="time" className="input" value={draft[pr] ?? ''} onChange={(ev) => setDraft((x) => ({ ...x, [pr]: ev.target.value }))} />
+              )}
             </label>
           ))}
         </div>
@@ -1392,7 +1399,14 @@ function IqamahYearEditor({ value, existingRows, onSave }: { value: IqamahYear; 
               <tr key={d}>
                 <td className="iqyear-day">{d}</td>
                 {PR.map((pr) => (
-                  <td key={pr}><input type="time" className="input iqyear-cell" value={get(d, pr)} onChange={(e) => setCell(d, pr, e.target.value)} /></td>
+                  <td key={pr}>
+                    {pr === 'maghrib' ? (
+                      // Maghrib may be a signed offset from its (sunset-drifting) adhan, e.g. "+5".
+                      <input type="text" className="input iqyear-cell" placeholder="+5" value={get(d, pr)} onChange={(e) => setCell(d, pr, e.target.value)} />
+                    ) : (
+                      <input type="time" className="input iqyear-cell" value={get(d, pr)} onChange={(e) => setCell(d, pr, e.target.value)} />
+                    )}
+                  </td>
                 ))}
               </tr>
             ))}

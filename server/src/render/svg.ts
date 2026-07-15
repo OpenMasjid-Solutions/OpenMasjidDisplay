@@ -530,8 +530,14 @@ function buildModel(tt: Timetable, now: Date): Model {
   const yearRow = tt.iqamahYear?.[dayKey];
   const iq = (k: keyof typeof tt.iqamah, adhan: number): number | null => {
     const csv = yearRow?.[k];
-    const csvH = csv ? parseHHMM(csv) : null;
-    if (csvH != null) return csvH;
+    if (csv) {
+      // A per-day override may be a signed offset from that day's adhan ("+5"/"-3") — used
+      // for Maghrib, whose adhan drifts with sunset — or a fixed clock time.
+      const offM = /^([+-])(\d{1,3})$/.exec(csv);
+      if (offM) return adhan + ((offM[1] === '-' ? -1 : 1) * +offM[2]) / 60;
+      const csvH = parseHHMM(csv);
+      if (csvH != null) return csvH;
+    }
     return iqamahHours(adhan, tt.iqamah[k]);
   };
   const rows: Row[] = [];

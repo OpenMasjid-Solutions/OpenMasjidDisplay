@@ -11,6 +11,21 @@ test('parses plain MM-DD rows', () => {
   assert.deepEqual(r.data['01-01'], { fajr: '06:00', dhuhr: '13:30', asr: '16:00', maghrib: '18:00', isha: '19:30' });
 });
 
+test('accepts a signed adhan offset for a prayer (e.g. Maghrib +5 / -3)', () => {
+  const r = parseIqamahCsv('date,fajr,maghrib\n01-01,06:00,+5\n02-01,06:00,- 3\n03-01,06:00,+200');
+  assert.equal(r.errors.length, 0, r.errors.join('; '));
+  assert.equal(r.data['01-01'].maghrib, '+5'); // offset preserved
+  assert.equal(r.data['01-01'].fajr, '06:00'); // clock still works alongside
+  assert.equal(r.data['02-01'].maghrib, '-3'); // whitespace + negative
+  assert.equal(r.data['03-01'].maghrib, '+120'); // clamped to ±120
+});
+
+test('rejects an unsigned bare number (not a clock, not an offset)', () => {
+  const r = parseIqamahCsv('date,maghrib\n01-01,5');
+  assert.equal(r.rows, 0);
+  assert.ok(r.errors.length > 0);
+});
+
 test('accepts Excel-mangled month-name dates (the "1-Jan" bug)', () => {
   // Excel rewrites "01-01" → "1-Jan"; this used to error on every upload.
   const r = parseIqamahCsv('date,fajr\n1-Jan,06:00\n2-Feb,06:05\n15-Dec,05:40');
