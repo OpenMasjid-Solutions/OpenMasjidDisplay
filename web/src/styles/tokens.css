@@ -25,8 +25,8 @@
   --color-gold-subtle: rgba(245, 158, 11, 0.1);
 
   --color-ink: #F4F7FB;
-  --color-ink-muted: #9FACC2;
-  --color-ink-faint: #5C6B83;
+  --color-ink-muted: #AEBACD;
+  --color-ink-faint: #8593AD;
 
   --color-border: rgba(148, 175, 210, 0.14);
 
@@ -75,9 +75,9 @@
   --aurora-gold: rgba(245, 158, 11, 0.14);
   --aurora-blur: 48px;
   --scene-vignette: rgba(0, 0, 0, 0.45);
-  /* Tint laid over a custom wallpaper PHOTO so the dashboard reads clearly on top of it
-     (matches the OpenMasjidOS / sibling-app admin look). Mode-based, not per-wallpaper. */
-  --scene-scrim: rgba(2, 8, 16, 0.55);
+  /* Veil drawn over a custom background image so on-image text stays readable. Matches
+     the sibling apps (OpenMasjidDonations/Kiosk) byte-for-byte. */
+  --scrim: linear-gradient(180deg, rgba(2, 9, 18, 0.30), rgba(2, 9, 18, 0.58));
   --pattern-opacity: 0.5;
   --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%2322D3EE' stroke-width='0.5' opacity='0.15'%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3C/g%3E%3C/svg%3E");
 }
@@ -101,8 +101,8 @@
   --color-gold-subtle: rgba(217, 119, 6, 0.08);
 
   --color-ink: #0C4A6E;
-  --color-ink-muted: #475569;
-  --color-ink-faint: #94A3B8;
+  --color-ink-muted: #44515F;
+  --color-ink-faint: #647281;
 
   --color-border: rgba(2, 132, 199, 0.12);
 
@@ -136,15 +136,11 @@
   --color-btn-hover: #075985;
   --color-on-primary: #FFFFFF;
 
-  --scene-base: #EAF6FF;
-  --scene-gradient: linear-gradient(150deg, #dbeafe 0%, #eef6ff 50%, #f0f9ff 100%);
-  --aurora-cyan: rgba(2, 132, 199, 0.14);
-  --aurora-navy: rgba(186, 230, 253, 0.42);
-  --aurora-gold: rgba(217, 119, 6, 0.07);
-  --scene-vignette: rgba(2, 40, 70, 0.06);
-  --scene-scrim: rgba(232, 244, 255, 0.55);
-  --pattern-opacity: 0.4;
-  --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%230284C7' stroke-width='0.5' opacity='0.1'%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3C/g%3E%3C/svg%3E");
+  /* NOTE: the ambient SCENE (page backdrop) is deliberately NOT lightened in light mode —
+     matching the sibling apps. Light mode only lightens the glass content cards; the backdrop
+     stays the dark gradient (like every preset wallpaper) so the light on-scene ink below is
+     always readable. Lightening the scene here was the "white tint" that made on-scene text
+     vanish in light mode. Scene tokens therefore inherit the dark values from :root. */
 }
 
 :root,
@@ -156,6 +152,25 @@
   --lift-y: -6px;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-display: "Segoe UI", system-ui, ui-sans-serif, var(--font-sans);
+}
+
+/* On-scene ("on the wallpaper") text — INDEPENDENT of the light/dark content theme.
+   All preset wallpapers are dark, so on-scene text defaults to light (readable in BOTH
+   themes; glass-card text still uses the theme's --color-ink). A light custom wallpaper
+   image flips this to dark via data-scene="light" (set from JS luminance). */
+:root,
+[data-theme="dark"],
+[data-theme="light"] {
+  --ink-scene: #F4F7FB;
+  --ink-scene-muted: #AEBACD;
+  --ink-scene-faint: #8593AD;
+  --text-shadow-scene: 0 1px 12px rgba(0, 0, 0, 0.55);
+}
+[data-scene="light"] {
+  --ink-scene: #0C4A6E;
+  --ink-scene-muted: #44515F;
+  --ink-scene-faint: #647281;
+  --text-shadow-scene: 0 1px 10px rgba(255, 255, 255, 0.65);
 }
 
 /* Wallpapers (applied via data-wallpaper on <html>) — mirror OpenMasjidOS so the

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useAppState } from './state';
 import { api } from './api';
-import { usePrefs, prefsStore, resolveTheme, useOmosAppearanceSync } from './prefs';
+import { usePrefs, prefsStore, resolveTheme, useOmosAppearanceSync, useReadableTheme } from './prefs';
 import {
   ToastProvider,
   MasjidMark,
@@ -75,6 +75,18 @@ function Root() {
   const [tab, setTab] = useState<Tab>('screens');
   const [setupInstead, setSetupInstead] = useState(false);
   const editId = new URLSearchParams(window.location.search).get('edit');
+
+  // On-scene text colour follows the WALLPAPER (not the light/dark toggle): the built-in
+  // presets are dark → light on-scene text in both themes; a light custom wallpaper image
+  // flips data-scene to "light" so the on-scene text (brand, clock, page heading) goes
+  // dark. Glass-card text stays under the theme's control. Matches the sibling apps.
+  const prefs = usePrefs();
+  const sceneTone = useReadableTheme(prefs.wallpaperImage.trim() || undefined, 'dark');
+  useEffect(() => {
+    const html = document.documentElement;
+    if (sceneTone === 'light') html.setAttribute('data-scene', 'light');
+    else html.removeAttribute('data-scene');
+  }, [sceneTone]);
 
   if (authed) {
     if (!state) return <Splash />;
@@ -194,12 +206,11 @@ function ProfileMenu({
   return (
     <div className="profile" ref={ref}>
       <button
-        className="profile-btn glass-raised"
+        className="profile-btn"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Account and settings"
-        title="Account"
+        aria-label="Account menu"
       >
         <IconUser size={18} />
       </button>
@@ -267,11 +278,11 @@ function Shell({
     <div className="shell">
       <Scene />
       <header className="topbar">
-        <div className="brand">
-          <MasjidMark size={24} />
-          <b>OpenMasjid Display</b>
-        </div>
-        <span className="spacer" />
+        <a className="brand" href="/" aria-label="OpenMasjid Display — home">
+          <MasjidMark size={22} />
+          <b>OpenMasjid&nbsp;Display</b>
+        </a>
+        <div className="spacer" />
         <Clock />
         <ProfileMenu
           dark={dark}
