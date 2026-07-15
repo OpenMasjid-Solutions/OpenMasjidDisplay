@@ -47,6 +47,13 @@ h1, h2, h3, p { margin: 0; }
   background-color: var(--scene-base);
   background-size: cover; background-position: center; background-repeat: no-repeat;
 }
+/* Dark (theme-aware) tint over the wallpaper photo so the dashboard reads clearly on top of
+   it — like the OpenMasjidOS dashboard and the sibling apps. A flat scrim + a soft vignette. */
+.scene-img::after {
+  content: ''; position: absolute; inset: 0;
+  background: var(--scene-scrim);
+  box-shadow: inset 0 0 260px 70px var(--scene-vignette);
+}
 
 /* ── Shell ──────────────────────────────────────────────────────────────── */
 .shell { min-height: 100vh; min-height: 100dvh; }
@@ -75,13 +82,16 @@ h1, h2, h3, p { margin: 0; }
 
 /* ── Top-right account/profile menu ─────────────────────────────────────── */
 .profile { position: relative; flex-shrink: 0; }
+/* Rounded-square account chip with an accent-tinted user glyph — matches the OpenMasjidOS
+   dashboard's profile button and the sibling apps (a distinct account avatar, not a plain
+   circle). */
 .profile-btn {
-  width: 2.4rem; height: 2.4rem; border-radius: 999px; border: 0; padding: 0;
+  width: 2.4rem; height: 2.4rem; border-radius: 0.7rem; border: 0; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  color: var(--color-ink-muted); cursor: pointer;
+  color: var(--color-primary); cursor: pointer;
   transition: color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-settle);
 }
-.profile-btn:hover { color: var(--color-ink); }
+.profile-btn:hover { color: var(--color-btn-hover, var(--color-ink)); }
 .profile-btn:active { transform: scale(0.94); }
 .profile-menu {
   position: absolute; inset-inline-end: 0; inset-block-start: calc(100% + 0.5rem);

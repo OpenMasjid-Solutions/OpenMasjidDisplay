@@ -75,6 +75,9 @@
   --aurora-gold: rgba(245, 158, 11, 0.14);
   --aurora-blur: 48px;
   --scene-vignette: rgba(0, 0, 0, 0.45);
+  /* Tint laid over a custom wallpaper PHOTO so the dashboard reads clearly on top of it
+     (matches the OpenMasjidOS / sibling-app admin look). Mode-based, not per-wallpaper. */
+  --scene-scrim: rgba(2, 8, 16, 0.55);
   --pattern-opacity: 0.5;
   --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%2322D3EE' stroke-width='0.5' opacity='0.15'%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3C/g%3E%3C/svg%3E");
 }
@@ -139,6 +142,7 @@
   --aurora-navy: rgba(186, 230, 253, 0.42);
   --aurora-gold: rgba(217, 119, 6, 0.07);
   --scene-vignette: rgba(2, 40, 70, 0.06);
+  --scene-scrim: rgba(232, 244, 255, 0.55);
   --pattern-opacity: 0.4;
   --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%230284C7' stroke-width='0.5' opacity='0.1'%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3C/g%3E%3C/svg%3E");
 }
