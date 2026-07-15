@@ -50,7 +50,11 @@ async function main(): Promise<void> {
     }, 100);
   });
 
-  const handler = createApi({ store, orchestrator });
+  // The volunteer page handler is shared: it runs on its own port (below) AND is mounted on
+  // the main control-panel port (under /volunteer) so it rides the OS tunnel with no platform
+  // change. One instance → one shared PIN rate-limiter across both entry points.
+  const volunteerHandler = createVolunteerApi({ store, orchestrator });
+  const handler = createApi({ store, orchestrator, volunteer: volunteerHandler });
   const server = http.createServer((req, res) => {
     handler(req, res).catch((err) => {
       log.error('request handler crashed', err);
@@ -67,9 +71,9 @@ async function main(): Promise<void> {
     if (!store.db.admin) log.info('first run — open the control panel to create your admin account');
   });
 
-  // The simple mobile volunteer page runs on its own port. It always listens, but
-  // the API stays inert until an admin enables it and sets a PIN (see Settings).
-  const volunteerHandler = createVolunteerApi({ store, orchestrator });
+  // The simple mobile volunteer page ALSO runs on its own port (a clean phone URL that can be
+  // firewalled separately). It always listens, but the API stays inert until an admin enables
+  // it and sets a PIN (see Settings). Same handler instance as the main-port mount above.
   const volunteerServer = http.createServer((req, res) => {
     volunteerHandler(req, res).catch((err) => {
       log.error('volunteer request handler crashed', err);

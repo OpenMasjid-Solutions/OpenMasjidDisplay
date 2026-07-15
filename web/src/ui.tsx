@@ -75,11 +75,15 @@ export const IconShrink = (p: IP) => <Svg {...p}><path d="M4 8h3a1 1 0 0 0 1-1V4
 /** OpenMasjid crescent + dome brand mark. Rendered as a CSS mask painted in
  *  `currentColor`, so it adapts to light/dark themes and stays crisp at any size. */
 export function MasjidMark({ size = 26 }: IP) {
+  // markUrl is a build-time absolute path (/assets/mark-*.png) baked into the JS. On the
+  // volunteer page served behind the OS tunnel under /<basePath>/, that bare path isn't routed
+  // to this app — so prefix it with the injected base (empty everywhere else, so a no-op).
+  const src = ((typeof window !== 'undefined' && window.__OMD_BASE__) || '') + markUrl;
   return (
     <span
       className="masjid-mark"
       aria-hidden="true"
-      style={{ width: size, height: size, maskImage: `url(${markUrl})`, WebkitMaskImage: `url(${markUrl})` }}
+      style={{ width: size, height: size, maskImage: `url(${src})`, WebkitMaskImage: `url(${src})` }}
     />
   );
 }

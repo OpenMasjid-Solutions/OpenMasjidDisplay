@@ -74,6 +74,9 @@ const MIME: Record<string, string> = {
 interface Deps {
   store: Store;
   orchestrator: Orchestrator;
+  /** The volunteer-page handler, also mounted here (under /volunteer) so the volunteer UI
+   *  rides the OS tunnel on the main port without the platform routing its own port. */
+  volunteer: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 }
 
 function sendJson(res: ServerResponse, status: number, obj: unknown): void {
@@ -118,7 +121,12 @@ function checkUploadedImage(buf: Buffer): { mime: string } | { error: string } {
 }
 
 function serveStatic(res: ServerResponse, pathname: string): boolean {
-  const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  let rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  // Behind the OS tunnel the app is served under /<appId>/…, so its bundle assets arrive as
+  // /<appId>/assets/… (the volunteer page's index.html repoints them there). Strip that one
+  // leading segment so they resolve to the real file; plain /assets/… (LAN) is untouched.
+  const pfx = /^[^/]+\/(assets\/.+)$/.exec(rel);
+  if (pfx) rel = pfx[1];
   const full = path.resolve(config.publicDir, rel);
   // Prevent path traversal outside the public dir (anchor with a trailing separator
   // so a sibling dir sharing the prefix can't slip through).
@@ -194,7 +202,7 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 };
 
 export function createApi(deps: Deps) {
-  const { store, orchestrator } = deps;
+  const { store, orchestrator, volunteer } = deps;
   const loginLimiter = new LoginLimiter();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
@@ -210,6 +218,16 @@ export function createApi(deps: Deps) {
     try {
       // ---- Unauthenticated endpoints --------------------------------------
       if (pathname === '/healthz') return sendJson(res, 200, { ok: true });
+
+      // ---- Volunteer page (also served here, not just on its own port) ----
+      // So it works behind the OS Cloudflare tunnel at /<appId>/volunteer with NO platform
+      // routing of the second port. Any volunteer path (optionally behind the /<appId> tunnel
+      // prefix) is handed to the volunteer handler, which does its OWN PIN auth and never
+      // exposes an admin endpoint (so this can't become an admin bypass). Its bundle assets
+      // ride the main /<appId>/assets/… path, handled by serveStatic below.
+      if (/^(?:\/[a-z0-9-]+)?\/(volunteer(?:\/.*)?|api\/volunteer\/.+)$/.test(pathname)) {
+        return volunteer(req, res);
+      }
 
       // ---- Public embeddable widget (no auth; only for opted-in timetables) ------
       // Matches /w/<id> and /w/<id>.json, optionally behind the Cloudflare-tunnel base
@@ -796,6 +814,15 @@ export function createApi(deps: Deps) {
         const publicConfigured = !!site?.enabled && !!site.publicUrl;
         const publicUrl = publicConfigured && tt.widget?.enabled ? `${site!.publicUrl}/w/${tt.id}` : '';
         return sendJson(res, 200, { enabled: !!tt.widget?.enabled, publicUrl, publicConfigured });
+      }
+
+      // The volunteer page's PUBLIC address behind the tunnel: the app's public base + /volunteer
+      // (it now rides the main port). Same authoritative /api/fabric/site source as the widget.
+      if (pathname === '/api/volunteer-info' && method === 'GET') {
+        const site = await siteInfo();
+        const publicConfigured = !!site?.enabled && !!site.publicUrl;
+        const publicUrl = publicConfigured ? `${site!.publicUrl}/volunteer` : '';
+        return sendJson(res, 200, { publicUrl, publicConfigured });
       }
       const prevMatch = /^\/api\/preview\/([\w-]+)$/.exec(pathname);
       if (prevMatch && method === 'GET') {

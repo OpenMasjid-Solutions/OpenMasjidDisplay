@@ -8,7 +8,12 @@ import { installCursorFx } from './cursorFx';
 import './styles/index.css';
 
 declare global {
-  interface Window { __OMD_VOLUNTEER__?: boolean }
+  interface Window {
+    __OMD_VOLUNTEER__?: boolean;
+    /** Base path the app is served under (e.g. "/display" behind the OS tunnel, "" otherwise);
+     *  injected into the volunteer page so its API calls resolve under the same prefix. */
+    __OMD_BASE__?: string;
+  }
 }
 
 prefsStore.hydrate();

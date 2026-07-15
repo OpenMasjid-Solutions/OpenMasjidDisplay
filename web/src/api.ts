@@ -57,6 +57,7 @@ export const api = {
   saveSettings: (s: Partial<Settings>) => req<Settings>('PUT', '/api/settings', s),
   saveVolunteerConfig: (enabled: boolean, pin?: string) =>
     req<{ ok: boolean; enabled: boolean; pinSet: boolean }>('PUT', '/api/volunteer-config', { enabled, pin }),
+  volunteerInfo: () => req<{ publicUrl: string; publicConfigured: boolean }>('GET', '/api/volunteer-info'),
 
   createTimetable: (b: Partial<Timetable>) => req<Timetable>('POST', '/api/timetables', b),
   updateTimetable: (id: string, b: Partial<Timetable>) => req<Timetable>('PUT', `/api/timetables/${id}`, b),
@@ -145,11 +146,15 @@ export interface VolunteerData {
   tvs: VolunteerTv[];
   options: { timetables: { id: string; name: string }[]; sources: { id: string; name: string; type: string }[] };
 }
+// Volunteer calls are prefixed with the app's base path (injected as window.__OMD_BASE__ when
+// the page is served under the OS tunnel at /<appId>/volunteer), so "/api/volunteer/…" resolves
+// under that same prefix. Empty on the LAN / volunteer port, so it's a no-op there.
+const VOL_BASE = (typeof window !== 'undefined' && window.__OMD_BASE__) || '';
 export const volApi = {
-  session: () => req<{ enabled: boolean; authed: boolean }>('GET', '/api/volunteer/session'),
-  login: (pin: string) => req<{ ok: boolean }>('POST', '/api/volunteer/login', { pin }),
-  logout: () => req<{ ok: boolean }>('POST', '/api/volunteer/logout'),
-  tvs: () => req<VolunteerData>('GET', '/api/volunteer/tvs'),
-  set: (id: string, content: ContentRef) => req<{ ok: boolean }>('POST', `/api/volunteer/tvs/${id}/set`, { content }),
-  resume: (id: string) => req<{ ok: boolean }>('POST', `/api/volunteer/tvs/${id}/resume`),
+  session: () => req<{ enabled: boolean; authed: boolean }>('GET', `${VOL_BASE}/api/volunteer/session`),
+  login: (pin: string) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/login`, { pin }),
+  logout: () => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/logout`),
+  tvs: () => req<VolunteerData>('GET', `${VOL_BASE}/api/volunteer/tvs`),
+  set: (id: string, content: ContentRef) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/tvs/${id}/set`, { content }),
+  resume: (id: string) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/tvs/${id}/resume`),
 };

@@ -69,15 +69,23 @@ function readBody(req: IncomingMessage, maxBytes = 100_000): Promise<Record<stri
   });
 }
 
-const VOLUNTEER_FLAG = '<script>window.__OMD_VOLUNTEER__=true;</script>';
+/** Inline boot script: flips the shared SPA bundle into the volunteer view and tells it the
+ *  base path it's served under (so its /api/volunteer/… calls resolve under the tunnel prefix).
+ *  It's a classic (non-module) script, so it runs before the deferred module bundle. */
+function volunteerBootScript(basePrefix: string): string {
+  return `<script>window.__OMD_VOLUNTEER__=true;window.__OMD_BASE__=${JSON.stringify(basePrefix)};</script>`;
+}
 
-/** Serve the SPA. index.html gets a flag injected so the app boots the volunteer UI. */
-function serveSpa(res: ServerResponse, pathname: string): void {
+/** Serve the SPA. index.html gets the boot script injected (and, under a tunnel base path, its
+ *  asset URLs repointed under that prefix) so the same build boots the volunteer UI. */
+function serveSpa(res: ServerResponse, pathname: string, basePrefix: string): void {
   const rel = pathname === '/' || pathname === '' ? 'index.html' : pathname.replace(/^\/+/, '');
   const full = path.resolve(config.publicDir, rel);
   const root = path.resolve(config.publicDir);
   const isIndex = rel === 'index.html';
   if (!isIndex && full.startsWith(root + path.sep) && fs.existsSync(full) && fs.statSync(full).isFile()) {
+    // A real static asset (reached on the volunteer PORT; behind the tunnel the MAIN server
+    // serves /<appId>/assets/… itself).
     const ext = path.extname(full).toLowerCase();
     res.writeHead(200, {
       'content-type': MIME[ext] ?? 'application/octet-stream',
@@ -86,11 +94,14 @@ function serveSpa(res: ServerResponse, pathname: string): void {
     fs.createReadStream(full).pipe(res);
     return;
   }
-  // index.html (or any unknown path → SPA fallback): inject the volunteer flag.
+  // index.html (or any unknown path → SPA fallback): repoint assets under the base path, then
+  // inject the boot script.
   const idx = path.join(config.publicDir, 'index.html');
   if (fs.existsSync(idx)) {
     let html = fs.readFileSync(idx, 'utf8');
-    html = html.includes('</head>') ? html.replace('</head>', `${VOLUNTEER_FLAG}</head>`) : VOLUNTEER_FLAG + html;
+    if (basePrefix) html = html.replace(/="\/assets\//g, `="${basePrefix}/assets/`);
+    const boot = volunteerBootScript(basePrefix);
+    html = html.includes('</head>') ? html.replace('</head>', `${boot}</head>`) : boot + html;
     res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
     res.end(html);
   } else {
@@ -113,7 +124,18 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
 
   return async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    const pathname = url.pathname;
+    // On its own port this handler is reached at the root; behind the OS tunnel (delegated by
+    // the main server) it's reached at /<basePath>/volunteer(/…), where <basePath> is the
+    // admin-chosen path — it DEFAULTS to the app id but can be renamed, so derive it from the
+    // ACTUAL leading segment rather than hardcoding config.omosAppId. Keep it as the base the
+    // served page prefixes its assets + API with. (The 'api' segment is the un-prefixed API,
+    // not a base path.)
+    const seg = /^\/([a-z0-9-]+)(\/.*)$/.exec(url.pathname);
+    const basePrefix =
+      seg && seg[1] !== 'api' && (seg[2] === '/volunteer' || seg[2].startsWith('/volunteer/') || seg[2].startsWith('/api/volunteer/'))
+        ? `/${seg[1]}`
+        : '';
+    const pathname = basePrefix ? url.pathname.slice(basePrefix.length) : url.pathname;
     const method = req.method ?? 'GET';
 
     try {
@@ -124,6 +146,12 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
       }
       if (pathname === '/api/volunteer/login' && method === 'POST') {
         if (!enabled()) return sendJson(res, 403, { error: 'The volunteer page is turned off.' });
+        // Rate limit keyed on the socket IP. Reached over the OS tunnel every request shares the
+        // ingress IP, so this is ONE global bucket: still brute-force-resistant (the important
+        // property — a 4–8-digit PIN can't be cracked through a global throttle), at the cost of
+        // one bad actor briefly locking out other remote logins (self-healing, ≤5 min; the LAN
+        // port sees real IPs). We deliberately do NOT key on X-Forwarded-For — trusting it is only
+        // safe behind the sanitising ingress, and a direct hit could spoof it for fresh buckets.
         const wait = loginLimiter.retryAfterMs(req);
         if (wait > 0) return sendJson(res, 429, { error: `Too many attempts. Try again in ${Math.ceil(wait / 1000)}s.` });
         const body = await readBody(req);
@@ -143,7 +171,7 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
 
       // ---- Static SPA (GET, non-API) --------------------------------------
       if (!pathname.startsWith('/api/') && method === 'GET') {
-        return serveSpa(res, pathname);
+        return serveSpa(res, pathname, basePrefix);
       }
 
       // ---- Everything below needs the volunteer session + enabled ---------

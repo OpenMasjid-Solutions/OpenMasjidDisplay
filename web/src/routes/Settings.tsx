@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { AppState, Settings } from '../types';
 import { Field, Toggle, Spinner, IconCheck, useToast } from '../ui';
@@ -238,6 +238,12 @@ function VolunteerPanel({ state, refetch }: Props) {
   const [busy, setBusy] = useState(false);
   const pinSet = state.volunteer.pinSet;
   const volUrl = `http://${window.location.hostname}:${state.volunteer.port}`;
+  // Public address behind the OS remote-access tunnel (the volunteer page now rides the main
+  // port under /volunteer). Empty unless remote access is on.
+  const [publicUrl, setPublicUrl] = useState('');
+  useEffect(() => {
+    api.volunteerInfo().then((r) => setPublicUrl(r.publicUrl)).catch(() => setPublicUrl(''));
+  }, []);
 
   const save = async (nextEnabled: boolean) => {
     setBusy(true);
@@ -285,10 +291,16 @@ function VolunteerPanel({ state, refetch }: Props) {
             placeholder={pinSet ? '••••' : 'e.g. 1234'}
           />
         </Field>
-        <Field label="Volunteer page address" hint="Open this on a phone (must be on the same network).">
+        <Field label="Volunteer page address" hint="Open this on a phone on the same network. It also works at /volunteer on the control-panel address.">
           <input className="input" readOnly value={volUrl} onFocus={(e) => e.currentTarget.select()} />
         </Field>
       </div>
+
+      {publicUrl && (
+        <Field label="Public web address (remote access)" hint="Reachable over the internet through your OpenMasjidOS tunnel — volunteers can open it from anywhere. It's still PIN-protected.">
+          <input className="input" readOnly value={publicUrl} onFocus={(e) => e.currentTarget.select()} />
+        </Field>
+      )}
 
       <button className="btn btn--primary" style={{ marginBlockStart: '0.4rem' }} onClick={() => save(enabled)} disabled={busy || (pin.trim() === '' && !pinSet)}>
         <IconCheck size={16} /> {pin.trim() ? 'Save PIN' : 'Save'}
