@@ -4,26 +4,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseIqamahCsv } from './iqamahCsv';
 
-test('parses plain MM-DD rows', () => {
+test('parses plain MM-DD rows and IGNORES the Maghrib column', () => {
   const r = parseIqamahCsv('date,fajr,dhuhr,asr,maghrib,isha\n01-01,06:00,13:30,16:00,18:00,19:30');
   assert.equal(r.errors.length, 0);
   assert.equal(r.rows, 1);
-  assert.deepEqual(r.data['01-01'], { fajr: '06:00', dhuhr: '13:30', asr: '16:00', maghrib: '18:00', isha: '19:30' });
+  // Maghrib is thrown out (always calculated sunset + its offset); everything else kept.
+  assert.deepEqual(r.data['01-01'], { fajr: '06:00', dhuhr: '13:30', asr: '16:00', isha: '19:30' });
 });
 
-test('accepts a signed adhan offset for a prayer (e.g. Maghrib +5 / -3)', () => {
-  const r = parseIqamahCsv('date,fajr,maghrib\n01-01,06:00,+5\n02-01,06:00,- 3\n03-01,06:00,+200');
-  assert.equal(r.errors.length, 0, r.errors.join('; '));
-  assert.equal(r.data['01-01'].maghrib, '+5'); // offset preserved
-  assert.equal(r.data['01-01'].fajr, '06:00'); // clock still works alongside
-  assert.equal(r.data['02-01'].maghrib, '-3'); // whitespace + negative
-  assert.equal(r.data['03-01'].maghrib, '+120'); // clamped to ±120
-});
-
-test('rejects an unsigned bare number (not a clock, not an offset)', () => {
-  const r = parseIqamahCsv('date,maghrib\n01-01,5');
+test('a Maghrib-only row yields nothing (its column is ignored)', () => {
+  const r = parseIqamahCsv('date,maghrib\n01-01,18:00');
   assert.equal(r.rows, 0);
-  assert.ok(r.errors.length > 0);
+  assert.equal(r.data['01-01'], undefined);
 });
 
 test('accepts Excel-mangled month-name dates (the "1-Jan" bug)', () => {

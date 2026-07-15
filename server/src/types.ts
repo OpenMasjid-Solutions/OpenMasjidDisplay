@@ -34,11 +34,11 @@ export interface IqamahConfig {
   isha: IqamahRule;
 }
 
-/** Per-day Iqamah override times uploaded via CSV, keyed by "MM-DD" (repeats each
- *  year). Each value maps a prayer key to either a "HH:MM" clock time OR a signed offset
- *  from that prayer's adhan, "+N" / "-N" minutes (mainly for Maghrib, whose adhan drifts
- *  with sunset). Where a date has an entry it wins over the IqamahConfig rule; missing
- *  dates fall back to the rule. */
+/** Per-day Iqamah override times (CSV import or the calendar editor), keyed by "MM-DD"
+ *  (repeats each year). Each value maps a prayer key to a "HH:MM" clock time; where a date
+ *  has an entry it wins over the IqamahConfig rule, and missing dates fall back to the rule.
+ *  Maghrib is NEVER stored here — it always follows the calculated sunset time plus its
+ *  Iqamah offset (a fixed clock time can't track the drifting sunset). */
 export type IqamahYear = Record<string, Partial<Record<'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha' | 'jumuah', string>>>;
 
 /** Image announcement slideshow: between spells of the normal display, the uploaded

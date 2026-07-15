@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
 import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
-import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, copyText, useToast } from '../ui';
+import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 import { readImageForUpload } from '../image';
 
@@ -263,8 +263,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const [iqYear, setIqYear] = useState<IqamahYear>(() => JSON.parse(JSON.stringify(tt?.iqamahYear ?? {})));
   const iqCount = Object.keys(iqYear).length;
   const csvActive = iqCount > 0; // any per-day overrides win over the per-prayer rules
-  const [showTable, setShowTable] = useState(false);
-  // Persist the whole map (used by the one-off editor and the monthly table).
+  // Persist the whole per-day map (used by the calendar editor + CSV import/clear).
   const saveIqYear = async (next: IqamahYear) => {
     if (!tt) return;
     await api.saveIqamahYear(tt.id, next);
@@ -491,16 +490,18 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
       <div className="card section">
         <h3 className="section-title">Iqamah times</h3>
-        <p className="hint" style={{ marginBlockStart: 0 }}>How long after each Adhan the Iqamah is called — a fixed clock time, or “don't show”.</p>
+        <p className="hint" style={{ marginBlockStart: 0 }}>How long after each Adhan the Iqamah is called — a fixed clock time, or “don't show”. <b>Maghrib</b> always follows the calculated sunset time; set its offset (minutes after the Adhan) here — it stays in effect even with a yearly CSV.</p>
         {csvActive && (
           <p className="hint">
-            A yearly CSV is in use, so these per-prayer rules are turned off. Fine-tune the exact times in the
-            table below, or <button type="button" onClick={clearCsv} style={{ background: 'none', border: 0, padding: 0, color: 'var(--color-primary)', textDecoration: 'underline', cursor: 'pointer', font: 'inherit' }}>clear the CSV</button> to use rules again.
+            A yearly CSV is in use, so the other per-prayer rules are turned off (Maghrib's still applies). Adjust
+            specific days in the calendar above, or <button type="button" onClick={clearCsv} style={{ background: 'none', border: 0, padding: 0, color: 'var(--color-primary)', textDecoration: 'underline', cursor: 'pointer', font: 'inherit' }}>clear the CSV</button> to use rules again.
           </p>
         )}
         <div className="list">
           {(['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const).map((k) => (
-            <IqamahRow key={k} name={k} rule={f.iqamah[k]} disabled={csvActive} onChange={(r) => setF((p) => ({ ...p, iqamah: { ...p.iqamah, [k]: r } as IqamahConfig }))} />
+            // Maghrib is never overridden by the CSV (its adhan drifts with sunset), so its
+            // offset stays editable here even when a yearly CSV is active.
+            <IqamahRow key={k} name={k} rule={f.iqamah[k]} disabled={csvActive && k !== 'maghrib'} onChange={(r) => setF((p) => ({ ...p, iqamah: { ...p.iqamah, [k]: r } as IqamahConfig }))} />
           ))}
         </div>
       </div>
@@ -543,11 +544,12 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
         {tt ? (
           <div>
             <p className="hint" style={{ marginBlockStart: 0 }}>
-              Set a one-off Iqamah time for a particular date (say a special programme, Ramadan, or an
-              early Fajr) — without touching your normal rules. It repeats on that date each year until you
-              remove it.
+              Pick a month, tap a day, and set the Iqamah times for just that date (a special programme,
+              Ramadan, an early Fajr…) — without touching your normal rules. It repeats on that date each year
+              until you clear it. Days with a change are dotted. (Maghrib isn't set here — it always follows
+              the calculated sunset time plus its offset.)
             </p>
-            <OneOffIqamahEditor year={iqYear} onSave={saveIqYear} />
+            <CalendarIqamahEditor year={iqYear} onSave={saveIqYear} />
           </div>
         ) : (
           <span className="hint">Create the timetable first, then you can add date-specific times.</span>
@@ -576,8 +578,8 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             <p className="hint" style={{ marginBlockStart: 0 }}>
               Upload one file with a row per day to set exact Iqamah times for the whole year — they override
               the rules above on matching dates. Download the example to see the format (it comes pre-filled
-              from your rules, ready to tweak). Tip: for Maghrib you can enter an offset like <b>+5</b> or
-              <b> -3</b> instead of a clock time, so it stays that many minutes from the adhan as sunset drifts.
+              from your rules, ready to tweak). <b>Don't include a Maghrib time</b> — it's thrown out on import;
+              Maghrib always follows the calculated sunset time plus its offset (set in “Iqamah times” below).
             </p>
             <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
               <label className="btn btn--primary btn--sm" style={{ cursor: 'pointer' }}>
@@ -591,13 +593,9 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             {iqCount > 0 && (
               <p className="hint" style={{ marginBlockStart: '0.5rem' }}>
                 {iqCount} day{iqCount === 1 ? '' : 's'} set. These show on the screens; the live preview here
-                still uses your rules.
+                still uses your rules. Fine-tune any single day in the calendar above.
               </p>
             )}
-            <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.6rem' }} onClick={() => setShowTable((v) => !v)}>
-              {showTable ? 'Hide the table editor' : csvActive ? 'Fine-tune the imported times (by month)' : 'Or edit times in a table (by month)'}
-            </button>
-            {showTable && <IqamahYearEditor value={iqYear} existingRows={iqCount} onSave={saveIqYear} />}
           </div>
         ) : (
           <span className="hint">Create the timetable first, then you can set yearly times.</span>
@@ -1243,191 +1241,102 @@ function daysInMonth(month: number, year: number = new Date().getFullYear()): nu
   return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
 }
 
-/** The quick way to add a one-off Iqamah change for a specific date — pick a date, type the
- *  Iqamah time(s) that differ that day, Add. Existing dated entries list below with a remove.
- *  Reads/writes the SAME shared year map as the CSV + monthly table (via `onSave`), so all
- *  three stay in step and none overwrites another. */
-function OneOffIqamahEditor({ year, onSave }: { year: IqamahYear; onSave: (next: IqamahYear) => Promise<void> }) {
+/** Calendar-style editor for per-day Iqamah changes: pick a month, tap a day, set that day's
+ *  times, Save. Days with a change are dotted, so there's no scrolling a 365-row list. Maghrib
+ *  is NOT edited here — it always follows the calculated sunset time plus its offset. Reads/writes
+ *  the shared per-day map via `onSave` (kept in step with the CSV). */
+function CalendarIqamahEditor({ year, onSave }: { year: IqamahYear; onSave: (next: IqamahYear) => Promise<void> }) {
   const toast = useToast();
-  const PR = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
-  const [date, setDate] = useState(''); // YYYY-MM-DD from <input type=date>
+  const PR = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [sel, setSel] = useState<number | null>(null);
   const [draft, setDraft] = useState<Partial<Record<(typeof PR)[number], string>>>({});
   const [busy, setBusy] = useState(false);
-
-  const entries = Object.keys(year).sort(); // "MM-DD" keys sort chronologically
-  const label = (mmdd: string) => {
-    const [m, d] = mmdd.split('-').map(Number);
-    return `${MONTHS[(m || 1) - 1]?.slice(0, 3) ?? '??'} ${d || ''}`.trim();
-  };
-
-  const add = async () => {
-    if (!date) return toast('Pick a date first.', 'error');
-    const row: Record<string, string> = {};
-    for (const pr of PR) { const v = draft[pr]; if (v) row[pr] = v; }
-    if (!Object.keys(row).length) return toast('Set at least one Iqamah time for that date.', 'error');
-    const mmdd = date.slice(5); // "MM-DD"
-    const next: IqamahYear = { ...year, [mmdd]: { ...(year[mmdd] ?? {}), ...row } };
-    setBusy(true);
-    try {
-      await onSave(next);
-      setDate('');
-      setDraft({});
-      toast(`Iqamah change saved for ${label(mmdd)}.`);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not save that change.', 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-  const remove = async (mmdd: string) => {
-    const next: IqamahYear = { ...year };
-    delete next[mmdd];
-    setBusy(true);
-    try {
-      await onSave(next);
-      toast(`Removed the change for ${label(mmdd)}.`);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not remove that change.', 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div>
-      {entries.length > 0 && (
-        <div className="list" style={{ marginBlock: '0.8rem' }}>
-          {entries.map((mmdd) => {
-            const e = year[mmdd] ?? {};
-            const parts = PR.filter((pr) => e[pr]).map((pr) => `${PRAYER_TITLE[pr]} ${e[pr]}`);
-            return (
-              <div key={mmdd} className="oneoff-row">
-                <span className="oneoff-date">{label(mmdd)}</span>
-                <span className="oneoff-times">{parts.length ? parts.join('  ·  ') : '—'}</span>
-                <button type="button" className="icon-btn" onClick={() => remove(mmdd)} disabled={busy} aria-label={`Remove the change for ${label(mmdd)}`}><IconTrash size={15} /></button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <div className="oneoff-add">
-        <label className="field" style={{ margin: 0 }}>
-          <span className="label">Date</span>
-          <input type="date" className="input" value={date} onChange={(ev) => setDate(ev.target.value)} />
-        </label>
-        <div className="oneoff-grid">
-          {PR.map((pr) => (
-            <label key={pr} className="field" style={{ margin: 0 }}>
-              <span className="label">{PRAYER_TITLE[pr]}</span>
-              {pr === 'maghrib' ? (
-                // Maghrib's adhan drifts with sunset, so allow a signed offset ("+5"/"-3")
-                // as well as a fixed clock time.
-                <input type="text" inputMode="text" className="input" placeholder="+5 or 6:35 PM" value={draft[pr] ?? ''} onChange={(ev) => setDraft((x) => ({ ...x, [pr]: ev.target.value }))} />
-              ) : (
-                <input type="time" className="input" value={draft[pr] ?? ''} onChange={(ev) => setDraft((x) => ({ ...x, [pr]: ev.target.value }))} />
-              )}
-            </label>
-          ))}
-        </div>
-        <button type="button" className="btn btn--primary btn--sm" onClick={add} disabled={busy}><IconPlus size={14} /> Add change</button>
-      </div>
-    </div>
-  );
-}
-
-/** In-app monthly grid for setting exact Iqamah clock times across the year. Edits a copy
- *  of the shared `value` map (seeded fresh whenever it changes — e.g. after a one-off add or
- *  a CSV import) and persists via `onSave`, so it never clobbers the other editors. */
-function IqamahYearEditor({ value, existingRows, onSave }: { value: IqamahYear; existingRows: number | null; onSave: (next: IqamahYear) => Promise<void> }) {
-  const toast = useToast();
-  const [year, setYear] = useState<IqamahYear>(() => JSON.parse(JSON.stringify(value)));
-  // Re-seed when the shared map changes underneath us (one-off add, CSV import/clear) so the
-  // grid never saves back a stale copy that would drop those changes.
-  useEffect(() => { setYear(JSON.parse(JSON.stringify(value))); }, [value]);
-  const [month, setMonth] = useState(new Date().getMonth() + 1);
-  const [busy, setBusy] = useState(false);
-  // True when this timetable already had per-day times when the editor opened (e.g.
-  // imported from a CSV) — saving manual edits then overrides them, so we confirm first.
-  const [confirmOverride, setConfirmOverride] = useState(false);
-  const PR = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
-  const pad = (n: number) => String(n).padStart(2, '0');
   const key = (d: number) => `${pad(month)}-${pad(d)}`;
-  const get = (d: number, pr: (typeof PR)[number]) => year[key(d)]?.[pr] ?? '';
-  const setCell = (d: number, pr: (typeof PR)[number], val: string) =>
-    setYear((y) => {
-      const k = key(d);
-      const row = { ...(y[k] ?? {}) };
-      if (val) row[pr] = val; else delete row[pr];
-      const ny = { ...y };
-      if (Object.keys(row).length) ny[k] = row; else delete ny[k];
-      return ny;
-    });
-  const doSave = async () => {
+  const dayHas = (d: number) => { const e = year[key(d)]; return !!e && PR.some((p) => e[p]); };
+
+  // Load the selected day's times into the draft (re-load if the shared map changes under us,
+  // e.g. after a CSV import).
+  useEffect(() => {
+    if (sel == null) return;
+    const e = year[key(sel)] ?? {};
+    setDraft({ fajr: e.fajr ?? '', dhuhr: e.dhuhr ?? '', asr: e.asr ?? '', isha: e.isha ?? '' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sel, month, year]);
+
+  const persist = async (mut: (row: Record<string, string>) => void, done: string) => {
+    if (sel == null) return;
+    const k = key(sel);
+    const row: Record<string, string> = {};
+    const cur = year[k];
+    if (cur) for (const [kk, vv] of Object.entries(cur)) if (vv) row[kk] = vv; // keep any other keys
+    mut(row);
+    const next: IqamahYear = { ...year };
+    if (Object.keys(row).length) next[k] = row as IqamahYear[string];
+    else delete next[k];
     setBusy(true);
     try {
-      await onSave(year);
-      const rows = Object.keys(year).length;
-      setConfirmOverride(false);
-      toast(`Saved Iqamah times for ${rows} day${rows === 1 ? '' : 's'}.`);
+      await onSave(next);
+      toast(done);
     } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not save the times.', 'error');
+      toast(e instanceof Error ? e.message : 'Could not save.', 'error');
     } finally {
       setBusy(false);
     }
   };
-  // Warn before overriding times already imported/saved for this timetable. Read the
-  // count LIVE (not captured at mount) so importing a CSV while the editor is open
-  // still triggers the warning.
-  const save = () => { if ((existingRows ?? 0) > 0) setConfirmOverride(true); else void doSave(); };
+  const short = () => `${MONTHS[month - 1].slice(0, 3)} ${sel}`;
+  const saveDay = () => persist((row) => { for (const p of PR) { const v = (draft[p] ?? '').trim(); if (v) row[p] = v; else delete row[p]; } }, `Saved ${short()}.`);
+  const clearDay = () => persist((row) => { for (const p of PR) delete row[p]; }, `Cleared ${short()}.`).then(() => setDraft({}));
+
+  // Lay the month out as a real calendar (weekday-aligned to the current year).
+  const yr = new Date().getFullYear();
+  const firstDow = new Date(yr, month - 1, 1).getDay();
+  const nDays = daysInMonth(month, yr);
+  const cells: (number | null)[] = [...Array(firstDow).fill(null), ...Array.from({ length: nDays }, (_, i) => i + 1)];
+  const WD = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
   return (
-    <>
-    <div className="iqyear">
-      <div className="row" style={{ gap: '0.5rem', marginBlock: '0.7rem', flexWrap: 'wrap', alignItems: 'center' }}>
-        <select className="select" style={{ width: 'auto' }} value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+    <div className="iqcal">
+      <div className="row" style={{ gap: '0.5rem', marginBlock: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <select className="select" style={{ width: 'auto' }} value={month} onChange={(e) => { setMonth(Number(e.target.value)); setSel(null); }}>
           {MONTHS.map((mn, i) => <option key={mn} value={i + 1}>{mn}</option>)}
         </select>
-        <button type="button" className="btn btn--primary btn--sm" onClick={save} disabled={busy}>Save times</button>
-        <span className="hint">Blank = use the rule. Saved for the whole year.</span>
+        <span className="hint">Tap a day to set its times. A dot means that day has a change.</span>
       </div>
-      <div className="iqyear-scroll">
-        <table className="iqyear-grid">
-          <thead>
-            <tr><th>Day</th>{PR.map((pr) => <th key={pr}>{PRAYER_TITLE[pr]}</th>)}</tr>
-          </thead>
-          <tbody>
-            {Array.from({ length: daysInMonth(month) }, (_, i) => i + 1).map((d) => (
-              <tr key={d}>
-                <td className="iqyear-day">{d}</td>
-                {PR.map((pr) => (
-                  <td key={pr}>
-                    {pr === 'maghrib' ? (
-                      // Maghrib may be a signed offset from its (sunset-drifting) adhan, e.g. "+5".
-                      <input type="text" className="input iqyear-cell" placeholder="+5" value={get(d, pr)} onChange={(e) => setCell(d, pr, e.target.value)} />
-                    ) : (
-                      <input type="time" className="input iqyear-cell" value={get(d, pr)} onChange={(e) => setCell(d, pr, e.target.value)} />
-                    )}
-                  </td>
-                ))}
-              </tr>
+      <div className="iqcal-grid">
+        {WD.map((w) => <div key={w} className="iqcal-wd">{w}</div>)}
+        {cells.map((d, i) =>
+          d == null ? (
+            <div key={`b${i}`} />
+          ) : (
+            <button type="button" key={d} className={`iqcal-day${sel === d ? ' is-selected' : ''}${dayHas(d) ? ' has-override' : ''}`} onClick={() => setSel(d)} aria-pressed={sel === d}>
+              {d}
+            </button>
+          ),
+        )}
+      </div>
+      {sel != null && (
+        <div className="iqcal-editor">
+          <div className="row-between" style={{ marginBlockEnd: '0.5rem' }}>
+            <b>{MONTHS[month - 1]} {sel}</b>
+            {dayHas(sel) && <button type="button" className="btn btn--ghost btn--sm" onClick={clearDay} disabled={busy}>Clear day</button>}
+          </div>
+          <div className="iqcal-fields">
+            {PR.map((pr) => (
+              <label key={pr} className="field" style={{ margin: 0 }}>
+                <span className="label">{PRAYER_TITLE[pr]}</span>
+                <input type="time" className="input" value={draft[pr] ?? ''} onChange={(ev) => setDraft((x) => ({ ...x, [pr]: ev.target.value }))} />
+              </label>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </div>
+          <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.6rem', flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn--primary btn--sm" onClick={saveDay} disabled={busy}><IconCheck size={14} /> Save {short()}</button>
+            <span className="hint">Blank = use your normal rule.</span>
+          </div>
+        </div>
+      )}
     </div>
-    <Modal
-      open={confirmOverride}
-      onClose={() => setConfirmOverride(false)}
-      title="Override imported times?"
-      footer={
-        <>
-          <button className="btn" onClick={() => setConfirmOverride(false)}>Cancel</button>
-          <button className="btn btn--primary" onClick={() => void doSave()} disabled={busy}>Override &amp; save</button>
-        </>
-      }
-    >
-      <p className="muted">This timetable already has per-day Iqāmah times (for example, imported from a CSV file). Saving your changes will override those imported times for the days you edited. Your CSV file itself isn't changed — you can re-import it to undo this.</p>
-    </Modal>
-    </>
   );
 }
 

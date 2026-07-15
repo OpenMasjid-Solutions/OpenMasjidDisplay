@@ -529,13 +529,11 @@ function buildModel(tt: Timetable, now: Date): Model {
   const dayKey = `${pad2(parts.month)}-${pad2(parts.day)}`;
   const yearRow = tt.iqamahYear?.[dayKey];
   const iq = (k: keyof typeof tt.iqamah, adhan: number): number | null => {
-    const csv = yearRow?.[k];
-    if (csv) {
-      // A per-day override may be a signed offset from that day's adhan ("+5"/"-3") — used
-      // for Maghrib, whose adhan drifts with sunset — or a fixed clock time.
-      const offM = /^([+-])(\d{1,3})$/.exec(csv);
-      if (offM) return adhan + ((offM[1] === '-' ? -1 : 1) * +offM[2]) / 60;
-      const csvH = parseHHMM(csv);
+    // Maghrib is ALWAYS the calculated sunset adhan + its rule offset — never a per-day
+    // override, since a fixed clock time can't track the drifting sunset. (Any legacy stored
+    // Maghrib value is ignored.) Every other prayer takes its per-day override when set.
+    if (k !== 'maghrib') {
+      const csvH = yearRow?.[k] ? parseHHMM(yearRow[k]!) : null;
       if (csvH != null) return csvH;
     }
     return iqamahHours(adhan, tt.iqamah[k]);
@@ -1508,7 +1506,8 @@ function joinList(items: string[]): string {
   return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
 }
 
-const ICHANGE_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
+// Maghrib is excluded — it's never a per-day override (always calculated sunset + its offset).
+const ICHANGE_KEYS = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 /** The soonest upcoming per-day Iqāmah change (from tt.iqamahYear) that falls within
  *  `daysBefore` days, rendered as a ready-to-show sentence — or null if none. A prayer only
