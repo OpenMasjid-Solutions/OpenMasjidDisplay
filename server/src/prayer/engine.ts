@@ -193,8 +193,26 @@ export function localParts(instant: Date, timeZone?: string): DateParts {
 export function dayOfWeek(instant: Date, timeZone?: string): number {
   const opts: Intl.DateTimeFormatOptions = { weekday: 'short' };
   if (timeZone) opts.timeZone = timeZone;
-  const wd = new Intl.DateTimeFormat('en-US', opts).format(instant);
+  let wd: string;
+  try {
+    wd = new Intl.DateTimeFormat('en-US', opts).format(instant);
+  } catch {
+    // An invalid IANA zone (e.g. a stale hand-typed value) would otherwise throw and
+    // crash the whole render — fall back to the host zone, like localParts does above.
+    delete opts.timeZone;
+    wd = new Intl.DateTimeFormat('en-US', opts).format(instant);
+  }
   return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(wd.slice(0, 3));
+}
+
+/** An instant at ~noon local time on the given calendar date in `timeZone`. Anchoring at
+ *  noon (rather than at 12:00 UTC) keeps localParts() on the INTENDED calendar date for
+ *  every zone — including UTC+13/+14 (Auckland/Fiji/Kiritimati), where a 12:00-UTC instant
+ *  rolls forward into the next day. Used to render/inspect a specific date's timetable. */
+export function zonedNoon(year: number, month: number, day: number, timeZone?: string): Date {
+  const utcNoon = Date.UTC(year, month - 1, day, 12);
+  const offset = timezoneOffsetHours(new Date(utcNoon), timeZone); // hours east of UTC
+  return new Date(utcNoon - offset * 3600000);
 }
 
 /** Parse "HH:MM" to decimal hours, or null if invalid. */

@@ -20,6 +20,7 @@ import {
   iqamahHours,
   localParts,
   timezoneOffsetHours,
+  zonedNoon,
   dayOfWeek,
   parseHHMM,
   METHODS,
@@ -734,7 +735,9 @@ export function widgetPayload(tt: Timetable, now: Date, opts: { date?: string; w
 
   const fd = parseIsoDate(opts.date);
   const isToday = !fd || (fd.y === today.year && fd.m === today.month && fd.d === today.day);
-  const focusDate = isToday ? now : new Date(Date.UTC(fd!.y, fd!.m - 1, fd!.d, 12));
+  // Anchor a non-today focus at LOCAL noon (not 12:00 UTC) so the focus card lands on the
+  // intended calendar date even in UTC+13/+14 zones (a UTC-noon instant rolls to the next day).
+  const focusDate = isToday ? now : zonedNoon(fd!.y, fd!.m, fd!.d, tz);
   const fParts = localParts(focusDate, tz);
 
   let rows: WidgetRow[] = [];
@@ -780,7 +783,7 @@ export function widgetPayload(tt: Timetable, now: Date, opts: { date?: string; w
   const focusIso = isoOf(fParts.year, fParts.month, fParts.day);
   const days: WidgetDay[] = [];
   for (let i = 0; i < 7; i++) {
-    const dObj = new Date(Date.UTC(mon.y, mon.m - 1, mon.d + i, 12));
+    const dObj = zonedNoon(mon.y, mon.m, mon.d + i, tz);
     const dp = localParts(dObj, tz);
     const lbl = new Date(Date.UTC(dp.year, dp.month - 1, dp.day, 12));
     const iso = isoOf(dp.year, dp.month, dp.day);

@@ -42,7 +42,7 @@ import { renderPreviewPng, renderPreviewMeta } from './render/renderPool';
 import { probeSource } from './render/renderer';
 import { parseIqamahCsv, toCsv, templateCsv, normalizeIqamahYear } from './iqamahCsv';
 import { renderMonthPrintHtml } from './print';
-import { localParts } from './prayer/engine';
+import { localParts, zonedNoon } from './prayer/engine';
 import {
   normTimetable,
   normSource,
@@ -83,6 +83,19 @@ function sendJson(res: ServerResponse, status: number, obj: unknown): void {
   const body = JSON.stringify(obj);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(body);
+}
+
+/** The instant to render a preview at: local noon on `dateStr` (YYYY-MM-DD) in the
+ *  timetable's timezone when a valid date is given, else "now". Lets the admin preview
+ *  the screen as it will look on a specific day (e.g. to confirm a per-day Iqamah change). */
+function previewInstant(dateStr: unknown, timezone?: string): number {
+  const m = typeof dateStr === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr) : null;
+  if (!m) return Date.now();
+  const y = +m[1];
+  const mo = +m[2];
+  const da = +m[3];
+  if (mo < 1 || mo > 12 || da < 1 || da > 31) return Date.now();
+  return zonedNoon(y, mo, da, timezone || undefined).getTime();
 }
 
 function readBody(req: IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
@@ -766,7 +779,12 @@ export function createApi(deps: Deps) {
         const bgFile = typeof body.backgroundImage === 'string' ? body.backgroundImage : '';
         const logoFile = typeof body.logoImage === 'string' ? body.logoImage : '';
         const width = tt.orientation === 'portrait' ? 540 : 960;
-        const png = await renderPreviewPng(tt, Date.now(), width, bgFile, logoFile);
+        // Optional `previewDate` (YYYY-MM-DD) lets the admin see the screen AS IT WILL LOOK on
+        // a chosen day — so a per-day Iqamah change set for a future date is verifiable now,
+        // instead of only appearing on the masjid screen when that day arrives. Anchored at
+        // local noon in the timetable's own timezone (a midday view of that calendar day).
+        const nowMs = previewInstant(body.previewDate, tt.timezone);
+        const png = await renderPreviewPng(tt, nowMs, width, bgFile, logoFile);
         res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
         res.end(png);
         return;
@@ -833,7 +851,8 @@ export function createApi(deps: Deps) {
         const tt = store.db.timetables.find((t) => t.id === prevMatch[1]);
         if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
         const width = tt.orientation === 'portrait' ? 540 : 960;
-        const png = await renderPreviewPng(tt, Date.now(), width, tt.backgroundImage || '', tt.logoImage || '');
+        const nowMs = previewInstant(url.searchParams.get('date'), tt.timezone);
+        const png = await renderPreviewPng(tt, nowMs, width, tt.backgroundImage || '', tt.logoImage || '');
         res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
         res.end(png);
         return;

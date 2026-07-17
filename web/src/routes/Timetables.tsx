@@ -161,6 +161,9 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     return (['general', 'salah', 'appearance', 'during', 'announce', 'sharing'] as const).includes(t as EditorTab) ? (t as EditorTab) : 'general';
   });
   const [previewOpen, setPreviewOpen] = useState(true);
+  // Empty = live "today". Set to a YYYY-MM-DD to preview the screen as it will look that day,
+  // so per-day Iqamah changes (set in the calendar below) are verifiable before the day arrives.
+  const [previewDate, setPreviewDate] = useState('');
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((p) => ({ ...p, [k]: v }));
 
   // The screens rotate the layout every 5 min when "Rotate layouts" is on; in the
@@ -592,8 +595,9 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             </div>
             {iqCount > 0 && (
               <p className="hint" style={{ marginBlockStart: '0.5rem' }}>
-                {iqCount} day{iqCount === 1 ? '' : 's'} set. These show on the screens; the live preview here
-                still uses your rules. Fine-tune any single day in the calendar above.
+                {iqCount} day{iqCount === 1 ? '' : 's'} set. Each takes effect automatically on its own date
+                (in this timetable's timezone). The preview shows <b>today</b> by default — to check a specific
+                day now, set its date in the “Preview date” box on the preview.
               </p>
             )}
           </div>
@@ -999,12 +1003,19 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
         {previewOpen && (
           <aside className="tt-editor__preview glass-raised">
-            <LivePreview body={previewBody} portrait={f.orientation === 'portrait'} onEditCommit={editLabel} />
-            <p className="hint" style={{ textAlign: 'center', marginBlock: '0.5rem 0' }}>
+            <LivePreview body={previewBody} portrait={f.orientation === 'portrait'} onEditCommit={editLabel} previewDate={previewDate} />
+            <div className="row" style={{ gap: '0.4rem', justifyContent: 'center', alignItems: 'center', marginBlockStart: '0.5rem', flexWrap: 'wrap' }}>
+              <label className="label" style={{ margin: 0 }} htmlFor="preview-date">Preview date</label>
+              <input id="preview-date" type="date" className="input" style={{ width: 'auto' }} value={previewDate} onChange={(e) => setPreviewDate(e.target.value)} />
+              {previewDate && <button type="button" className="btn btn--ghost btn--sm" onClick={() => setPreviewDate('')}>Back to today</button>}
+            </div>
+            <p className="hint" style={{ textAlign: 'center', marginBlock: '0.35rem 0' }}>
               <IconClock size={12} />{' '}
-              {f.layoutCarousel
-                ? 'Rotating preview — layouts cycle every 5 min. Click a name, the masjid title or the footer to rename it.'
-                : 'Live preview — click a name, the masjid title or the footer to rename it.'}
+              {previewDate
+                ? 'This is how the screen will look that day — including any Iqamah change you set for it in the calendar below.'
+                : f.layoutCarousel
+                  ? 'Rotating preview — layouts cycle every 5 min. Pick a date to check a specific day. Click a name, the masjid title or the footer to rename it.'
+                  : 'Live preview — pick a date to see a specific day. Click a name, the masjid title or the footer to rename it.'}
             </p>
           </aside>
         )}
@@ -1058,19 +1069,22 @@ function WidgetEmbed({ id }: { id: string }) {
   );
 }
 
-function LivePreview({ body, portrait, onEditCommit, onPopout }: { body: Partial<Timetable>; portrait: boolean; onEditCommit: (id: string, value: string) => void; onPopout?: () => void }) {
+function LivePreview({ body, portrait, onEditCommit, onPopout, previewDate }: { body: Partial<Timetable>; portrait: boolean; onEditCommit: (id: string, value: string) => void; onPopout?: () => void; previewDate?: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState(false);
   const [spots, setSpots] = useState<Hotspot[]>([]);
   const [active, setActive] = useState<{ id: string; value: string } | null>(null);
   const urlRef = useRef<string | null>(null);
-  const key = JSON.stringify(body);
+  // `previewDate` (YYYY-MM-DD) renders the screen as it will look on that day — so a per-day
+  // Iqamah change set for a future date is visible here, not only on the day it lands.
+  const reqBody = previewDate ? { ...body, previewDate } : body;
+  const key = JSON.stringify(reqBody);
 
   useEffect(() => {
     let alive = true;
     const t = setTimeout(() => {
       api
-        .previewLive(body)
+        .previewLive(reqBody)
         .then((u) => {
           if (!alive) {
             URL.revokeObjectURL(u);
