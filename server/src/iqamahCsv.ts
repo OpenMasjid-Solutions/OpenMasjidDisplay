@@ -25,7 +25,7 @@ const CSV_COLS = ['fajr', 'dhuhr', 'asr', 'isha', 'jumuah'] as const;
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
 /** Parse a clock string ("HH:MM", "h:MM am/pm") to "HH:MM" 24h, or null. */
-function parseClock(s: string): string | null {
+export function parseClock(s: string): string | null {
   const m = /^\s*(\d{1,2}):(\d{2})\s*(am|pm)?\s*$/i.exec(s);
   if (!m) return null;
   let h = +m[1];

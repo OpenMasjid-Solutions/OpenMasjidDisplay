@@ -15,6 +15,7 @@
 import type { Timetable, HadithItem, SalahHadith, TimeFormat, Lang } from '../types';
 import { getPalette, type Palette } from './theme';
 import { DEFAULT_SALAH_HADITH } from './defaultHadith';
+import { resolveSchedule } from '../iqamahSchedule';
 import {
   prayerTimes,
   iqamahHours,
@@ -476,12 +477,14 @@ interface Model {
   /** configured Jumu'ah time(s), decimal hours, sorted — shown as a separate strip
    *  on every day (NOT part of the daily prayer rows). */
   jumuah: number[];
-  /** on Friday, the upcoming Jumu'ah the ring counts down to (1st, then 2nd); null on
-   *  other days or once every Jumu'ah time has passed. */
-  nextJumuah: { time: number; ordinal: number; count: number } | null;
+  /** on Friday, the upcoming Jumu'ah the ring counts down to; null on other days or once
+   *  every Jumu'ah time has passed. `adhan` marks the FIRST phase — counting to the Dhuhr
+   *  adhan (labeled "Jumu'ah", never "Dhuhr") — before the Jumu'ah jamā'ah countdowns
+   *  (1st, then 2nd, …). `ordinal` is the Jumu'ah being headed toward (1-based). */
+  nextJumuah: { time: number; ordinal: number; count: number; adhan: boolean } | null;
 }
 
-function buildModel(tt: Timetable, now: Date): Model {
+export function buildModel(tt: Timetable, now: Date): Model {
   const tz = tt.timezone || undefined;
   const parts = localParts(now, tz);
   const off = timezoneOffsetHours(now, tz);
@@ -496,10 +499,14 @@ function buildModel(tt: Timetable, now: Date): Model {
 
   const nowHours = parts.hour + parts.minute / 60 + parts.second / 3600;
   const isFriday = dayOfWeek(now, tz) === 5;
-  // Jumu'ah times are shown as a SEPARATE strip on EVERY day; they don't replace
-  // Dhuhr in the daily table and don't drive the active/next countdown (which always
-  // tracks the five daily prayers, Dhuhr included).
-  const jumuah = tt.jumuah.map(parseHHMM).filter((x): x is number => x != null).sort((a, b) => a - b);
+  // Scheduled "from this date onward" Iqamah changes effective on the display's date (the
+  // times below, and — when set — the Jumu'ah times, carried forward from the latest entry).
+  const sched = resolveSchedule(tt.iqamahSchedule, parts.year, parts.month, parts.day);
+  // Jumu'ah times are shown as a SEPARATE strip on EVERY day; they don't replace Dhuhr in
+  // the daily table and don't drive the active/next countdown (which always tracks the five
+  // daily prayers, Dhuhr included). A scheduled Jumu'ah change replaces the base times.
+  const jumuahSrc = sched.jumuah && sched.jumuah.length ? sched.jumuah : tt.jumuah;
+  const jumuah = jumuahSrc.map(parseHHMM).filter((x): x is number => x != null).sort((a, b) => a - b);
   const order = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
   // Per-prayer Adhan delay: the masjid may call the Adhan a few minutes after the
   // astronomical time. `adj()` gives the DISPLAYED Adhan (astronomical + offset); the
@@ -526,15 +533,18 @@ function buildModel(tt: Timetable, now: Date): Model {
   }
   if (!activeKey) activeKey = 'isha';
 
-  // A CSV-imported per-day override (keyed by month-day) wins over the rule.
+  // Override precedence for a prayer's Iqamah on this date: a CSV-imported per-day time
+  // (keyed by month-day) wins over a scheduled "from this date" change, which wins over the
+  // base rule.
   const dayKey = `${pad2(parts.month)}-${pad2(parts.day)}`;
   const yearRow = tt.iqamahYear?.[dayKey];
   const iq = (k: keyof typeof tt.iqamah, adhan: number): number | null => {
-    // Maghrib is ALWAYS the calculated sunset adhan + its rule offset — never a per-day
-    // override, since a fixed clock time can't track the drifting sunset. (Any legacy stored
-    // Maghrib value is ignored.) Every other prayer takes its per-day override when set.
+    // Maghrib is ALWAYS the calculated sunset adhan + its rule offset — never overridden,
+    // since a fixed clock time can't track the drifting sunset. (Any legacy stored Maghrib
+    // value is ignored.) Every other prayer takes its per-day / scheduled override when set.
     if (k !== 'maghrib') {
-      const csvH = yearRow?.[k] ? parseHHMM(yearRow[k]!) : null;
+      const ov = yearRow?.[k] ?? (sched as Record<string, string | undefined>)[k];
+      const csvH = ov ? parseHHMM(ov) : null;
       if (csvH != null) return csvH;
     }
     return iqamahHours(adhan, tt.iqamah[k]);
@@ -565,23 +575,23 @@ function buildModel(tt: Timetable, now: Date): Model {
   // correct: the ring just counts down to Dhuhr).
   if (activeKey === 'fajr' && !countdownToIqamah && nowHours >= times.sunrise) activeKey = null;
 
-  // The zawāl (prohibited) window before the Dhuhr Adhan: during it, prayer is prohibited,
-  // so the ring stays a "Prohibited time → Dhuhr Adhan" notice — never a Jumu'ah countdown
-  // (which would otherwise fire on a Friday when a Jumu'ah time sits at/just before Dhuhr).
-  const pn = tt.prohibitedNotice;
   const dhuhrAdhan = adj('dhuhr');
-  const inProhibited = !!pn?.enabled && nowHours >= dhuhrAdhan - Math.max(1, pn.minutes) / 60 && nowHours < dhuhrAdhan;
+  const asrAdhan = eff['asr'];
 
-  // On Friday, Jumu'ah stands in for the Dhuhr jamā'ah, so the next-prayer ring counts down to
-  // the upcoming Jumu'ah (1st, then 2nd) instead of Dhuhr — and NEVER shows Dhuhr at all. But it
-  // must NOT hijack the rest of the day: a Jumu'ah only wins if it falls no later than the next
-  // NON-Dhuhr daily prayer, so a pre-Fajr render still counts to Fajr and a mistyped evening
-  // Jumu'ah can't shadow Asr/Maghrib. It also overrides a Dhuhr-Iqāmah countdown, but not another
-  // prayer's Iqāmah window nor the zawāl (prohibited) notice, which stays as-is. The daily TABLE
-  // still tracks the five prayers (Dhuhr stays active through midday); only the ring switches.
+  // On Friday, Jumu'ah stands in for the Dhuhr jamā'ah, so the next-prayer ring counts down —
+  // in order — to the Dhuhr ADHAN (labeled "Jumu'ah"), then the 1st Jumu'ah jamā'ah, then the
+  // 2nd, … and NEVER shows "Dhuhr". This holds even inside the zawāl (prohibited) window just
+  // before the adhan: the ring keeps the Jumu'ah label while the render layers the red
+  // "Prohibited time" styling on top, so it reads "…UNTIL JUMU'AH ADHAN", never "…DHUHR ADHAN".
+  // But it must NOT hijack the rest of the day: phase 1 fires only when the Dhuhr adhan is the
+  // next event (nothing non-Dhuhr comes first — so a pre-Fajr render still counts to Fajr), and
+  // a Jumu'ah only wins inside the MIDDAY window (at/after the adhan, no later than Asr) — so a
+  // mistyped evening Jumu'ah can't shadow Asr/Maghrib/Isha. It overrides a Dhuhr-Iqāmah
+  // countdown, but not another prayer's Iqāmah window. The daily TABLE still tracks the five
+  // prayers (Dhuhr stays active through midday); only the ring switches.
   let nextJumuah: Model['nextJumuah'] = null;
-  if (isFriday && jumuah.length && !inProhibited) {
-    // The next daily prayer that ISN'T Dhuhr (Jumu'ah replaces Dhuhr, so it bounds the target).
+  if (isFriday && jumuah.length) {
+    // The next daily prayer that ISN'T Dhuhr (bounds phase 1 so it can't fire before Fajr).
     let nnKey = 'fajr';
     let nnHours = tomorrowFajr + (ao.fajr ?? 0) / 60 + 24;
     for (const k of order) {
@@ -591,15 +601,23 @@ function buildModel(tt: Timetable, now: Date): Model {
         break;
       }
     }
+    const canTake = !countdownToIqamah || inWindow?.key === 'dhuhr';
     const upcoming = jumuah.filter((t) => t > nowHours);
-    if (upcoming.length && upcoming[0] <= nnHours && (!countdownToIqamah || inWindow?.key === 'dhuhr')) {
-      // Count down to the upcoming Jumu'ah (a Jumu'ah adhan countdown, not a Dhuhr Iqāmah).
-      nextJumuah = { time: upcoming[0], ordinal: jumuah.indexOf(upcoming[0]) + 1, count: jumuah.length };
+    if (canTake && nowHours < dhuhrAdhan && dhuhrAdhan <= nnHours) {
+      // Phase 1: before the Dhuhr adhan — count to it, labeled "Jumu'ah" (Dhuhr becomes Jumu'ah
+      // on Friday). ordinal 1 = heading toward the 1st Jumu'ah next.
+      nextJumuah = { time: dhuhrAdhan, ordinal: 1, count: jumuah.length, adhan: true };
+      nextHours = dhuhrAdhan;
+      countdownToIqamah = false;
+    } else if (canTake && upcoming.length && upcoming[0] <= asrAdhan) {
+      // Phase 2+: after the adhan — count to the upcoming Jumu'ah jamā'ah (1st, then 2nd, …),
+      // but only within the midday window (a Jumu'ah after Asr is a typo, not the jamā'ah).
+      nextJumuah = { time: upcoming[0], ordinal: jumuah.indexOf(upcoming[0]) + 1, count: jumuah.length, adhan: false };
       nextHours = upcoming[0];
       countdownToIqamah = false;
     } else if (nextKey === 'dhuhr') {
-      // No Jumu'ah to show, but we'd otherwise point at Dhuhr — skip it (never count to Dhuhr on
-      // a Jumu'ah day) and target the next non-Dhuhr prayer instead.
+      // We'd otherwise point at Dhuhr — skip it (never count to Dhuhr on a Jumu'ah day) and
+      // target the next non-Dhuhr prayer instead.
       nextKey = nnKey;
       nextHours = nnHours;
       countdownToIqamah = false;
@@ -1496,9 +1514,11 @@ function prohibitedWindow(tt: Timetable, m: Model, nowHours: number): { secsLeft
   return null;
 }
 
-/** The red scrolling message shown along the bottom during a ticker-mode prohibited window. */
+/** The red scrolling message shown along the bottom during a ticker-mode prohibited window.
+ *  On Friday the awaited adhan is the Jumu'ah adhan, not "Dhuhr". */
 function prohibitedMessage(tt: Timetable, m: Model): string {
-  return `Prohibited time for prayer — please wait until the Dhuhr adhan (${fmtShort(dhuhrAdhanHours(m), tt.timeFormat)})`;
+  const adhanName = m.isFriday && m.jumuah.length ? "Jumu'ah" : 'Dhuhr';
+  return `Prohibited time for prayer — please wait until the ${adhanName} adhan (${fmtShort(dhuhrAdhanHours(m), tt.timeFormat)})`;
 }
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -1512,18 +1532,22 @@ function joinList(items: string[]): string {
 // Maghrib is excluded — it's never a per-day override (always calculated sunset + its offset).
 const ICHANGE_KEYS = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-/** The soonest upcoming per-day Iqāmah change (from tt.iqamahYear) that falls within
- *  `daysBefore` days, rendered as a ready-to-show sentence — or null if none. A prayer only
- *  "changes" on a date when it has a DELIBERATE per-day override there that differs BOTH from
- *  the rule for that same date (≥2 min) AND from the effective time the day before (≥2 min).
- *  The same-date-vs-rule test makes DST days and seasonal drift (and an unedited full-year
- *  template, whose rows equal the rule) never trigger it; the vs-day-before test means only
- *  the ONSET of a multi-day block fires, not every interior day. Only the five daily prayers
- *  are considered. The sentence is English (like the prohibited-time message); localizing it
- *  fully is a later i18n pass. */
-function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: number): string | null {
+/** The soonest upcoming Iqāmah change that falls within `daysBefore` days, rendered as a
+ *  ready-to-show sentence — or null if none. Considers BOTH a scheduled "from this date"
+ *  change (tt.iqamahSchedule) and a per-day CSV override (tt.iqamahYear). A prayer only
+ *  "changes" on a date when its effective override there differs BOTH from the rule for that
+ *  same date (≥2 min) AND from the effective time the day before (≥2 min). The same-date-vs-
+ *  rule test makes DST days and seasonal drift (and an unedited full-year template, whose
+ *  rows equal the rule) never trigger it; the vs-day-before test means only the ONSET of a
+ *  change fires, not every day it's in effect. Only the four daily prayers are considered
+ *  (Maghrib is never overridden; Jumu'ah changes aren't announced here). English sentence;
+ *  full localization is a later i18n pass. */
+export function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: number): string | null {
   const year = tt.iqamahYear;
-  if (!year || tt.latitude == null || tt.longitude == null) return null;
+  const schedule = tt.iqamahSchedule;
+  const hasYear = !!year && Object.keys(year).length > 0;
+  const hasSched = !!schedule && schedule.length > 0;
+  if ((!hasYear && !hasSched) || tt.latitude == null || tt.longitude == null) return null;
   const tz = tt.timezone || undefined;
   const today = localParts(now, tz);
   const method = tt.method === 'Custom' ? { label: 'Custom', fajr: tt.fajrAngle ?? 18, isha: tt.ishaAngle ?? 17 } : tt.method;
@@ -1547,31 +1571,46 @@ function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: number): str
   // a deliberate override is compared against (both use the same date's UTC offset).
   const ruleIq = (y: number, mo: number, da: number, key: (typeof ICHANGE_KEYS)[number]): number | null =>
     iqamahHours(timesFor(y, mo, da)[key] + (ao[key] ?? 0) / 60, tt.iqamah[key]);
-  // Effective Iqāmah on a date: the per-day override if set, else the rule.
+  // The override "HH:MM" on a date: per-day CSV wins over a scheduled "from this date" change.
+  const overrideStr = (y: number, mo: number, da: number, key: (typeof ICHANGE_KEYS)[number]): string | undefined =>
+    year?.[`${pad2(mo)}-${pad2(da)}`]?.[key] ?? (resolveSchedule(schedule, y, mo, da) as Record<string, string | undefined>)[key];
+  // Effective Iqāmah on a date: the override if set, else the rule.
   const effIq = (y: number, mo: number, da: number, key: (typeof ICHANGE_KEYS)[number]): number | null => {
-    const ov = year[`${pad2(mo)}-${pad2(da)}`]?.[key];
+    const ov = overrideStr(y, mo, da, key);
     const ovH = ov ? parseHHMM(ov) : null;
     return ovH != null ? ovH : ruleIq(y, mo, da, key);
   };
 
-  // Resolve each MM-DD key to its next future occurrence (year wrap), within the window.
+  // Candidate change-dates within [1, daysBefore]: each CSV MM-DD's next occurrence (year
+  // wrap) plus each schedule from-date (absolute). De-duped by calendar date.
   const cands: { y: number; mo: number; da: number; daysUntil: number }[] = [];
-  for (const k of Object.keys(year)) {
-    const mm = /^(\d{2})-(\d{2})$/.exec(k);
-    if (!mm) continue;
-    const mo = Number(mm[1]);
-    const da = Number(mm[2]);
-    if (mo < 1 || mo > 12 || da < 1 || da > 31) continue;
-    for (const y of [today.year, today.year + 1]) {
-      const candUTC = Date.UTC(y, mo - 1, da, 12);
-      if (new Date(candUTC).getUTCMonth() !== mo - 1) continue; // Feb-29 in a non-leap year
-      const daysUntil = Math.round((candUTC - todayUTC) / 86400000);
-      if (daysUntil >= 1 && daysUntil <= daysBefore) {
-        cands.push({ y, mo, da, daysUntil });
-        break;
-      }
+  const seen = new Set<string>();
+  const addCand = (y: number, mo: number, da: number): boolean => {
+    const candUTC = Date.UTC(y, mo - 1, da, 12);
+    if (new Date(candUTC).getUTCMonth() !== mo - 1) return false; // invalid (e.g. Feb-29 non-leap)
+    const daysUntil = Math.round((candUTC - todayUTC) / 86400000);
+    if (daysUntil < 1 || daysUntil > daysBefore) return false;
+    const key = `${y}-${mo}-${da}`;
+    if (seen.has(key)) return true;
+    seen.add(key);
+    cands.push({ y, mo, da, daysUntil });
+    return true;
+  };
+  if (hasYear)
+    for (const k of Object.keys(year!)) {
+      const mm = /^(\d{2})-(\d{2})$/.exec(k);
+      if (!mm) continue;
+      const mo = Number(mm[1]);
+      const da = Number(mm[2]);
+      if (mo < 1 || mo > 12 || da < 1 || da > 31) continue;
+      // First occurrence (this year, else next) that lands within the window.
+      if (!addCand(today.year, mo, da)) addCand(today.year + 1, mo, da);
     }
-  }
+  if (hasSched)
+    for (const e of schedule!) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(e.from);
+      if (m) addCand(Number(m[1]), Number(m[2]), Number(m[3]));
+    }
   cands.sort((a, b) => a.daysUntil - b.daysUntil);
 
   for (const c of cands) {
@@ -1581,7 +1620,7 @@ function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: number): str
     const pda = prev.getUTCDate();
     const changed: { key: (typeof ICHANGE_KEYS)[number]; hours: number }[] = [];
     for (const key of ICHANGE_KEYS) {
-      const ov = year[`${pad2(c.mo)}-${pad2(c.da)}`]?.[key];
+      const ov = overrideStr(c.y, c.mo, c.da, key);
       const ovH = ov ? parseHHMM(ov) : null;
       if (ovH == null) continue; // only a deliberate override can be a "change"
       const ruleH = ruleIq(c.y, c.mo, c.da, key); // vs the rule for the SAME date (DST/drift-safe)
@@ -1892,12 +1931,17 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   const jLabel = L.jumuah ?? "Jumu'ah";
   // With two or more Jumu'ahs the ordinal sits on its OWN line above "JUMU'AH" (the combined
   // "2ND JUMU'AH" was too wide for the ring); the label itself is just "JUMU'AH".
-  const nextOrdinal = jm && jm.count > 1 ? ordinalEn(jm.ordinal) : '';
+  // No ordinal during the Jumu'ah ADHAN phase (it reads plainly "JUMU'AH … UNTIL ADHAN",
+  // mirroring a weekday "DHUHR … UNTIL ADHAN"); the ordinal appears for the jamā'ah phases.
+  const nextOrdinal = jm && !jm.adhan && jm.count > 1 ? ordinalEn(jm.ordinal) : '';
   const nextLabel = jm ? jLabel : rowName(nextRow, L);
   const nextArabic = jm ? (PRAYER_LABELS.ar.jumuah ?? '') : (PRAYER_LABELS.ar[nextRow.label] ?? '');
-  // "Iqamah in" while inside the current prayer's Adhan->Iqamah window, "Jumu'ah" for a
-  // Jumu'ah countdown, else "Adhan in".
-  const eventWord = jm ? jLabel.toUpperCase() : (m.countdownToIqamah ? (L.iqamah ?? 'Iqamah') : (L.athan ?? 'Adhan')).toUpperCase();
+  // "Iqamah in" while inside the current prayer's Adhan->Iqamah window; for Friday, "Adhan"
+  // while counting to the Dhuhr adhan (relabeled Jumu'ah) then "Jumu'ah" for each jamā'ah;
+  // else "Adhan in".
+  const eventWord = jm
+    ? (jm.adhan ? (L.athan ?? 'Adhan') : jLabel).toUpperCase()
+    : (m.countdownToIqamah ? (L.iqamah ?? 'Iqamah') : (L.athan ?? 'Adhan')).toUpperCase();
   // Ring progress: fraction of the current interval (previous Adhan -> next event) elapsed.
   // When a prayer is active the ring fills from its Adhan. In the gap after Fajr — no
   // prayer is active (activeKey is null from Sunrise until Dhuhr) — it fills from Sunrise,

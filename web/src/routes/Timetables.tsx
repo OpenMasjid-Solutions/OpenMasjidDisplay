@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
-import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
+import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, IqamahScheduleEntry, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 import { readImageForUpload } from '../image';
@@ -260,17 +260,23 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     }
   };
 
-  // The per-day Iqamah overrides — ONE map keyed "MM-DD", shared by the one-off "Add a
-  // date" editor, the monthly table and CSV import/export so none clobbers another. Managed
-  // only via the dedicated iqamah endpoints (the normal form save never touches iqamahYear).
+  // The per-day Iqamah overrides — ONE map keyed "MM-DD", set by CSV import/export (the rare
+  // masjid whose iqamah differs every single day). Managed only via the dedicated iqamah-csv
+  // endpoints (the normal form save never touches iqamahYear). Scheduled "from this date"
+  // changes live separately in iqSchedule below and cover the common case.
   const [iqYear, setIqYear] = useState<IqamahYear>(() => JSON.parse(JSON.stringify(tt?.iqamahYear ?? {})));
   const iqCount = Object.keys(iqYear).length;
   const csvActive = iqCount > 0; // any per-day overrides win over the per-prayer rules
-  // Persist the whole per-day map (used by the calendar editor + CSV import/clear).
-  const saveIqYear = async (next: IqamahYear) => {
-    if (!tt) return;
-    await api.saveIqamahYear(tt.id, next);
-    setIqYear(next);
+
+  // The scheduled "from this date onward" Iqamah changes — the recommended way to change
+  // times a few times a year (they hold until the next change). Persisted via its own
+  // endpoint; the server returns the cleaned, date-sorted list we mirror locally.
+  const [iqSchedule, setIqSchedule] = useState<IqamahScheduleEntry[]>(() => JSON.parse(JSON.stringify(tt?.iqamahSchedule ?? [])));
+  const saveIqSchedule = async (next: IqamahScheduleEntry[]): Promise<IqamahScheduleEntry[]> => {
+    if (!tt) return next;
+    const r = await api.saveIqamahSchedule(tt.id, next);
+    setIqSchedule(r.schedule);
+    return r.schedule; // the server-cleaned list — the editor re-syncs to it (drops empty rows)
   };
   const importCsv = (file: File) => {
     if (!tt) return;
@@ -543,19 +549,19 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       </div>
 
       <div className="card section">
-        <h3 className="section-title">Iqamah changes on specific dates</h3>
+        <h3 className="section-title">Scheduled Iqamah changes</h3>
         {tt ? (
           <div>
             <p className="hint" style={{ marginBlockStart: 0 }}>
-              Pick a month, tap a day, and set the Iqamah times for just that date (a special programme,
-              Ramadan, an early Fajr…) — without touching your normal rules. It repeats on that date each year
-              until you clear it. Days with a change are dotted. (Maghrib isn't set here — it always follows
-              the calculated sunset time plus its offset.)
+              Change Iqamah times from a date onward — set “from this date, times are …” and they stay that
+              way until your next scheduled change. Add one entry each time the times change (e.g. a seasonal
+              shift). Leave a prayer blank to keep it on your normal rule (or the previous change). Maghrib
+              always follows the calculated sunset time plus its offset, so it isn't set here.
             </p>
-            <CalendarIqamahEditor year={iqYear} onSave={saveIqYear} />
+            <IqamahScheduleEditor schedule={iqSchedule} onSave={saveIqSchedule} />
           </div>
         ) : (
-          <span className="hint">Create the timetable first, then you can add date-specific times.</span>
+          <span className="hint">Create the timetable first, then you can schedule Iqamah changes.</span>
         )}
       </div>
 
@@ -570,7 +576,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             <input className="input" type="number" min={1} max={60} value={icn.daysBefore} onChange={(e) => setIcn({ daysBefore: Number(e.target.value) })} />
           </Field>
         ) : (
-          <p className="hint" style={{ marginBlockStart: 0 }}>When on, the screens automatically announce a date-specific change (from above) a few days ahead — no need to type anything.</p>
+          <p className="hint" style={{ marginBlockStart: 0 }}>When on, the screens automatically announce a scheduled Iqamah change (from above) a few days ahead — no need to type anything.</p>
         )}
       </div>
 
@@ -1247,109 +1253,77 @@ function JumuahEditor({ times, onChange }: { times: string[]; onChange: (t: stri
   );
 }
 
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-
-/** Days in a 1-based month, leap-aware for February (29 in a leap year, else 28). */
-function daysInMonth(month: number, year: number = new Date().getFullYear()): number {
-  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
-}
-
-/** Calendar-style editor for per-day Iqamah changes: pick a month, tap a day, set that day's
- *  times, Save. Days with a change are dotted, so there's no scrolling a 365-row list. Maghrib
- *  is NOT edited here — it always follows the calculated sunset time plus its offset. Reads/writes
- *  the shared per-day map via `onSave` (kept in step with the CSV). */
-function CalendarIqamahEditor({ year, onSave }: { year: IqamahYear; onSave: (next: IqamahYear) => Promise<void> }) {
+/** Editor for scheduled "from this date onward" Iqamah changes: a list of dated entries,
+ *  each setting the daily prayers (and, optionally, the Jumu'ah time(s)) that take effect
+ *  from that date until the next entry. Maghrib is never scheduled. Edits are kept locally
+ *  and saved together; the server returns the cleaned, date-sorted list we re-sync from. */
+function IqamahScheduleEditor({ schedule, onSave }: { schedule: IqamahScheduleEntry[]; onSave: (next: IqamahScheduleEntry[]) => Promise<IqamahScheduleEntry[]> }) {
   const toast = useToast();
   const PR = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const [month, setMonth] = useState(new Date().getMonth() + 1);
-  const [sel, setSel] = useState<number | null>(null);
-  const [draft, setDraft] = useState<Partial<Record<(typeof PR)[number], string>>>({});
+  const [rows, setRows] = useState<IqamahScheduleEntry[]>(() => JSON.parse(JSON.stringify(schedule)));
   const [busy, setBusy] = useState(false);
-  const key = (d: number) => `${pad(month)}-${pad(d)}`;
-  const dayHas = (d: number) => { const e = year[key(d)]; return !!e && PR.some((p) => e[p]); };
+  const saved = JSON.stringify(schedule);
+  // Re-sync when the saved schedule changes under us (a save normalizes + date-sorts it).
+  useEffect(() => { setRows(JSON.parse(JSON.stringify(schedule))); }, [saved]);
+  const dirty = JSON.stringify(rows) !== saved;
 
-  // Load the selected day's times into the draft (re-load if the shared map changes under us,
-  // e.g. after a CSV import).
-  useEffect(() => {
-    if (sel == null) return;
-    const e = year[key(sel)] ?? {};
-    setDraft({ fajr: e.fajr ?? '', dhuhr: e.dhuhr ?? '', asr: e.asr ?? '', isha: e.isha ?? '' });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sel, month, year]);
+  const today = () => new Date().toISOString().slice(0, 10);
+  const update = (i: number, patch: Partial<IqamahScheduleEntry>) =>
+    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const setTime = (i: number, pr: (typeof PR)[number], v: string) =>
+    update(i, { [pr]: v || undefined } as Partial<IqamahScheduleEntry>);
+  const addRow = () => setRows((rs) => [...rs, { from: today() }]);
+  const removeRow = (i: number) => setRows((rs) => rs.filter((_, j) => j !== i));
 
-  const persist = async (mut: (row: Record<string, string>) => void, done: string) => {
-    if (sel == null) return;
-    const k = key(sel);
-    const row: Record<string, string> = {};
-    const cur = year[k];
-    if (cur) for (const [kk, vv] of Object.entries(cur)) if (vv) row[kk] = vv; // keep any other keys
-    mut(row);
-    const next: IqamahYear = { ...year };
-    if (Object.keys(row).length) next[k] = row as IqamahYear[string];
-    else delete next[k];
+  const save = async () => {
     setBusy(true);
     try {
-      await onSave(next);
-      toast(done);
+      // Re-sync straight from the server's cleaned result: if it dropped an empty row, the
+      // schedule prop's JSON can be unchanged (so the [saved] effect wouldn't re-run) — setting
+      // rows here is what clears the "unsaved changes" state.
+      const next = await onSave(rows);
+      setRows(JSON.parse(JSON.stringify(next)));
+      toast('Iqamah schedule saved.');
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not save.', 'error');
     } finally {
       setBusy(false);
     }
   };
-  const short = () => `${MONTHS[month - 1].slice(0, 3)} ${sel}`;
-  const saveDay = () => persist((row) => { for (const p of PR) { const v = (draft[p] ?? '').trim(); if (v) row[p] = v; else delete row[p]; } }, `Saved ${short()}.`);
-  const clearDay = () => persist((row) => { for (const p of PR) delete row[p]; }, `Cleared ${short()}.`).then(() => setDraft({}));
-
-  // Lay the month out as a real calendar (weekday-aligned to the current year).
-  const yr = new Date().getFullYear();
-  const firstDow = new Date(yr, month - 1, 1).getDay();
-  const nDays = daysInMonth(month, yr);
-  const cells: (number | null)[] = [...Array(firstDow).fill(null), ...Array.from({ length: nDays }, (_, i) => i + 1)];
-  const WD = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
   return (
-    <div className="iqcal">
-      <div className="row" style={{ gap: '0.5rem', marginBlock: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
-        <select className="select" style={{ width: 'auto' }} value={month} onChange={(e) => { setMonth(Number(e.target.value)); setSel(null); }}>
-          {MONTHS.map((mn, i) => <option key={mn} value={i + 1}>{mn}</option>)}
-        </select>
-        <span className="hint">Tap a day to set its times. A dot means that day has a change.</span>
-      </div>
-      <div className="iqcal-grid">
-        {WD.map((w) => <div key={w} className="iqcal-wd">{w}</div>)}
-        {cells.map((d, i) =>
-          d == null ? (
-            <div key={`b${i}`} />
-          ) : (
-            <button type="button" key={d} className={`iqcal-day${sel === d ? ' is-selected' : ''}${dayHas(d) ? ' has-override' : ''}`} onClick={() => setSel(d)} aria-pressed={sel === d}>
-              {d}
-            </button>
-          ),
-        )}
-      </div>
-      {sel != null && (
-        <div className="iqcal-editor">
-          <div className="row-between" style={{ marginBlockEnd: '0.5rem' }}>
-            <b>{MONTHS[month - 1]} {sel}</b>
-            {dayHas(sel) && <button type="button" className="btn btn--ghost btn--sm" onClick={clearDay} disabled={busy}>Clear day</button>}
+    <div className="iqsched">
+      {rows.length === 0 && (
+        <p className="hint" style={{ marginBlockStart: 0 }}>No scheduled changes yet — add one to set Iqamah times from a chosen date onward.</p>
+      )}
+      {rows.map((r, i) => (
+        <div key={i} className="iqsched-entry" style={{ background: 'var(--glass-bg-inset)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-card)', padding: '0.85rem 0.9rem', marginBlockEnd: '0.6rem' }}>
+          <div className="row-between" style={{ alignItems: 'flex-end', gap: '0.6rem', flexWrap: 'wrap', marginBlockEnd: '0.6rem' }}>
+            <label className="field" style={{ margin: 0 }}>
+              <span className="label">From this date</span>
+              <input type="date" className="input" style={{ width: 'auto' }} value={r.from} onChange={(e) => update(i, { from: e.target.value })} />
+            </label>
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => removeRow(i)}><IconTrash size={14} /> Remove</button>
           </div>
           <div className="iqcal-fields">
             {PR.map((pr) => (
               <label key={pr} className="field" style={{ margin: 0 }}>
                 <span className="label">{PRAYER_TITLE[pr]}</span>
-                <input type="time" className="input" value={draft[pr] ?? ''} onChange={(ev) => setDraft((x) => ({ ...x, [pr]: ev.target.value }))} />
+                <input type="time" className="input" value={r[pr] ?? ''} onChange={(e) => setTime(i, pr, e.target.value)} />
               </label>
             ))}
           </div>
-          <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.6rem', flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn--primary btn--sm" onClick={saveDay} disabled={busy}><IconCheck size={14} /> Save {short()}</button>
-            <span className="hint">Blank = use your normal rule.</span>
+          <div style={{ marginBlockStart: '0.7rem' }}>
+            <span className="label">Jumu'ah from this date (optional)</span>
+            <JumuahEditor times={r.jumuah ?? []} onChange={(j) => update(i, { jumuah: j.length ? j : undefined })} />
           </div>
         </div>
-      )}
+      ))}
+      <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.4rem', flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn--ghost btn--sm" onClick={addRow} disabled={busy}><IconPlus size={14} /> Add a change</button>
+        <button type="button" className="btn btn--primary btn--sm" onClick={save} disabled={busy || !dirty}><IconCheck size={14} /> Save schedule</button>
+        {dirty && <span className="hint">You have unsaved changes.</span>}
+      </div>
     </div>
   );
 }

@@ -10,6 +10,7 @@ import type {
   ContentRef,
   Hotspot,
   IqamahYear,
+  IqamahScheduleEntry,
 } from './types';
 
 let onUnauth: () => void = () => {};
@@ -75,6 +76,8 @@ export const api = {
   clearIqamahCsv: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/iqamah-csv`),
   saveIqamahYear: (id: string, year: Record<string, Record<string, string>>) =>
     req<{ ok: boolean; rows: number }>('PUT', `/api/timetables/${id}/iqamah-year`, { year }),
+  saveIqamahSchedule: (id: string, schedule: IqamahScheduleEntry[]) =>
+    req<{ ok: boolean; entries: number; schedule: IqamahScheduleEntry[] }>('PUT', `/api/timetables/${id}/iqamah-schedule`, { schedule }),
   iqamahCsvUrl: (id: string, mode?: 'template') =>
     `/api/timetables/${id}/iqamah-csv${mode ? `?mode=${mode}` : ''}`,
 

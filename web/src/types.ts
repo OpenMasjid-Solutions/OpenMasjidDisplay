@@ -23,6 +23,15 @@ export interface IqamahConfig {
   isha: IqamahRule;
 }
 export type IqamahYear = Record<string, Partial<Record<'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha' | 'jumuah', string>>>;
+/** A scheduled "from this date onward" Iqamah change (see server types). */
+export interface IqamahScheduleEntry {
+  from: string;
+  fajr?: string;
+  dhuhr?: string;
+  asr?: string;
+  isha?: string;
+  jumuah?: string[];
+}
 export interface Announcements {
   enabled: boolean;
   images: string[];
@@ -75,6 +84,7 @@ export interface Timetable {
   gregorianOffset: number;
   iqamah: IqamahConfig;
   iqamahYear?: IqamahYear;
+  iqamahSchedule?: IqamahScheduleEntry[];
   jumuah: string[];
   showSunrise: boolean;
   showCountdown: boolean;

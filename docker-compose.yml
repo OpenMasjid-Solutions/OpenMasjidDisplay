@@ -14,7 +14,7 @@ services:
   app:
     # Tag for humans + digest for integrity (the @sha256 is what actually pins). A
     # moved tag can't repoint this to a different image. Bump both each release.
-    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.59.0@sha256:99004b2ce151064184453c1d747977cf34e2778d640e2406f605b7fb42993433
+    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.60.0
     restart: unless-stopped
     environment:
       PORT: "8080"

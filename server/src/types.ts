@@ -41,6 +41,24 @@ export interface IqamahConfig {
  *  Iqamah offset (a fixed clock time can't track the drifting sunset). */
 export type IqamahYear = Record<string, Partial<Record<'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha' | 'jumuah', string>>>;
 
+/** A scheduled Iqamah change. From the absolute date `from` ("YYYY-MM-DD") onward, the
+ *  given prayers use these fixed "HH:MM" times (and, if set, these Jumu'ah times) — and
+ *  KEEP using them until a later entry's date takes over. Unlike IqamahYear (a per-DAY
+ *  map), a schedule entry holds indefinitely forward: the common "we moved Fajr on March 1
+ *  and it stayed that way" case. Each prayer carries forward independently (an entry that
+ *  only sets Fajr leaves the others on whatever the previous entry/rule gave). Maghrib is
+ *  never scheduled — it always follows the calculated sunset plus its Iqamah offset. */
+export interface IqamahScheduleEntry {
+  /** absolute effective date, "YYYY-MM-DD" */
+  from: string;
+  fajr?: string;
+  dhuhr?: string;
+  asr?: string;
+  isha?: string;
+  /** Jumu'ah time(s) "HH:MM" effective from this date (replaces the base Jumu'ah times) */
+  jumuah?: string[];
+}
+
 /** Image announcement slideshow: between spells of the normal display, the uploaded
  *  images cycle as the backdrop (prayer times stay on top), within a daily window. */
 export interface Announcements {
@@ -200,6 +218,9 @@ export interface Timetable {
   iqamah: IqamahConfig;
   /** Per-day Iqamah overrides (CSV import); managed only by the iqamah-csv endpoints. */
   iqamahYear?: IqamahYear;
+  /** Scheduled Iqamah changes ("from this date, times are …, until the next change");
+   *  managed only by the iqamah-schedule endpoint. Sorted ascending by `from`. */
+  iqamahSchedule?: IqamahScheduleEntry[];
   /** Friday khutbah/Jumu'ah times "HH:MM" (one or more) */
   jumuah: string[];
   showSunrise: boolean;

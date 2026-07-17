@@ -41,6 +41,7 @@ import {
 import { renderPreviewPng, renderPreviewMeta } from './render/renderPool';
 import { probeSource } from './render/renderer';
 import { parseIqamahCsv, toCsv, templateCsv, normalizeIqamahYear } from './iqamahCsv';
+import { normalizeIqamahSchedule } from './iqamahSchedule';
 import { renderMonthPrintHtml } from './print';
 import { localParts, zonedNoon } from './prayer/engine';
 import {
@@ -444,6 +445,7 @@ export function createApi(deps: Deps) {
         // the duplicate owns its own assets (deleting the original can't affect it).
         const copy = normTimetable({ ...src, name: `${src.name} (copy)`.slice(0, 80) });
         if (src.iqamahYear) copy.iqamahYear = JSON.parse(JSON.stringify(src.iqamahYear));
+        if (src.iqamahSchedule) copy.iqamahSchedule = JSON.parse(JSON.stringify(src.iqamahSchedule));
         copy.backgroundImage = src.backgroundImage ? copyAsset(src.backgroundImage, copy.id, 'bg') : '';
         copy.logoImage = src.logoImage ? copyAsset(src.logoImage, copy.id, 'logo') : '';
         if (copy.announcements?.images?.length) {
@@ -593,6 +595,23 @@ export function createApi(deps: Deps) {
           else delete db.timetables[idx].iqamahYear;
         });
         return sendJson(res, 200, { ok: true, rows: Object.keys(year).length });
+      }
+
+      // Scheduled "from this date onward" Iqamah changes (the recommended way to change
+      // iqamah times a few times a year). Managed only here — a normal timetable save never
+      // touches it (see validate.ts) — so the schedule survives every other edit.
+      const isMatch = /^\/api\/timetables\/([\w-]+)\/iqamah-schedule$/.exec(pathname);
+      if (isMatch && method === 'PUT') {
+        const id = isMatch[1];
+        const idx = store.db.timetables.findIndex((t) => t.id === id);
+        if (idx < 0) return sendJson(res, 404, { error: 'Timetable not found.' });
+        const body = await readBody(req, 2_000_000);
+        const schedule = normalizeIqamahSchedule(body.schedule);
+        store.update((db) => {
+          if (schedule.length) db.timetables[idx].iqamahSchedule = schedule;
+          else delete db.timetables[idx].iqamahSchedule;
+        });
+        return sendJson(res, 200, { ok: true, entries: schedule.length, schedule });
       }
 
       // ---- Announcement slideshow images ----------------------------------

@@ -307,8 +307,10 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     hijriOffset: o.hijriOffset === undefined ? base?.hijriOffset ?? 0 : intIn(o.hijriOffset, 0, -3, 3),
     gregorianOffset: o.gregorianOffset === undefined ? base?.gregorianOffset ?? 0 : intIn(o.gregorianOffset, 0, -3, 3),
     iqamah: o.iqamah ? normIqamah(o.iqamah) : base?.iqamah ?? defaultIqamah(),
-    // iqamahYear (CSV import) is managed only by the iqamah-csv endpoints.
+    // iqamahYear (CSV import) and iqamahSchedule (the from-date change schedule) are managed
+    // only by their dedicated endpoints — never taken from a normal timetable-save body.
     iqamahYear: base?.iqamahYear,
+    iqamahSchedule: base?.iqamahSchedule,
     jumuah: jumuah.length ? jumuah : ['13:30'],
     showSunrise: o.showSunrise === undefined ? base?.showSunrise ?? true : bool(o.showSunrise, true),
     showCountdown: o.showCountdown === undefined ? base?.showCountdown ?? true : bool(o.showCountdown, true),
