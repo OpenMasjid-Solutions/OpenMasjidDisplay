@@ -296,7 +296,7 @@ export function activeTicker(tt: Timetable, now: Date): { text: string; prohibit
   const nowHours = m.parts.hour + m.parts.minute / 60 + m.parts.second / 3600;
   // A full-screen overlay (pre-Iqāmah countdown, during-salah hadith, or a full-screen
   // prohibited notice) takes over the whole screen — hide the scrolling ticker.
-  if (activeOverlay(tt, m, nowHours, now)) return { text: '', prohibited: false };
+  if (activeOverlay(tt, m, nowHours)) return { text: '', prohibited: false };
   // Ticker-mode prohibited window → a red message that overrides any normal ticker,
   // for the whole window (it clears itself when prayer is allowed again).
   if (tt.prohibitedNotice?.ticker && prohibitedWindow(tt, m, nowHours)) {
@@ -1709,14 +1709,34 @@ function hadithPool(sh: SalahHadith): HadithItem[] {
   return [...defaults, ...sh.items];
 }
 
-/** Does a hadith apply after the given prayer? Empty/absent `prayers` = shown after any. */
-function hadithAppliesTo(h: HadithItem, prayerKey: string): boolean {
-  return !h.prayers?.length || h.prayers.includes(prayerKey);
+/** A small deterministic string hash (FNV-1a) → uint32. Lets us pick a stable "random"
+ *  hadith per salah occurrence with NO render state (the frame render is recomputed from
+ *  `now` every second, so Math.random would flicker through ahadith). */
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Pick the ONE hadith to show for this salah occurrence. If the current prayer has any
+ *  ahadith specifically targeted to it, the pick is from THOSE (so a masjid's ‘Asr ahadith
+ *  show at ‘Asr, its Fajr ones at Fajr); otherwise it's from the general (untargeted) ahadith.
+ *  The choice is stable for the whole salah window — seeded by the date + prayer, so the
+ *  stateless per-frame render keeps showing the same one — yet varies day to day. */
+export function pickSalahHadith(sh: SalahHadith, prayerKey: string, parts: { year: number; month: number; day: number }): HadithItem | null {
+  const pool = hadithPool(sh);
+  const specific = pool.filter((h) => h.prayers?.length && h.prayers.includes(prayerKey));
+  const eligible = specific.length ? specific : pool.filter((h) => !h.prayers?.length);
+  if (!eligible.length) return null;
+  return eligible[hashStr(`${parts.year}-${parts.month}-${parts.day}-${prayerKey}`) % eligible.length];
 }
 
 /** Which full-screen overlay (if any) is active right now. Precedence: the zawāl
  *  notice, then the pre-Iqāmah countdown, then the during-salah hadith. */
-function activeOverlay(tt: Timetable, m: Model, nowHours: number, now: Date): Overlay | null {
+function activeOverlay(tt: Timetable, m: Model, nowHours: number): Overlay | null {
   // (The zawāl prohibited notice is no longer a full-screen takeover — it lives in the
   //  next-prayer ring as a "Prohibited time" countdown; see panelRing / prohibitedRing.)
   // 2) Full-screen countdown for the last minutes before any Iqāmah.
@@ -1739,24 +1759,20 @@ function activeOverlay(tt: Timetable, m: Model, nowHours: number, now: Date): Ov
   if (bo?.enabled && inSalah(Math.max(1, bo.minutes) / 60)) return { kind: 'blackout' };
   const sh = tt.salahHadith;
   if (sh?.enabled) {
-    // Its key selects prayer-specific ahadith; rotate every ~15s.
+    // ONE hadith for the whole salah window, chosen per occurrence — prayer-specific ahadith
+    // win at their salah, else the general ones (see pickSalahHadith).
     const inRow = inSalah(Math.max(1, sh.minutes) / 60);
     if (inRow) {
-      const eligible = hadithPool(sh).filter((h) => hadithAppliesTo(h, inRow.key));
-      if (eligible.length) {
-        const idx = Math.floor(now.getTime() / 15000) % eligible.length;
-        return { kind: 'hadith', item: eligible[idx] };
-      }
+      const item = pickSalahHadith(sh, inRow.key, m.parts);
+      if (item) return { kind: 'hadith', item };
     }
   }
   return null;
 }
 
-/** Calm hadith card over a dimmed scene, shown during salah (Arabic above English). */
-/** How long each language is shown before switching, in ms (Arabic, then English). */
-const HADITH_PHASE_MS = 10_000;
-
-function salahHadithView(item: HadithItem, now: Date, clock: ClockText, p: Palette, W: number, H: number): string {
+/** Calm hadith card over a dimmed scene, shown during salah — Arabic AND English together
+ *  (Arabic on top, a little larger; English beneath it), with the citation under both. */
+export function salahHadithView(item: HadithItem, clock: ClockText, p: Palette, W: number, H: number): string {
   const out: string[] = [];
   out.push(rect(0, 0, W, H, 0, 'rgba(0,0,0,0.66)'));
   const cardW = Math.min(W * 0.84, 1500);
@@ -1767,53 +1783,56 @@ function salahHadithView(item: HadithItem, now: Date, clock: ClockText, p: Palet
 
   const ar = sanitizeText(item.ar);
   const en = sanitizeText(item.en);
-  // ONE language at a time: Arabic for 10s, then English for 10s, alternating. If only
-  // one is provided, always show it.
-  const both = !!ar && !!en;
-  const showArabic = both ? Math.floor(now.getTime() / HADITH_PHASE_MS) % 2 === 0 : !!ar;
-  const content = showArabic ? ar : en;
-  const isArabic = showArabic && !!ar;
-
-  // Autofit: shrink the font until the wrapped text fits the card, so a long hadith
-  // never overflows the box. Arabic gets a slightly tighter width budget + taller
-  // line-height (it sits taller and connects), and the Arabic font stack.
-  // Always render the hadith (Arabic AND English) in Amiri so the card uses ONE typeface —
-  // Amiri has full Latin, so the English no longer mixes Amiri + Noto Sans.
+  const cite = (item.cite ?? '').trim();
+  // One typeface for the whole card: Amiri carries full Latin, so English doesn't mix fonts.
   const family = FONT_ARABIC;
-  // Let the text use nearly the full width of the card — a narrow budget made short
-  // ahadith wrap into a tall, skinny block with big empty side margins ("a square").
-  const maxW = cardW * (isArabic ? 0.92 : 0.9);
-  const maxH = cardH * 0.74;
-  const lineFactor = isArabic ? 1.7 : 1.4;
-  // Autofit BOTH ways: GROW a short hadith so it fills the card (wrapLines already caps
-  // each line at maxW, so growing only ever adds height), then SHRINK if a long one
-  // still overflows. Result: the text always reaches for the sides instead of hugging
-  // the centre.
-  const fsCap = Math.min(132, cardH * 0.34);
-  let fs = clamp(W * 0.04, 22, 76);
-  let lines = wrapLines(content, fs, maxW, 14);
+  const maxW = cardW * 0.9;
+  const maxH = cardH * 0.78;
+  const AR_LF = 1.7; // Arabic line-height (it sits taller and connects)
+  const EN_LF = 1.4;
+  const EN_RATIO = 0.72; // English size relative to Arabic — the secondary line beneath it
+
+  // Lay both blocks out at a given Arabic font size and measure the combined height, so we can
+  // autofit the PAIR to the card: grow a short hadith to fill it, then shrink a long one.
+  const layout = (fsAr: number) => {
+    const fsEn = Math.max(13, fsAr * EN_RATIO);
+    const arL = ar ? wrapLines(ar, fsAr, maxW, 14) : [];
+    const enL = en ? wrapLines(en, fsEn, maxW, 16) : [];
+    const arH = arL.length * fsAr * AR_LF;
+    const enH = enL.length * fsEn * EN_LF;
+    const gapH = arL.length && enL.length ? fsAr * 0.55 : 0;
+    const citeH = cite ? fsEn * 1.5 : 0;
+    return { fsAr, fsEn, arL, enL, arH, enH, gapH, citeH, total: arH + gapH + enH + citeH };
+  };
+
+  const fsCap = Math.min(120, cardH * 0.3);
+  let fs = clamp(W * 0.032, 20, 64);
+  let L = layout(fs);
   while (fs < fsCap) {
     const next = Math.min(fs + 2, fsCap);
-    const nl = wrapLines(content, next, maxW, 14);
-    if (nl.length * next * lineFactor > maxH) break;
+    const nl = layout(next);
+    if (nl.total > maxH) break;
     fs = next;
-    lines = nl;
+    L = nl;
   }
-  while (lines.length * fs * lineFactor > maxH && fs > 14) {
+  while (L.total > maxH && fs > 13) {
     fs -= 2;
-    lines = wrapLines(content, fs, maxW, 14);
+    L = layout(fs);
   }
-  const lh = fs * lineFactor;
-  const cite = (item.cite ?? '').trim();
-  // Reserve a little room at the bottom for the citation so the text block sits centred
-  // above it rather than dead-centre.
-  let ly = cy - (lines.length * lh) / 2 + fs * (isArabic ? 0.95 : 0.75) - (cite ? fs * 0.5 : 0);
-  for (const ln of lines) {
-    out.push(text(cx, ly, ln, { size: fs, fill: p.text, family, weight: 500, anchor: 'middle' }));
-    ly += lh;
+
+  // Render the stack, vertically centred: Arabic block, gap, English block, citation.
+  const lhAr = L.fsAr * AR_LF;
+  const lhEn = L.fsEn * EN_LF;
+  let y = cy - L.total / 2;
+  for (let i = 0; i < L.arL.length; i++) {
+    out.push(text(cx, y + L.fsAr * 0.85 + i * lhAr, L.arL[i], { size: L.fsAr, fill: p.text, family, weight: 500, anchor: 'middle' }));
   }
-  // Source attribution, small and dim, under the hadith.
-  if (cite) out.push(text(cx, ly + fs * 0.5, `— ${cite}`, { size: clamp(fs * 0.5, 13, 30), fill: p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 0.5 }));
+  y += L.arH + L.gapH;
+  for (let i = 0; i < L.enL.length; i++) {
+    out.push(text(cx, y + L.fsEn * 0.85 + i * lhEn, L.enL[i], { size: L.fsEn, fill: p.text, family, weight: 500, anchor: 'middle' }));
+  }
+  y += L.enH;
+  if (cite) out.push(text(cx, y + L.fsEn * 1.0, `— ${cite}`, { size: clamp(L.fsEn * 0.82, 13, 28), fill: p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 0.5 }));
 
   // Keep the current time on screen (small, top corner) so the display still tells
   // the time while the congregation prays.
@@ -2001,14 +2020,14 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
 
   // ── Full-takeover overlays (drawn over the scene, suppress the normal layout
   //    AND the scrolling ticker — see activeTickerString) ──────────────────────
-  const overlay = activeOverlay(tt, m, nowHours, now);
+  const overlay = activeOverlay(tt, m, nowHours);
   if (overlay) {
     // Full-screen overlays always dim to a dark scrim, so use light text even on a light
     // theme (dark-on-dark would be unreadable).
     const pS = p.light ? { ...p, text: '#f2f6f3', textDim: '#c8d3cc', textFaint: '#96a69d' } : p;
     if (overlay.kind === 'iqamah') out.push(iqamahCountdownView(overlay.secs, overlay.key, pS, L, W, H));
     else if (overlay.kind === 'blackout') out.push(blackoutView(W, H));
-    else out.push(salahHadithView(overlay.item, now, clock, pS, W, H));
+    else out.push(salahHadithView(overlay.item, clock, pS, W, H));
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${out.join('')}</svg>`;
   }
 

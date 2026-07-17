@@ -1,7 +1,7 @@
 {
   "name": "openmasjid-display-server",
   "private": true,
-  "version": "0.60.0",
+  "version": "0.61.0",
   "description": "Control plane + timetable renderer + embedded RTSP server for OpenMasjid Display",
   "license": "AGPL-3.0-only",
   "scripts": {
@@ -9,7 +9,7 @@
     "dev": "tsc -w -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/prayer/engine.test.ts src/scheduler.test.ts src/iqamahCsv.test.ts src/iqamahSchedule.test.ts src/validate.test.ts src/render/iqamahOverride.test.ts"
+    "test": "node --import tsx --test src/prayer/engine.test.ts src/scheduler.test.ts src/iqamahCsv.test.ts src/iqamahSchedule.test.ts src/validate.test.ts src/render/iqamahOverride.test.ts src/render/salahHadith.test.ts"
   },
   "dependencies": {
     "@resvg/resvg-js": "2.6.2",
