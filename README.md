@@ -55,8 +55,8 @@ each screen shows:
   set the PIN in **Settings**.
 
 <div align="center">
-<img src="screenshots/1.svg" width="49%" alt="Prayer timetable display" />
-<img src="screenshots/3.svg" width="49%" alt="Control panel" />
+<img src="screenshots/1.png" width="49%" alt="Prayer timetable display" />
+<img src="screenshots/3.png" width="49%" alt="Control panel" />
 </div>
 
 ## How it works
