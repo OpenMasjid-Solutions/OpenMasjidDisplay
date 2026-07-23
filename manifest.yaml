@@ -52,6 +52,13 @@ ports:
 # per-app secret at install (OPENMASJID_APP_SECRET) and honours its identity-bound
 # /api/auth/session calls, so "Open" signs you in with your OpenMasjidOS login.
 # The app still works fully standalone (its own login) when the Fabric is absent.
+# OpenMasjidOS Fabric app-to-app broker (platform v0.40.0+): consume the Parking
+# Attendant app's "parking" capability so a timetable's announcement slideshow can
+# cycle its live board. The platform brokers the call (we never learn that app's
+# address or secret); it fails soft when the app isn't installed. See parkingFeed.ts.
+fabric:
+  consumes:
+    - parking-attendant/parking
 sso: true
 # Opt into Fabric notifications so the app may relay alerts (e.g. "a screen went
 # offline") to the masjid's configured webhook via POST /api/fabric/notify. The app
