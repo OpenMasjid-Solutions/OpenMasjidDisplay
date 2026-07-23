@@ -202,6 +202,56 @@ export function removeAnnouncement(file: string): void {
   }
   cache.delete(name);
 }
+// ── Live incorrect-parking alert frames (from the Parking Attendant app via Fabric) ──
+// Zero or more frames per timetable, one per active report, named
+// `<id>.ann.parking-<n>.png` and refreshed by parkingFeed.ts. The `.ann.` infix means
+// removeAllAnnouncements() cleans them up on delete; listParkingFrames() enumerates
+// them for the slideshow rotation (so the count is dynamic — nothing when no reports).
+const PARKING_RE = (safeId: string) => new RegExp(`^${safeId}\\.ann\\.parking-(\\d+)\\.png$`);
+
+/** The parking alert frame filenames for a timetable, sorted by index. */
+export function listParkingFrames(id: string): string[] {
+  const safeId = safeName(id);
+  if (!safeId) return [];
+  const dir = uploadsDir();
+  try {
+    if (!fs.existsSync(dir)) return [];
+    const re = PARKING_RE(safeId);
+    return fs.readdirSync(dir)
+      .filter((f) => re.test(f))
+      .sort((a, b) => Number(re.exec(a)![1]) - Number(re.exec(b)![1]));
+  } catch {
+    return [];
+  }
+}
+
+/** Write the given alert frames as `<id>.ann.parking-<n>.png` and delete any extras
+ *  (so removing a report drops its frame). `frames` empty → all parking frames removed. */
+export function syncParkingFrames(id: string, frames: Buffer[]): void {
+  const safeId = safeName(id);
+  if (!safeId) return;
+  fs.mkdirSync(uploadsDir(), { recursive: true });
+  frames.forEach((data, i) => {
+    const name = `${safeId}.ann.parking-${i}.png`;
+    const tmp = path.join(uploadsDir(), `${name}.tmp`);
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, path.join(uploadsDir(), name)); // atomic swap
+    cache.delete(name);
+  });
+  // Remove any frames beyond the new count (and the legacy single `<id>.ann.parking.png`).
+  const dir = uploadsDir();
+  const re = PARKING_RE(safeId);
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const m = re.exec(f);
+      const stale = (m && Number(m[1]) >= frames.length) || f === `${safeId}.ann.parking.png`;
+      if (stale) { try { fs.unlinkSync(path.join(dir, f)); } catch {} cache.delete(f); }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Delete every announcement image belonging to timetable `id` (on timetable delete). */
 export function removeAllAnnouncements(id: string): void {
   const safeId = safeName(id);

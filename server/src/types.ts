@@ -74,6 +74,12 @@ export interface Announcements {
   forSeconds: number;
   /** seconds each image is shown */
   imageSeconds: number;
+  /** also cycle live incorrect-parking ALERT cards (one per active report) pulled
+   *  from the Parking Attendant app over the OpenMasjidOS Fabric (capability
+   *  `parking-attendant/parking`, method `reports`). Refreshed in the background;
+   *  shows nothing when there are no reports. Off by default; only has effect when
+   *  the platform + that app are present (fails soft otherwise). */
+  parking?: boolean;
 }
 
 /** One scrolling ticker message, optionally scheduled to a daily window. */

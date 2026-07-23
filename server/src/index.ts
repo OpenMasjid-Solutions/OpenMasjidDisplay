@@ -15,6 +15,7 @@ import { hasValidSession } from './auth';
 import { ping } from './mediamtx';
 import { MediaMtxServer } from './mediamtxServer';
 import { notify } from './fabric';
+import { startParkingFeed } from './parkingFeed';
 
 const log = makeLog('main');
 
@@ -101,6 +102,9 @@ async function main(): Promise<void> {
 
   // Re-evaluate schedules and stream health on a steady cadence.
   setInterval(() => void orchestrator.reconcile(), 15000);
+
+  // Refresh the live parking board (Fabric) for any timetable that opted in.
+  startParkingFeed(store);
 
   const shutdown = () => {
     log.info('shutting down');
