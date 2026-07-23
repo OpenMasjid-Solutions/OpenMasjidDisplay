@@ -202,6 +202,27 @@ export function removeAnnouncement(file: string): void {
   }
   cache.delete(name);
 }
+// ── Live parking board frame (from the Parking Attendant app via the Fabric) ──
+// A single, deterministically-named frame per timetable, refreshed by parkingFeed.ts.
+// The `.ann.` infix means removeAllAnnouncements() cleans it up with the rest on delete,
+// and activeAnnouncementImage() can reference the name without a filesystem check.
+/** The fixed filename of a timetable's live parking frame. */
+export function parkingFrameName(id: string): string | null {
+  const safeId = safeName(id);
+  return safeId ? `${safeId}.ann.parking.png` : null;
+}
+/** Write (or replace) a timetable's live parking frame; returns the filename or null. */
+export function saveParkingFrame(id: string, data: Buffer): string | null {
+  const name = parkingFrameName(id);
+  if (!name) return null;
+  fs.mkdirSync(uploadsDir(), { recursive: true });
+  const tmp = path.join(uploadsDir(), `${name}.tmp`);
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, path.join(uploadsDir(), name)); // atomic swap so a frame is never half-written
+  cache.delete(name); // invalidate the data-URI cache (mtime changed)
+  return name;
+}
+
 /** Delete every announcement image belonging to timetable `id` (on timetable delete). */
 export function removeAllAnnouncements(id: string): void {
   const safeId = safeName(id);

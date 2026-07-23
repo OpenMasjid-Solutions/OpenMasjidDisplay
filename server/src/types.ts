@@ -74,6 +74,11 @@ export interface Announcements {
   forSeconds: number;
   /** seconds each image is shown */
   imageSeconds: number;
+  /** also cycle a live parking board pulled from the Parking Attendant app over the
+   *  OpenMasjidOS Fabric (capability `parking-attendant/parking`). The frame is
+   *  refreshed in the background and shown as one more slide. Off by default; only
+   *  has effect when the platform + that app are present (fails soft otherwise). */
+  parking?: boolean;
 }
 
 /** One scrolling ticker message, optionally scheduled to a daily window. */

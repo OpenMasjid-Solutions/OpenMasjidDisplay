@@ -896,6 +896,12 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
                 </div>
               </Field>
             </div>
+            <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
+              <span className="label" style={{ margin: 0 }}>
+                Include the live parking board <span className="hint">— from the Parking Attendant app, if installed</span>
+              </span>
+              <Toggle checked={!!ann.parking} onChange={(v) => setAnn({ parking: v })} label="Include the live parking board" />
+            </div>
           </>
         ) : (
           <span className="hint">Create the timetable first, then you can add announcement images.</span>

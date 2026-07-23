@@ -136,6 +136,7 @@ function normAnnouncements(v: unknown, base?: Announcements): Announcements | un
     everySeconds: intIn(o.everySeconds, base?.everySeconds ?? 60, 5, 3600),
     forSeconds: intIn(o.forSeconds, base?.forSeconds ?? 20, 3, 1800),
     imageSeconds: intIn(o.imageSeconds, base?.imageSeconds ?? 8, 2, 600),
+    parking: bool(o.parking, base?.parking ?? false),
   };
 }
 

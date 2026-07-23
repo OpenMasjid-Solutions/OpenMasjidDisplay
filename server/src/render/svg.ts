@@ -255,7 +255,13 @@ function inDailyWindow(nowMin: number, start: string, end: string): boolean {
  *  the clock so every screen/worker agrees. Returns the image filename or null. */
 export function activeAnnouncementImage(tt: Timetable, now: Date): string | null {
   const a = tt.announcements;
-  if (!a || !a.enabled || !a.images || a.images.length === 0) return null;
+  if (!a || !a.enabled) return null;
+  // The rotation pool: the admin's uploaded images, plus (when enabled) the live
+  // parking board frame refreshed by parkingFeed.ts. The frame file may not exist
+  // yet — the renderer resolves it to a data URI and simply skips a missing one.
+  const pool = a.images ? [...a.images] : [];
+  if (a.parking) { const pf = `${tt.id}.ann.parking.png`; if (pf) pool.push(pf); }
+  if (pool.length === 0) return null;
   const parts = localParts(now, tt.timezone || undefined);
   if (!inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
   const every = Math.max(1, Math.floor(a.everySeconds));
@@ -264,8 +270,8 @@ export function activeAnnouncementImage(tt: Timetable, now: Date): string | null
   const cycle = every + forS;
   const phase = ((Math.floor(now.getTime() / 1000) % cycle) + cycle) % cycle;
   if (phase < every) return null; // showing the normal timetable
-  const idx = Math.floor((phase - every) / imgS) % a.images.length;
-  return a.images[idx] ?? null;
+  const idx = Math.floor((phase - every) / imgS) % pool.length;
+  return pool[idx] ?? null;
 }
 
 // Separator between ticker messages. Uses non-breaking spaces ( ) because SVG
