@@ -48,4 +48,4 @@ jobs:
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-allsigned-prcomment: 'All contributors have signed the CLA. Thank you! 🕌'
           # Accounts that never need to sign (the maintainers + bots):
-          allowlist: hasan-ismail,dependabot[bot],github-actions[bot]
+          allowlist: hasan-ismail,osayed0001,web-flow,dependabot[bot],github-actions[bot]
