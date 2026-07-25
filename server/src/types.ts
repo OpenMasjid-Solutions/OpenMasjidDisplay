@@ -74,10 +74,11 @@ export interface Announcements {
   forSeconds: number;
   /** seconds each image is shown */
   imageSeconds: number;
-  /** also cycle a live parking board pulled from the Parking Attendant app over the
-   *  OpenMasjidOS Fabric (capability `parking-attendant/parking`). The frame is
-   *  refreshed in the background and shown as one more slide. Off by default; only
-   *  has effect when the platform + that app are present (fails soft otherwise). */
+  /** also cycle live incorrect-parking ALERT cards (one per active report) pulled
+   *  from the Parking Attendant app over the OpenMasjidOS Fabric (capability
+   *  `parking-attendant/parking`, method `reports`). Refreshed in the background;
+   *  shows nothing when there are no reports. Off by default; only has effect when
+   *  the platform + that app are present (fails soft otherwise). */
   parking?: boolean;
 }
 

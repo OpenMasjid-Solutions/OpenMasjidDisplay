@@ -898,9 +898,9 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             </div>
             <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
               <span className="label" style={{ margin: 0 }}>
-                Include the live parking board <span className="hint">— from the Parking Attendant app, if installed</span>
+                Show incorrect-parking alerts <span className="hint">— red cards from the Parking Attendant app, only while a car is flagged</span>
               </span>
-              <Toggle checked={!!ann.parking} onChange={(v) => setAnn({ parking: v })} label="Include the live parking board" />
+              <Toggle checked={!!ann.parking} onChange={(v) => setAnn({ parking: v })} label="Show incorrect-parking alerts" />
             </div>
           </>
         ) : (

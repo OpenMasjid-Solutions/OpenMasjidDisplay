@@ -253,14 +253,15 @@ function inDailyWindow(nowMin: number, start: string, end: string): boolean {
  *  alternates: `everySeconds` of normal timetable, then `forSeconds` of cycling
  *  images (each `imageSeconds`), within the daily window. Stateless — derived from
  *  the clock so every screen/worker agrees. Returns the image filename or null. */
-export function activeAnnouncementImage(tt: Timetable, now: Date): string | null {
+export function activeAnnouncementImage(tt: Timetable, now: Date, parkingFrames: string[] = []): string | null {
   const a = tt.announcements;
   if (!a || !a.enabled) return null;
   // The rotation pool: the admin's uploaded images, plus (when enabled) the live
-  // parking board frame refreshed by parkingFeed.ts. The frame file may not exist
-  // yet — the renderer resolves it to a data URI and simply skips a missing one.
+  // incorrect-parking alert frames — one per active report — that parkingFeed.ts
+  // refreshes and the caller enumerates (empty when there are no reports). Each is
+  // rendered by the Parking Attendant app and only shows while a car is flagged.
   const pool = a.images ? [...a.images] : [];
-  if (a.parking) { const pf = `${tt.id}.ann.parking.png`; if (pf) pool.push(pf); }
+  if (a.parking && parkingFrames.length) pool.push(...parkingFrames);
   if (pool.length === 0) return null;
   const parts = localParts(now, tt.timezone || undefined);
   if (!inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;

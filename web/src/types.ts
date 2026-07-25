@@ -40,7 +40,7 @@ export interface Announcements {
   everySeconds: number;
   forSeconds: number;
   imageSeconds: number;
-  /** also cycle the live parking board from the Parking Attendant app (Fabric) */
+  /** also cycle live incorrect-parking alert cards from the Parking Attendant app (Fabric) */
   parking?: boolean;
 }
 export interface TickerMessage { id: string; text: string; start: string; end: string }

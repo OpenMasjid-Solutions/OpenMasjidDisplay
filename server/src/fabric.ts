@@ -134,20 +134,21 @@ export async function notify(payload: NotifyPayload): Promise<{ delivered: boole
 }
 
 /**
- * Fetch the current parking board (an SVG string) from the Parking Attendant app
- * via the Fabric app-to-app broker (server→server, authenticated with OUR per-app
- * secret; the platform routes it to `parking-attendant`'s `parking/board`
- * capability). Both sides must agree on the grant (our manifest `fabric.consumes`,
- * theirs `fabric.provides`). FAILS SOFT: no Fabric, not granted, target down, or any
- * error → null, and the slideshow simply skips the parking frame. Never throws.
+ * Fetch the current incorrect-parking alert cards (one SVG per active report) from
+ * the Parking Attendant app via the Fabric app-to-app broker (server→server,
+ * authenticated with OUR per-app secret; the platform routes it to
+ * `parking-attendant`'s `parking/reports` capability). Both sides must agree on the
+ * grant (our manifest `fabric.consumes`, theirs `fabric.provides`). FAILS SOFT: no
+ * Fabric, not granted, target down, or any error → [] (no parking slides). Returns
+ * [] when there are no reports. Never throws.
  */
-export async function fetchParkingBoardSvg(): Promise<string | null> {
-  if (!config.omosBaseUrl || !config.omosAppSecret) return null;
+export async function fetchParkingReportCards(): Promise<string[]> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return [];
   warnIfCleartextSecret();
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 6000);
-    const res = await fetch(`${config.omosBaseUrl}/api/fabric/app/parking-attendant/parking/board`, {
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/app/parking-attendant/parking/reports`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-openmasjid-app-secret': config.omosAppSecret },
       body: '{}',
@@ -155,18 +156,20 @@ export async function fetchParkingBoardSvg(): Promise<string | null> {
       redirect: 'error',
     });
     clearTimeout(t);
-    if (!res.ok) return null;
-    const j = (await res.json().catch(() => ({}))) as { svg?: unknown; fabric_error?: { code?: string } };
+    if (!res.ok) return [];
+    const j = (await res.json().catch(() => ({}))) as { cards?: unknown; fabric_error?: { code?: string } };
     if (j.fabric_error) {
-      log.debug(`parking board unavailable (fabric_error: ${j.fabric_error.code ?? 'unknown'})`);
-      return null;
+      log.debug(`parking reports unavailable (fabric_error: ${j.fabric_error.code ?? 'unknown'})`);
+      return [];
     }
-    if (typeof j.svg !== 'string' || !j.svg.startsWith('<svg')) return null;
-    // Cap the size defensively (the broker already limits to 256 KB each way).
-    return j.svg.length <= 512 * 1024 ? j.svg : null;
+    if (!Array.isArray(j.cards)) return [];
+    return j.cards
+      .map((c) => (c && typeof (c as { svg?: unknown }).svg === 'string' ? (c as { svg: string }).svg : ''))
+      .filter((svg) => svg.startsWith('<svg') && svg.length <= 512 * 1024)
+      .slice(0, 12);
   } catch (err) {
-    log.debug(`parking board fetch failed: ${err instanceof Error ? err.message : err}`);
-    return null;
+    log.debug(`parking reports fetch failed: ${err instanceof Error ? err.message : err}`);
+    return [];
   }
 }
 
