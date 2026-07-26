@@ -896,12 +896,6 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
                 </div>
               </Field>
             </div>
-            <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
-              <span className="label" style={{ margin: 0 }}>
-                Show incorrect-parking alerts <span className="hint">— red cards from the Parking Attendant app, only while a car is flagged</span>
-              </span>
-              <Toggle checked={!!ann.parking} onChange={(v) => setAnn({ parking: v })} label="Show incorrect-parking alerts" />
-            </div>
           </>
         ) : (
           <span className="hint">Create the timetable first, then you can add announcement images.</span>

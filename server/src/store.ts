@@ -132,6 +132,7 @@ function freshDB(): DB {
     tvs: [],
     schedules: [],
     nodes: [],
+    reports: [],
   };
 }
 
@@ -162,6 +163,10 @@ export class Store {
           // every upgrade (the spread below then takes the fresh []). Guard the corrupt
           // case too: a non-array here would break every reconcile.
           if (!Array.isArray(parsed.nodes)) delete (parsed as { nodes?: unknown }).nodes;
+          // Same guard for `reports` (arrived in v0.63.0). Its readers use `?? []`, which
+          // covers a MISSING value but not a corrupt one — a non-array would survive the
+          // spread and then throw on the first .filter/.push.
+          if (!Array.isArray(parsed.reports)) delete (parsed as { reports?: unknown }).reports;
           const fresh = freshDB();
           // Merge settings so fields added in later versions (e.g. volunteerEnabled) default in.
           return { ...fresh, ...parsed, settings: { ...fresh.settings, ...parsed.settings }, version: DB_VERSION };
