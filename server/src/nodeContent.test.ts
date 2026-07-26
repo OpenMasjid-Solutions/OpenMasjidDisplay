@@ -190,6 +190,29 @@ test('adoption only accepts local addresses', () => {
   }
 });
 
+test('a PORT is accepted only on loopback — a LAN address with a port would be a port scanner', () => {
+  // A real node is a dedicated appliance answering on :80, so an admin types just the IP.
+  // Allowing `192.168.x.x:<any>` would let this endpoint sweep the masjid's network, so it
+  // stays refused. Loopback grants no new reachability (the controller can already reach its
+  // own loopback), and it is what lets the devnode harness be adopted through the real panel
+  // — which matters because OpenMasjidOS binds :80 on the host, so a dev node must not.
+  assert.deepEqual(nodeOrigin('127.0.0.1:8099'), { origin: 'http://127.0.0.1:8099' });
+  assert.deepEqual(nodeOrigin('localhost:8099'), { origin: 'http://localhost:8099' });
+  // IPv6 is refused rather than mis-parsed (::1 would otherwise split as host '::' port 1).
+  assert.ok('error' in nodeOrigin('::1'));
+  assert.ok('error' in nodeOrigin('[::1]:8099'));
+  assert.deepEqual(nodeOrigin('127.0.0.1'), { origin: 'http://127.0.0.1' }, 'no port still works');
+
+  for (const lan of ['192.168.1.40:8099', '10.0.0.5:80', '172.16.0.9:1234', 'omd-node-1a2b.local:8099']) {
+    const r = nodeOrigin(lan);
+    assert.ok('error' in r, `${lan} must be refused`);
+    assert.match(r.error, /no “:port”|not valid/, `the error should explain: ${r.error}`);
+  }
+  // A nonsense port on loopback is still rejected rather than silently coerced.
+  assert.ok('error' in nodeOrigin('127.0.0.1:0'));
+  assert.ok('error' in nodeOrigin('127.0.0.1:99999'));
+});
+
 test('a node address is normalized to a bare http origin', () => {
   const o = nodeOrigin(' HTTP://192.168.1.40/status ');
   assert.deepEqual(o, { origin: 'http://192.168.1.40' });

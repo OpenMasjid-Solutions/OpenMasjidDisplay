@@ -1,7 +1,7 @@
 {
   "name": "openmasjid-node-agent",
   "private": true,
-  "version": "0.62.0",
+  "version": "0.64.0",
   "description": "omd-agent — the on-device agent for an OpenMasjid Display Raspberry Pi node",
   "license": "AGPL-3.0-only",
   "scripts": {
@@ -10,7 +10,8 @@
     "start": "node dist/node/agent/src/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsc -p tsconfig.check.json && node --import tsx --test src/backoff.test.ts src/store.test.ts src/display.test.ts src/assetCache.test.ts src/agent.test.ts",
-    "typecheck:all": "tsc -p tsconfig.check.json"
+    "typecheck:all": "tsc -p tsconfig.check.json",
+    "devnode": "node --import tsx src/devnode.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"

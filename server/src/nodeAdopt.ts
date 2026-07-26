@@ -63,24 +63,58 @@ function isPrivateIPv4(host: string): boolean {
  * the panel's discovery picker offers nodes).
  */
 export function nodeOrigin(raw: string): { origin: string } | { error: string } {
-  const host = raw.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
-  if (!host) return { error: 'Enter the address shown on the screen.' };
-  if (host.includes('@') || host.includes(':')) {
-    // No credentials, no port override, no IPv6 literal: keeps the parse unambiguous and
-    // stops `user@evil.com`-style tricks from reaching the fetch below.
+  const hostPort = raw.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  if (!hostPort) return { error: 'Enter the address shown on the screen.' };
+  // No credentials: stops `user@evil.com`-style tricks from reaching the fetch below.
+  if (hostPort.includes('@')) {
     return { error: 'Enter just the IP address shown on the screen (for example 192.168.1.40).' };
+  }
+
+  /*
+   * A PORT is accepted only for LOOPBACK.
+   *
+   * A real node always answers on :80 — it is a dedicated appliance, so nothing competes
+   * for the port and an admin can type just the IP they read off the TV. Allowing an
+   * arbitrary port on a LAN address would turn this endpoint into a port scanner for the
+   * masjid's network, which is the whole point of the guard, so that stays refused.
+   *
+   * Loopback is different: the controller can already reach its own loopback trivially, so
+   * no new reachability is granted — and it is what lets `node/agent`'s devnode harness be
+   * adopted through the real panel UI on a developer's machine. That matters because
+   * OpenMasjidOS itself binds :80 on the host, so a dev node must NOT use :80 there.
+   */
+  // The host part is matched as "no colons" so an IPv6 literal cannot be mis-split into a
+  // host and a port (`::1` would otherwise parse as host `::` port `1`). IPv6 is then
+  // refused outright below: a node is reached by IPv4 or by its mDNS name, and supporting a
+  // third address form here would only add a parse to get wrong.
+  const portMatch = /^([^:]*):(\d{1,5})$/.exec(hostPort);
+  const host = portMatch ? portMatch[1] : hostPort;
+  const port = portMatch ? Number.parseInt(portMatch[2], 10) : 0;
+  if (host.includes(':')) {
+    return { error: 'Enter the IPv4 address or name shown on the screen (for example 192.168.1.40).' };
+  }
+  const isLoopback = ['127.0.0.1', 'localhost'].includes(host.toLowerCase());
+  if (portMatch) {
+    if (!isLoopback) {
+      return {
+        error:
+          'A display node answers on the standard port, so enter just the address shown on the ' +
+          'screen (for example 192.168.1.40) with no “:port”.',
+      };
+    }
+    if (port < 1 || port > 65535) return { error: 'That port number is not valid.' };
   }
   const lower = host.toLowerCase();
   if (DENIED_HOSTS.has(lower)) return { error: 'That address is not a display node.' };
   const isMdns = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(local|lan)$/.test(lower);
-  if (!isPrivateIPv4(lower) && !isMdns) {
+  if (!isPrivateIPv4(lower) && !isMdns && !isLoopback) {
     return {
       error:
         'A Pi node is adopted over your local network, so its address must be a local one ' +
         '(for example 192.168.1.40 or omd-node-1a2b.local).',
     };
   }
-  return { origin: `http://${lower}` };
+  return { origin: portMatch ? `http://${lower}:${port}` : `http://${lower}` };
 }
 
 /** Read a bounded JSON body, or throw. */

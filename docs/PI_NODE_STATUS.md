@@ -179,3 +179,24 @@ not end well. Same bytes, same pixels.
    `*.test.ts`; tsx does not typecheck. So adding a required `AgentOpts` field left eight test
    call sites silently broken, and a bad `import('node:events')` shape sat unnoticed. Both
    projects now have a `tsconfig.check.json` that includes the tests, run first by `npm test`.
+
+---
+
+## Ports — checked against OpenMasjidOS
+
+`OpenMasjidOS` binds **80:80, 443:443 and 8443-8452** on its host (its `docker-compose.yml`).
+Nothing in this feature competes with that:
+
+| Who | Ports | Note |
+|---|---|---|
+| OpenMasjidOS (host) | 80, 443, 8443-8452 | the platform |
+| Display container (host) | 7860, 7861, 8554 | unchanged by this work |
+| A Pi node | 80 **on its own board** | a dedicated appliance; nothing else runs there, so an admin types just the IP off the TV |
+| `devnode` harness (dev box) | 8099 | **must not** be :80 — it runs on the machine the OS is on |
+
+The spec left ":80 vs a high port" open (§15 Q1). Settled: **:80 on a real node** (dedicated
+device, best possible UX — no port to mistype off a TV across a hall), **a high port for the
+dev harness**, and `nodeOrigin` therefore accepts `host:port` **only for loopback**. A LAN
+address with a port stays refused, because accepting one would turn the adoption endpoint
+into a port scanner for the masjid's network. IPv6 is refused outright rather than parsed —
+`::1` would otherwise mis-split into host `::` and port `1`.
