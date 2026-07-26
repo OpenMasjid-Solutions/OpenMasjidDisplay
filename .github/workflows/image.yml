@@ -105,9 +105,19 @@ jobs:
             coreutils quilt parted debootstrap zerofree zip dosfstools \
             libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc gpg pigz \
             kpartx arch-test binfmt-support qemu-user-binfmt
+          # Installing the package is not enough: debootstrap dies with "Unable to execute
+          # target architecture" unless the aarch64 interpreter is actually REGISTERED with
+          # the running kernel's binfmt_misc. pi-gen's own pre-flight check passes without
+          # this because it only tests that qemu can run a binary, not that the chroot can.
+          sudo update-binfmts --enable qemu-aarch64
+          sudo systemctl restart systemd-binfmt || true
+          update-binfmts --display qemu-aarch64 | head -5
 
       - name: Check out pi-gen
-        run: git clone --depth 1 --branch arm64 https://github.com/RPi-Distro/pi-gen.git
+        # master, not the `arm64` branch: that branch is legacy and warns "RELEASE does not
+        # match the intended option for this branch", while current master takes ARCH=arm64
+        # with RELEASE=bookworm directly.
+        run: git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
 
       - name: Configure the build
         run: |
