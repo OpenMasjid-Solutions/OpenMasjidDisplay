@@ -14,10 +14,19 @@ function intEnv(name: string, def: number): number {
   return Number.isFinite(n) ? n : def;
 }
 
+// This file's distance from the server package root differs between running the
+// TypeScript directly under tsx (server/src/config.ts → one level up) and running the
+// build (server/dist/server/src/config.js → three, because tsc's rootDir spans the repo
+// so it can compile packages/render-core into the same program — see tsconfig.json).
+// Same `isTs` trick as render/renderPool.ts uses to find its worker.
+const SERVER_ROOT = path.resolve(__dirname, __filename.endsWith('.ts') ? '..' : '../../..');
+
 export const config = {
   port: intEnv('PORT', 8080),
   dataDir: env('DATA_DIR', path.resolve(process.cwd(), 'data')),
-  publicDir: env('PUBLIC_DIR', path.resolve(__dirname, '..', 'public')),
+  // The container sets PUBLIC_DIR=/app/public explicitly; this default is for local dev,
+  // where Vite's build lands in server/public.
+  publicDir: env('PUBLIC_DIR', path.resolve(SERVER_ROOT, 'public')),
 
   /** The simple mobile "volunteer" page runs on its own HTTP port so volunteers get
    *  a clean URL (and it can be firewalled separately). The container listens on

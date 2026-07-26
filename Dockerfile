@@ -22,10 +22,16 @@ COPY web/ ./
 RUN npm run build
 
 # ---- Compile the server (TypeScript → dist) -------------------------------
+# The server's tsconfig compiles packages/render-core + packages/protocol as part of its
+# own program (one tsc, no npm indirection), so BOTH directories must be present and the
+# repo-relative layout must be preserved — hence /build/server + /build/packages rather
+# than a bare WORKDIR. Those packages have zero runtime dependencies, so `npm ci` in
+# server/ is still the only install.
 FROM --platform=$BUILDPLATFORM node:22-slim AS server
-WORKDIR /server
+WORKDIR /build/server
 COPY server/package.json server/package-lock.json ./
 RUN npm ci
+COPY packages/ /build/packages/
 COPY server/ ./
 RUN npm run build
 
@@ -55,7 +61,10 @@ WORKDIR /app
 COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY --from=server /server/dist ./dist
+# tsc's rootDir spans the repo (so the shared packages compile into the same program), so
+# the emitted tree is dist/server/src/… + dist/packages/… — see server/tsconfig.json and
+# the CMD below. Copying `dist` wholesale keeps those relative paths intact.
+COPY --from=server /build/server/dist ./dist
 COPY --from=web /web/dist ./public
 
 # Vendored fonts (loaded with priority by render/fonts.ts). We bundle a STATIC Noto
@@ -87,4 +96,7 @@ EXPOSE 8080 8081 8554
 VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "dist/index.js"]
+# dist/server/src/index.js, not dist/index.js: the server compiles the shared packages in
+# the same tsc program, so its rootDir is the repo root and the output is one level deeper.
+# Kept in step with the `start` script in server/package.json.
+CMD ["node", "dist/server/src/index.js"]

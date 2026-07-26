@@ -119,6 +119,8 @@ export interface Timetable {
 
 export type SourceType = 'camera' | 'hdmi';
 export type SourceMode = 'direct' | 'normalize';
+/** How a Pi node plays this source: straight off the LAN, or via the controller's re-encode. */
+export type NodePlayback = 'auto' | 'direct-only' | 'always-relay';
 export interface Source {
   id: string;
   name: string;
@@ -127,6 +129,10 @@ export interface Source {
   mode: SourceMode;
   quality: Quality;
   enabled: boolean;
+  /** default 'auto' — play direct when the node can decode it, else re-encode here */
+  nodePlayback?: NodePlayback;
+  /** codec last observed on this source ('h264', 'h265', …); learned from a node, read-only */
+  videoCodec?: string;
   createdAt: string;
 }
 
@@ -135,12 +141,52 @@ export interface ContentRef {
   id?: string;
 }
 
+/** How a screen is driven: a plain RTSP decoder box, or one of our Raspberry Pi nodes. */
+export type ScreenKind = 'decoder' | 'node';
+
 export interface Tv {
   id: string;
   name: string;
   room?: string;
   defaultContent: ContentRef;
   override?: { content: ContentRef; until: number | null } | null;
+  /** absent = 'decoder' (every screen that existed before Pi nodes) */
+  kind?: ScreenKind;
+  /** the PiNode driving this screen, when kind === 'node' */
+  nodeId?: string;
+  createdAt: string;
+}
+
+/** What a node can decode in hardware. */
+export interface NodeCaps {
+  codecs: string[];
+  maxHeight: number;
+  maxFps: number;
+}
+
+/** Last-known health from a node's heartbeat (all optional — it is best effort). */
+export interface NodeHealth {
+  tempC?: number;
+  memFreeMb?: number;
+  uptimeS?: number;
+  wifiRssi?: number;
+  ip?: string;
+}
+
+/** An adopted Pi display node, as the panel sees it. The server strips the token hash
+ *  and salt from every response, so those fields deliberately do not exist here. */
+export interface PiNode {
+  id: string;
+  serial: string;
+  name: string;
+  fw: string;
+  model: string;
+  caps: NodeCaps;
+  ip: string;
+  /** epoch ms of the last frame the controller received (0 = never connected) */
+  lastSeen: number;
+  health?: NodeHealth;
+  screenId?: string;
   createdAt: string;
 }
 
@@ -163,6 +209,8 @@ export interface Settings {
   volunteerEnabled: boolean;
   /** also serve the volunteer page on the main address / over remote access (default on) */
   volunteerRemote: boolean;
+  /** expose the Raspberry Pi node screen kind (off until the hardware path is proven) */
+  piNodes: boolean;
 }
 
 export interface TvStatus {
@@ -197,6 +245,8 @@ export interface AppState {
   sources: Source[];
   tvs: Tv[];
   schedules: ScheduleRule[];
+  /** adopted Pi display nodes; [] when the feature is off or none are set up */
+  nodes: PiNode[];
   themes: ThemePreset[];
   /** built-in ahadith on Salāh (for the enable/disable checklist) */
   hadithDefaults: HadithDefault[];

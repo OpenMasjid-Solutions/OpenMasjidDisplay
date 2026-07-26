@@ -15,7 +15,7 @@ import {
   iqamahHours,
   parseHHMM,
   type MethodDef,
-} from './prayer/engine';
+} from './core';
 import { logoDataUri } from './render/background';
 import type { Timetable } from './types';
 

@@ -1,0 +1,17 @@
+{
+  "name": "openmasjid-node-kiosk",
+  "private": true,
+  "version": "0.64.1",
+  "description": "The on-screen renderer for an OpenMasjid Display Raspberry Pi node — draws the same render-core SVG the controller rasterizes",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+//
+// Same purity contract as packages/render-core: `"types": []` with no "DOM" lib, so
+// this compiles with no Node and no browser globals. The controller, the on-device
+// agent and (if it ever needs to) the kiosk can all import it, and it carries no
+// runtime dependencies at all — see the DEVIATION note in src/index.ts for why the
+// validators are hand-written rather than zod.
+//
+// Transport coercion (a `ws` RawData Buffer → string) deliberately lives in the
+// transport layer on each side, not here, which is what keeps this package platform-free.
+//
+// Typecheck with: cd server && npm run typecheck:protocol
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": [],
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "../render-core/src/types.ts"],
+  "exclude": ["node_modules", "**/*.test.ts"]
+}

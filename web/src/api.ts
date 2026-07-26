@@ -11,6 +11,8 @@ import type {
   Hotspot,
   IqamahYear,
   IqamahScheduleEntry,
+  PiNode,
+  NodeCaps,
 } from './types';
 
 let onUnauth: () => void = () => {};
@@ -127,6 +129,25 @@ export const api = {
   setTv: (id: string, content: ContentRef, until: number | null) =>
     req<Tv>('POST', `/api/tvs/${id}/set`, { content, until }),
   resumeTv: (id: string) => req<Tv>('POST', `/api/tvs/${id}/resume`),
+
+  // ── Raspberry Pi display nodes ──────────────────────────────────────────────
+  /** Ask the device at `address` who it is, before committing to adopting it. */
+  probeNode: (address: string) =>
+    req<{ serial: string; model: string; fw: string; caps: NodeCaps; adopted: boolean; controllerName?: string }>(
+      'POST',
+      '/api/nodes/probe',
+      { address },
+    ),
+  /** Pair the node and create the screen it drives, in one step. */
+  adoptNode: (address: string, name?: string) =>
+    req<{ node: PiNode; screen: Tv }>('POST', '/api/nodes/adopt', { address, name }),
+  renameNode: (id: string, name: string) => req<PiNode>('PUT', `/api/nodes/${id}`, { name }),
+  /** Un-adopt: the node wipes itself (if reachable) and its screen reverts to a decoder. */
+  deleteNode: (id: string) => req<{ ok: boolean }>('DELETE', `/api/nodes/${id}`),
+  /** Show the node's identity big on its TV, so you can tell which screen it is. */
+  identifyNode: (id: string, seconds = 30) =>
+    req<{ ok: boolean }>('POST', `/api/nodes/${id}/identify`, { seconds }),
+  rebootNode: (id: string) => req<{ ok: boolean }>('POST', `/api/nodes/${id}/reboot`),
 
   createSchedule: (b: Partial<ScheduleRule>) => req<ScheduleRule>('POST', '/api/schedules', b),
   updateSchedule: (id: string, b: Partial<ScheduleRule>) => req<ScheduleRule>('PUT', `/api/schedules/${id}`, b),

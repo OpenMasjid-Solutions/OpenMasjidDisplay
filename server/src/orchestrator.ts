@@ -15,12 +15,16 @@
  *   • Each screen path (tv_<id>) self-relays from rtsp://<loopback>/<contentPath>,
  *     so switching a screen is a single PATCH of its source.
  */
+import os from 'node:os';
 import { config } from './config';
 import { makeLog } from './logger';
 import type { Store } from './store';
 import { RenderManager, type NormalizeSpec } from './render/renderer';
-import { dimsFor } from './render/svg';
+import { dimsFor } from './core';
 import { resolveTv } from './scheduler';
+import { planNodeContent, type NodePlan } from './nodeContent';
+import { assetsForTimetable } from './nodeAssets';
+import type { NodeHub } from './nodeHub';
 import {
   ping,
   listConfiguredPaths,
@@ -34,6 +38,34 @@ import type { ContentRef, Tv, TvStatus } from './types';
 
 const log = makeLog('orchestrator');
 
+/** Is this screen driven by a Pi node (rather than an RTSP decoder box)? Requires BOTH
+ *  the kind and a bound node — a half-configured screen falls back to the legacy path
+ *  rather than silently showing nothing. */
+export function isNodeScreen(tv: Tv): boolean {
+  return tv.kind === 'node' && !!tv.nodeId;
+}
+
+/**
+ * An RTSP origin a node on the LAN can reach us at, or '' if we cannot tell.
+ *
+ * Only used for the re-encode fallback (§12 of the spec), which by definition needs the
+ * controller on the same network as the camera. `NODE_RELAY_HOST` overrides the guess
+ * for multi-homed hosts; otherwise we take the first non-internal IPv4 address, which is
+ * right for the single-NIC box a masjid actually runs. A cloud-hosted controller has no
+ * such address and returns '' — planNodeContent turns that into a clear admin message
+ * instead of a black screen.
+ */
+export function lanRtspBase(): string {
+  const override = (process.env.NODE_RELAY_HOST ?? '').trim();
+  if (override) return `rtsp://${override}:${config.rtspPort}`;
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs ?? []) {
+      if (a.family === 'IPv4' && !a.internal && a.address) return `rtsp://${a.address}:${config.rtspPort}`;
+    }
+  }
+  return '';
+}
+
 export class Orchestrator {
   private running = false;
   private rerun = false;
@@ -46,6 +78,16 @@ export class Orchestrator {
   private alerts = new Map<string, { downSince: number | null; offlineNotified: boolean }>();
   /** A screen must stop pulling its stream for this long before we call it offline. */
   private readonly OFFLINE_MS = 90_000;
+  /** Last reported node-screen problem per screen, so we alert on change, not on repeat. */
+  private nodeProblems = new Map<string, string>();
+  /** The Pi node hub, attached after construction (it needs this orchestrator's notifier,
+   *  so the two cannot be constructed in one expression). Absent = no node support. */
+  private hub: NodeHub | null = null;
+
+  /** Wire the Pi node hub in. Called once at startup; safe to never call. */
+  attachNodeHub(hub: NodeHub): void {
+    this.hub = hub;
+  }
 
   constructor(
     private readonly store: Store,
@@ -96,20 +138,40 @@ export class Orchestrator {
 
     const resolutions = db.tvs.map((tv) => ({ tv, res: resolveTv(tv, db.schedules, now, tz) }));
 
+    // Screens split by HOW they are driven. Content resolution above is shared verbatim
+    // (overrides, schedules and the volunteer page work identically for both kinds) —
+    // only the delivery differs from here on.
+    const decoders = resolutions.filter(({ tv }) => !isNodeScreen(tv));
+    const nodeScreens = resolutions.filter(({ tv }) => isNodeScreen(tv));
+
+    // THE COMPUTE WIN: only DECODER screens contribute to the working set, so a
+    // timetable shown solely on Pi nodes never starts an ffmpeg pipeline and never gets
+    // a MediaMTX path. A node renders it itself from a few KB of JSON. Do not "simplify"
+    // this back to iterating every screen — nodeContent.test.ts asserts it.
     const refTt = new Set<string>();
     const refSrc = new Set<string>();
-    for (const { res } of resolutions) {
+    for (const { res } of decoders) {
       const cp = this.contentPath(res.content);
       if (!cp) continue;
       if (res.content.kind === 'timetable') refTt.add(cp);
       else if (res.content.kind === 'source') refSrc.add(cp);
     }
 
+    // Work out what each node should show. A node that needs the controller to re-encode
+    // an undecodable camera is the ONE case where a node screen adds controller work —
+    // and only then, for that one source.
+    const nodePlans = this.planNodes(nodeScreens, refSrc);
+    const relaySrc = new Set<string>();
+    for (const { plan } of nodePlans) if (plan.normalizeSourceId) relaySrc.add(plan.normalizeSourceId);
+
     const activeTts = db.timetables.filter((t) => refTt.has(t.id));
     const refSources = db.sources.filter((s) => refSrc.has(s.id) && s.enabled);
     const directSources = refSources.filter((s) => s.mode === 'direct');
-    const normalizeSources: NormalizeSpec[] = refSources
-      .filter((s) => s.mode === 'normalize')
+    // Sources needing a transcode: those an admin marked 'normalize' for decoder screens,
+    // plus any a node asked us to relay (deduped — the same source can be both).
+    const normalizeIds = new Set<string>([...refSources.filter((s) => s.mode === 'normalize').map((s) => s.id), ...relaySrc]);
+    const normalizeSources: NormalizeSpec[] = db.sources
+      .filter((s) => normalizeIds.has(s.id) && s.enabled)
       .map((s) => ({ id: s.id, url: s.url, dims: dimsFor('landscape', s.quality) }));
 
     const reachable = await ping();
@@ -129,7 +191,11 @@ export class Orchestrator {
           sourceOnDemandCloseAfter: '10s',
         });
       }
-      for (const { tv, res } of resolutions) {
+      // Only decoder screens get a tv_<id> relay path. A node screen has no decoder box
+      // to serve, so configuring one would keep an idle path (and its on-demand plumbing)
+      // alive for nothing. A screen converted to a node therefore has its old path
+      // removed by the cleanup below, exactly like a deleted screen.
+      for (const { tv, res } of decoders) {
         const cp = this.contentPath(res.content);
         if (!cp) continue;
         desired.set(tv.id, {
@@ -170,35 +236,109 @@ export class Orchestrator {
       db.timetables.find((t) => t.id === id),
     );
 
+    // Push each node its content (the hub no-ops when it matches what it last sent, so
+    // this is free on the 15 s reconciles where nothing changed).
+    for (const { tv, plan } of nodePlans) {
+      const nodeId = tv.nodeId;
+      if (!nodeId) continue;
+      this.hub?.setContent(nodeId, plan.content);
+      this.reportNodeProblem(tv.id, tv.name, plan.problem);
+    }
+
     const statuses: TvStatus[] = [];
     for (const { tv, res } of resolutions) {
       const cp = this.contentPath(res.content);
-      // "Pulling" = a decoder is actively reading this screen's RTSP path. The path
-      // is on-demand, so a reader (the screen) is what makes it live — readers≥1 is
-      // the cleanest "the screen is on and showing the stream" signal.
-      let pulling = false;
-      if (reachable && cp) {
+      let ready = false;
+      if (isNodeScreen(tv)) {
+        // For a node there is no RTSP path to inspect: the node IS the player. "Ready"
+        // means its socket is up and it has heartbeated recently (protocol
+        // OFFLINE_AFTER_MS), which is the same ~90 s tolerance decoder screens get.
+        ready = !!tv.nodeId && !!this.hub?.isFresh(tv.nodeId);
+      } else if (reachable && cp) {
+        // "Pulling" = a decoder is actively reading this screen's RTSP path. The path
+        // is on-demand, so a reader (the screen) is what makes it live — readers≥1 is
+        // the cleanest "the screen is on and showing the stream" signal.
         const st = await getPathState(tv.id);
-        pulling = !!st && st.readers >= 1;
+        ready = !!st && st.readers >= 1;
       }
       statuses.push({
         tvId: tv.id,
         effective: res.content,
         source: res.source,
         ruleId: res.ruleId,
-        streamReady: pulling,
+        streamReady: ready,
       });
     }
     this.statuses = statuses;
     this.onStatus(this.statuses);
 
-    // Offline/online notifications, only while MediaMTX itself is reachable (so a
-    // platform/MediaMTX blip never makes every screen look offline at once).
-    if (reachable) {
-      this.runAlerts(
-        resolutions.map(({ tv, res }, i) => ({ tv, pulling: statuses[i].streamReady, off: res.content.kind === 'off' })),
-      );
+    // Offline/online notifications. Decoder screens are only judged while MediaMTX is
+    // reachable (so a MediaMTX blip never makes every screen look offline at once);
+    // node screens are judged always, because their liveness is a socket to US and has
+    // nothing to do with whether MediaMTX is up.
+    const byId = new Map(statuses.map((s) => [s.tvId, s]));
+    this.runAlerts(
+      resolutions
+        .filter(({ tv }) => isNodeScreen(tv) || reachable)
+        .map(({ tv, res }) => ({
+          tv,
+          pulling: byId.get(tv.id)?.streamReady ?? false,
+          off: res.content.kind === 'off',
+        })),
+    );
+  }
+
+  /**
+   * Work out what each node screen should show.
+   *
+   * `decoderSrcIds` is the set of sources currently feeding legacy decoder screens; it is
+   * what lets planNodeContent refuse to start a transcode that would fight an existing
+   * MediaMTX proxy path and break one of those screens.
+   */
+  private planNodes(
+    nodeScreens: { tv: Tv; res: { content: ContentRef } }[],
+    decoderSrcIds: ReadonlySet<string>,
+  ): { tv: Tv; plan: NodePlan }[] {
+    const db = this.store.db;
+    const relayBase = lanRtspBase();
+    return nodeScreens.map(({ tv, res }) => {
+      const node = tv.nodeId ? db.nodes?.find((n) => n.id === tv.nodeId) : undefined;
+      const plan = planNodeContent({
+        content: res.content,
+        timetable: res.content.kind === 'timetable' ? db.timetables.find((t) => t.id === res.content.id) : undefined,
+        source: res.content.kind === 'source' ? db.sources.find((s) => s.id === res.content.id) : undefined,
+        caps: node?.caps,
+        relayBase,
+        usedByDecoder: res.content.kind === 'source' && !!res.content.id && decoderSrcIds.has(res.content.id),
+        // The masjid's own background photo and logo, addressed by content hash so a node
+        // fetches each once and then never again however often content is re-pushed.
+        assets:
+          res.content.kind === 'timetable'
+            ? (() => {
+                const tt = db.timetables.find((t) => t.id === res.content.id);
+                return tt ? assetsForTimetable(tt) : [];
+              })()
+            : [],
+      });
+      return { tv, plan };
+    });
+  }
+
+  /** Alert the masjid once per distinct problem per screen, not once per reconcile. */
+  private reportNodeProblem(tvId: string, tvName: string, problem: string | undefined): void {
+    const previous = this.nodeProblems.get(tvId);
+    if (!problem) {
+      this.nodeProblems.delete(tvId);
+      return;
     }
+    if (previous === problem) return;
+    this.nodeProblems.set(tvId, problem);
+    log.warn(`node screen "${tvName}": ${problem}`);
+    void this.notify?.({
+      title: 'Screen needs attention',
+      text: `📺 "${(tvName || 'Screen').slice(0, 60)}": ${problem}`,
+      level: 'warning',
+    });
   }
 
   /**

@@ -3,10 +3,18 @@
 import assert from 'node:assert';
 import test from 'node:test';
 import { normTimetable } from '../validate';
-import { normalizeIqamahYear } from '../iqamahCsv';
-import { normalizeIqamahSchedule } from '../iqamahSchedule';
-import { widgetData, widgetPayload, renderDisplaySvg, buildModel, upcomingIqamahChange } from './svg';
-import { localParts, zonedNoon, dayOfWeek } from '../prayer/engine';
+import {
+  normalizeIqamahYear,
+  normalizeIqamahSchedule,
+  widgetData,
+  widgetPayload,
+  renderDisplaySvg,
+  buildModel,
+  upcomingIqamahChange,
+  localParts,
+  zonedNoon,
+  dayOfWeek,
+} from '../core';
 
 function ttFor(tz: string | undefined) {
   return normTimetable({

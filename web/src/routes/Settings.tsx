@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { AppState, Settings } from '../types';
-import { Field, Toggle, Spinner, IconCheck, useToast } from '../ui';
+import { Field, Toggle, Spinner, IconCheck, IconWarn, useToast } from '../ui';
 import { usePrefs, prefsStore, WALLPAPERS, fetchOmosAppearance } from '../prefs';
 import { timezoneOptions } from '../timezones';
 
@@ -140,6 +140,8 @@ export function SettingsPage({ state, refetch }: Props) {
 
       <VolunteerPanel state={state} refetch={refetch} />
 
+      <PiNodesPanel state={state} refetch={refetch} />
+
       <NotificationsPanel />
 
       <div className="panel glass">
@@ -155,6 +157,57 @@ export function SettingsPage({ state, refetch }: Props) {
       </div>
 
       <button className="btn btn--primary" onClick={save} disabled={busy}><IconCheck size={16} /> Save settings</button>
+    </div>
+  );
+}
+
+/**
+ * Opt in to the Raspberry Pi node screen kind.
+ *
+ * Off by default and saved on its own (not with the "Save settings" button) because it
+ * gates a whole feature — the /api/nodes routes and the node WebSocket endpoint do not
+ * exist at all while it is off, so turning it on is a deliberate act rather than a side
+ * effect of saving an unrelated preference.
+ */
+function PiNodesPanel({ state, refetch }: Props) {
+  const toast = useToast();
+  const [on, setOn] = useState(state.settings.piNodes);
+  const nodeCount = (state.nodes ?? []).length;
+
+  const toggle = async (v: boolean) => {
+    setOn(v); // optimistic
+    try {
+      await api.saveSettings({ piNodes: v });
+      await refetch();
+      toast(v ? 'Pi node screens enabled.' : 'Pi node screens hidden.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save.', 'error');
+      setOn(state.settings.piNodes); // revert on failure
+    }
+  };
+
+  return (
+    <div className="panel glass">
+      <h3 className="section-title" style={{ marginTop: 0 }}>Raspberry Pi screens (new)</h3>
+      <p className="muted" style={{ marginBottom: '1rem' }}>
+        Instead of an RTSP decoder box, a small Raspberry Pi running our card plugs straight into the TV
+        and draws the timetable itself — so this server does no video work for that screen, and cameras
+        play straight from your network. Your existing decoder screens are unaffected either way.
+      </p>
+
+      <div className="toggle-row row-between">
+        <span className="label" style={{ margin: 0 }}>
+          Offer Pi node screens <span className="hint">— adds “Pi node” to Add screen on the Screens page</span>
+        </span>
+        <Toggle checked={on} onChange={toggle} label="Offer Pi node screens" />
+      </div>
+
+      {nodeCount > 0 && !on && (
+        <p className="hint" style={{ color: '#e5736b' }}>
+          <IconWarn size={14} /> {nodeCount} Pi {nodeCount === 1 ? 'node is' : 'nodes are'} still set up. While this
+          is off they cannot connect, so those screens will go dark — turn it back on, or remove the nodes first.
+        </p>
+      )}
     </div>
   );
 }

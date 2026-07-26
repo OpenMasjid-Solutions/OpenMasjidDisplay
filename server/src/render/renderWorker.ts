@@ -18,10 +18,9 @@
  */
 import { parentPort } from 'node:worker_threads';
 import { Resvg } from '@resvg/resvg-js';
-import { renderDisplaySvg, activeAnnouncementImage } from './svg';
+import { renderDisplaySvg, activeAnnouncementImage, getPalette } from '../core';
 import { backgroundDataUri, logoDataUri, announcementDataUri, listParkingFrames } from './background';
 import { fontOptions } from './fonts';
-import { getPalette } from './theme';
 import type { Timetable } from '../types';
 
 if (!parentPort) throw new Error('renderWorker must be run as a worker thread');
