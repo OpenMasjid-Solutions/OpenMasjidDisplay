@@ -20,7 +20,16 @@ permissions:
 
 jobs:
   image:
-    runs-on: ubuntu-latest
+    # NATIVE arm64, not an emulated build on x86 — pi-gen says so itself, in the build log:
+    # "WARNING: Only a native build environment is supported."
+    #
+    # Two emulated attempts (trixie and bookworm) each ran ~45 minutes and then died the same
+    # way: dpkg could not configure python3-requests / python3-urllib3 / ssh-import-id,
+    # because their postinsts run py3compile and that misbehaves under qemu-user. Chasing it
+    # with binfmt flags and package swaps was treating the symptom. GitHub's arm64 runners are
+    # free for public repositories, so the whole emulation layer just goes away — and the
+    # build is considerably faster besides.
+    runs-on: ubuntu-24.04-arm
     # pi-gen on a Zero 2 W target takes a while; the default 6h is plenty but be explicit.
     timeout-minutes: 120
     steps:
@@ -94,29 +103,15 @@ jobs:
       - name: Install pi-gen dependencies
         run: |
           sudo apt-get update
-          # qemu-user-static is what the PINNED pi-gen tag's dependency list names (the
-          # trixie branch named qemu-user-binfmt instead — the two Conflict with each other,
-          # so exactly one of them can be installed and it has to match the pi-gen in use).
+          # No qemu, no binfmt: the runner IS arm64, so the chroot runs native. qemu-user-static
+          # is still installed because pi-gen's dependency check asks for it unconditionally —
+          # it simply never gets used.
           sudo apt-get install -y --no-install-recommends \
             coreutils quilt parted debootstrap zerofree zip dosfstools \
             libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc gpg pigz \
-            kpartx arch-test binfmt-support qemu-user-static
-          # Installing the package is not enough: debootstrap dies with "Unable to execute
-          # target architecture" unless the aarch64 interpreter is registered with the running
-          # kernel's binfmt_misc AND registered with the FIX-BINARY (F) flag.
-          #
-          # F is the crux. Without it the kernel resolves the interpreter path INSIDE the
-          # chroot, where /usr/bin/qemu-aarch64-static does not exist yet — which is exactly
-          # what debootstrap's second stage trips over. With F the interpreter is opened up
-          # front and carried in, so it works in any chroot or mount namespace. pi-gen's
-          # pre-flight reports "arm64: ok" either way, because it only tests qemu on the host.
-          sudo update-binfmts --enable qemu-aarch64 || true
-          sudo systemctl restart systemd-binfmt || true
-          # multiarch/qemu-user-static --reset -p yes re-registers every handler with F set.
-          # This is the standard way to make foreign-arch chroots work in CI.
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-          echo "--- aarch64 handler (expect 'flags: ... F') ---"
-          update-binfmts --display qemu-aarch64 || cat /proc/sys/fs/binfmt_misc/qemu-aarch64 || true
+            kpartx arch-test qemu-user-static
+          echo "--- host architecture (expect aarch64) ---"
+          uname -m
 
       - name: Check out pi-gen
         # PINNED to a released bookworm+arm64 snapshot rather than tracking a branch.
