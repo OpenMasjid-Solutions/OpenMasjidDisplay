@@ -251,23 +251,27 @@ function inDailyWindow(nowMin: number, start: string, end: string): boolean {
 
 /** Which announcement image (if any) should be the backdrop right now. The display
  *  alternates: `everySeconds` of normal timetable, then `forSeconds` of cycling
- *  images (each `imageSeconds`), within the daily window. Stateless — derived from
- *  the clock so every screen/worker agrees. Returns the image filename or null. */
-export function activeAnnouncementImage(tt: Timetable, now: Date, parkingFrames: string[] = []): string | null {
+ *  images (each `imageSeconds`). Stateless — derived from the clock so every
+ *  screen/worker agrees. Returns the image filename or null.
+ *
+ *  Two sources feed the rotation:
+ *   - the admin's uploaded slideshow images (only when the slideshow is enabled, and
+ *     honoring its daily window), and
+ *   - `reportFrames`: incorrect-parking alert cards, one per active volunteer report
+ *     targeting this timetable. These rotate WHENEVER present — filing a report is
+ *     the opt-in — independent of the image slideshow and its window. */
+export function activeAnnouncementImage(tt: Timetable, now: Date, reportFrames: string[] = []): string | null {
   const a = tt.announcements;
-  if (!a || !a.enabled) return null;
-  // The rotation pool: the admin's uploaded images, plus (when enabled) the live
-  // incorrect-parking alert frames — one per active report — that parkingFeed.ts
-  // refreshes and the caller enumerates (empty when there are no reports). Each is
-  // rendered by the Parking Attendant app and only shows while a car is flagged.
-  const pool = a.images ? [...a.images] : [];
-  if (a.parking && parkingFrames.length) pool.push(...parkingFrames);
+  const images = a?.enabled && a.images ? [...a.images] : [];
+  const pool = [...images, ...reportFrames];
   if (pool.length === 0) return null;
   const parts = localParts(now, tt.timezone || undefined);
-  if (!inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
-  const every = Math.max(1, Math.floor(a.everySeconds));
-  const forS = Math.max(1, Math.floor(a.forSeconds));
-  const imgS = Math.max(1, Math.floor(a.imageSeconds));
+  // Uploaded images respect the slideshow's daily window; alerts ignore it. So when
+  // there are no alerts, apply the window; when alerts are present, always rotate.
+  if (reportFrames.length === 0 && a && !inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
+  const every = Math.max(1, Math.floor(a?.everySeconds ?? 25));
+  const forS = Math.max(1, Math.floor(a?.forSeconds ?? 20));
+  const imgS = Math.max(1, Math.floor(a?.imageSeconds ?? 8));
   const cycle = every + forS;
   const phase = ((Math.floor(now.getTime() / 1000) % cycle) + cycle) % cycle;
   if (phase < every) return null; // showing the normal timetable
