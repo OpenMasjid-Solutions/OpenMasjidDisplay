@@ -12,10 +12,10 @@
  * per-element toggles are honoured; a carousel option rotates the layout over the
  * day to avoid screen burn-in. No sacred/Arabic text appears in decorative chrome.
  */
-import type { Timetable, HadithItem, SalahHadith, TimeFormat, Lang } from '../types';
+import type { Timetable, HadithItem, SalahHadith, TimeFormat, Lang } from './types';
 import { getPalette, type Palette } from './theme';
 import { DEFAULT_SALAH_HADITH } from './defaultHadith';
-import { resolveSchedule } from '../iqamahSchedule';
+import { resolveSchedule } from './iqamahSchedule';
 import {
   prayerTimes,
   iqamahHours,
@@ -26,7 +26,7 @@ import {
   parseHHMM,
   METHODS,
   type PrayerTimes,
-} from '../prayer/engine';
+} from './prayer/engine';
 
 export interface Dims {
   width: number;

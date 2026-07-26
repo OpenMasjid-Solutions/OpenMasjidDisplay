@@ -18,11 +18,20 @@ import {
   clearCookieHeader,
 } from './auth';
 import { probePlatform, ssoConfigured, notify, siteInfo } from './fabric';
-import { widgetPayload } from './render/svg';
+import {
+  widgetPayload,
+  THEMES,
+  DEFAULT_SALAH_HADITH,
+  parseIqamahCsv,
+  toCsv,
+  templateCsv,
+  normalizeIqamahYear,
+  normalizeIqamahSchedule,
+  localParts,
+  zonedNoon,
+} from './core';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter } from './rateLimit';
-import { THEMES } from './render/theme';
-import { DEFAULT_SALAH_HADITH } from './render/defaultHadith';
 import {
   saveBackground,
   removeBackground,
@@ -40,10 +49,7 @@ import {
 } from './render/background';
 import { renderPreviewPng, renderPreviewMeta } from './render/renderPool';
 import { probeSource } from './render/renderer';
-import { parseIqamahCsv, toCsv, templateCsv, normalizeIqamahYear } from './iqamahCsv';
-import { normalizeIqamahSchedule } from './iqamahSchedule';
 import { renderMonthPrintHtml } from './print';
-import { localParts, zonedNoon } from './prayer/engine';
 import {
   normTimetable,
   normSource,
@@ -52,7 +58,9 @@ import {
   normSettings,
   normContent,
 } from './validate';
-import type { DB } from './types';
+import type { DB, PiNode } from './types';
+import type { NodeHub } from './nodeHub';
+import { probeNode, adoptNode, controllerWsUrl } from './nodeAdopt';
 
 const log = makeLog('api');
 
@@ -78,6 +86,29 @@ interface Deps {
   /** The volunteer-page handler, also mounted here (under /volunteer) so the volunteer UI
    *  rides the OS tunnel on the main port without the platform routing its own port. */
   volunteer: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  /** The Pi node hub, for the panel's live commands (identify / reboot / un-adopt).
+   *  Optional so the API can be constructed without node support at all. */
+  nodeHub?: NodeHub;
+}
+
+/** A node record minus its credential. `tokenHash`/`tokenSalt` must never reach the
+ *  panel — they are the only thing standing between a leaked API response and a node
+ *  impersonation, so strip them at the single point every node response goes through. */
+function publicNode(n: PiNode): Omit<PiNode, 'tokenHash' | 'tokenSalt'> {
+  const { tokenHash: _h, tokenSalt: _s, ...rest } = n;
+  return rest;
+}
+
+/** A trimmed, length-capped string with a fallback — the panel's node rename. */
+function str80(v: unknown, fallback: string): string {
+  const s = typeof v === 'string' ? v.trim().slice(0, 80) : '';
+  return s || fallback;
+}
+
+/** Clamp an integer from a request body into [lo,hi], falling back on junk. */
+function intIn(v: unknown, def: number, lo: number, hi: number): number {
+  const n = typeof v === 'number' ? v : Number.parseInt(String(v ?? ''), 10);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.trunc(n))) : def;
 }
 
 function sendJson(res: ServerResponse, status: number, obj: unknown): void {
@@ -216,7 +247,7 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 };
 
 export function createApi(deps: Deps) {
-  const { store, orchestrator, volunteer } = deps;
+  const { store, orchestrator, volunteer, nodeHub } = deps;
   const loginLimiter = new LoginLimiter();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
@@ -757,6 +788,97 @@ export function createApi(deps: Deps) {
         if (idx < 0) return sendJson(res, 404, { error: 'Screen not found.' });
         store.update((db) => void (db.tvs[idx].override = null));
         return sendJson(res, 200, store.db.tvs[idx]);
+      }
+
+      // ---- Raspberry Pi display nodes --------------------------------------
+      // Every route here is behind the `piNodes` setting, so a masjid that has not opted
+      // in has no new attack surface at all (404, as if the feature did not ship).
+      if (pathname === '/api/nodes' || pathname.startsWith('/api/nodes/')) {
+        if (!store.db.settings.piNodes) return sendJson(res, 404, { error: 'Not found.' });
+
+        // Ask a device on the LAN who it is, before committing to adopting it.
+        if (pathname === '/api/nodes/probe' && method === 'POST') {
+          const body = await readBody(req);
+          const out = await probeNode(String(body.address ?? ''));
+          if ('error' in out) return sendJson(res, 400, { error: out.error });
+          return sendJson(res, 200, out.status);
+        }
+
+        // Adopt a node and create the screen it drives, in one step — a node with no
+        // screen has nothing to show, and a screen with no node cannot be driven.
+        if (pathname === '/api/nodes/adopt' && method === 'POST') {
+          if (atCap(res, store.db.nodes ?? [])) return;
+          if (atCap(res, store.db.tvs)) return;
+          const body = await readBody(req);
+          const wsUrl = controllerWsUrl(req.headers);
+          if (!wsUrl) return sendJson(res, 400, { error: 'Could not work out this controller\'s address for the node to call back on.' });
+          const out = await adoptNode(String(body.address ?? ''), {
+            controllerName: store.db.timetables[0]?.masjidName || 'OpenMasjid Display',
+            wsUrl,
+            name: typeof body.name === 'string' ? body.name : undefined,
+          });
+          if ('error' in out) return sendJson(res, 400, { error: out.error });
+          if ((store.db.nodes ?? []).some((n) => n.serial === out.node.serial)) {
+            return sendJson(res, 409, { error: 'That node is already set up on this controller.' });
+          }
+          const screen = normTv({ name: out.node.name });
+          screen.kind = 'node';
+          screen.nodeId = out.node.id;
+          out.node.screenId = screen.id;
+          store.update((db) => {
+            (db.nodes ??= []).push(out.node);
+            db.tvs.push(screen);
+          });
+          // Never include the token (it is not even kept) — just the record and screen.
+          return sendJson(res, 200, { node: publicNode(out.node), screen });
+        }
+
+        const nodeMatch = /^\/api\/nodes\/([\w-]+)$/.exec(pathname);
+        if (nodeMatch) {
+          const id = nodeMatch[1];
+          const idx = (store.db.nodes ?? []).findIndex((n) => n.id === id);
+          if (idx < 0) return sendJson(res, 404, { error: 'Node not found.' });
+          if (method === 'PUT') {
+            const body = await readBody(req);
+            const name = str80(body.name, store.db.nodes![idx].name);
+            store.update((db) => void (db.nodes![idx].name = name));
+            return sendJson(res, 200, publicNode(store.db.nodes![idx]));
+          }
+          if (method === 'DELETE') {
+            // Un-adopt: tell the node to wipe itself (best effort — it may be offline,
+            // which is what the physical factory-reset paths are for), drop our record,
+            // and return its screen to the legacy decoder kind rather than deleting it,
+            // so schedules and overrides pointing at that screen keep working.
+            const node = store.db.nodes![idx];
+            nodeHub?.factoryReset(node.id);
+            store.update((db) => {
+              db.nodes = (db.nodes ?? []).filter((n) => n.id !== id);
+              for (const tv of db.tvs) {
+                if (tv.nodeId === id) {
+                  delete tv.nodeId;
+                  delete tv.kind;
+                }
+              }
+            });
+            return sendJson(res, 200, { ok: true });
+          }
+        }
+
+        const identifyMatch = /^\/api\/nodes\/([\w-]+)\/identify$/.exec(pathname);
+        if (identifyMatch && method === 'POST') {
+          const body = await readBody(req);
+          const seconds = intIn(body.seconds, 30, 1, 300);
+          const ok = nodeHub?.identify(identifyMatch[1], seconds) ?? false;
+          if (!ok) return sendJson(res, 409, { error: 'That screen is not connected right now.' });
+          return sendJson(res, 200, { ok: true });
+        }
+
+        const rebootMatch = /^\/api\/nodes\/([\w-]+)\/reboot$/.exec(pathname);
+        if (rebootMatch && method === 'POST') {
+          const ok = nodeHub?.reboot(rebootMatch[1]) ?? false;
+          if (!ok) return sendJson(res, 409, { error: 'That screen is not connected right now.' });
+          return sendJson(res, 200, { ok: true });
+        }
       }
 
       // ---- Schedules -------------------------------------------------------

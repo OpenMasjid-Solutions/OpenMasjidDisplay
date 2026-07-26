@@ -125,11 +125,13 @@ function freshDB(): DB {
       scheduleTimezone: config.seed.timezone,
       volunteerEnabled: false,
       volunteerRemote: true,
+      piNodes: false,
     },
     timetables: [seededTimetable()],
     sources: [],
     tvs: [],
     schedules: [],
+    nodes: [],
   };
 }
 
@@ -156,6 +158,10 @@ export class Store {
         const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8')) as DB;
         if (parsed && typeof parsed === 'object' && Array.isArray(parsed.timetables)) {
           parsed.timetables = parsed.timetables.map(migrateTimetable);
+          // Pi nodes arrived after the first stores were written, so `nodes` is absent on
+          // every upgrade (the spread below then takes the fresh []). Guard the corrupt
+          // case too: a non-array here would break every reconcile.
+          if (!Array.isArray(parsed.nodes)) delete (parsed as { nodes?: unknown }).nodes;
           const fresh = freshDB();
           // Merge settings so fields added in later versions (e.g. volunteerEnabled) default in.
           return { ...fresh, ...parsed, settings: { ...fresh.settings, ...parsed.settings }, version: DB_VERSION };

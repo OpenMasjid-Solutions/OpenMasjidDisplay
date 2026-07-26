@@ -10,7 +10,8 @@ import { RenderManager } from './render/renderer';
 import { Orchestrator } from './orchestrator';
 import { createApi } from './api';
 import { createVolunteerApi } from './volunteerApi';
-import { WsHub } from './ws';
+import { WsHub, routeUpgrades } from './ws';
+import { NodeHub } from './nodeHub';
 import { hasValidSession } from './auth';
 import { ping } from './mediamtx';
 import { MediaMtxServer } from './mediamtxServer';
@@ -54,8 +55,30 @@ async function main(): Promise<void> {
   // The volunteer page handler is shared: it runs on its own port (below) AND is mounted on
   // the main control-panel port (under /volunteer) so it rides the OS tunnel with no platform
   // change. One instance → one shared PIN rate-limiter across both entry points.
+  // Raspberry Pi display nodes dial in to this hub. Built BEFORE the API so the panel's
+  // identify / reboot / un-adopt routes have a live hub to talk to; its callbacks reach
+  // `hub` (the panel socket) lazily, so that one can still be created after the server.
+  const nodeHub = new NodeHub(store, {
+    onUnsupportedCodec: (nodeId, sourceId, codec) => {
+      // Remember what the node could not decode, so this source is relayed from now on
+      // for every node instead of failing once per node (see nodeContent.ts).
+      if (!sourceId || !codec) return;
+      store.update((db) => {
+        const s = db.sources.find((x) => x.id === sourceId);
+        if (s && s.videoCodec !== codec) s.videoCodec = codec;
+      });
+      log.info(`node ${nodeId} cannot decode ${codec} on ${sourceId}; it will be re-encoded`);
+      void orchestrator.reconcile();
+    },
+    onNotify: (p) => void notify(p),
+    onChanged: () => {
+      hub?.broadcast('state', null);
+    },
+  });
+  orchestrator.attachNodeHub(nodeHub);
+
   const volunteerHandler = createVolunteerApi({ store, orchestrator });
-  const handler = createApi({ store, orchestrator, volunteer: volunteerHandler });
+  const handler = createApi({ store, orchestrator, volunteer: volunteerHandler, nodeHub });
   const server = http.createServer((req, res) => {
     handler(req, res).catch((err) => {
       log.error('request handler crashed', err);
@@ -65,7 +88,10 @@ async function main(): Promise<void> {
       }
     });
   });
-  hub = new WsHub(server, (req) => hasValidSession(req, store.secret));
+  hub = new WsHub((req) => hasValidSession(req, store.secret));
+  // Both WebSocket endpoints go through ONE upgrade router — see routeUpgrades() for why
+  // that is not optional.
+  routeUpgrades(server, [hub, nodeHub]);
 
   server.listen(config.port, () => {
     log.info(`OpenMasjid Display control panel listening on :${config.port}`);
@@ -109,6 +135,9 @@ async function main(): Promise<void> {
   const shutdown = () => {
     log.info('shutting down');
     render.stopAll();
+    // Close node sockets with a going-away code so agents reconnect promptly on restart
+    // instead of sitting out their backoff after a container update.
+    nodeHub.stopAll();
     mediamtx.stop();
     server.close();
     volunteerServer.close();

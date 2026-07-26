@@ -5,7 +5,7 @@ import test from 'node:test';
 import { pickSalahHadith, salahHadithView } from './svg';
 import { getPalette } from './theme';
 import { DEFAULT_SALAH_HADITH } from './defaultHadith';
-import type { SalahHadith } from '../types';
+import type { SalahHadith } from './types';
 
 const P = { year: 2026, month: 7, day: 17 };
 const ALL_OFF = DEFAULT_SALAH_HADITH.map((d) => d.id); // disable every built-in

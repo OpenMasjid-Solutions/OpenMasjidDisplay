@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+//
+// PURITY CONTRACT, not a nicety: `"types": []` and a lib WITHOUT "DOM" mean this
+// package compiles with no Node globals and no browser globals, so the same source
+// runs unchanged in the controller container (CommonJS + resvg), in a Raspberry Pi
+// node's kiosk browser (ESM + the DOM), and under tsx in tests. If you find
+// yourself wanting `node:fs`, `process` or `document` here, the code belongs in
+// server/ or node/kiosk/ instead. Typecheck with: cd server && npm run typecheck:core
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": [],
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "**/*.test.ts"]
+}

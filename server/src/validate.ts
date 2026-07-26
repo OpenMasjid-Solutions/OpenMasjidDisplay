@@ -4,8 +4,7 @@
  *  domain objects. Every field is clamped/defaulted; ids and createdAt are
  *  preserved on update or generated on create. */
 import { rid, defaultIqamah } from './store';
-import { THEMES } from './render/theme';
-import { parseHHMM } from './prayer/engine';
+import { THEMES, parseHHMM } from './core';
 import type {
   Timetable,
   Source,
@@ -367,13 +366,23 @@ export function normSource(input: unknown, base?: Source): Source {
     mode: oneOf(o.mode, ['direct', 'normalize'] as const, base?.mode ?? 'direct'),
     quality: oneOf(o.quality, ['720p', '1080p'] as const, oneOf(base?.quality, ['720p', '1080p'] as const, '1080p')) as Quality,
     enabled: o.enabled === undefined ? base?.enabled ?? true : bool(o.enabled, true),
+    nodePlayback: oneOf(o.nodePlayback, ['auto', 'direct-only', 'always-relay'] as const, base?.nodePlayback ?? 'auto'),
+    // Learned from a node's `unsupported_codec` event, never from a request body — an
+    // admin cannot set it, and a stale value only costs one relayed stream.
+    videoCodec: base?.videoCodec ?? '',
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };
 }
 
 export function normTv(input: unknown, base?: Tv): Tv {
   const o = asObj(input);
-  return {
+  // `kind` and `nodeId` are set by the ADOPTION flow, not by a screen save: binding a
+  // screen to a node means minting a token and talking to the hardware. Preserving them
+  // from `base` means a normal screen edit can never orphan a node or turn a decoder
+  // screen into a broken node screen — the same reasoning as iqamahYear/iqamahSchedule
+  // being writable only through their own endpoints.
+  const kind = base?.kind ?? 'decoder';
+  const tv: Tv = {
     id: base?.id ?? rid('tv'),
     name: str(o.name, base?.name ?? 'Screen', 80) || 'Screen',
     room: str(o.room, base?.room ?? '', 80),
@@ -381,6 +390,9 @@ export function normTv(input: unknown, base?: Tv): Tv {
     override: base?.override ?? null,
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };
+  if (kind !== 'decoder') tv.kind = kind;
+  if (base?.nodeId) tv.nodeId = base.nodeId;
+  return tv;
 }
 
 export function normSchedule(input: unknown, base?: ScheduleRule): ScheduleRule {
@@ -410,5 +422,6 @@ export function normSettings(input: unknown, base: Settings): Settings {
     scheduleTimezone: str(o.scheduleTimezone, base.scheduleTimezone, 64).trim(),
     volunteerEnabled: o.volunteerEnabled === undefined ? base.volunteerEnabled ?? false : bool(o.volunteerEnabled, false),
     volunteerRemote: o.volunteerRemote === undefined ? base.volunteerRemote ?? true : bool(o.volunteerRemote, true),
+    piNodes: o.piNodes === undefined ? base.piNodes ?? false : bool(o.piNodes, false),
   };
 }

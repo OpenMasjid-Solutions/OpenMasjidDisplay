@@ -11,7 +11,7 @@
  * self-contained (inline CSS/JS). It fetches its own JSON — /w/<id>.json?date=&week= —
  * so the countdown stays live and the visitor can browse other days without a reload.
  */
-import type { WidgetPayload } from './render/svg';
+import type { WidgetPayload } from './core';
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);

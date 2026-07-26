@@ -1,0 +1,10 @@
+{
+  "name": "@openmasjid/protocol",
+  "private": true,
+  "version": "0.62.0",
+  "description": "Wire contract between the OpenMasjid Display controller and its Raspberry Pi display nodes — shared frame types and validators, zero dependencies",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}
