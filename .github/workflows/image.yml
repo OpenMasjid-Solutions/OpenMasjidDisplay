@@ -114,10 +114,11 @@ jobs:
           update-binfmts --display qemu-aarch64 | head -5
 
       - name: Check out pi-gen
-        # master, not the `arm64` branch: that branch is legacy and warns "RELEASE does not
-        # match the intended option for this branch", while current master takes ARCH=arm64
-        # with RELEASE=bookworm directly.
-        run: git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
+        # The arm64 branch is where 64-bit lives: master defaults to ARCH=armhf and ignores an
+        # ARCH=arm64 in the config (the previous run's pre-flight checked armhf, which is how
+        # that showed up). RELEASE is left unset so the branch picks its own intended value —
+        # overriding it is what produced 'RELEASE does not match the intended option'.
+        run: git clone --depth 1 --branch arm64 https://github.com/RPi-Distro/pi-gen.git
 
       - name: Configure the build
         run: |
@@ -138,7 +139,6 @@ jobs:
           echo "::add-mask::$FIRST_USER_PASS"
           cat > pi-gen/config <<EOF
           IMG_NAME=openmasjid-node
-          RELEASE=bookworm
           ARCH=arm64
           TARGET_HOSTNAME=omd-node
           FIRST_USER_NAME=omd-setup
