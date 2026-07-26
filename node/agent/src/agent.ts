@@ -24,7 +24,8 @@ import { ControllerClient } from './controller';
 import { Display, type Target } from './display';
 import type { AgentStore } from './store';
 import type { Platform } from './platform';
-import type { ControllerFrame, NodeMode, SetContent } from '../../../packages/protocol/src/index';
+import { AssetCache, originFromWsUrl } from './assetCache';
+import type { AssetRef, ControllerFrame, NodeMode, SetContent } from '../../../packages/protocol/src/index';
 
 /** What the kiosk page fetches from /api/view to know what to draw. */
 export type KioskView =
@@ -34,6 +35,16 @@ export type KioskView =
       doc: unknown;
       /** false while the clock is unsynced — the page shows a notice instead of times */
       clockSynced: boolean;
+      /**
+       * Local URLs for the masjid's own images, by render slot ('bg' / 'logo'), for the
+       * ones that are actually cached. Absent slots fall back to the themed scene.
+       *
+       * Plain URLs rather than data URIs: the controller has to inline base64 because resvg
+       * only embeds data URIs, but a browser fetches `<image href>` happily — and over
+       * loopback that avoids base64-ing a multi-megabyte photo into the document every
+       * second on a 512 MB board. The bytes are identical, so the pixels are too.
+       */
+      assets?: Record<string, string>;
     }
   | {
       kind: 'status';
@@ -57,6 +68,8 @@ export interface AgentOpts {
   fw: string;
   /** origin the kiosk browser should load, e.g. 'http://127.0.0.1' */
   kioskOrigin: string;
+  /** where cached assets live (a subdirectory of /data) */
+  assetDir: string;
   log?: (msg: string) => void;
   now?: () => number;
   rand?: () => number;
@@ -70,6 +83,9 @@ export class Agent {
   private readonly display: Display;
   private client: ControllerClient | null = null;
   private content: SetContent | null = null;
+  /** render slot ('bg'/'logo') → cached sha, for whatever is actually on disk */
+  private assets = new Map<string, string>();
+  private cache: AssetCache | null = null;
   private linked = false;
   private note = '';
   private identifyUntil = 0;
@@ -174,6 +190,13 @@ export class Agent {
   private async applyContent(): Promise<void> {
     const c = this.content;
     if (!c) return;
+    if (c.type === 'timetable') {
+      // Fetch the masjid's photo/logo BEFORE switching the screen, so a node shows the
+      // finished design rather than the themed scene for a beat and then repainting. Any
+      // asset that cannot be fetched is simply left out — never a reason to withhold the
+      // timetable itself.
+      await this.syncAssets(c.assets ?? []);
+    }
     if (c.type === 'timetable' && !this.opts.platform.clockSynced()) {
       // The Pi has no RTC. Drawing prayer times from a 1970 clock would be worse than
       // saying so, so hold the timetable until NTP lands and re-check shortly.
@@ -185,6 +208,44 @@ export class Agent {
     }
     this.note = '';
     await this.display.show(this.targetFor(c));
+  }
+
+  /**
+   * Bring the asset cache in line with what this timetable needs.
+   *
+   * Built lazily and rebuilt if the adoption changes, because the cache needs the token and
+   * the controller origin, neither of which exists before adoption.
+   */
+  private async syncAssets(refs: AssetRef[]): Promise<void> {
+    const a = this.opts.store.adoption;
+    if (!a) return;
+    if (!this.cache) {
+      this.cache = new AssetCache({
+        dir: this.opts.assetDir,
+        origin: originFromWsUrl(a.wsUrl),
+        token: a.nodeToken,
+        serial: this.opts.platform.serial(),
+        log: (m) => this.log(m),
+      });
+    }
+    if (refs.length === 0) {
+      this.assets = new Map();
+      this.cache.prune([]);
+      return;
+    }
+    this.assets = await this.cache.ensure(refs);
+    const missing = refs.filter((r) => !this.assets.has(r.id));
+    if (missing.length) {
+      this.client?.event('asset_fetch_failed', `could not fetch: ${missing.map((m) => m.id).join(', ')}`);
+    }
+    // Drop anything this timetable no longer references, so a masjid trying five wallpapers
+    // does not slowly fill the card.
+    this.cache.prune(this.assets.values());
+  }
+
+  /** Serve a cached asset to the kiosk (the local API routes /assets/<sha> here). */
+  readAsset(sha: string): Buffer | null {
+    return this.cache?.read(sha) ?? null;
   }
 
   /** Put back whatever content we were told to show (after an identify overlay). */
@@ -222,7 +283,9 @@ export class Agent {
     const p = this.opts.platform;
     const identifying = this.now() < this.identifyUntil;
     if (this.content?.type === 'timetable' && !identifying && this.display.mode === 'timetable') {
-      return { kind: 'timetable', doc: this.content.doc, clockSynced: p.clockSynced() };
+      const assets: Record<string, string> = {};
+      for (const [slot, sha] of this.assets) assets[slot] = `/assets/${sha}`;
+      return { kind: 'timetable', doc: this.content.doc, clockSynced: p.clockSynced(), assets };
     }
     const a = this.opts.store.adoption;
     const view: KioskView = {

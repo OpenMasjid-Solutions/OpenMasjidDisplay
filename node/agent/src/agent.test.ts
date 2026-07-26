@@ -17,6 +17,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { Agent } from './agent';
@@ -135,12 +136,44 @@ async function startController() {
     onNotify: () => {},
     onChanged: () => {},
   });
-  const server = http.createServer((_q, r) => r.end('ok'));
+  // Serves the node-asset route the same way api.ts does: content-addressed, and gated on
+  // (serial, bearer token) rather than an admin cookie.
+  const assets = new Map<string, Buffer>();
+  const assetRequests: string[] = [];
+  const server = http.createServer((q, r) => {
+    const url = new URL(q.url ?? '/', 'http://x');
+    const m = /^\/api\/node\/assets\/([0-9a-f]{64})$/.exec(url.pathname);
+    if (m) {
+      assetRequests.push(m[1]);
+      const authed =
+        (q.headers.authorization ?? '') === `Bearer ${TOKEN}` && url.searchParams.get('serial') === SERIAL;
+      if (!authed) {
+        r.writeHead(401);
+        return r.end('{}');
+      }
+      const bytes = assets.get(m[1]);
+      if (!bytes) {
+        r.writeHead(404);
+        return r.end('{}');
+      }
+      r.writeHead(200, { 'content-type': 'image/png' });
+      return r.end(bytes);
+    }
+    r.end('ok');
+  });
   routeUpgrades(server, [hub]);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const port = (server.address() as AddressInfo).port;
-  return { hub, store, events, wsUrl: `ws://127.0.0.1:${port}/ws/node`, close: () => server.close() };
+  return {
+    hub,
+    store,
+    events,
+    assets,
+    assetRequests,
+    wsUrl: `ws://127.0.0.1:${port}/ws/node`,
+    close: () => server.close(),
+  };
 }
 
 /** A temp /data for the agent's store. */
@@ -167,7 +200,7 @@ test('end to end: adopt over HTTP, dial home, receive content, drive the display
   const dataDir = tempData();
   const platform = new FakePlatform();
   const store = new AgentStore(dataDir);
-  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
 
   // The node's own local API, as an admin's controller would reach it.
   const api = createLocalApi({
@@ -251,6 +284,103 @@ test('end to end: adopt over HTTP, dial home, receive content, drive the display
   }
 });
 
+test('the masjid’s own photo and logo are fetched, cached and served to the kiosk', async () => {
+  const ctl = await startController();
+  const dataDir = tempData();
+  const platform = new FakePlatform();
+  const store = new AgentStore(dataDir);
+  store.adopt({ controllerName: 'Test Masjid', wsUrl: ctl.wsUrl, nodeToken: TOKEN, adoptedAt: '' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
+
+  // The node serves what it cached to its own kiosk browser.
+  const api = createLocalApi({
+    store, platform, fw: '0.62.0', kioskDir: dataDir,
+    viewJson: () => agent.view(),
+    readAsset: (sha) => agent.readAsset(sha),
+    onAdopted: () => agent.onAdopted(),
+  });
+  api.listen(0, '127.0.0.1');
+  await once(api, 'listening');
+  const nodeUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
+
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452deadbeef', 'hex');
+  const sha = crypto.createHash('sha256').update(png).digest('hex');
+  ctl.assets.set(sha, png);
+
+  try {
+    await agent.start();
+    await waitFor(() => ctl.hub.isFresh('node_1'), 4000, 'connects');
+    ctl.hub.setContent('node_1', {
+      type: 'timetable',
+      doc: DOC as never,
+      assets: [{ id: 'bg', sha256: sha, url: `/api/node/assets/${sha}` }],
+    });
+    await waitFor(() => agent.mode === 'timetable', 4000, 'timetable up');
+
+    // The kiosk is handed a LOCAL url for the photo, not a data URI — a browser fetches
+    // `<image href>` happily, and base64-ing a multi-megabyte photo into the document every
+    // second on a 512 MB board would not end well.
+    const view = agent.view();
+    assert.ok(view.kind === 'timetable');
+    assert.equal(view.assets?.bg, `/assets/${sha}`);
+
+    // …and that URL really serves the bytes, byte-for-byte.
+    const res = await fetch(`${nodeUrl}/assets/${sha}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'image/png', 'sniffed from the magic number');
+    assert.deepEqual(Buffer.from(await res.arrayBuffer()), png);
+
+    // A re-push of the same timetable must not re-download it.
+    const fetches = ctl.assetRequests.length;
+    ctl.hub.setContent('node_1', { type: 'off' });
+    await waitFor(() => agent.mode === 'off', 3000, 'off');
+    ctl.hub.setContent('node_1', {
+      type: 'timetable',
+      doc: DOC as never,
+      assets: [{ id: 'bg', sha256: sha, url: `/api/node/assets/${sha}` }],
+    });
+    await waitFor(() => agent.mode === 'timetable', 4000, 'timetable again');
+    assert.equal(ctl.assetRequests.length, fetches, 'a cached hash is never re-fetched');
+
+    // An unknown hash is 404 rather than a path into the box.
+    assert.equal((await fetch(`${nodeUrl}/assets/${'e'.repeat(64)}`)).status, 404);
+    assert.equal((await fetch(`${nodeUrl}/assets/not-a-hash`)).status, 404);
+  } finally {
+    await agent.stop();
+    api.close();
+    ctl.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('an asset the controller cannot serve does not stop the timetable', async () => {
+  // A masjid would far rather see the timetable without its logo than not see the timetable.
+  const ctl = await startController();
+  const dataDir = tempData();
+  const platform = new FakePlatform();
+  const store = new AgentStore(dataDir);
+  store.adopt({ controllerName: 'M', wsUrl: ctl.wsUrl, nodeToken: TOKEN, adoptedAt: '' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
+  try {
+    await agent.start();
+    await waitFor(() => ctl.hub.isFresh('node_1'), 4000, 'connects');
+    // Nothing registered in ctl.assets → the fetch 404s.
+    ctl.hub.setContent('node_1', {
+      type: 'timetable',
+      doc: DOC as never,
+      assets: [{ id: 'logo', sha256: 'f'.repeat(64), url: `/api/node/assets/${'f'.repeat(64)}` }],
+    });
+    await waitFor(() => agent.mode === 'timetable', 5000, 'the timetable still comes up');
+    const view = agent.view();
+    assert.ok(view.kind === 'timetable');
+    assert.equal(view.assets?.logo, undefined, 'the slot is simply absent → themed scene');
+  } finally {
+    await agent.stop();
+    ctl.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('losing the controller does NOT change what is on the screen', async () => {
   // The invariant the whole design rests on: a container restart must not blank a masjid.
   const ctl = await startController();
@@ -258,7 +388,7 @@ test('losing the controller does NOT change what is on the screen', async () => 
   const platform = new FakePlatform();
   const store = new AgentStore(dataDir);
   store.adopt({ controllerName: 'Test Masjid', wsUrl: ctl.wsUrl, nodeToken: TOKEN, adoptedAt: '' });
-  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
   try {
     await agent.start();
     await waitFor(() => ctl.hub.isFresh('node_1'), 4000, 'connects');
@@ -288,7 +418,7 @@ test('a timetable is withheld until the clock is NTP-synced', async () => {
   platform.synced = false;
   const store = new AgentStore(dataDir);
   store.adopt({ controllerName: 'M', wsUrl: ctl.wsUrl, nodeToken: TOKEN, adoptedAt: '' });
-  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
   try {
     await agent.start();
     await waitFor(() => ctl.hub.isFresh('node_1'), 4000, 'connects');
@@ -314,7 +444,7 @@ test('identify takes the screen briefly, then the content comes back', async () 
   const platform = new FakePlatform();
   const store = new AgentStore(dataDir);
   store.adopt({ controllerName: 'Test Masjid', wsUrl: ctl.wsUrl, nodeToken: TOKEN, adoptedAt: '' });
-  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
   try {
     await agent.start();
     await waitFor(() => ctl.hub.isFresh('node_1'), 4000, 'connects');
@@ -344,7 +474,7 @@ test('a crashing player is restarted, then falls back to a status screen that ex
   // Fast restart timer: the real backoff is 1s → 2s → 4s → …, correct on a Pi and far too
   // slow to sit through here. This is the behaviour under test, not the delay.
   const agent = new Agent({
-    store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999',
+    store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets'),
     setTimer: (fn, _ms) => setTimeout(fn, 5),
   });
   try {
@@ -378,7 +508,7 @@ test('an unknown command is NAKed with a reason, not silently accepted', async (
   const platform = new FakePlatform();
   const store = new AgentStore(dataDir);
   store.adopt({ controllerName: 'M', wsUrl: ctl.wsUrl, nodeToken: TOKEN, adoptedAt: '' });
-  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
   try {
     await agent.start();
     await waitFor(() => ctl.hub.isFresh('node_1'), 4000, 'connects');
@@ -407,7 +537,7 @@ test('factory_reset clears the adoption and wipes the device', async () => {
   const platform = new FakePlatform();
   const store = new AgentStore(dataDir);
   store.adopt({ controllerName: 'M', wsUrl: ctl.wsUrl, nodeToken: TOKEN, adoptedAt: '' });
-  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
   try {
     await agent.start();
     await waitFor(() => ctl.hub.isFresh('node_1'), 4000, 'connects');
@@ -429,7 +559,7 @@ test('the node refuses to connect with a token the controller did not issue', as
   const platform = new FakePlatform();
   const store = new AgentStore(dataDir);
   store.adopt({ controllerName: 'M', wsUrl: ctl.wsUrl, nodeToken: 'c'.repeat(64), adoptedAt: '' });
-  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999' });
+  const agent = new Agent({ store, platform, fw: '0.62.0', kioskOrigin: 'http://127.0.0.1:9999', assetDir: path.join(dataDir, 'assets') });
   try {
     await agent.start();
     await new Promise((r) => setTimeout(r, 600));

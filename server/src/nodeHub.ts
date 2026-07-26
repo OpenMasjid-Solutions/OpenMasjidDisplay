@@ -34,6 +34,7 @@ import { makeLog } from './logger';
 import { verifyPassword } from './auth';
 import { LoginLimiter } from './rateLimit';
 import type { Store } from './store';
+import type { PiNode } from './types';
 import type { UpgradeTarget } from './ws';
 import {
   NODE_WS_PATH,
@@ -118,12 +119,8 @@ export class NodeHub implements UpgradeTarget {
     }
     const url = new URL(req.url ?? '/', 'http://localhost');
     const serial = (url.searchParams.get('serial') ?? '').slice(0, 64);
-    const token = bearer(req.headers.authorization);
-    const node = serial ? this.store.db.nodes?.find((n) => n.serial === serial) : undefined;
-
-    // One scrypt verify, only when we have both a known serial and a well-formed token.
-    const ok = !!node && !!token && verifyPassword(token, { hash: node.tokenHash, salt: node.tokenSalt });
-    if (!ok) {
+    const node = verifyNodeToken(this.store, serial, bearer(req.headers.authorization));
+    if (!node) {
       this.limiter.fail(req);
       log.warn(`rejected node upgrade for serial "${serial || '(none)'}" from ${req.socket.remoteAddress}`);
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -387,10 +384,26 @@ export class NodeHub implements UpgradeTarget {
 }
 
 /** Extract a bearer token, or '' if the header is missing/!bearer/malformed. */
-function bearer(header: string | undefined): string {
+export function bearer(header: string | undefined): string {
   if (!header) return '';
   const m = /^Bearer\s+([A-Za-z0-9._-]+)$/.exec(header.trim());
   return m ? m[1] : '';
+}
+
+/**
+ * Authenticate a node by (serial, token) and return its record, or null.
+ *
+ * The single implementation for BOTH the WebSocket upgrade and the HTTP asset route, so
+ * there is one place where a node's credential is checked and no chance of the two drifting
+ * apart. The serial is a lookup key, not a credential — it selects which record to check so
+ * exactly one scrypt runs per attempt (see the header).
+ */
+export function verifyNodeToken(store: Store, serial: string, token: string): PiNode | null {
+  if (!store.db.settings.piNodes) return null;
+  if (!serial || !token) return null;
+  const node = store.db.nodes?.find((n) => n.serial === serial);
+  if (!node) return null;
+  return verifyPassword(token, { hash: node.tokenHash, salt: node.tokenSalt }) ? node : null;
 }
 
 /** A fresh 256-bit adoption token, hex. Only the hash of this is ever stored. */

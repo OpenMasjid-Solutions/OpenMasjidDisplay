@@ -10,8 +10,9 @@
     "start": "node dist/server/src/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:core": "tsc -p ../packages/render-core/tsconfig.json",
-    "test": "node --import tsx --test ../packages/render-core/src/purity.test.ts ../packages/render-core/src/prayer/engine.test.ts ../packages/render-core/src/iqamahCsv.test.ts ../packages/render-core/src/iqamahSchedule.test.ts ../packages/render-core/src/salahHadith.test.ts ../packages/protocol/src/protocol.test.ts src/scheduler.test.ts src/validate.test.ts src/nodeContent.test.ts src/nodeHub.test.ts src/render/iqamahOverride.test.ts",
-    "typecheck:protocol": "tsc -p ../packages/protocol/tsconfig.json"
+    "test": "tsc -p tsconfig.check.json && node --import tsx --test ../packages/render-core/src/purity.test.ts ../packages/render-core/src/prayer/engine.test.ts ../packages/render-core/src/iqamahCsv.test.ts ../packages/render-core/src/iqamahSchedule.test.ts ../packages/render-core/src/salahHadith.test.ts ../packages/protocol/src/protocol.test.ts src/scheduler.test.ts src/validate.test.ts src/nodeContent.test.ts src/nodeAssets.test.ts src/nodeHub.test.ts src/render/iqamahOverride.test.ts",
+    "typecheck:protocol": "tsc -p ../packages/protocol/tsconfig.json",
+    "typecheck:all": "tsc -p tsconfig.check.json"
   },
   "dependencies": {
     "@resvg/resvg-js": "2.6.2",

@@ -431,9 +431,13 @@ test('a garbage frame is ignored without dropping the connection', async () => {
     ws.send('not json at all');
     ws.send(JSON.stringify({ v: 999, type: 'status', mode: 'timetable' }));
     ws.send(JSON.stringify({ v: 1, type: 'nonsense' }));
-    // Still alive and still driveable afterwards.
+    // Still alive and still driveable afterwards. Reaching into the private members is
+    // deliberate: `ping` has no public sender because nothing but a keepalive needs one.
     const wait = nextFrame(ws, 'ping');
-    assert.equal(ctl.hub['send'](ctl.hub['conns'].get('node_1'), { type: 'ping', cmdId: 'p1' }), true);
+    const conn = (ctl.hub as unknown as { conns: Map<string, unknown> }).conns.get('node_1');
+    assert.ok(conn, 'the connection should be registered');
+    const send = (ctl.hub as unknown as { send(c: unknown, f: unknown): boolean }).send.bind(ctl.hub);
+    assert.equal(send(conn, { type: 'ping', cmdId: 'p1' }), true);
     await wait;
     assert.equal(ws.readyState, WebSocket.OPEN);
   } finally {

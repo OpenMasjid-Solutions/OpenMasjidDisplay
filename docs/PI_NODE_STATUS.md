@@ -29,7 +29,7 @@ off-hardware; the image has never been built or booted. M2–M4 are not started.
 | Mock-node acceptance | [nodeHub.test.ts](../server/src/nodeHub.test.ts) | A script speaking only the published protocol is adopted and driven over real sockets, with real scrypt and real frames. |
 | Panel | [Screens.tsx](../web/src/routes/Screens.tsx), [Settings.tsx](../web/src/routes/Settings.tsx) | Screen-kind chooser (skipped entirely while the flag is off), the two-step adopt-by-IP flow with image/Etcher instructions, a "Pi node" badge, and a node drawer (model, serial, firmware, address, last seen, temperature, memory, Wi-Fi signal, decodable codecs) with Identify / Reboot / rename / un-adopt. The opt-in toggle lives in Settings. |
 
-`cd server && npm run build && npm test` → **106 passing**. `cd web && npm run build` clean.
+`cd server && npm run build && npm test` → **114 passing**. `cd web && npm run build` clean.
 
 Verified live against a running instance, not just by unit test: `/api/nodes/*` is 404 while
 the flag is off and 401 unauthenticated; the address guard refuses a public IP and
@@ -76,9 +76,10 @@ there is no local Docker on the dev box. Watch the first CI image build.
 | Display supervisor | [display.ts](../node/agent/src/display.ts) | Exactly ONE process at a time (512 MB: kiosk ~250 MB *or* player ~120 MB, never both). Crash → restart with backoff → after 5, fall back to a status screen that states the error rather than leaving a black TV. |
 | Local API | [localApi.ts](../node/agent/src/localApi.ts) | `GET /api/status` open; `POST /api/adopt` **one-shot**, 409 forever after; `/api/view` loopback-only; everything else bearer-gated. Also serves the kiosk bundle. |
 | Kiosk renderer | [node/kiosk/src/main.ts](../node/kiosk/src/main.ts) | Calls the **same `renderDisplaySvg`** the controller rasterizes, so parity is structural rather than reviewed. 56 KB bundle including the whole engine. |
+| Asset sync | [nodeAssets.ts](../server/src/nodeAssets.ts), [assetCache.ts](../node/agent/src/assetCache.ts) | The masjid's own background photo and logo, content-addressed: fetched once per change, verified against the hash before being cached, shared between slots, pruned when unreferenced. The controller route is authenticated by NODE TOKEN (not an admin cookie) and the node resolves asset paths against the controller origin it already dials, so it works on a LAN, behind the tunnel and from the cloud alike. |
 | Image + CI | [image/](../image/), [image.yml](../.github/workflows/image.yml) | pi-gen stage, systemd units, read-only root, zram, watchdogs, both factory-reset paths, `_omd-node._tcp` advert. |
 
-`cd node/agent && npm test` → **25 passing**, including an end-to-end test where the real
+`cd node/agent && npm test` → **38 passing**, including an end-to-end test where the real
 agent is adopted over HTTP by the real `adoptNode`, dials the real `NodeHub`, and is driven
 through timetable → stream → off over real sockets.
 
@@ -131,10 +132,6 @@ at 1 Hz is fast enough on a Zero 2 W** — the most likely thing to need work.
 
 ## Known gaps in what is built
 
-- **Uploaded background/logo assets are not synced to nodes.** The `assets[]` protocol field
-  exists and is validated; the orchestrator sends `[]`. A node renders the themed scene, so
-  a masjid's custom photo/logo would not appear. Belongs to M1 — it needs content-hashed
-  asset serving plus a token-authenticated fetch route.
 - **The panel has no mDNS discovery picker** (spec §9 step 1 offers one alongside manual
   entry). Typing the address shown on the TV works and is the documented path. The agent side
   is done (the image advertises `_omd-node._tcp`); the controller still needs an mDNS browser.
@@ -151,3 +148,34 @@ at 1 Hz is fast enough on a Zero 2 W** — the most likely thing to need work.
 self-update — the agent NAKs `update` explicitly so a controller sees why), **M4** (72 h soak
 with hourly power cuts, `PI_NODE_SETUP.md`). Spec §15's open questions remain open; §9's
 on-screen confirmation-code hardening is still the v1.1 seam.
+
+---
+
+## Asset sync (the last M1 software gap, now closed)
+
+A masjid's own background photo and logo reach a node addressed by **content hash**, which
+buys several things at once: a re-push costs zero bytes, two screens sharing a photo transfer
+it once, bytes are verified against the hash before being cached (so a corrupt download is
+detected rather than drawn forever on a read-only-rootfs box), and unreferenced files are
+pruned so trying five wallpapers does not slowly fill the card.
+
+The asset URL is a **path**, resolved by the node against the controller origin it already
+dials for its WebSocket. That sidesteps "what address am I reachable at?" entirely — the
+honest answer differs between a LAN install, a tunnelled one and a cloud-hosted controller.
+
+The kiosk is handed a **local URL** rather than a data URI. The controller must inline base64
+because resvg only embeds data URIs; a browser fetches `<image href>` happily, and
+base64-ing a multi-megabyte photo into the document every second on a 512 MB board would
+not end well. Same bytes, same pixels.
+
+### Two bugs this work surfaced, both invisible to the type-checker
+
+1. **The asset route was placed below the admin auth gate.** Every node request 401'd on a
+   missing admin cookie, so no node could ever fetch its masjid's logo — while the code's own
+   comment claimed it was placed above the gate. Found by driving the real server with curl.
+   `nodeAssets.test.ts` now covers it, and that test was validated by reintroducing the bug
+   and watching it fail.
+2. **Test files were never typechecked.** `tsconfig.json` is the build config and excludes
+   `*.test.ts`; tsx does not typecheck. So adding a required `AgentOpts` field left eight test
+   call sites silently broken, and a bad `import('node:events')` shape sat unnoticed. Both
+   projects now have a `tsconfig.check.json` that includes the tests, run first by `npm test`.

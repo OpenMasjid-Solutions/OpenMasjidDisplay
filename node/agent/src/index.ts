@@ -67,6 +67,7 @@ async function main(): Promise<void> {
     // The kiosk browser and this server are on the same box, so loopback — which also
     // means the view endpoint can be loopback-gated.
     kioskOrigin: `http://127.0.0.1${PORT === 80 ? '' : `:${PORT}`}`,
+    assetDir: path.join(DATA_DIR, 'assets'),
     log,
   });
 
@@ -76,6 +77,7 @@ async function main(): Promise<void> {
     fw: FW,
     kioskDir: KIOSK_DIR,
     viewJson: () => agent.view(),
+    readAsset: (sha) => agent.readAsset(sha),
     onAdopted: () => {
       log('adopted — dialling the control panel');
       agent.onAdopted();

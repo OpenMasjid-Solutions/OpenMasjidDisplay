@@ -46,6 +46,7 @@ import {
   isRenderableImageMime,
   copyAsset,
   logoDataUri,
+  uploadBySha256,
 } from './render/background';
 import { renderPreviewPng, renderPreviewMeta } from './render/renderPool';
 import { probeSource } from './render/renderer';
@@ -59,7 +60,7 @@ import {
   normContent,
 } from './validate';
 import type { DB, PiNode } from './types';
-import type { NodeHub } from './nodeHub';
+import { verifyNodeToken, bearer, type NodeHub } from './nodeHub';
 import { probeNode, adoptNode, controllerWsUrl } from './nodeAdopt';
 
 const log = makeLog('api');
@@ -403,6 +404,29 @@ export function createApi(deps: Deps) {
       if (!pathname.startsWith('/api/') && method === 'GET') {
         if (serveStatic(res, pathname)) return;
         return serveIndex(res);
+      }
+
+      // ---- A node fetching an uploaded asset (background photo / masjid logo) ----
+      // Content-addressed, so a node re-fetches only when the bytes actually change.
+      // Authenticated with the node's own bearer token rather than an admin session — this
+      // is the one route a node calls over HTTP, and it must not require a cookie. Placed
+      // BEFORE the admin auth gate for that reason, and gated by its own credential check.
+      const nodeAssetMatch = /^(?:\/[a-z0-9-]+)?\/api\/node\/assets\/([0-9a-f]{64})$/.exec(pathname);
+      if (nodeAssetMatch && method === 'GET') {
+        if (!store.db.settings.piNodes) return sendJson(res, 404, { error: 'Not found.' });
+        const serial = (url.searchParams.get('serial') ?? '').slice(0, 64);
+        if (!verifyNodeToken(store, serial, bearer(req.headers.authorization))) {
+          return sendJson(res, 401, { error: 'Unauthorized.' });
+        }
+        const found = uploadBySha256(nodeAssetMatch[1]);
+        if (!found) return sendJson(res, 404, { error: 'Not found.' });
+        res.writeHead(200, {
+          'content-type': found.mime,
+          // Immutable: the URL *is* the hash, so the bytes behind it can never change.
+          'cache-control': 'public, max-age=31536000, immutable',
+        });
+        fs.createReadStream(found.path).pipe(res);
+        return;
       }
 
       // ---- Everything else requires auth ----------------------------------

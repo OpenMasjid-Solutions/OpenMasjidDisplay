@@ -48,6 +48,8 @@ export interface LocalApiOpts {
   kioskDir: string;
   /** what the kiosk should currently render, as JSON for its own fetch */
   viewJson: () => unknown;
+  /** a cached asset by sha256, for the kiosk to draw (loopback only) */
+  readAsset?: (sha: string) => Buffer | null;
   /** called after a successful adoption so the agent can start dialling immediately */
   onAdopted: () => void;
 }
@@ -153,6 +155,24 @@ export function createLocalApi(opts: LocalApiOpts): http.Server {
           return send(res, 200, opts.viewJson());
         }
 
+        // The masjid's cached background/logo, for our own kiosk browser. Loopback-only and
+        // content-addressed: the path IS the hash, so it can only ever serve bytes we
+        // verified on download, and it can never be pointed at another file on the box.
+        const assetMatch = /^\/assets\/([0-9a-f]{64})$/.exec(pathname);
+        if (assetMatch && method === 'GET') {
+          if (!isLoopback(req)) return send(res, 403, { error: 'loopback only' });
+          const buf = opts.readAsset?.(assetMatch[1]) ?? null;
+          if (!buf) return send(res, 404, { error: 'not cached' });
+          res.writeHead(200, {
+            // The renderer only needs the bytes; a browser sniffs the real type. Declaring
+            // octet-stream would stop <image href> drawing it, so keep it generic-but-image.
+            'content-type': sniffImageType(buf),
+            'cache-control': 'public, max-age=31536000, immutable',
+          });
+          res.end(buf);
+          return;
+        }
+
         // Everything else under /api needs the token.
         if (pathname.startsWith('/api/')) {
           if (!authed(req)) return send(res, 401, { error: 'unauthorized' });
@@ -170,6 +190,23 @@ export function createLocalApi(opts: LocalApiOpts): http.Server {
       }
     })();
   });
+}
+
+/**
+ * The image type of some bytes, from its magic number.
+ *
+ * Sniffed rather than remembered: the cache is keyed only by content hash, so the file name
+ * carries no extension to trust — and the controller already sniffed the bytes on upload for
+ * exactly the same reason (a JPEG named .png). Defaults to PNG, which browsers will
+ * re-sniff anyway.
+ */
+function sniffImageType(buf: Buffer): string {
+  if (buf.length >= 8 && buf.toString('hex', 0, 8) === '89504e470d0a1a0a') return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length >= 6 && /^GIF8[79]a$/.test(buf.toString('latin1', 0, 6))) return 'image/gif';
+  const head = buf.toString('utf8', 0, Math.min(buf.length, 256)).trimStart();
+  if (head.startsWith('<?xml') || /<svg[\s>]/i.test(head)) return 'image/svg+xml';
+  return 'image/png';
 }
 
 /** Is this request from the box itself? (Our own kiosk browser.) */

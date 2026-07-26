@@ -23,7 +23,7 @@ import { renderDisplaySvg, type Timetable } from '../../../packages/render-core/
 
 /** Mirrors the agent's KioskView (node/agent/src/agent.ts). */
 type View =
-  | { kind: 'timetable'; doc: Timetable; clockSynced: boolean }
+  | { kind: 'timetable'; doc: Timetable; clockSynced: boolean; assets?: Record<string, string> }
   | {
       kind: 'status';
       serial: string;
@@ -60,7 +60,13 @@ function draw(): void {
   const now = new Date();
   let html: string;
   try {
-    html = view?.kind === 'timetable' ? renderDisplaySvg(view.doc, now, {}) : statusSvg(view, now);
+    html =
+      view?.kind === 'timetable'
+        ? // The masjid's own photo/logo, served by the agent from its content-addressed
+          // cache. Absent slots are simply undefined, which render-core treats as "use the
+          // themed scene" — identical to the controller's behaviour for a missing upload.
+          renderDisplaySvg(view.doc, now, { bg: view.assets?.bg, logo: view.assets?.logo })
+        : statusSvg(view, now);
   } catch (err) {
     // A malformed document must not blank the screen or spin the CPU on an exception every
     // second. Say so on screen once and keep the clock running.

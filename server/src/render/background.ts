@@ -59,6 +59,56 @@ function dataUri(file: string): string | null {
   return uri;
 }
 
+/** sha256 of an upload's bytes, cached by mtime like the data URIs above. */
+const hashCache = new Map<string, { sha: string; mtimeMs: number }>();
+
+/**
+ * The content hash of a stored upload, or null if it is missing/invalid.
+ *
+ * Used to sync assets to Raspberry Pi nodes: the hash is the cache key on the node, so a
+ * background photo is transferred once and then never again, however many times the
+ * timetable is re-pushed. Hashing is mtime-cached because a 4 MB photo would otherwise be
+ * re-read and re-hashed on every reconcile (every 15 s, per screen).
+ */
+export function uploadSha256(file: string): string | null {
+  const name = safeName(file);
+  if (!name) return null;
+  const full = path.join(uploadsDir(), name);
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(full);
+  } catch {
+    return null;
+  }
+  if (!st.isFile()) return null;
+  const cached = hashCache.get(name);
+  if (cached && cached.mtimeMs === st.mtimeMs) return cached.sha;
+  try {
+    const sha = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
+    hashCache.set(name, { sha, mtimeMs: st.mtimeMs });
+    return sha;
+  } catch {
+    return null;
+  }
+}
+
+/** Find the upload whose bytes hash to `sha`, for serving a node's asset request. */
+export function uploadBySha256(sha: string): { path: string; mime: string; name: string } | null {
+  if (!/^[0-9a-f]{64}$/.test(sha)) return null;
+  const dir = uploadsDir();
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (uploadSha256(name) === sha) {
+        const info = uploadFilePath(name);
+        if (info) return { ...info, name };
+      }
+    }
+  } catch {
+    /* no uploads dir */
+  }
+  return null;
+}
+
 const EXT_BY_MIME: Record<string, string> = {
   'image/png': '.png',
   'image/jpeg': '.jpg',

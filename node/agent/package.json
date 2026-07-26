@@ -9,7 +9,8 @@
     "dev": "tsc -w -p tsconfig.json",
     "start": "node dist/node/agent/src/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/backoff.test.ts src/store.test.ts src/display.test.ts src/agent.test.ts"
+    "test": "tsc -p tsconfig.check.json && node --import tsx --test src/backoff.test.ts src/store.test.ts src/display.test.ts src/assetCache.test.ts src/agent.test.ts",
+    "typecheck:all": "tsc -p tsconfig.check.json"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -23,6 +23,7 @@ import { RenderManager, type NormalizeSpec } from './render/renderer';
 import { dimsFor } from './core';
 import { resolveTv } from './scheduler';
 import { planNodeContent, type NodePlan } from './nodeContent';
+import { assetsForTimetable } from './nodeAssets';
 import type { NodeHub } from './nodeHub';
 import {
   ping,
@@ -309,9 +310,15 @@ export class Orchestrator {
         caps: node?.caps,
         relayBase,
         usedByDecoder: res.content.kind === 'source' && !!res.content.id && decoderSrcIds.has(res.content.id),
-        // Uploaded background/logo assets are not yet synced to nodes (see
-        // docs/PI_NODE_SPEC.md M1) — a node renders the themed scene meanwhile.
-        assets: [],
+        // The masjid's own background photo and logo, addressed by content hash so a node
+        // fetches each once and then never again however often content is re-pushed.
+        assets:
+          res.content.kind === 'timetable'
+            ? (() => {
+                const tt = db.timetables.find((t) => t.id === res.content.id);
+                return tt ? assetsForTimetable(tt) : [];
+              })()
+            : [],
       });
       return { tv, plan };
     });
