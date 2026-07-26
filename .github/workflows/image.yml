@@ -155,6 +155,13 @@ jobs:
           cat > pi-gen/config <<EOF
           IMG_NAME=openmasjid-node
           ARCH=arm64
+          # bookworm, deliberately. The arm64 branch now defaults to TRIXIE, and a trixie
+          # build got all the way through stage2 before dpkg failed configuring
+          # python3-certifi / python3-requests / ssh-import-id under emulation. Bookworm is
+          # what Raspberry Pi OS actually ships for a Zero 2 W and is far better trodden by
+          # pi-gen. Setting this makes pi-gen print "RELEASE does not match the intended
+          # option for this branch" — that warning is cosmetic and expected.
+          RELEASE=bookworm
           # STAGE_LIST is explicit for two reasons. It skips the desktop stages (3-5) without
           # SKIP files, and — the important one — it puts stage-omd LAST. pi-gen's default is
           # a sorted glob of stage*, and "stage-omd" sorts BEFORE "stage0" ('-' < '0'), so our
