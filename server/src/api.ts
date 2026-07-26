@@ -208,6 +208,9 @@ function statePayload(store: Store, orchestrator: Orchestrator) {
     sources: db.sources,
     tvs: db.tvs,
     schedules: db.schedules,
+    // Adopted Pi nodes, credential stripped by publicNode(). Absent-safe: a store written
+    // before this feature has no `nodes`, and the panel treats [] as "no node screens".
+    nodes: (db.nodes ?? []).map(publicNode),
     themes: THEMES,
     // The built-in library of ahadith on Salāh (id + English + citation + shipped salah
     // targeting) so the panel can render the enable/disable checklist and prayer pickers.
@@ -864,19 +867,28 @@ export function createApi(deps: Deps) {
           }
         }
 
+        // Live commands. 404 and 409 mean different things to an admin — "there is no such
+        // node" (they just removed it) versus "the node exists but is powered off" — so
+        // check existence first rather than reporting every failure as "not connected".
+        const knownNode = (id: string): boolean => (store.db.nodes ?? []).some((n) => n.id === id);
+
         const identifyMatch = /^\/api\/nodes\/([\w-]+)\/identify$/.exec(pathname);
         if (identifyMatch && method === 'POST') {
+          if (!knownNode(identifyMatch[1])) return sendJson(res, 404, { error: 'Node not found.' });
           const body = await readBody(req);
           const seconds = intIn(body.seconds, 30, 1, 300);
-          const ok = nodeHub?.identify(identifyMatch[1], seconds) ?? false;
-          if (!ok) return sendJson(res, 409, { error: 'That screen is not connected right now.' });
+          if (!nodeHub?.identify(identifyMatch[1], seconds)) {
+            return sendJson(res, 409, { error: 'That screen is not connected right now.' });
+          }
           return sendJson(res, 200, { ok: true });
         }
 
         const rebootMatch = /^\/api\/nodes\/([\w-]+)\/reboot$/.exec(pathname);
         if (rebootMatch && method === 'POST') {
-          const ok = nodeHub?.reboot(rebootMatch[1]) ?? false;
-          if (!ok) return sendJson(res, 409, { error: 'That screen is not connected right now.' });
+          if (!knownNode(rebootMatch[1])) return sendJson(res, 404, { error: 'Node not found.' });
+          if (!nodeHub?.reboot(rebootMatch[1])) {
+            return sendJson(res, 409, { error: 'That screen is not connected right now.' });
+          }
           return sendJson(res, 200, { ok: true });
         }
       }

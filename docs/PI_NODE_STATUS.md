@@ -26,8 +26,25 @@ As of this commit: **M0 is complete and verified. M1–M4 are not started.**
 | Offline alerts | [orchestrator.ts](../server/src/orchestrator.ts) | Node liveness = socket + fresh heartbeat, on the same ~90 s debounce and Fabric notify path decoder screens use. Judged independently of MediaMTX reachability. |
 | Admin API | [api.ts](../server/src/api.ts) | `/api/nodes/probe`, `/api/nodes/adopt`, `PUT`/`DELETE /api/nodes/:id`, `…/identify`, `…/reboot`. All 404 while `piNodes` is off. Credentials stripped from every response by `publicNode()`. |
 | Mock-node acceptance | [nodeHub.test.ts](../server/src/nodeHub.test.ts) | A script speaking only the published protocol is adopted and driven over real sockets, with real scrypt and real frames. |
+| Panel | [Screens.tsx](../web/src/routes/Screens.tsx), [Settings.tsx](../web/src/routes/Settings.tsx) | Screen-kind chooser (skipped entirely while the flag is off), the two-step adopt-by-IP flow with image/Etcher instructions, a "Pi node" badge, and a node drawer (model, serial, firmware, address, last seen, temperature, memory, Wi-Fi signal, decodable codecs) with Identify / Reboot / rename / un-adopt. The opt-in toggle lives in Settings. |
 
 `cd server && npm run build && npm test` → **106 passing**. `cd web && npm run build` clean.
+
+Verified live against a running instance, not just by unit test: `/api/nodes/*` is 404 while
+the flag is off and 401 unauthenticated; the address guard refuses a public IP and
+`169.254.169.254` by name; identify/reboot/delete on a removed node return 404 ("no such
+node"), distinct from 409 ("node is powered off"); `/api/state` carries `nodes` with the
+credential stripped.
+
+Two bugs this live pass caught that the type-checker could not:
+- `statePayload` was silently missing `nodes` (a scripted edit that failed on CRLF), so the
+  panel would have shown no nodes forever.
+- identify/reboot reported "not connected right now" for a node that did not exist.
+
+One design trap avoided in the panel: `Modal` binds Escape and its Tab trap to `window`, so
+nesting a confirmation dialog inside the node drawer would close both on one Escape and make
+the two focus traps fight over the same DOM. The removal confirmation is a state of the
+drawer instead.
 
 ### Container change you must know about
 
@@ -78,9 +95,12 @@ there is no local Docker on the dev box. Watch the first CI image build.
   exists and is validated; the orchestrator sends `[]`. A node renders the themed scene, so
   a masjid's custom photo/logo would not appear. Belongs to M1 — it needs content-hashed
   asset serving plus a token-authenticated fetch route.
-- **No panel UI yet** (M0's "add-flow stub"). The API is complete and exercised by tests, so
-  adoption currently happens via `POST /api/nodes/adopt`. `db.nodes` is already in
-  `/api/state` for the UI to consume.
+- **The panel has no mDNS discovery picker** (spec §9 step 1 offers one alongside manual
+  entry). Typing the address shown on the TV works and is the documented path; discovery
+  needs an mDNS browser on the controller, which is M1 work alongside the agent that
+  advertises `_omd-node._tcp`.
+- **The "Download the node image" button points at the repo's latest release**, which will
+  not carry a `.img.xz` asset until `image.yml` exists (M1).
 - `render-core` is **sequential, not re-entrant**: `renderDisplaySvg` writes module-level
   state (`HOT`, `COLON_DIM`, `LIGHTUI`) that `salahHadithView` reads. Fine for one render per
   process (the container's worker, a node's kiosk); do not call it concurrently.
