@@ -157,6 +157,15 @@ export class Store {
         const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8')) as DB;
         if (parsed && typeof parsed === 'object' && Array.isArray(parsed.timetables)) {
           parsed.timetables = parsed.timetables.map(migrateTimetable);
+          // Normalize reports: older ones used a single `image`; the renderer now
+          // expects `images: string[]`. Guarantee the array so nothing reads undefined.
+          if (Array.isArray(parsed.reports)) {
+            parsed.reports = parsed.reports.map((r) => {
+              const legacy = (r as { image?: string }).image;
+              const images = Array.isArray(r.images) ? r.images : legacy ? [legacy] : [];
+              return { ...r, images };
+            });
+          }
           const fresh = freshDB();
           // Merge settings so fields added in later versions (e.g. volunteerEnabled) default in.
           return { ...fresh, ...parsed, settings: { ...fresh.settings, ...parsed.settings }, version: DB_VERSION };
