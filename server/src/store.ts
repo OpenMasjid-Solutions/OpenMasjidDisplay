@@ -165,8 +165,18 @@ export class Store {
           if (!Array.isArray(parsed.nodes)) delete (parsed as { nodes?: unknown }).nodes;
           // Same guard for `reports` (arrived in v0.63.0). Its readers use `?? []`, which
           // covers a MISSING value but not a corrupt one — a non-array would survive the
-          // spread and then throw on the first .filter/.push.
+          // spread and then throw on the first .filter/.push. Runs BEFORE the shape
+          // normalization below, so that only ever sees a real array.
           if (!Array.isArray(parsed.reports)) delete (parsed as { reports?: unknown }).reports;
+          // Normalize reports: older ones used a single `image`; the renderer now
+          // expects `images: string[]`. Guarantee the array so nothing reads undefined.
+          if (Array.isArray(parsed.reports)) {
+            parsed.reports = parsed.reports.map((r) => {
+              const legacy = (r as { image?: string }).image;
+              const images = Array.isArray(r.images) ? r.images : legacy ? [legacy] : [];
+              return { ...r, images };
+            });
+          }
           const fresh = freshDB();
           // Merge settings so fields added in later versions (e.g. volunteerEnabled) default in.
           return { ...fresh, ...parsed, settings: { ...fresh.settings, ...parsed.settings }, version: DB_VERSION };

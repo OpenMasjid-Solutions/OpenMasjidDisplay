@@ -1,7 +1,7 @@
 {
   "name": "openmasjid-node-agent",
   "private": true,
-  "version": "0.64.0",
+  "version": "0.64.1",
   "description": "omd-agent — the on-device agent for an OpenMasjid Display Raspberry Pi node",
   "license": "AGPL-3.0-only",
   "scripts": {
