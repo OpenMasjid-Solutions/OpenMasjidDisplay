@@ -17,12 +17,17 @@ on:
     branches: [main]
     tags: ['v*']
     # Docs-only changes don't change the image — skip the (slow) multi-arch build.
+    # `node/` and `image/` are the Raspberry Pi node card, built by image.yml and not part
+    # of this container at all. `packages/` is deliberately NOT here: the server compiles
+    # render-core and protocol into its own program, so a change there does change the image.
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
       - 'screenshots/**'
       - 'LICENSE'
       - 'docker-compose.yml'
+      - 'node/**'
+      - 'image/**'
   workflow_dispatch:
 
 permissions:
