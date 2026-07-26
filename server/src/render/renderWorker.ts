@@ -179,8 +179,11 @@ port.on('message', (msg: Req) => {
     const reportFrames = listParkingFrames(tt.id);
     const annFile = activeAnnouncementImage(tt, now, reportFrames);
     const announcement = annFile ? announcementDataUri(annFile) : null;
+    // Is the current announcement an incorrect-parking alert frame? (drives the
+    // full-bleed, no-glass rendering so there's no blue panel around the red card.)
+    const announcementAlert = !!annFile && reportFrames.includes(annFile);
     // tickerBandOnly: paint just the strip — ffmpeg overlays the moving text smoothly.
-    const svg = renderDisplaySvg(tt, now, { bg, logo, announcement, tickerBandOnly: true, bgLight: bgIsLight(tt, bg), autoAccent: bgAccent(tt, bg) });
+    const svg = renderDisplaySvg(tt, now, { bg, logo, announcement, announcementAlert, tickerBandOnly: true, bgLight: bgIsLight(tt, bg), autoAccent: bgAccent(tt, bg) });
     // renderWidth caps the raster (ffmpeg upscales to the output) so each per-second
     // render stays cheap and the live countdown never skips.
     const r = new Resvg(svg, {

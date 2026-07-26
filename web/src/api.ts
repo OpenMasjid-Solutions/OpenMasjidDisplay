@@ -155,7 +155,7 @@ export interface VolunteerReport {
   description: string;
   location: string;
   reason: string;
-  hasImage: boolean;
+  imageCount: number;
   targets: string[];
   createdAt: string;
 }
@@ -168,7 +168,7 @@ export interface NewReport {
   description: string;
   location: string;
   reason: string;
-  image?: string;
+  images: string[];
   targets: string[];
 }
 // Volunteer calls are prefixed with the app's base path (injected as window.__OMD_BASE__ when

@@ -258,8 +258,9 @@ function VolReport() {
   const [reason, setReason] = useState('');
   const [allDisplays, setAllDisplays] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
-  const [image, setImage] = useState('');
+  const [photos, setPhotos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const MAX_PHOTOS = 4;
 
   const load = () =>
     volApi.reports().then((d) => { setReports(d.reports); setTimetables(d.timetables); }).catch(() => {});
@@ -268,10 +269,16 @@ function VolReport() {
   const toggleDisplay = (id: string) =>
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
-  const onPhoto = async (file: File | undefined) => {
-    if (!file) return;
-    try { setImage(await resizeToDataUrl(file)); }
-    catch (e) { toast(e instanceof Error ? e.message : 'Could not read that image.', 'error'); }
+  const onPhotos = async (files: FileList | null) => {
+    if (!files) return;
+    for (const file of Array.from(files).slice(0, MAX_PHOTOS)) {
+      try {
+        const d = await resizeToDataUrl(file);
+        setPhotos((p) => (p.length >= MAX_PHOTOS ? p : [...p, d]));
+      } catch (e) {
+        toast(e instanceof Error ? e.message : 'Could not read that image.', 'error');
+      }
+    }
   };
 
   const submit = async () => {
@@ -282,8 +289,8 @@ function VolReport() {
     const targets = allDisplays || selected.length === 0 ? ['*'] : selected;
     setBusy(true);
     try {
-      await volApi.addReport({ plate, description, location, reason, image: image || undefined, targets });
-      setPlate(''); setDescription(''); setLocation(''); setReason(''); setImage('');
+      await volApi.addReport({ plate, description, location, reason, images: photos, targets });
+      setPlate(''); setDescription(''); setLocation(''); setReason(''); setPhotos([]);
       toast('Reported — it will show on the screens.');
       await load();
     } catch (e) {
@@ -328,13 +335,26 @@ function VolReport() {
           <input className="input" placeholder="Reason (e.g. Blocking a fire lane)" value={reason} onChange={(e) => setReason(e.target.value)} />
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBlockStart: '0.7rem' }}>
-          <label className="btn btn--ghost" style={{ cursor: 'pointer' }}>
-            <IconCamera size={16} /> {image ? 'Change photo' : 'Add photo'}
-            <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => { void onPhoto(e.target.files?.[0]); e.target.value = ''; }} />
-          </label>
-          {image && <img src={image} alt="" style={{ width: '3rem', height: '3rem', objectFit: 'cover', borderRadius: '0.5rem' }} />}
-          {image && <button type="button" className="icon-btn" aria-label="Remove photo" onClick={() => setImage('')}>✕</button>}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem', marginBlockStart: '0.7rem' }}>
+          {photos.map((src, i) => (
+            <div key={i} style={{ position: 'relative' }}>
+              <img src={src} alt="" style={{ width: '3.4rem', height: '3.4rem', objectFit: 'cover', borderRadius: '0.5rem' }} />
+              <button
+                type="button"
+                aria-label="Remove photo"
+                onClick={() => setPhotos((p) => p.filter((_, j) => j !== i))}
+                style={{ position: 'absolute', top: '-0.4rem', insetInlineEnd: '-0.4rem', width: '1.4rem', height: '1.4rem', borderRadius: '50%', border: 0, background: 'rgba(0,0,0,0.7)', color: '#fff', cursor: 'pointer', lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          {photos.length < MAX_PHOTOS && (
+            <label className="btn btn--ghost" style={{ cursor: 'pointer' }}>
+              <IconCamera size={16} /> Add photo{photos.length ? 's' : ''}
+              <input type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => { void onPhotos(e.target.files); e.target.value = ''; }} />
+            </label>
+          )}
         </div>
 
         <button className="btn btn--primary btn--block" style={{ marginBlockStart: '0.8rem' }} disabled={busy} onClick={submit}>
@@ -346,9 +366,9 @@ function VolReport() {
       {reports.length === 0 && <p className="muted" style={{ padding: '0 0.2rem' }}>Nothing reported right now.</p>}
       {reports.map((r) => (
         <div key={r.id} className="vol-tv glass-raised" style={{ padding: '0.7rem 0.85rem', display: 'flex', gap: '0.7rem', alignItems: 'center' }}>
-          {r.hasImage && <img src={volApi.reportImageUrl(r.id)} alt="" style={{ width: '3.2rem', height: '3.2rem', objectFit: 'cover', borderRadius: '0.5rem', flex: '0 0 auto' }} />}
+          {r.imageCount > 0 && <img src={volApi.reportImageUrl(r.id)} alt="" style={{ width: '3.2rem', height: '3.2rem', objectFit: 'cover', borderRadius: '0.5rem', flex: '0 0 auto' }} />}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 600 }}>{r.plate || r.description || 'Vehicle'}</div>
+            <div style={{ fontWeight: 600 }}>{r.plate || r.description || 'Vehicle'}{r.imageCount > 1 ? ` · ${r.imageCount} photos` : ''}</div>
             <div className="muted" style={{ fontSize: '0.85rem' }}>{r.location} · {r.reason}</div>
             <div className="muted" style={{ fontSize: '0.75rem' }}>{targetLabel(r.targets)}</div>
           </div>
