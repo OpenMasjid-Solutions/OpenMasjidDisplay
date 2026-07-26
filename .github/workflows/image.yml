@@ -94,10 +94,14 @@ jobs:
       - name: Install pi-gen dependencies
         run: |
           sudo apt-get update
+          # qemu-user-binfmt (not just qemu-user-static) is what pi-gen's own dependency
+          # check looks for — it needs the binfmt_misc registration to run arm64 binaries
+          # inside the chroot on an amd64 runner. binfmt-support provides the update-binfmts
+          # machinery it hooks into.
           sudo apt-get install -y --no-install-recommends \
-            coreutils quilt parted qemu-user-static debootstrap zerofree zip dosfstools \
+            coreutils quilt parted debootstrap zerofree zip dosfstools \
             libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc gpg pigz \
-            kpartx arch-test
+            kpartx arch-test binfmt-support qemu-user-static qemu-user-binfmt
 
       - name: Check out pi-gen
         run: git clone --depth 1 --branch arm64 https://github.com/RPi-Distro/pi-gen.git
