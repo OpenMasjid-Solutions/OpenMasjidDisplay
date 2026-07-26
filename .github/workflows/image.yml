@@ -123,11 +123,17 @@ jobs:
           update-binfmts --display qemu-aarch64 || cat /proc/sys/fs/binfmt_misc/qemu-aarch64 || true
 
       - name: Check out pi-gen
-        # The arm64 branch is where 64-bit lives: master defaults to ARCH=armhf and ignores an
-        # ARCH=arm64 in the config (the previous run's pre-flight checked armhf, which is how
-        # that showed up). RELEASE is left unset so the branch picks its own intended value —
-        # overriding it is what produced 'RELEASE does not match the intended option'.
-        run: git clone --depth 1 --branch arm64 https://github.com/RPi-Distro/pi-gen.git
+        # PINNED to a released bookworm+arm64 snapshot rather than tracking a branch.
+        #
+        # Tracking `arm64` broke twice for the same underlying reason: that branch has moved
+        # on to trixie. Letting it default gave a trixie build whose python postinsts failed
+        # to configure under emulation; forcing RELEASE=bookworm onto it then produced
+        # NO_PUBKEY errors, because the branch's keyring no longer matches bookworm. A tag
+        # is internally consistent — release, keyring and stages all agree — and it makes our
+        # image reproducible instead of depending on what upstream did this week.
+        #
+        # Bookworm is what Raspberry Pi OS ships for a Zero 2 W. Bump this deliberately.
+        run: git clone --depth 1 --branch 2026-06-18-raspios-bookworm-arm64 https://github.com/RPi-Distro/pi-gen.git
 
       - name: Configure the build
         run: |
@@ -155,13 +161,8 @@ jobs:
           cat > pi-gen/config <<EOF
           IMG_NAME=openmasjid-node
           ARCH=arm64
-          # bookworm, deliberately. The arm64 branch now defaults to TRIXIE, and a trixie
-          # build got all the way through stage2 before dpkg failed configuring
-          # python3-certifi / python3-requests / ssh-import-id under emulation. Bookworm is
-          # what Raspberry Pi OS actually ships for a Zero 2 W and is far better trodden by
-          # pi-gen. Setting this makes pi-gen print "RELEASE does not match the intended
-          # option for this branch" — that warning is cosmetic and expected.
-          RELEASE=bookworm
+          # RELEASE is intentionally NOT set: the pinned tag already targets bookworm, and
+          # overriding it is exactly what produced the NO_PUBKEY keyring mismatch.
           # STAGE_LIST is explicit for two reasons. It skips the desktop stages (3-5) without
           # SKIP files, and — the important one — it puts stage-omd LAST. pi-gen's default is
           # a sorted glob of stage*, and "stage-omd" sorts BEFORE "stage0" ('-' < '0'), so our
