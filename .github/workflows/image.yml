@@ -168,6 +168,10 @@ jobs:
           KEYBOARD_LAYOUT=gb
           TIMEZONE_DEFAULT=Etc/UTC
           EXPORT_NOOBS=0
+          # xz, not pi-gen's default zip: it is what the panel's download button and the
+          # setup guide tell an admin to expect, and Balena Etcher reads .img.xz directly.
+          DEPLOY_COMPRESSION=xz
+          COMPRESSION_LEVEL=6
           EOF
 
       - name: Build the image
@@ -177,9 +181,23 @@ jobs:
       - name: Name the artifact
         id: art
         run: |
-          img=$(find pi-gen/deploy -name '*.img.xz' | head -1)
-          [ -n "$img" ] || { echo "no image produced"; exit 1; }
-          out="openmasjid-node-v${{ steps.meta.outputs.version }}.img.xz"
+          # Accept whatever pi-gen actually deployed rather than assuming a name. Its default
+          # compression is zip, and that mismatch turned a 40-minute GREEN build into
+          # "no image produced" — so list the directory on failure instead of guessing again.
+          img=$(find pi-gen/deploy -type f \( -name '*.img.xz' -o -name '*.img.zip' -o -name '*.zip' -o -name '*.img' \) | head -1)
+          if [ -z "$img" ]; then
+            echo "no image produced; pi-gen/deploy contains:"
+            ls -la pi-gen/deploy || true
+            exit 1
+          fi
+          # Keep whatever extension it really has (.img.xz, .zip, …).
+          case "$img" in
+            *.img.xz) ext=".img.xz" ;;
+            *.img.zip) ext=".img.zip" ;;
+            *.zip) ext=".zip" ;;
+            *) ext=".img" ;;
+          esac
+          out="openmasjid-node-v${{ steps.meta.outputs.version }}${ext}"
           mv "$img" "$out"
           sha256sum "$out" > "$out.sha256"
           echo "img=$out" >> "$GITHUB_OUTPUT"

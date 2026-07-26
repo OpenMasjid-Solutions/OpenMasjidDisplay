@@ -4,7 +4,9 @@
 # Presence of this file is what makes pi-gen actually EXPORT an .img from this stage. Without
 # it the stage is built into a rootfs and then nothing is written out — the deploy/ directory
 # stays empty and the workflow's "no image produced" check fires.
-IMG_SUFFIX="-node"
+# No suffix: IMG_NAME is already "openmasjid-node", and a "-node" suffix on top produced
+# "openmasjid-node-node.img".
+IMG_SUFFIX=""
 if [ "${USE_QEMU}" = "1" ]; then
 	export IMG_SUFFIX="${IMG_SUFFIX}-qemu"
 fi
