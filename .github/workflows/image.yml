@@ -131,6 +131,12 @@ jobs:
           cp -r image/pi-gen/stage-omd pi-gen/
           chmod +x pi-gen/stage-omd/prerun.sh pi-gen/stage-omd/00-omd/01-run.sh
 
+          # Only OUR stage may export an image. stage2 ships its own EXPORT_IMAGE, so without
+          # this pi-gen deploys two: "…-lite" (stock Raspberry Pi OS, none of our software)
+          # and ours. Picking the wrong one would hand a masjid a card that boots to a login
+          # prompt and never shows a timetable — and it would look like a successful build.
+          touch pi-gen/stage2/SKIP_IMAGES
+
           # Assemble the substage's files/ — it must be SELF-CONTAINED, because a substage
           # that reaches back into the repo only works when the repo happens to be mounted.
           FILES=pi-gen/stage-omd/00-omd/files
@@ -184,12 +190,23 @@ jobs:
           # Accept whatever pi-gen actually deployed rather than assuming a name. Its default
           # compression is zip, and that mismatch turned a 40-minute GREEN build into
           # "no image produced" — so list the directory on failure instead of guessing again.
-          img=$(find pi-gen/deploy -type f \( -name '*.img.xz' -o -name '*.img.zip' -o -name '*.zip' -o -name '*.img' \) | head -1)
-          if [ -z "$img" ]; then
-            echo "no image produced; pi-gen/deploy contains:"
-            ls -la pi-gen/deploy || true
+          # pi-gen runs under sudo, so everything in deploy/ is owned by root.
+          sudo chown -R "$(id -u):$(id -g)" pi-gen/deploy
+          echo "pi-gen/deploy contains:"
+          ls -la pi-gen/deploy
+          mapfile -t imgs < <(find pi-gen/deploy -type f \( -name '*.img.xz' -o -name '*.img.zip' -o -name '*.zip' -o -name '*.img' \))
+          if [ "${#imgs[@]}" -eq 0 ]; then echo "no image produced"; exit 1; fi
+          # Exactly one, or we cannot know which is ours — stage2's "-lite" export is stock
+          # Raspberry Pi OS with none of our software, and shipping that would look like
+          # success right up until a masjid booted it to a login prompt.
+          if [ "${#imgs[@]}" -ne 1 ]; then
+            echo "expected exactly one image, found ${#imgs[@]}: ${imgs[*]}"
             exit 1
           fi
+          img="${imgs[0]}"
+          case "$img" in
+            *-lite.*) echo "that is stage2's stock Lite export, not ours: $img"; exit 1 ;;
+          esac
           # Keep whatever extension it really has (.img.xz, .zip, …).
           case "$img" in
             *.img.xz) ext=".img.xz" ;;
