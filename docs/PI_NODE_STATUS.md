@@ -200,3 +200,55 @@ dev harness**, and `nodeOrigin` therefore accepts `host:port` **only for loopbac
 address with a port stays refused, because accepting one would turn the adoption endpoint
 into a port scanner for the masjid's network. IPv6 is refused outright rather than parsed —
 `::1` would otherwise mis-split into host `::` and port `1`.
+
+---
+
+## Getting the pi-gen image build green — what was actually wrong
+
+Seven CI rounds. Recorded because none of it is guessable from the outside, and the first
+three failures all *looked* like environment problems when two were bugs in our own stage.
+
+**1. `Cannot find module 'ws'` typechecking the agent.** Not a missing dependency — a
+missing *install*. `node/agent`'s end-to-end test drives the real controller hub, so its
+tests-included typecheck compiles part of `server/` and needs the server's `node_modules`.
+It passed locally only because that directory already existed. CI now installs it.
+
+**2. `qemu-user-binfmt` Conflicts with `qemu-user-static`.** They register the same
+interpreters, so asking for both gives apt "held broken packages". pi-gen's dependency check
+names `qemu-user-binfmt`, so that is the one to keep.
+
+**3. pi-gen wants `FIRST_USER_PASS` when the first-boot rename is disabled** — and it is
+right to. A passwordless account on a device on a masjid's network is a hole; a *fixed* one
+baked into a published image is worse. The build now mints a random password per build, masks
+it from the logs, and the stage then **locks and expires** the account. Nothing needs it: the
+agent runs as `omd`, SSH ships disabled.
+
+**4. pi-gen master is armhf.** 64-bit lives on the `arm64` branch. The tell was the
+pre-flight line changing to "Checking native armhf executable support". `RELEASE` must be
+left unset on that branch or it warns that it does not match.
+
+**5. THE STAGE WAS DOING NOTHING.** pi-gen only executes substage *directories*
+(`for SUB_STAGE_DIR in ${STAGE_DIR}/*; if [ -d ... ]`). `00-packages` and `01-run.sh` sat
+loose in `stage-omd/`, so they were silently skipped — visible only as `Begin stage-omd`
+immediately followed by `End stage-omd`. They now live in `stage-omd/00-omd/`. The stage also
+needed `prerun.sh` (without it `${ROOTFS_DIR}` is empty instead of stage2's rootfs) and
+`EXPORT_IMAGE` (without it pi-gen builds a rootfs and never writes an `.img`, so `deploy/`
+stays empty). **A successful bootstrap would still have produced a stock Raspberry Pi OS
+image with none of our customizations** — the most expensive class of bug, because it looks
+like success.
+
+**6. Stage ordering.** pi-gen's default `STAGE_LIST` is a sorted glob of `stage*`, and
+`stage-omd` sorts *before* `stage0` (`-` < `0`). Our stage ran first, against nothing.
+`STAGE_LIST` is now explicit, which also skips the desktop stages without `SKIP` files.
+
+**7. `debootstrap: E: Unable to execute target architecture` is the FIX-BINARY flag.** Not a
+missing package. Without `F` the kernel resolves the qemu interpreter *inside* the chroot,
+where it does not exist yet; with `F` it is opened up front and carried in.
+`docker run --privileged multiarch/qemu-user-static --reset -p yes` re-registers every
+handler with `F`. pi-gen's pre-flight reports "arm64: ok" either way, because it only tests
+qemu on the host — which is why this looked like it was already working.
+
+The substage is now **self-contained**: the workflow assembles `00-omd/files/` with the
+agent, the kiosk bundle and the overlay, so nothing reaches back into the repo and no
+environment variables have to cross into the build. That also keeps the door open to
+pi-gen's `build-docker.sh` without another restructure.
