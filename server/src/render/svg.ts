@@ -270,8 +270,11 @@ export function activeAnnouncementImage(tt: Timetable, now: Date, reportFrames: 
   // there are no alerts, apply the window; when alerts are present, always rotate.
   if (reportFrames.length === 0 && a && !inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
   const every = Math.max(1, Math.floor(a?.everySeconds ?? 25));
-  const forS = Math.max(1, Math.floor(a?.forSeconds ?? 20));
   const imgS = Math.max(1, Math.floor(a?.imageSeconds ?? 8));
+  // The "show" window must be long enough to cycle EVERY frame at least once, or a
+  // multi-photo report only ever shows its first photo before flipping back to the
+  // timetable. So stretch it to cover the whole pool when needed.
+  const forS = Math.max(Math.max(1, Math.floor(a?.forSeconds ?? 20)), pool.length * imgS);
   const cycle = every + forS;
   const phase = ((Math.floor(now.getTime() / 1000) % cycle) + cycle) % cycle;
   if (phase < every) return null; // showing the normal timetable
