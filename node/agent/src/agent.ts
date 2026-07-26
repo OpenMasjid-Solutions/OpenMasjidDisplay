@@ -250,7 +250,16 @@ export class Agent {
 
   /** Put back whatever content we were told to show (after an identify overlay). */
   private async restoreContent(): Promise<void> {
-    if (this.now() < this.identifyUntil) return; // a newer identify is still running
+    const remaining = this.identifyUntil - this.now();
+    if (remaining > 0) {
+      // Either a newer identify extended the window, or this timer fired a hair early.
+      // RESCHEDULE — do not just return. Returning drops the restore on the floor, and
+      // since nothing else ever calls this, the screen would sit on the identify page
+      // until the next content change. setTimeout is allowed to fire marginally early,
+      // so that is a real stuck-screen bug on a node, not just a flaky test.
+      setTimeout(() => void this.restoreContent(), remaining + 20);
+      return;
+    }
     this.identifyUntil = 0;
     if (this.content) await this.applyContent();
     else await this.display.show(this.statusTarget());
