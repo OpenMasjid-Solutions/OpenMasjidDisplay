@@ -25,7 +25,7 @@ import {
 import { normContent } from './validate';
 import { LoginLimiter } from './rateLimit';
 import { rid } from './store';
-import { saveReportImage, removeReportImage, reportImageFile } from './render/background';
+import { saveReportImages, removeReportImage, reportImageFile } from './render/background';
 import { regenerateReportFrames } from './render/reportFrames';
 import type { ContentRef, ParkingReport } from './types';
 
@@ -35,7 +35,7 @@ const str = (v: unknown, max: number): string => String(v ?? '').trim().slice(0,
 function publicReport(r: ParkingReport) {
   return {
     id: r.id, plate: r.plate, description: r.description, location: r.location,
-    reason: r.reason, hasImage: !!r.image, targets: r.targets, createdAt: r.createdAt,
+    reason: r.reason, imageCount: r.images.length, targets: r.targets, createdAt: r.createdAt,
   };
 }
 
@@ -254,8 +254,8 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
         let targets = Array.isArray(body.targets) ? body.targets.map(String).filter((id) => known.has(id)) : [];
         if (targets.length === 0) targets = ['*']; // no/blank selection → show on every display
         const id = rid('rep');
-        const image = typeof body.image === 'string' && body.image ? saveReportImage(id, body.image) : '';
-        const report: ParkingReport = { id, plate, description, location, reason, image, targets, createdAt: new Date().toISOString() };
+        const images = saveReportImages(id, body.images);
+        const report: ParkingReport = { id, plate, description, location, reason, images, targets, createdAt: new Date().toISOString() };
         store.update((db) => void (db.reports ??= []).push(report));
         regenerateReportFrames(store);
         return sendJson(res, 201, { report: publicReport(report) });
@@ -269,10 +269,11 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
         regenerateReportFrames(store);
         return sendJson(res, 200, { ok: true });
       }
-      const repImg = /^\/api\/volunteer\/reports\/([\w-]+)\/image$/.exec(pathname);
+      const repImg = /^\/api\/volunteer\/reports\/([\w-]+)\/image(?:\/(\d+))?$/.exec(pathname);
       if (repImg && method === 'GET') {
         const rep = (store.db.reports ?? []).find((r) => r.id === repImg[1]);
-        const f = rep && rep.image ? reportImageFile(rep.image) : null;
+        const idx = repImg[2] ? Number(repImg[2]) : 0;
+        const f = rep && rep.images[idx] ? reportImageFile(rep.images[idx]) : null;
         if (!f) return sendJson(res, 404, { error: 'No image.' });
         res.writeHead(200, { 'content-type': f.mime, 'cache-control': 'no-store' });
         return void fs.createReadStream(f.path).pipe(res);
