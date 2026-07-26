@@ -106,12 +106,21 @@ jobs:
             libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc gpg pigz \
             kpartx arch-test binfmt-support qemu-user-binfmt
           # Installing the package is not enough: debootstrap dies with "Unable to execute
-          # target architecture" unless the aarch64 interpreter is actually REGISTERED with
-          # the running kernel's binfmt_misc. pi-gen's own pre-flight check passes without
-          # this because it only tests that qemu can run a binary, not that the chroot can.
-          sudo update-binfmts --enable qemu-aarch64
+          # target architecture" unless the aarch64 interpreter is registered with the running
+          # kernel's binfmt_misc AND registered with the FIX-BINARY (F) flag.
+          #
+          # F is the crux. Without it the kernel resolves the interpreter path INSIDE the
+          # chroot, where /usr/bin/qemu-aarch64-static does not exist yet — which is exactly
+          # what debootstrap's second stage trips over. With F the interpreter is opened up
+          # front and carried in, so it works in any chroot or mount namespace. pi-gen's
+          # pre-flight reports "arm64: ok" either way, because it only tests qemu on the host.
+          sudo update-binfmts --enable qemu-aarch64 || true
           sudo systemctl restart systemd-binfmt || true
-          update-binfmts --display qemu-aarch64 | head -5
+          # multiarch/qemu-user-static --reset -p yes re-registers every handler with F set.
+          # This is the standard way to make foreign-arch chroots work in CI.
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          echo "--- aarch64 handler (expect 'flags: ... F') ---"
+          update-binfmts --display qemu-aarch64 || cat /proc/sys/fs/binfmt_misc/qemu-aarch64 || true
 
       - name: Check out pi-gen
         # The arm64 branch is where 64-bit lives: master defaults to ARCH=armhf and ignores an
@@ -123,9 +132,15 @@ jobs:
       - name: Configure the build
         run: |
           cp -r image/pi-gen/stage-omd pi-gen/
-          # Lite is stage2; skip the desktop stages entirely.
-          touch pi-gen/stage3/SKIP pi-gen/stage4/SKIP pi-gen/stage5/SKIP
-          touch pi-gen/stage4/SKIP_IMAGES pi-gen/stage5/SKIP_IMAGES
+          chmod +x pi-gen/stage-omd/prerun.sh pi-gen/stage-omd/00-omd/01-run.sh
+
+          # Assemble the substage's files/ — it must be SELF-CONTAINED, because a substage
+          # that reaches back into the repo only works when the repo happens to be mounted.
+          FILES=pi-gen/stage-omd/00-omd/files
+          mkdir -p "$FILES/agent" "$FILES/kiosk" "$FILES/overlay"
+          cp -r node/agent/dist node/agent/node_modules node/agent/package.json "$FILES/agent/"
+          cp -r node/kiosk/dist/. "$FILES/kiosk/"
+          cp -r image/overlay/. "$FILES/overlay/"
 
           # pi-gen refuses DISABLE_FIRST_BOOT_USER_RENAME without a password, and it is
           # right to: a passwordless account on a device sitting on a masjid's network is a
@@ -140,6 +155,11 @@ jobs:
           cat > pi-gen/config <<EOF
           IMG_NAME=openmasjid-node
           ARCH=arm64
+          # STAGE_LIST is explicit for two reasons. It skips the desktop stages (3-5) without
+          # SKIP files, and — the important one — it puts stage-omd LAST. pi-gen's default is
+          # a sorted glob of stage*, and "stage-omd" sorts BEFORE "stage0" ('-' < '0'), so our
+          # stage ran first against an empty rootfs and did nothing at all.
+          STAGE_LIST="stage0 stage1 stage2 stage-omd"
           TARGET_HOSTNAME=omd-node
           FIRST_USER_NAME=omd-setup
           FIRST_USER_PASS=${FIRST_USER_PASS}
@@ -153,12 +173,7 @@ jobs:
 
       - name: Build the image
         working-directory: pi-gen
-        env:
-          AGENT_DIST: ${{ github.workspace }}/node/agent
-          KIOSK_DIST: ${{ github.workspace }}/node/kiosk/dist
-        # AGENT_DIST/KIOSK_DIST are consumed by stage-omd/01-run.sh; -E preserves them
-        # through sudo into the build.
-        run: sudo -E ./build.sh
+        run: sudo ./build.sh
 
       - name: Name the artifact
         id: art

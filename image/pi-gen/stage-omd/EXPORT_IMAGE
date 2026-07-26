@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+#
+# Presence of this file is what makes pi-gen actually EXPORT an .img from this stage. Without
+# it the stage is built into a rootfs and then nothing is written out — the deploy/ directory
+# stays empty and the workflow's "no image produced" check fires.
+IMG_SUFFIX="-node"
+if [ "${USE_QEMU}" = "1" ]; then
+	export IMG_SUFFIX="${IMG_SUFFIX}-qemu"
+fi
