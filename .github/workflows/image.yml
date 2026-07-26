@@ -94,17 +94,13 @@ jobs:
       - name: Install pi-gen dependencies
         run: |
           sudo apt-get update
-          # pi-gen's dependency check wants qemu-user-binfmt: it needs the binfmt_misc
-          # registration to execute arm64 binaries inside the chroot on an amd64 runner, and
-          # binfmt-support provides the update-binfmts machinery it hooks into.
-          #
-          # qemu-user-static is deliberately NOT here — the two packages Conflict with each
-          # other (they register the same interpreters), so asking for both leaves apt with
-          # "held broken packages".
+          # qemu-user-static is what the PINNED pi-gen tag's dependency list names (the
+          # trixie branch named qemu-user-binfmt instead — the two Conflict with each other,
+          # so exactly one of them can be installed and it has to match the pi-gen in use).
           sudo apt-get install -y --no-install-recommends \
             coreutils quilt parted debootstrap zerofree zip dosfstools \
             libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc gpg pigz \
-            kpartx arch-test binfmt-support qemu-user-binfmt
+            kpartx arch-test binfmt-support qemu-user-static
           # Installing the package is not enough: debootstrap dies with "Unable to execute
           # target architecture" unless the aarch64 interpreter is registered with the running
           # kernel's binfmt_misc AND registered with the FIX-BINARY (F) flag.
