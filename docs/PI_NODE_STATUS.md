@@ -6,7 +6,8 @@
 Companion to `PI_NODE_SPEC.md`. The spec says what we are building; this says **what exists
 in the tree today**, so nobody has to infer it from the code. Update it with each milestone.
 
-As of this commit: **M0 is complete and verified. M1–M4 are not started.**
+As of this commit: **M0 is complete and verified. M1's software is written and tested
+off-hardware; the image has never been built or booted. M2–M4 are not started.**
 
 ---
 
@@ -65,6 +66,45 @@ there is no local Docker on the dev box. Watch the first CI image build.
 
 ---
 
+## M1 — the device side (software done, hardware unverified)
+
+| Piece | Where | Notes |
+|---|---|---|
+| `Platform` seam | [platform.ts](../node/agent/src/platform.ts) | Every Pi-specific thing — `/proc/cpuinfo`, `cog`, GStreamer, NetworkManager, reboot, wipe — behind one interface. **This is why M1 could be tested at all:** the real agent runs against the real controller on a dev box with a fake platform. No other agent module may touch `child_process` or `/proc`. |
+| Agent state machine | [agent.ts](../node/agent/src/agent.ts) | starting → status_screen → timetable / stream / off. Holds the timetable until the clock is NTP-synced (no RTC on a Pi). |
+| Controller client | [controller.ts](../node/agent/src/controller.ts) | Outbound WSS, jittered backoff that never gives up, heartbeats, acks. Ignores unreadable frames instead of disconnecting, so a newer controller cannot knock older nodes offline. |
+| Display supervisor | [display.ts](../node/agent/src/display.ts) | Exactly ONE process at a time (512 MB: kiosk ~250 MB *or* player ~120 MB, never both). Crash → restart with backoff → after 5, fall back to a status screen that states the error rather than leaving a black TV. |
+| Local API | [localApi.ts](../node/agent/src/localApi.ts) | `GET /api/status` open; `POST /api/adopt` **one-shot**, 409 forever after; `/api/view` loopback-only; everything else bearer-gated. Also serves the kiosk bundle. |
+| Kiosk renderer | [node/kiosk/src/main.ts](../node/kiosk/src/main.ts) | Calls the **same `renderDisplaySvg`** the controller rasterizes, so parity is structural rather than reviewed. 56 KB bundle including the whole engine. |
+| Image + CI | [image/](../image/), [image.yml](../.github/workflows/image.yml) | pi-gen stage, systemd units, read-only root, zram, watchdogs, both factory-reset paths, `_omd-node._tcp` advert. |
+
+`cd node/agent && npm test` → **25 passing**, including an end-to-end test where the real
+agent is adopted over HTTP by the real `adoptNode`, dials the real `NodeHub`, and is driven
+through timetable → stream → off over real sockets.
+
+**The kiosk was rendered in a real browser and looked at**, not just built: a headless
+screenshot of the timetable (Arabic shaping, celestial glow, glass cards, countdown ring,
+Hijri date, Jumu'ah band) and of the status screen. That retires the biggest render-core
+risk — resvg and a browser do not accept identical SVG.
+
+Bugs this pass caught that unit tests could not:
+- `index.ts` resolved its version with `require('../../package.json')`, which from
+  `dist/node/agent/src/` points at nothing. `require` throws, so the `?? '0.0.0'` fallback
+  never ran and **the agent crashed on boot** while all 25 tests passed. Nothing executed the
+  entry point. Fixed, and `image.yml` now boots the built dist and asserts the version.
+- The status screen printed "Ready to adopt" twice — once derived from `adopted`, once from
+  `note`. `note` is now for exceptional states only.
+
+### Still unverified without a Pi (M1's remaining acceptance)
+
+Flash → boot → portal (or Ethernet skip) → IP on the TV → adopt → timetable renders, then
+pull the controller's plug and confirm it keeps ticking. Specifically unproven: the pi-gen
+build itself, HDMI with the TV off at boot, `v4l2h264dec` hardware decode, `cog` on DRM/KMS,
+the `wifi-connect` portal, read-only-root behaviour, and **whether a full-frame SVG re-render
+at 1 Hz is fast enough on a Zero 2 W** — the most likely thing to need work.
+
+---
+
 ## Deliberate deviations from the spec
 
 1. **`packages/protocol` uses hand-written validators, not zod** (spec §5/§10). `zod`
@@ -96,18 +136,18 @@ there is no local Docker on the dev box. Watch the first CI image build.
   a masjid's custom photo/logo would not appear. Belongs to M1 — it needs content-hashed
   asset serving plus a token-authenticated fetch route.
 - **The panel has no mDNS discovery picker** (spec §9 step 1 offers one alongside manual
-  entry). Typing the address shown on the TV works and is the documented path; discovery
-  needs an mDNS browser on the controller, which is M1 work alongside the agent that
-  advertises `_omd-node._tcp`.
-- **The "Download the node image" button points at the repo's latest release**, which will
-  not carry a `.img.xz` asset until `image.yml` exists (M1).
+  entry). Typing the address shown on the TV works and is the documented path. The agent side
+  is done (the image advertises `_omd-node._tcp`); the controller still needs an mDNS browser.
+- **The "Download the node image" button points at the repo's latest release**, which only
+  carries a `.img.xz` once `image.yml` has run for a tag — so it 404s until the first tagged
+  build.
 - `render-core` is **sequential, not re-entrant**: `renderDisplaySvg` writes module-level
   state (`HOT`, `COLON_DIM`, `LIGHTUI`) that `salahHadithView` reads. Fine for one render per
   process (the container's worker, a node's kiosk); do not call it concurrently.
 
 ## Not started
 
-**M1** (image + first-boot + kiosk timetable), **M2** (stream mode, identify on device),
-**M3** (agent OTA), **M4** (RO rootfs, watchdogs, zram, `PI_NODE_SETUP.md`). Nothing under
-`node/` or `image/` exists yet. The open questions in spec §15 remain open; §9's on-screen
-confirmation-code hardening is still the v1.1 seam.
+**M2** (identify/stream verified on hardware, `docker stats` proof), **M3** (agent OTA
+self-update — the agent NAKs `update` explicitly so a controller sees why), **M4** (72 h soak
+with hourly power cuts, `PI_NODE_SETUP.md`). Spec §15's open questions remain open; §9's
+on-screen confirmation-code hardening is still the v1.1 seam.

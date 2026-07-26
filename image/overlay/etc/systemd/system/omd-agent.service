@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+#
+# omd-agent — the node's control plane. It owns the display: it decides whether the kiosk
+# browser or the video player is running, serves the local adoption API on :80, and keeps
+# an outbound WebSocket to the controller.
+#
+# It is intentionally the ONLY unit that starts a display process. Anything else drawing to
+# the same DRM device would fight it for the screen.
+
+[Unit]
+Description=OpenMasjid Display node agent
+Documentation=https://github.com/OpenMasjid-Solutions/OpenMasjidDisplay
+# Needs the network up enough to bind :80 and resolve the controller, but must NOT wait for
+# actual connectivity: an unadopted node with no Wi-Fi still has to show its status screen
+# so a human can set it up. `network.target` (not network-online.target) is deliberate.
+After=network.target local-fs.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/omd/agent/dist/node/agent/src/index.js
+WorkingDirectory=/opt/omd/agent
+Environment=NODE_ENV=production
+Environment=OMD_DATA_DIR=/data
+Environment=OMD_KIOSK_DIR=/opt/omd/kiosk
+Environment=OMD_PORT=80
+
+# Port 80 without running as root: an admin types just the IP off the TV, and everything
+# else the agent does needs no privilege beyond its own files.
+User=omd
+Group=omd
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Restart forever. A node that gives up is a dark screen nobody notices until Jumu'ah.
+Restart=always
+RestartSec=3
+
+# Hardware/software watchdog: if the agent stops pinging, systemd restarts it. Screens hang
+# in prayer halls and nobody reboots them.
+WatchdogSec=60
+
+# Least privilege. /data is the one writable path (the rootfs is read-only anyway); /dev/dri
+# and /dev/video* are needed to drive the display and the hardware decoder, and the agent
+# spawns cog/gst-launch as children so it cannot be NoNewPrivileges-sandboxed further.
+ReadWritePaths=/data
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+DeviceAllow=/dev/dri rw
+DeviceAllow=char-drm rw
+DeviceAllow=/dev/video10 rw
+DeviceAllow=/dev/video11 rw
+DeviceAllow=/dev/video12 rw
+SupplementaryGroups=video render
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=omd-agent
+
+[Install]
+WantedBy=multi-user.target

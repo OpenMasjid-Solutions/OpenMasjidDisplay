@@ -1,0 +1,88 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+#
+# omd-firstboot — the two things that must happen before omd-agent starts, and nothing else.
+#
+# The network state machine itself lives in the AGENT (see node/agent/src/agent.ts), not
+# here, so there is one place that decides what the screen shows. This script only handles
+# what a shell has to: the factory-reset escape hatches, and bringing up the Wi-Fi setup
+# portal when there is no usable network.
+set -eu
+
+DATA_DIR=/data
+BOOT_DIR=/boot/firmware
+[ -d "$BOOT_DIR" ] || BOOT_DIR=/boot
+log() { echo "omd-firstboot: $*"; }
+
+# ── Factory reset ───────────────────────────────────────────────────────────────
+# A file on the FAT boot partition is the escape hatch that always works: any laptop can
+# create it, no login and no network needed, which is the point when a node is unreachable.
+if [ -f "$BOOT_DIR/factory-reset" ]; then
+  log "factory-reset file found — wiping $DATA_DIR"
+  rm -rf "${DATA_DIR:?}/"* 2>/dev/null || true
+  # Remove the trigger, or every future boot wipes the node again.
+  rm -f "$BOOT_DIR/factory-reset" || log "WARNING: could not remove the trigger file"
+fi
+
+# GPIO21 held to ground for 10s during boot: the same reset with no card reader.
+if [ -d /sys/class/gpio ] && [ ! -e /sys/class/gpio/gpio21 ]; then
+  echo 21 > /sys/class/gpio/export 2>/dev/null || true
+fi
+if [ -e /sys/class/gpio/gpio21/value ]; then
+  echo in > /sys/class/gpio/gpio21/direction 2>/dev/null || true
+  held=0
+  while [ "$held" -lt 10 ]; do
+    [ "$(cat /sys/class/gpio/gpio21/value 2>/dev/null || echo 1)" = "0" ] || break
+    held=$((held + 1))
+    sleep 1
+  done
+  if [ "$held" -ge 10 ]; then
+    log "GPIO21 held low for 10s — wiping $DATA_DIR"
+    rm -rf "${DATA_DIR:?}/"* 2>/dev/null || true
+  fi
+fi
+
+mkdir -p "$DATA_DIR"
+chown omd:omd "$DATA_DIR" 2>/dev/null || true
+
+# ── Network ─────────────────────────────────────────────────────────────────────
+# Ethernet first and fast: if a cable is in, skip Wi-Fi setup entirely. A masjid that ran a
+# cable should never be asked to join a setup hotspot.
+have_ip() {
+  ip -4 addr show scope global 2>/dev/null | grep -q 'inet '
+}
+for iface in eth0 usb0 end0; do
+  if [ -e "/sys/class/net/$iface/carrier" ] && [ "$(cat "/sys/class/net/$iface/carrier" 2>/dev/null)" = "1" ]; then
+    log "$iface has carrier — waiting up to 20s for DHCP"
+    i=0
+    while [ "$i" -lt 20 ]; do
+      have_ip && { log "wired network up; skipping Wi-Fi setup"; exit 0; }
+      i=$((i + 1))
+      sleep 1
+    done
+  fi
+done
+
+# A known Wi-Fi network may just be slow to associate. Give it a chance before shouting.
+i=0
+while [ "$i" -lt 25 ]; do
+  have_ip && { log "network up"; exit 0; }
+  i=$((i + 1))
+  sleep 1
+done
+
+# No usable network. Open the captive portal so someone with a phone can join us to the
+# masjid's Wi-Fi. The agent keeps showing its status screen throughout, which is where the
+# on-screen instructions come from — this script never draws to the display.
+SERIAL4=$(sed -n 's/^Serial\s*:\s*.*\(....\)$/\1/p' /proc/cpuinfo | tr 'a-f' 'A-F' | tail -1)
+[ -n "$SERIAL4" ] || SERIAL4=$(hostname | tail -c 5)
+SSID="OpenMasjid-Node-$SERIAL4"
+log "no network — starting the setup portal as '$SSID'"
+# WPA2 needs 8 characters minimum; this is a setup-only AP that can do nothing but set
+# Wi-Fi credentials (it cannot read the token, adopt, or control the node), which is why a
+# well-known password is acceptable here. Stated as a limitation in PI_NODE_SETUP.md.
+exec /usr/local/sbin/wifi-connect \
+  --portal-ssid "$SSID" \
+  --portal-passphrase "12345678" \
+  --portal-listening-port 8080

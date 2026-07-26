@@ -1,0 +1,103 @@
+#!/bin/bash -e
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+#
+# pi-gen stage-omd: turn Raspberry Pi OS Lite into an OpenMasjid node card.
+#
+# Runs on the BUILD host with ${ROOTFS_DIR} pointing at the image's root. `install` and
+# `on_chroot` are pi-gen helpers. Nothing here is masjid-specific — the image is generic and
+# every node is identical until it is adopted.
+
+OVERLAY="$(dirname "$0")/../../overlay"
+
+# ── The agent and the kiosk bundle ──────────────────────────────────────────────
+# Both are built on the CI host (x86, fast) and copied in as plain JS — the agent is
+# TypeScript compiled to CommonJS with no native modules, so it is architecture-independent
+# and needs no arm64 npm install inside the chroot.
+install -d "${ROOTFS_DIR}/opt/omd/agent" "${ROOTFS_DIR}/opt/omd/kiosk" "${ROOTFS_DIR}/data"
+cp -r "${AGENT_DIST:?AGENT_DIST must point at node/agent (built)}/dist" "${ROOTFS_DIR}/opt/omd/agent/"
+cp -r "${AGENT_DIST}/node_modules" "${ROOTFS_DIR}/opt/omd/agent/"
+cp "${AGENT_DIST}/package.json" "${ROOTFS_DIR}/opt/omd/agent/"
+cp -r "${KIOSK_DIST:?KIOSK_DIST must point at node/kiosk/dist}/." "${ROOTFS_DIR}/opt/omd/kiosk/"
+
+# ── Overlay files ───────────────────────────────────────────────────────────────
+cp -r "${OVERLAY}/etc/." "${ROOTFS_DIR}/etc/"
+install -m 0755 "${OVERLAY}/usr/local/sbin/omd-firstboot" "${ROOTFS_DIR}/usr/local/sbin/omd-firstboot"
+
+on_chroot <<'CHROOT'
+set -e
+
+# An unprivileged account for the agent. It gets CAP_NET_BIND_SERVICE from the unit file
+# rather than running as root, and `video`/`render` for the display and decoder.
+if ! id omd >/dev/null 2>&1; then
+  useradd --system --home-dir /opt/omd --shell /usr/sbin/nologin --groups video,render omd
+fi
+chown -R omd:omd /opt/omd /data
+
+systemctl enable omd-agent.service
+systemctl enable omd-firstboot.service
+systemctl enable avahi-daemon
+systemctl enable chrony
+# SSH stays OFF by default (the Pi convention: an `ssh` file on the boot partition enables
+# it for a technician).
+systemctl disable ssh || true
+
+# The panel's discovery picker looks for this.
+cat > /etc/avahi/services/omd-node.service <<'AVAHI'
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">OpenMasjid node %h</name>
+  <service>
+    <type>_omd-node._tcp</type>
+    <port>80</port>
+  </service>
+</service-group>
+AVAHI
+
+# zram swap sized to half of RAM: enough headroom for the browser without thrashing.
+cat > /etc/default/zramswap <<'ZRAM'
+ALGO=zstd
+PERCENT=50
+ZRAM
+
+# The BCM hardware watchdog, so a wedged kernel reboots itself. Screens hang in prayer halls
+# and nobody power-cycles them.
+sed -i 's/^#watchdog-device/watchdog-device/' /etc/watchdog.conf || true
+echo 'watchdog-device = /dev/watchdog' >> /etc/watchdog.conf
+echo 'max-load-1 = 24' >> /etc/watchdog.conf
+systemctl enable watchdog || true
+
+# Journal to RAM with a small persisted ring: SD cards die from writes.
+install -d /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/omd.conf <<'JRNL'
+[Journal]
+Storage=volatile
+RuntimeMaxUse=16M
+JRNL
+CHROOT
+
+# ── Boot config ─────────────────────────────────────────────────────────────────
+BOOTCFG="${ROOTFS_DIR}/boot/firmware/config.txt"
+[ -f "$BOOTCFG" ] || BOOTCFG="${ROOTFS_DIR}/boot/config.txt"
+cat >> "$BOOTCFG" <<'CFG'
+
+# ── OpenMasjid Display node ───────────────────────────────────────────────────
+# The TV is very often switched OFF when the Pi powers up. Without forcing hotplug and
+# pinning a mode, the Pi sees no connected display at boot and outputs nothing at all even
+# after someone turns the TV on — which looks exactly like a dead node.
+hdmi_force_hotplug=1
+# Full KMS: what cog's DRM backend and kmssink both need.
+dtoverlay=vc4-kms-v3d
+# Under full KMS the GPU needs almost no carve-out, and that RAM is worth far more to the
+# browser on a 512 MB board.
+gpu_mem=16
+# Hardware watchdog.
+dtparam=watchdog=on
+CFG
+
+CMDLINE="${ROOTFS_DIR}/boot/firmware/cmdline.txt"
+[ -f "$CMDLINE" ] || CMDLINE="${ROOTFS_DIR}/boot/cmdline.txt"
+# Pin the HDMI mode ('D' = force it even with no EDID) for the TV-is-off case, and keep the
+# boot quiet so a masjid does not watch kernel logs scroll past on the screen.
+sed -i '1 s|$| video=HDMI-A-1:1920x1080@60D logo.nologo consoleblank=0 quiet|' "$CMDLINE"

@@ -5,3 +5,5 @@ dist/
 .env
 data/
 server/public/
+node/agent/dist/
+node/kiosk/dist/

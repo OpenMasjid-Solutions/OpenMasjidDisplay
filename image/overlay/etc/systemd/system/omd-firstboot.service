@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+#
+# Runs before the agent on every boot (not only the first — the name follows the Pi
+# convention, but a node can lose its Wi-Fi at any time and must be able to offer the setup
+# portal again).
+#
+# It handles only what a shell must: the factory-reset escape hatches, and the captive
+# portal when there is no usable network. The state machine that decides what the SCREEN
+# shows lives in the agent, so there is exactly one owner of the display.
+
+[Unit]
+Description=OpenMasjid node first-boot / network provisioning
+Documentation=https://github.com/OpenMasjid-Solutions/OpenMasjidDisplay
+After=network.target NetworkManager.service local-fs.target
+Wants=NetworkManager.service
+# The agent must not start before a pending factory reset has wiped /data, or it would read
+# the adoption it is about to lose and briefly dial an old controller.
+Before=omd-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/omd-firstboot
+# The portal is a long-lived exec when it runs at all, so no timeout.
+TimeoutStartSec=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=omd-firstboot
+
+[Install]
+WantedBy=multi-user.target
