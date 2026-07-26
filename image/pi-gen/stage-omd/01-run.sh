@@ -34,6 +34,16 @@ if ! id omd >/dev/null 2>&1; then
 fi
 chown -R omd:omd /opt/omd /data
 
+# LOCK the account pi-gen insisted on creating. It is built with a random per-build
+# password that is never published, and nothing needs it: the agent runs as `omd`, SSH
+# ships disabled, and a node is administered entirely from the control panel. Locking it
+# means even that random password cannot be used to log in — a technician who needs a
+# shell enables SSH the standard Pi way (an `ssh` file on the boot partition) and sets
+# their own credentials.
+passwd -l omd-setup || true
+# Expire it too, so it cannot be used for a local console login either.
+usermod --expiredate 1 omd-setup || true
+
 systemctl enable omd-agent.service
 systemctl enable omd-firstboot.service
 systemctl enable avahi-daemon

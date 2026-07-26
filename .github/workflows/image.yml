@@ -115,12 +115,24 @@ jobs:
           # Lite is stage2; skip the desktop stages entirely.
           touch pi-gen/stage3/SKIP pi-gen/stage4/SKIP pi-gen/stage5/SKIP
           touch pi-gen/stage4/SKIP_IMAGES pi-gen/stage5/SKIP_IMAGES
+
+          # pi-gen refuses DISABLE_FIRST_BOOT_USER_RENAME without a password, and it is
+          # right to: a passwordless account on a device sitting on a masjid's network is a
+          # hole. But a FIXED password baked into a published image is worse — it would be
+          # the same on every node, forever, and discoverable from this file.
+          #
+          # So: a fresh random password per build, masked out of the logs, never published,
+          # and never needed — the agent runs as its own system user, SSH ships disabled,
+          # and stage-omd LOCKS this account outright. It exists only to satisfy pi-gen.
+          FIRST_USER_PASS="$(openssl rand -base64 32)"
+          echo "::add-mask::$FIRST_USER_PASS"
           cat > pi-gen/config <<EOF
           IMG_NAME=openmasjid-node
           RELEASE=bookworm
           ARCH=arm64
           TARGET_HOSTNAME=omd-node
           FIRST_USER_NAME=omd-setup
+          FIRST_USER_PASS=${FIRST_USER_PASS}
           DISABLE_FIRST_BOOT_USER_RENAME=1
           ENABLE_SSH=0
           LOCALE_DEFAULT=en_GB.UTF-8
