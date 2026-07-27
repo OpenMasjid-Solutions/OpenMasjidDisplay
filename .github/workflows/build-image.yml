@@ -71,6 +71,37 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # BOOT the image we just published, do not just build it. Building only proves the
+      # Dockerfile parses and the layers assemble; it says nothing about whether the app
+      # starts. That distinction became real when tsconfig's rootDir was widened to compile
+      # the shared packages, which moved the entrypoint from dist/index.js to
+      # dist/server/src/index.js and shifted every __dirname-relative path with it. A masjid
+      # finding that out on update is not acceptable, and there is no local Docker on the
+      # dev box to catch it beforehand.
+      - name: Smoke-test the published image
+        run: |
+          IMG=ghcr.io/${{ steps.meta.outputs.owner }}/${{ steps.meta.outputs.name }}:${{ steps.meta.outputs.version }}
+          docker run -d --name omd-smoke -p 18099:8080 -e MEDIAMTX_MANAGED=no "$IMG"
+          for i in $(seq 1 45); do
+            curl -fsS -m 2 http://127.0.0.1:18099/healthz >/dev/null 2>&1 && break
+            sleep 2
+          done
+          echo "--- container log ---"
+          docker logs omd-smoke 2>&1 | tail -20
+          health=$(curl -fsS -m 5 http://127.0.0.1:18099/healthz) || { echo "FAILED: /healthz never answered"; docker rm -f omd-smoke; exit 1; }
+          echo "healthz: $health"
+          # The control panel must actually be served — that is PUBLIC_DIR resolving to the
+          # web bundle, which is the path most likely to break with the new dist depth.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:18099/)
+          echo "GET / -> $code"
+          # And the API must be gated, not merely present.
+          api=$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:18099/api/state)
+          echo "GET /api/state -> $api"
+          docker rm -f omd-smoke
+          echo "$health" | grep -q '"ok":true' || { echo "FAILED: bad healthz body"; exit 1; }
+          [ "$code" = "200" ] || { echo "FAILED: the control panel was not served (PUBLIC_DIR?)"; exit 1; }
+          [ "$api" = "401" ] || { echo "FAILED: /api/state should be 401 unauthenticated, got $api"; exit 1; }
+
       # Optional: tell the OpenMasjidAPPS catalog to rebuild after a release.
       # Requires a repo secret CATALOG_DISPATCH_TOKEN (a PAT with 'repo' scope).
       # - name: Notify catalog
