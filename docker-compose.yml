@@ -17,7 +17,7 @@ services:
     # The digest is appended by the "chore: digest-pin" commit that FOLLOWS the release tag —
     # an image's digest cannot exist inside the commit that builds it. Until then this line
     # is tag-only, and the catalog must not be pointed here (see docs/PI_NODE_STATUS.md).
-    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.65.0
+    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.65.0@sha256:5389c9bdf648bb3646c1a491f2f1e28056e3ab7695ee837736a8af960c282efb
     restart: unless-stopped
     environment:
       PORT: "8080"
