@@ -14,8 +14,10 @@ services:
   app:
     # Tag for humans + digest for integrity (the @sha256 is what actually pins). A
     # moved tag can't repoint this to a different image. Bump both each release.
-    # TODO: after the v0.62.0 image builds, re-pin the digest (append @sha256:<new>).
-    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.64.1@sha256:a1735bda5b091d069a3b95c733e6a006fe41029bffec08fe73857103243eada7
+    # The digest is appended by the "chore: digest-pin" commit that FOLLOWS the release tag —
+    # an image's digest cannot exist inside the commit that builds it. Until then this line
+    # is tag-only, and the catalog must not be pointed here (see docs/PI_NODE_STATUS.md).
+    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.65.0
     restart: unless-stopped
     environment:
       PORT: "8080"
