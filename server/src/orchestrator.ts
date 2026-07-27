@@ -285,6 +285,12 @@ export class Orchestrator {
           pulling: byId.get(tv.id)?.streamReady ?? false,
           off: res.content.kind === 'off',
         })),
+      // Which screens EXIST, as distinct from which are judgeable this pass. Alert state is
+      // pruned against existence only — a decoder screen is unjudgeable while MediaMTX is
+      // unreachable, but it has not gone away, and forgetting it would re-arm its 90 s timer
+      // and fire a second "Screen offline" push (or swallow its "back online") on every
+      // MediaMTX restart. That would hit installs with no Pi nodes at all.
+      new Set(resolutions.map(({ tv }) => tv.id)),
     );
   }
 
@@ -347,11 +353,11 @@ export class Orchestrator {
    * "Off" are not monitored. Debounced so brief reconnects (content switches, power
    * cycles) don't flap. Fires only when a `notify` callback is wired and configured.
    */
-  private runAlerts(items: { tv: Tv; pulling: boolean; off: boolean }[]): void {
+  private runAlerts(items: { tv: Tv; pulling: boolean; off: boolean }[], existing: ReadonlySet<string>): void {
     if (!this.notify) return;
     const now = Date.now();
-    const present = new Set(items.map((i) => i.tv.id));
-    for (const id of [...this.alerts.keys()]) if (!present.has(id)) this.alerts.delete(id);
+    // Prune by EXISTENCE, not by what we could judge this pass — see the call site.
+    for (const id of [...this.alerts.keys()]) if (!existing.has(id)) this.alerts.delete(id);
 
     for (const { tv, pulling, off } of items) {
       let st = this.alerts.get(tv.id);

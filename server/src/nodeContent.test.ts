@@ -169,6 +169,54 @@ test('nodePlayback is normalized and videoCodec is not settable from a request b
   assert.equal(normSource({ name: 'c', url: 'rtsp://a/b' }, learned).videoCodec, 'h265', 'but it survives a save');
 });
 
+// ── Alert state must survive a MediaMTX blip ─────────────────────────────────
+
+test('a MediaMTX outage does not wipe alert state for screens that still exist', async () => {
+  // REGRESSION (would hit installs with NO Pi nodes): runAlerts moved out of the
+  // `if (reachable)` guard and is now passed only the judgeable screens. It prunes state for
+  // ids not in that list, so an unreachable MediaMTX used to erase every decoder screen's
+  // downSince/offlineNotified — re-arming the 90 s timer (a duplicate "Screen offline") and
+  // swallowing the "back online". Pruning is now by EXISTENCE, which this pins down.
+  const { Orchestrator } = await import('./orchestrator');
+  const tv = { ...normTv({ name: 'Hall' }), id: 'tv_1' } as Tv;
+  const notes: string[] = [];
+  const orch = new Orchestrator(
+    { db: {} } as never,
+    {} as never,
+    () => {},
+    (p) => void notes.push(p.title ?? ''),
+  );
+  const run = (orch as unknown as {
+    runAlerts(i: { tv: Tv; pulling: boolean; off: boolean }[], e: ReadonlySet<string>): void;
+  }).runAlerts.bind(orch);
+  const alerts = (orch as unknown as { alerts: Map<string, { downSince: number | null; offlineNotified: boolean }> }).alerts;
+  const all = new Set(['tv_1']);
+
+  // The screen goes down and stays down long enough to alert.
+  run([{ tv, pulling: false, off: false }], all);
+  alerts.get('tv_1')!.downSince = Date.now() - 120_000;
+  run([{ tv, pulling: false, off: false }], all);
+  assert.equal(notes.length, 1, 'one offline alert');
+  assert.equal(alerts.get('tv_1')?.offlineNotified, true);
+
+  // MediaMTX blips: nothing is judgeable, but the screen still exists.
+  run([], all);
+  assert.equal(alerts.has('tv_1'), true, 'state must survive an unjudgeable pass');
+  assert.equal(alerts.get('tv_1')?.offlineNotified, true, 'and must not re-arm');
+
+  // Still down after the blip → no duplicate alert.
+  run([{ tv, pulling: false, off: false }], all);
+  assert.equal(notes.length, 1, 'a MediaMTX blip must not produce a second "offline" push');
+
+  // Recovery still reports, because offlineNotified was not erased.
+  run([{ tv, pulling: true, off: false }], all);
+  assert.equal(notes.length, 2, 'the "back online" push must still fire');
+
+  // A screen that is genuinely deleted IS forgotten.
+  run([], new Set<string>());
+  assert.equal(alerts.has('tv_1'), false, 'a removed screen is pruned');
+});
+
 // ── Adoption address safety (SSRF) ───────────────────────────────────────────
 
 test('adoption only accepts local addresses', () => {

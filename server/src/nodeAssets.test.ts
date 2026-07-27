@@ -182,6 +182,99 @@ test('the asset route authenticates by NODE TOKEN, without an admin session', as
   }
 });
 
+test('deleting a node screen also releases its node, rather than orphaning it', async () => {
+  // REGRESSION: DELETE /api/tvs/:id used to filter db.tvs only. The PiNode survived with a
+  // dangling screenId — still authenticating, never pushed content again (the orchestrator
+  // only iterates node SCREENS), so the TV froze on its last frame forever. The panel renders
+  // nodes through their screen, so the orphan was invisible AND un-removable, it kept
+  // consuming a slot against the collection cap, and the same serial could not be re-adopted.
+  const cred = hashPassword('a'.repeat(64));
+  const screen = { id: 'tv_1', name: 'Hall', kind: 'node', nodeId: 'node_1', defaultContent: { kind: 'off' }, createdAt: '' };
+  const db = {
+    version: 1,
+    admin: { hash: 'x', salt: 'y', createdAt: '' },
+    settings: { defaultQuality: '1080p', scheduleTimezone: '', volunteerEnabled: false, volunteerRemote: true, piNodes: true },
+    timetables: [tt({})],
+    sources: [],
+    tvs: [screen],
+    schedules: [],
+    nodes: [{ id: 'node_1', serial: 'feedface', name: 'Hall', tokenHash: cred.hash, tokenSalt: cred.salt, fw: '1', model: '', caps: { codecs: ['h264'], maxHeight: 1080, maxFps: 30 }, ip: '', lastSeen: 0, screenId: 'tv_1', createdAt: '' }],
+  };
+  const store = { db, secret: crypto.randomBytes(32), update: (fn: (d: unknown) => void) => fn(db) };
+  let resetCalled = '';
+  const handler = createApi({
+    store: store as never,
+    orchestrator: { getStatuses: () => [] } as never,
+    volunteer: async () => {},
+    nodeHub: { factoryReset: (id: string) => { resetCalled = id; return true; } } as never,
+  });
+  const server = http.createServer((q, r) => void handler(q, r));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    // Drive the REAL route, which means holding a real session. First-run setup mints one,
+    // so start from no admin and let /api/setup issue the cookie.
+    db.admin = null as never;
+    const setup = await fetch(`${base}/api/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'test-pass-1234' }),
+    });
+    assert.equal(setup.status, 200, 'setup should mint a session');
+    const cookie = (setup.headers.get('set-cookie') ?? '').split(';')[0];
+    assert.ok(cookie, 'expected a session cookie');
+
+    const del = await fetch(`${base}/api/tvs/tv_1`, { method: 'DELETE', headers: { cookie } });
+    assert.equal(del.status, 200);
+
+    assert.deepEqual(db.tvs, [], 'the screen is gone');
+    assert.deepEqual(db.nodes, [], 'and its node record went with it, rather than being orphaned');
+    assert.equal(resetCalled, 'node_1', 'and the Pi was told to wipe itself');
+  } finally {
+    server.close();
+  }
+});
+
+test('deleting a plain decoder screen leaves node records alone', async () => {
+  const cred = hashPassword('a'.repeat(64));
+  const db = {
+    version: 1,
+    admin: null,
+    settings: { defaultQuality: '1080p', scheduleTimezone: '', volunteerEnabled: false, volunteerRemote: true, piNodes: true },
+    timetables: [tt({})],
+    sources: [],
+    tvs: [{ id: 'tv_plain', name: 'Lobby', defaultContent: { kind: 'off' }, createdAt: '' }],
+    schedules: [],
+    nodes: [{ id: 'node_1', serial: 'feedface', name: 'Hall', tokenHash: cred.hash, tokenSalt: cred.salt, fw: '1', model: '', caps: { codecs: ['h264'], maxHeight: 1080, maxFps: 30 }, ip: '', lastSeen: 0, createdAt: '' }],
+  };
+  const store = { db, secret: crypto.randomBytes(32), update: (fn: (d: unknown) => void) => fn(db) };
+  let reset = false;
+  const handler = createApi({
+    store: store as never,
+    orchestrator: { getStatuses: () => [] } as never,
+    volunteer: async () => {},
+    nodeHub: { factoryReset: () => { reset = true; return true; } } as never,
+  });
+  const server = http.createServer((q, r) => void handler(q, r));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const setup = await fetch(`${base}/api/setup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'test-pass-1234' }),
+    });
+    const cookie = (setup.headers.get('set-cookie') ?? '').split(';')[0];
+    assert.equal((await fetch(`${base}/api/tvs/tv_plain`, { method: 'DELETE', headers: { cookie } })).status, 200);
+    assert.deepEqual(db.tvs, []);
+    assert.equal(db.nodes.length, 1, 'an unrelated node must not be collateral damage');
+    assert.equal(reset, false, 'and nothing should be told to factory-reset');
+  } finally {
+    server.close();
+  }
+});
+
 test('two slots sharing one file produce the same hash (one transfer on the node)', () => {
   const shared = putUpload('shared', Buffer.from('one image, two jobs'));
   try {

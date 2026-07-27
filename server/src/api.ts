@@ -789,7 +789,20 @@ export function createApi(deps: Deps) {
           return sendJson(res, 200, updated);
         }
         if (method === 'DELETE') {
-          store.update((db) => void (db.tvs = db.tvs.filter((t) => t.id !== id)));
+          // Deleting a screen must also release the Pi node driving it. Without this the
+          // PiNode survives with a dangling screenId: its token still authenticates, but
+          // the orchestrator only ever pushes content to node SCREENS, so the TV freezes on
+          // whatever it last showed — forever. The panel renders nodes through their screen,
+          // so the orphan is invisible and un-removable, it keeps consuming a slot against
+          // the collection cap, and the same serial cannot be re-adopted (409). Recovery
+          // would mean physically factory-resetting the Pi.
+          const doomed = store.db.tvs.find((t) => t.id === id);
+          const nodeId = doomed?.nodeId;
+          if (nodeId) nodeHub?.factoryReset(nodeId); // best effort; an offline node cannot be told
+          store.update((db) => {
+            db.tvs = db.tvs.filter((t) => t.id !== id);
+            if (nodeId) db.nodes = (db.nodes ?? []).filter((n) => n.id !== nodeId);
+          });
           return sendJson(res, 200, { ok: true });
         }
       }
