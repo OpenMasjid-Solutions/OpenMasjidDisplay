@@ -183,15 +183,20 @@ export class Orchestrator {
       }
       // A decoder reading a FROZEN picture still counts as "pulling", so freshness has to
       // be asked separately — otherwise a screen showing yesterday's times reports green.
-      const stale = res.content.kind === 'timetable' && !!cp && this.render.isStale(cp);
+      const isTt = res.content.kind === 'timetable' && !!cp;
+      const reason = isTt ? this.render.staleReason(cp!) : null;
       statuses.push({
         tvId: tv.id,
         effective: res.content,
         source: res.source,
         ruleId: res.ruleId,
         streamReady: pulling,
-        contentStale: stale,
-        frameAgeMs: res.content.kind === 'timetable' && cp ? this.render.frameAgeMs(cp) : undefined,
+        contentStale: reason !== null,
+        ...(reason ? { staleReason: reason } : {}),
+        // Only meaningful for a FROZEN screen. Under a wrong clock the renderer is happily
+        // producing a frame every second, so the age is ~0 and quoting it would read as
+        // "out of date, 0 minutes ago" — true but useless, and it looks like a panel bug.
+        frameAgeMs: isTt && reason !== 'clock' ? this.render.frameAgeMs(cp!) : undefined,
       });
     }
     this.statuses = statuses;
@@ -209,6 +214,11 @@ export class Orchestrator {
           pulling: statuses[i].streamReady && !statuses[i].contentStale,
           off: res.content.kind === 'off',
           stale: !!statuses[i].contentStale,
+          staleReason: statuses[i].staleReason,
+          // Whether a decoder is attached, INDEPENDENT of freshness. The alert wording said
+          // "still lit up" purely on `stale`, so a screen that was stale AND had no decoder
+          // attached was described as lit up when it was dark.
+          litUp: statuses[i].streamReady,
         })),
       );
     }
@@ -220,13 +230,51 @@ export class Orchestrator {
    * "Off" are not monitored. Debounced so brief reconnects (content switches, power
    * cycles) don't flap. Fires only when a `notify` callback is wired and configured.
    */
-  private runAlerts(items: { tv: Tv; pulling: boolean; off: boolean; stale?: boolean }[]): void {
+  /** The alert to send for a screen that has been unhealthy for OFFLINE_MS. Split out so the
+   *  wording is testable, and so each distinct fault names its own remedy. */
+  alertFor(
+    name: string,
+    s: { stale: boolean; staleReason?: 'frozen' | 'clock'; litUp: boolean },
+  ): { title: string; text: string; level: 'info' | 'success' | 'warning' | 'error' } {
+    if (s.stale && s.staleReason === 'clock') {
+      return {
+        title: 'Clock wrong — prayer times are wrong',
+        text: `⚠️ "${name}" is showing prayer times worked out from this machine's clock, and that clock is clearly wrong. Every time on that screen is wrong. Set the clock (or fix its time sync) and the screen corrects itself.`,
+        level: 'error',
+      };
+    }
+    if (s.stale) {
+      return {
+        title: 'Screen showing out-of-date times',
+        text: s.litUp
+          ? `⚠️ "${name}" is still lit up, but its timetable stopped updating — the prayer times on it are NOT current. Please check that screen.`
+          : `⚠️ "${name}" has stopped updating its timetable AND is not pulling its stream — the times it last showed are not current. Please check that screen and its decoder.`,
+        level: 'error',
+      };
+    }
+    return {
+      title: 'Screen offline',
+      text: `📺 "${name}" isn't pulling its video stream — the screen or its decoder may be turned off or disconnected.`,
+      level: 'warning',
+    };
+  }
+
+  private runAlerts(
+    items: {
+      tv: Tv;
+      pulling: boolean;
+      off: boolean;
+      stale?: boolean;
+      staleReason?: 'frozen' | 'clock';
+      litUp?: boolean;
+    }[],
+  ): void {
     if (!this.notify) return;
     const now = Date.now();
     const present = new Set(items.map((i) => i.tv.id));
     for (const id of [...this.alerts.keys()]) if (!present.has(id)) this.alerts.delete(id);
 
-    for (const { tv, pulling, off, stale } of items) {
+    for (const { tv, pulling, off, stale, staleReason, litUp } of items) {
       let st = this.alerts.get(tv.id);
       if (!st) {
         st = { downSince: null, offlineNotified: false };
@@ -249,19 +297,10 @@ export class Orchestrator {
         if (st.downSince == null) st.downSince = now;
         if (now - st.downSince >= this.OFFLINE_MS && !st.offlineNotified) {
           st.offlineNotified = true;
-          void this.notify(
-            stale
-              ? {
-                  title: 'Screen showing out-of-date times',
-                  text: `⚠️ "${name}" is still lit up, but its timetable stopped updating — the prayer times on it are NOT current. Please check that screen.`,
-                  level: 'error',
-                }
-              : {
-                  title: 'Screen offline',
-                  text: `📺 "${name}" isn't pulling its video stream — the screen or its decoder may be turned off or disconnected.`,
-                  level: 'warning',
-                },
-          );
+          // Say the true thing. "Still lit up" is only accurate when a decoder really is
+          // attached, and a wrong clock is a different problem from a frozen renderer with
+          // a different remedy, so each gets its own wording.
+          void this.notify(this.alertFor(name, { stale: !!stale, staleReason, litUp: !!litUp }));
         }
       }
     }

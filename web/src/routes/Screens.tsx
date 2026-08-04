@@ -172,9 +172,19 @@ function ScreenCard({
               <span
                 className="tag"
                 style={{ marginInlineStart: '0.5rem', background: 'rgba(229,115,107,0.24)', color: '#e5736b', fontWeight: 700 }}
-                title={`This screen's timetable stopped updating${status?.frameAgeMs ? ` about ${Math.round(status.frameAgeMs / 60000)} min ago` : ''}, so the prayer times on it are NOT current. It is marked on the screen itself too. Check the app log.`}
+                title={
+                  status?.staleReason === 'clock'
+                    ? "This machine's clock is clearly wrong, so every prayer time on this screen is wrong. Set the clock (or fix its time sync) and the screen corrects itself. It is marked on the screen too."
+                    : `This screen's timetable stopped updating${
+                        // Only quote an age for a FROZEN screen. Under a wrong clock the renderer
+                        // is fine and the age is ~0, which would read as "0 min ago".
+                        status?.frameAgeMs && status.frameAgeMs >= 60000
+                          ? ` about ${Math.round(status.frameAgeMs / 60000)} min ago`
+                          : ''
+                      }, so the prayer times on it are NOT current. It is marked on the screen itself too. Check the app log.`
+                }
               >
-                Times out of date
+                {status?.staleReason === 'clock' ? 'Clock is wrong' : 'Times out of date'}
               </span>
             ) : (
               effective.kind !== 'off' && !ready && (

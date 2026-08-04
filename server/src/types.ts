@@ -373,6 +373,10 @@ export interface TvStatus {
    *  still be true at the same time: a decoder is happily reading a frozen picture,
    *  which is exactly why this needs its own signal. */
   contentStale?: boolean;
+  /** WHY it is stale: 'frozen' = the renderer stopped producing frames (frameAgeMs is
+   *  meaningful); 'clock' = frames are fine but this machine's clock is wrong, so the times
+   *  are wrong for a different reason and the frame age says nothing useful. */
+  staleReason?: 'frozen' | 'clock';
   /** age in ms of the frame being published, when known (diagnostics) */
   frameAgeMs?: number;
 }

@@ -167,6 +167,45 @@ test('an implausible host clock is detected, and a correct one is never flagged'
   assert.equal(clockSuspect(), false, 'the real clock running these tests must not be flagged');
 });
 
+// Regression guards for how staleness is REPORTED (the sweep found three gaps here).
+test('the alert names the actual fault, and never claims a dark screen is lit up', () => {
+  const { Orchestrator } = require('../orchestrator') as typeof import('../orchestrator');
+  // alertFor is pure; no store/render needed to exercise the wording.
+  const o = Object.create(Orchestrator.prototype) as InstanceType<typeof Orchestrator>;
+
+  const clock = o.alertFor('Main hall', { stale: true, staleReason: 'clock', litUp: true });
+  assert.match(clock.title, /Clock wrong/i);
+  assert.match(clock.text, /clock/i);
+  assert.doesNotMatch(clock.text, /stopped updating/i, 'a wrong clock is not a frozen renderer');
+
+  const frozenLit = o.alertFor('Main hall', { stale: true, staleReason: 'frozen', litUp: true });
+  assert.match(frozenLit.text, /still lit up/i);
+
+  // The bug: "still lit up" was chosen on `stale` alone, so a screen with NO decoder
+  // attached was described as lit up when it was dark.
+  const frozenDark = o.alertFor('Main hall', { stale: true, staleReason: 'frozen', litUp: false });
+  assert.doesNotMatch(frozenDark.text, /still lit up/i, 'must not claim a dark screen is lit');
+  assert.match(frozenDark.text, /not pulling its stream/i);
+
+  const offline = o.alertFor('Main hall', { stale: false, litUp: false });
+  assert.match(offline.title, /offline/i);
+  assert.equal(offline.level, 'warning');
+  for (const a of [clock, frozenLit, frozenDark]) assert.equal(a.level, 'error');
+});
+
+test('staleReason separates a frozen renderer from a wrong clock', () => {
+  // Mirrors TimetablePipeline.staleReason(). A wrong clock renders fine every second, so
+  // its frame age is ~0 and must NOT be quoted as an age to a human.
+  const STALE_AFTER = 30_000;
+  const reason = (clockBad: boolean, lastFrameAt: number, now: number) =>
+    clockBad ? 'clock' : lastFrameAt > 0 && now - lastFrameAt > STALE_AFTER ? 'frozen' : null;
+  const t0 = Date.parse('2026-08-04T12:00:00Z');
+  assert.equal(reason(true, t0, t0), 'clock', 'a wrong clock wins even with a fresh frame');
+  assert.equal(reason(false, t0, t0 + 31_000), 'frozen');
+  assert.equal(reason(false, t0, t0 + 1_000), null);
+  assert.equal(reason(false, 0, t0 + 999_999), null, 'nothing rendered yet is not stale');
+});
+
 test('stale content is reported as NOT online, so the offline alert fires', () => {
   // The rule applied in orchestrator.runOnce(): a decoder reading a frozen picture is
   // "pulling" but must not count as healthy.
