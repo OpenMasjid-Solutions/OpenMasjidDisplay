@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+#
+# Automated dependency updates. Without this nothing told the maintainers when an
+# advisory landed against something this app ships — the postcss advisory found by the
+# 2026-08-04 audit had been public for a while and no one here knew. (DISPLAY-015)
+#
+# `docker` covers the digest-pinned FROM lines in the Dockerfile and `github-actions`
+# the SHA-pinned `uses:` in the workflows — both are pinned deliberately for
+# supply-chain reasons (DISPLAY-004, DISPLAY-009), and Dependabot is what keeps a
+# deliberate pin from quietly becoming a stale one.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # One PR for the dev toolchain, individual PRs for anything that ships in the image.
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
