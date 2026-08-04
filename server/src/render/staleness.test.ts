@@ -149,6 +149,24 @@ test('the stale mark visibly alters the frame and never mutates the original', (
   assert.equal(out.length, original.length, 'geometry must not change (ffmpeg expects fixed dims)');
 });
 
+// ── Clock sanity (DISPLAY-014) ────────────────────────────────────────────────
+test('an implausible host clock is detected, and a correct one is never flagged', () => {
+  const { clockSuspect } = require('./renderer') as typeof import('./renderer');
+  // The failures that actually happen in the field: a box with no RTC that booted with no
+  // network falls back to the epoch or to a stale build date.
+  assert.equal(clockSuspect(0), true, 'the epoch is not a believable time');
+  assert.equal(clockSuspect(Date.parse('1970-01-01T00:00:00Z')), true);
+  assert.equal(clockSuspect(Date.parse('2020-06-01T00:00:00Z')), true, 'years behind → wrong');
+  assert.equal(clockSuspect(Date.parse('2026-07-31T23:59:59Z')), true, 'just before the floor → wrong');
+
+  // No false positives: the check is one-directional, so a correct clock now or later is
+  // always fine. A display marked wrong when it is right would be its own bug.
+  assert.equal(clockSuspect(Date.parse('2026-08-01T00:00:00Z')), false);
+  assert.equal(clockSuspect(Date.parse('2026-08-04T12:00:00Z')), false);
+  assert.equal(clockSuspect(Date.parse('2030-01-01T00:00:00Z')), false, 'a future clock must not be flagged');
+  assert.equal(clockSuspect(), false, 'the real clock running these tests must not be flagged');
+});
+
 test('stale content is reported as NOT online, so the offline alert fires', () => {
   // The rule applied in orchestrator.runOnce(): a decoder reading a frozen picture is
   // "pulling" but must not count as healthy.

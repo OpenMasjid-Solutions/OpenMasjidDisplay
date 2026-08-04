@@ -27,6 +27,12 @@ const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
+/** Is the host clock obviously wrong? See CLOCK_FLOOR_MS. Exported so the status feed and
+ *  tests can ask the same question the renderer asks. */
+export function clockSuspect(now = Date.now()): boolean {
+  return now < CLOCK_FLOOR_MS;
+}
+
 function safeTicker(tt: Timetable): { text: string; prohibited: boolean } {
   try {
     return activeTicker(tt, new Date());
@@ -68,6 +74,22 @@ const RENDER_CAP = 1280; // longest side of the rasterised frame (keeps the per-
  *  or a reconcile stealing CPU, and far short of anyone reading a wrong Iqamah time off
  *  the wall. Beyond it the screen is marked and the status feed reports it. */
 const STALE_AFTER_MS = 30_000;
+/**
+ * A floor on believable wall-clock time. Every prayer time on the screen derives from the
+ * host clock and nothing ever questioned it, so a box whose clock is wrong renders a
+ * beautiful, authoritative, WRONG timetable — a mini-PC that lost its CMOS battery, a Pi
+ * with no RTC that booted with no network, a VM resumed from suspend. The display's own
+ * confidence is the problem.
+ *
+ * The clock cannot legitimately read earlier than the release this code shipped in, so
+ * anything before this is definitely wrong. One-directional on purpose: it can only catch
+ * a clock that is BEHIND, which is the failure that actually happens (unset clocks fall
+ * back to the epoch or to a build date, they don't jump forward). That also means it has
+ * no false positives — a correct clock in 2030 is simply later than this.
+ *
+ * Move this forward when cutting a release.
+ */
+const CLOCK_FLOOR_MS = Date.parse('2026-08-01T00:00:00Z');
 export function renderDimsFor(out: Dims): Dims {
   const longest = Math.max(out.width, out.height);
   if (longest <= RENDER_CAP) return out;
@@ -495,7 +517,10 @@ class TimetablePipeline extends FfmpegPipeline {
         this.lastFrame = img; // the write pump feeds this to ffmpeg
         this.lastFrameAt = Date.now();
         this.staleFrame = null; // fresh picture — drop the marked copy
-        if (this.staleLogged) {
+        // Only announce recovery once we are ACTUALLY current again. A suspect clock keeps
+        // rendering successfully every second, so clearing this unconditionally would flap
+        // between "rendering again" and the warning once per second, for ever.
+        if (this.staleLogged && !this.isStale()) {
           log.info(`timetable ${this.id} is rendering again; the screen is current`);
           this.staleLogged = false;
         }
@@ -539,9 +564,14 @@ class TimetablePipeline extends FfmpegPipeline {
     this.lastWriteSlot = slot;
   }
 
-  /** Is the picture we are publishing out of date? The loop renders once a second, so a
-   *  frame older than STALE_AFTER_MS means the renderer is broken, not merely busy. */
+  /** Should the picture we are publishing be trusted as CURRENT?
+   *
+   *  Two ways to fail: the frame is too old (the renderer is broken, not merely busy — the
+   *  loop renders once a second), or the host clock is implausible, in which case the frame
+   *  is freshly rendered and still shows the wrong times. Both mean "do not present this as
+   *  current", so both take the same visible mark. */
   isStale(): boolean {
+    if (clockSuspect()) return true;
     return this.lastFrameAt > 0 && Date.now() - this.lastFrameAt > STALE_AFTER_MS;
   }
 
@@ -562,8 +592,12 @@ class TimetablePipeline extends FfmpegPipeline {
     if (!this.staleLogged) {
       this.staleLogged = true;
       log.warn(
-        `timetable ${this.id} is showing a frame ${Math.round(this.frameAgeMs() / 1000)}s old — ` +
-          'the times on that screen are NOT current; it is marked on screen and reported offline',
+        clockSuspect()
+          ? `timetable ${this.id}: this machine's clock reads ${new Date().toISOString()}, which cannot be right — ` +
+              'every prayer time on that screen is therefore wrong. Set the clock (or fix NTP) and the ' +
+              'screen clears itself; until then it is marked on screen and reported offline'
+          : `timetable ${this.id} is showing a frame ${Math.round(this.frameAgeMs() / 1000)}s old — ` +
+              'the times on that screen are NOT current; it is marked on screen and reported offline',
       );
     }
     const { width, height, pixels } = img;
