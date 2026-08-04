@@ -64,13 +64,29 @@ function verifyToken(secret: Buffer, token: string, aud: Audience): boolean {
   }
 }
 
+/** Decode one cookie value, tolerating malformed percent-escapes.
+ *
+ *  The Cookie header is entirely attacker-controlled and `decodeURIComponent` THROWS a
+ *  URIError on input as trivial as `%`. That used to be fatal rather than cosmetic:
+ *  hasValidSession() is also called from the WebSocket 'upgrade' listener (see ws.ts),
+ *  and a throw inside an event listener is an uncaught exception that takes the whole
+ *  process down — an unauthenticated remote kill of every screen in the masjid.
+ *  A value that isn't valid percent-encoding is used verbatim; it simply won't verify. */
+function decodeCookieValue(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function parseCookies(header?: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
     if (i < 0) continue;
-    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    out[part.slice(0, i).trim()] = decodeCookieValue(part.slice(i + 1).trim());
   }
   return out;
 }

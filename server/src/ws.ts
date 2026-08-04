@@ -12,18 +12,32 @@ export class WsHub {
 
   constructor(server: Server, authed: (req: IncomingMessage) => boolean) {
     this.wss = new WebSocketServer({ noServer: true });
+    // Defence in depth: an exception thrown in an 'upgrade' listener is an UNCAUGHT
+    // exception (there is no surrounding try/catch as there is on the HTTP path), so it
+    // kills the process. That made a single malformed cookie an unauthenticated remote
+    // kill switch for every screen. The root cause is fixed in auth.ts, but this handler
+    // must never be the reason the app dies — drop the socket and stay up instead.
     server.on('upgrade', (req, socket, head) => {
-      const path = (req.url ?? '').split('?')[0];
-      if (path !== '/ws') {
-        socket.destroy();
-        return;
+      try {
+        const path = (req.url ?? '').split('?')[0];
+        if (path !== '/ws') {
+          socket.destroy();
+          return;
+        }
+        if (!authed(req)) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
+      } catch (err) {
+        log.error('upgrade failed', err);
+        try {
+          socket.destroy();
+        } catch {
+          /* already gone */
+        }
       }
-      if (!authed(req)) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
     });
     this.wss.on('connection', () => log.debug('control panel connected'));
   }
