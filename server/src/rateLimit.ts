@@ -88,7 +88,29 @@ export class LoginLimiter {
 }
 
 /**
- * A plain request-rate cap keyed by client IP, for PUBLIC endpoints where the concern is
+ * Distinguish real clients on a PUBLIC endpoint.
+ *
+ * `req.socket.remoteAddress` is the wrong key for anything reached through the
+ * OpenMasjidOS remote-access tunnel: every external visitor arrives from the ingress, so
+ * they all share ONE bucket and a popular masjid's own website visitors throttle each
+ * other. X-Forwarded-For's first hop is the original client and is trustworthy here only
+ * because that ingress sanitises the header (CLAUDE.md §4).
+ *
+ * Spoofable on a DIRECT hit — but the failure direction is benign for a volume cap: a
+ * forged value buys an attacker a fresh bucket, which is no better than the extra source
+ * addresses they already have, while a shared-bucket false positive would deny real
+ * worshippers the prayer times. Never use this for a credential limiter, where the
+ * incentives invert — LoginLimiter deliberately keys on the socket for exactly that reason.
+ */
+function clientKey(req: IncomingMessage): string {
+  // Both `headers` and `socket` are optional-chained on purpose: this runs on the public,
+  // unauthenticated path, and a throw here would be a 400 (or worse) rather than a limit.
+  const xff = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
+  return xff || req.socket?.remoteAddress || 'unknown';
+}
+
+/**
+ * A plain request-rate cap keyed by client, for PUBLIC endpoints where the concern is
  * volume rather than credential guessing (so unlike LoginLimiter there is no backoff and
  * no notion of failure — every request counts).
  *
@@ -105,7 +127,7 @@ export class RequestLimiter {
 
   /** True if this request is within budget (and counts it). */
   allow(req: IncomingMessage): boolean {
-    const k = req.socket.remoteAddress || 'unknown';
+    const k = clientKey(req);
     const now = Date.now();
     const e = this.hits.get(k);
     if (!e || now - e.windowStart >= this.windowMs) {

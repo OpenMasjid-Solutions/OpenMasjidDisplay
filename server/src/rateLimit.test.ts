@@ -79,6 +79,37 @@ test('the request limiter allows a normal viewer and stops a flood', () => {
   assert.equal(lim.allow(viewer), false, 'the 91st in one window must be refused');
 });
 
+// Regression guard: keying the PUBLIC widget on the socket meant every visitor arriving
+// through the OpenMasjidOS remote-access tunnel shared ONE bucket, so a masjid's own
+// website visitors throttled each other off their own prayer times.
+test('visitors behind a shared ingress IP get their own budgets', () => {
+  const lim = new RequestLimiter(5, 60_000);
+  const ingress = '198.51.100.7'; // every tunnelled request arrives from here
+  const behind = (client: string) =>
+    ({ headers: { 'x-forwarded-for': `${client}, ${ingress}` }, socket: { remoteAddress: ingress } }) as unknown as IncomingMessage;
+
+  // Exhaust one real visitor's budget.
+  const a = behind('203.0.113.10');
+  for (let i = 0; i < 5; i++) assert.equal(lim.allow(a), true);
+  assert.equal(lim.allow(a), false, 'that visitor is over budget');
+
+  // A DIFFERENT visitor behind the same ingress must be unaffected.
+  for (const ip of ['203.0.113.11', '203.0.113.12', '2001:db8::99']) {
+    assert.equal(lim.allow(behind(ip)), true, `${ip} must not inherit another visitor's budget`);
+  }
+});
+
+test('the limiter still works with no forwarding header, and survives a missing socket', () => {
+  const lim = new RequestLimiter(2, 60_000);
+  const direct = ({ headers: {}, socket: { remoteAddress: '192.0.2.5' } }) as unknown as IncomingMessage;
+  assert.equal(lim.allow(direct), true);
+  assert.equal(lim.allow(direct), true);
+  assert.equal(lim.allow(direct), false, 'a direct LAN hit is still capped');
+  // A destroyed socket must not throw (req.socket can be null).
+  const noSocket = ({ headers: {} }) as unknown as IncomingMessage;
+  assert.doesNotThrow(() => lim.allow(noSocket));
+});
+
 test('the request limiter is per IP and its window resets', () => {
   const lim = new RequestLimiter(2, 60_000);
   const a = from('198.51.100.1');
