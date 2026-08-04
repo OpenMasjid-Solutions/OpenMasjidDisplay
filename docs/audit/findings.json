@@ -1,0 +1,263 @@
+{
+  "audit": {
+    "repo": "OpenMasjid-Solutions/OpenMasjidDisplay",
+    "date": "2026-08-04",
+    "commitAudited": "c1080cd",
+    "treeEquivalentTo": "v0.61.0",
+    "branch": "audit/security-2026-08-04",
+    "autonomousPushToMain": false,
+    "autonomousPushDisabledReason": "build-image.yml publishes ghcr.io/openmasjid-solutions/openmasjiddisplay:<version> and :latest on every push to main, so pushing there would ship a production container image to every masjid.",
+    "baseline": {
+      "serverBuild": "pass",
+      "serverTests": "50/50 pass",
+      "webTypecheckAndBuild": "pass",
+      "serverNpmAudit": "0 vulnerabilities",
+      "webNpmAudit": "1 high (postcss, build-time only)"
+    },
+    "counts": {
+      "critical": 2,
+      "high": 1,
+      "medium": 7,
+      "low": 9,
+      "total": 19,
+      "fixed": 16,
+      "reportedOnly": 3
+    },
+    "deliverablesUpdated": "2026-08-04",
+    "reportedOnly": [
+      "DISPLAY-007 (needs a product decision: new auth endpoints)",
+      "DISPLAY-008 (root container: /data ownership migration)",
+      "DISPLAY-010 (release-channel policy)"
+    ]
+  },
+  "findings": [
+    {
+      "id": "DISPLAY-001",
+      "title": "Unauthenticated remote crash of the entire app via a malformed cookie on the WebSocket upgrade",
+      "severity": "critical",
+      "confidence": "confirmed",
+      "category": "denial-of-service",
+      "file": "server/src/auth.ts",
+      "line": 73,
+      "summary": "parseCookies calls decodeURIComponent on every cookie value; a value of '%' throws URIError. On the HTTP path the handler's try/catch returns 400, but ws.ts calls the same code from inside a server 'upgrade' listener where nothing catches it and no uncaughtException handler exists, so the process exits. Demonstrated live: GET /ws with Cookie: omd_session=% killed the server and /healthz then returned ECONNREFUSED. Requires no authentication and can be looped for a sustained outage of every screen.",
+      "status": "fixed",
+      "commit": "08ac9f9"
+    },
+    {
+      "id": "DISPLAY-002",
+      "title": "A screen can display stale prayer times indefinitely while the panel reports it healthy",
+      "severity": "critical",
+      "confidence": "confirmed",
+      "category": "correctness",
+      "file": "server/src/render/renderPool.ts",
+      "line": 79,
+      "summary": "No freshness or liveness contract exists between the renderer and the screen. RenderWorker.request() has no timeout, so a hung worker never settles; renderer.ts:472 gates on this.rendering, which is only cleared in then/catch, so the pipeline stops rendering forever; writeLatest() re-feeds the last frame with no age guard; and orchestrator streamReady only measures readers>=1, so ffmpeg publishing duplicated frames keeps the screen reported online and suppresses the offline alert. A repeatedly-throwing render reaches the same state and is logged only at debug level. Result: a frozen clock and yesterday's Iqamah times on the wall with nothing raising an alarm.",
+      "status": "fixed",
+      "commit": "b6f2a26"
+    },
+    {
+      "id": "DISPLAY-003",
+      "title": "A truncated or corrupt session.secret fails open, making admin sessions forgeable",
+      "severity": "high",
+      "confidence": "confirmed",
+      "category": "authentication-bypass",
+      "file": "server/src/store.ts",
+      "line": 176,
+      "summary": "loadSecret does not validate the loaded value's length. Buffer.from(s,'hex') does not throw on malformed input and silently returns a short or empty buffer, and createHmac accepts a zero-length key, so the signing key becomes publicly known. Demonstrated live: with session.secret truncated to 0 bytes, a token signed with an empty key returned HTTP 200 from /api/state and disclosed full admin state. The precondition is reachable because the secret is written with a plain non-atomic writeFileSync, unlike db.json in the same class which uses tmp+rename.",
+      "status": "fixed",
+      "commit": "77e1431"
+    },
+    {
+      "id": "DISPLAY-004",
+      "title": "Production image is published using mutable third-party GitHub Action tags",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "supply-chain",
+      "file": ".github/workflows/build-image.yml",
+      "line": 36,
+      "summary": "actions/checkout@v4, docker/setup-qemu-action@v3, docker/setup-buildx-action@v3, docker/login-action@v3 and docker/build-push-action@v6 are all mutable tags in a job holding packages: write that publishes the image every masjid installs. cla.yml in this same repo is correctly SHA-pinned, and OpenMasjidAPPS pins its catalog workflow for exactly this reason, so build-image.yml is the outlier.",
+      "status": "fixed",
+      "commit": "e003ff6"
+    },
+    {
+      "id": "DISPLAY-005",
+      "title": "Admin session cookie is never marked Secure although the panel is served over HTTPS",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "session-management",
+      "file": "server/src/auth.ts",
+      "line": 18,
+      "summary": "The Secure attribute is added only when COOKIE_SECURE=yes, and docker-compose.yml never sets it, so it is off in every deployment. manifest.yaml opts into https: true and its own comment cites Secure cookies as a reason. Cookies are not scheme-isolated and the plain-HTTP port remains published as a legacy fallback, so a 30-day admin cookie set over HTTPS is also sent in cleartext and can be captured passively on the LAN. Setting COOKIE_SECURE globally would lock admins out of the plain-HTTP LAN flow, so the fix must mark the cookie Secure per request based on the request's scheme.",
+      "status": "fixed",
+      "commit": "8ff8afe"
+    },
+    {
+      "id": "DISPLAY-006",
+      "title": "Unauthenticated /api/session and /api/setup each force an outbound platform request with no throttle",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "denial-of-service",
+      "file": "server/src/api.ts",
+      "line": 302,
+      "summary": "GET /api/session is unauthenticated and calls probePlatform. With no omos_session cookie there is no caching at all, so every request performs a fresh outbound fetch to the platform (fabric.ts:221), letting one unauthenticated client flood OpenMasjidOS while holding an app socket per probe for up to 3s. POST /api/setup has the same shape and is permanently reachable under SSO because store.db.admin stays null for the life of the deployment, so its 409 short-circuit never fires. The Donations app already fixed this class; Display has not.",
+      "status": "fixed",
+      "commit": "3b9d815"
+    },
+    {
+      "id": "DISPLAY-007",
+      "title": "No way to revoke a session, and no password-change path exists at all",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "session-management",
+      "file": "server/src/auth.ts",
+      "line": 42,
+      "summary": "CORRECTED after the initial write-up: I first described this as \"changing the password does not sign other devices out\", but while implementing that fix I found this app has NO password-change endpoint and no password-change UI -- git grep for change.?password|newPassword|currentPassword across server/src and web/src returns nothing, and the only credential routes are /api/setup (one-shot, 409 once an admin exists) and /api/login. Tokens carry only {exp,aud} with no version, session id or server-side list, so an issued 30-day admin token cannot be revoked by ANY action available in the product, and the local password can never be changed. The only remedy for a leaked session is deleting session.secret from the data volume by hand. Not fixed here because the mechanical fix (tokenVersion bumped on password change) has nothing to hook to: making it useful means adding new authenticated endpoints plus UI, which is a product feature rather than a security patch and not something to invent unprompted mid-audit.",
+      "status": "reported-only",
+      "commit": null
+    },
+    {
+      "id": "DISPLAY-008",
+      "title": "Container runs the app, ffmpeg and MediaMTX as root",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "container-hardening",
+      "file": "Dockerfile",
+      "line": 33,
+      "summary": "No USER directive, so everything runs as uid 0, including ffmpeg and resvg which parse untrusted camera streams and uploaded images. docker-compose.yml sets no no-new-privileges and no cap_drop. Not fixed by this audit: adding USER changes the uid that must own /data and every existing install has a root-owned data volume, so a careless change locks masjids out of their own configuration on upgrade. Needs a deliberate migration and testing against an existing volume.",
+      "status": "reported-only",
+      "commit": null
+    },
+    {
+      "id": "DISPLAY-009",
+      "title": "Base images pinned by mutable tag rather than digest",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "supply-chain",
+      "file": "Dockerfile",
+      "line": 14,
+      "summary": "bluenviron/mediamtx:1.19.1 and three node:22-slim stages are tag-pinned, not digest-pinned. node:22-slim moves constantly and a version tag can be re-pushed, so two builds of the same source can yield materially different images, undercutting the @sha256 pin that docker-compose.yml relies on downstream.",
+      "status": "fixed",
+      "commit": "669cb2c"
+    },
+    {
+      "id": "DISPLAY-010",
+      "title": "Every push to main overwrites the published version tag and :latest",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "release-integrity",
+      "file": ".github/workflows/build-image.yml",
+      "line": 15,
+      "summary": "The workflow triggers on every push to main and derives its tag from manifest.yaml, so any merge without a version bump republishes that version tag and always overwrites :latest. A published version tag therefore stops meaning the bytes released as that version, and the @sha256 digest pin in docker-compose.yml is the only remaining integrity control. Corollary: a digest a rolled-back catalog points at becomes untagged after a rebuild and must not be garbage-collected in GHCR.",
+      "status": "reported-only",
+      "commit": null
+    },
+    {
+      "id": "DISPLAY-011",
+      "title": "The login limiter's sweep predicate is unsatisfiable, so its map never evicts",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "resource-leak",
+      "file": "server/src/rateLimit.ts",
+      "line": 28,
+      "summary": "Entries are only created in fail(), which increments fails before storing, so every entry has fails >= 1 and the sweep condition e.fails === 0 is never true. The interval deletes nothing, defeating its own stated purpose, and one entry accumulates per distinct client IP for the process lifetime. Over IPv6 the key space is effectively unbounded, making this a slow leak on a long-running masjid box.",
+      "status": "fixed",
+      "commit": "6b7bf12"
+    },
+    {
+      "id": "DISPLAY-012",
+      "title": "postcss <= 8.5.22 source-map path traversal (build-time only, not reachable)",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "dependency",
+      "file": "web/package-lock.json",
+      "line": 1,
+      "summary": "npm audit reports 1 high in web/ (0 in server/): postcss 8.5.15 via vite 6.4.3, advisories GHSA-r28c-9q8g-f849 and GHSA-fxqj-rqcc-2cmp, both quoted verbatim from the tool. Exploitation needs attacker-controlled CSS; this app compiles only its own in-repo stylesheets and postcss never ships in the runtime image, so it is not reachable. Fixed anyway because the fix is a one-line override and CI is part of the supply chain.",
+      "status": "fixed",
+      "commit": "396bbd1"
+    },
+    {
+      "id": "DISPLAY-013",
+      "title": "No security response headers on the control panel or API",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "hardening",
+      "file": "server/src/api.ts",
+      "line": 83,
+      "summary": "Observed against a running server, panel and API responses carry no X-Frame-Options or CSP frame-ancestors, no Referrer-Policy and no X-Content-Type-Options. Impact is limited because SameSite=Lax denies a cross-site frame any session cookie, so clickjacking cannot reach an authenticated panel. The app already sets nosniff plus a sandbox CSP for uploaded files and a deliberate frame-ancestors * for the widget, so only the panel is unprotected.",
+      "status": "fixed",
+      "commit": "da46000"
+    },
+    {
+      "id": "DISPLAY-014",
+      "title": "No clock sanity check, so a wrong host clock renders confidently wrong prayer times",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "correctness",
+      "file": "server/src/render/renderer.ts",
+      "line": 479,
+      "summary": "Every prayer time derives from the host clock and nothing questions it. The timezone and DST maths is correct, but a host that lost its CMOS battery, a Pi with no RTC that booted offline, or a resumed VM will render an authoritative wrong timetable. There is no 'times may be wrong' state, only the Setup needed frame for a missing location. Raise the severity on hardware without an RTC.",
+      "status": "fixed",
+      "commit": "5cadd87"
+    },
+    {
+      "id": "DISPLAY-015",
+      "title": "No automated dependency updates configured",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "dependency-hygiene",
+      "file": ".github/workflows/cla.yml",
+      "line": 51,
+      "summary": ".github contains only build-image.yml and cla.yml; there is no dependabot.yml, so nothing notifies the maintainers when a dependency advisory lands. The cla.yml allowlist already names dependabot[bot], so the intent existed.",
+      "status": "fixed",
+      "commit": "703fd07"
+    },
+    {
+      "id": "DISPLAY-016",
+      "title": "print?month= accepts months 00-99 and silently renders a different month",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "input-validation",
+      "file": "server/src/api.ts",
+      "line": 829,
+      "summary": "The regex constrains the shape but not the range, so ?month=2026-00 renders December 2025 and ?month=2026-99 renders a month in 2034, each labelled with whatever it landed on. No crash and no unbounded loop because the day loop is bounded by daysInMonth, but a printed calendar that is confidently the wrong month is a poor artefact to hand a congregation.",
+      "status": "fixed",
+      "commit": "5cac6bb"
+    },
+    {
+      "id": "DISPLAY-017",
+      "title": "The public widget is unauthenticated, uncached and unthrottled compute",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "denial-of-service",
+      "file": "server/src/api.ts",
+      "line": 253,
+      "summary": "GET /w/<id> and /w/<id>.json are intentionally public for opted-in timetables. Each request computes a focus day plus seven days of prayer times and renders a full HTML page with cache-control: no-store and no rate limit, and the page polls every 30s per viewer. On a tunnel-exposed instance this is a cheap way to keep the box busy, and it shares CPU with the 1 fps render loop feeding the screens. Access control itself is sound: a disabled widget returns 404 rather than 403 so ids are not probeable.",
+      "status": "fixed",
+      "commit": "2d09662"
+    },
+    {
+      "id": "DISPLAY-018",
+      "title": "db.json holds credential hashes but is written with default permissions",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "hardening",
+      "file": "server/src/store.ts",
+      "line": 191,
+      "summary": "db.json contains the admin scrypt hash and salt and the volunteer PIN hash, and is written with no explicit mode so umask decides. The adjacent session.secret is deliberately written with mode 0o600, so the intent exists but was not applied to the file holding the password hashes.",
+      "status": "fixed",
+      "commit": "4724346"
+    },
+    {
+      "id": "DISPLAY-019",
+      "title": "No container HEALTHCHECK although /healthz exists",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "availability",
+      "file": "Dockerfile",
+      "line": 86,
+      "summary": "The app serves /healthz and neither the image nor docker-compose.yml uses it, leaving the orchestrator blind to a wedged-but-listening process, which is precisely the DISPLAY-002 state where the port answers and the picture is frozen. Once DISPLAY-002 lands, the endpoint should report render freshness rather than merely that the process is up.",
+      "status": "fixed",
+      "commit": "7534f99"
+    }
+  ]
+}

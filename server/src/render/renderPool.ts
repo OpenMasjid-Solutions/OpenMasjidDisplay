@@ -18,6 +18,15 @@ const log = makeLog('render');
 // Resolve the worker next to this module. In the built container it's the emitted
 // .js; under tsx (local dev) __filename ends in .ts and we load the .ts through the
 // same loader.
+/** How long a single render may take before we call the worker wedged rather than busy.
+ *  Generous: the video loop asks for one render per second, and even a 4K-ish frame on a
+ *  loaded 2-core box finishes in well under a second. Overridable for very slow hardware
+ *  (and so the tests don't have to wait 15 real seconds). */
+const REQUEST_TIMEOUT_MS = (() => {
+  const n = Number.parseInt(process.env.RENDER_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 15_000;
+})();
+
 const isTs = __filename.endsWith('.ts');
 const WORKER_FILE = path.join(__dirname, isTs ? 'renderWorker.ts' : 'renderWorker.js');
 const WORKER_OPTS = isTs ? { execArgv: ['--import', 'tsx'] } : undefined;
@@ -50,6 +59,9 @@ export class RenderWorker {
   private pending = new Map<number, Pending>();
   private disposed = false;
 
+  /** @param timeoutMs deadline for a single render (see REQUEST_TIMEOUT_MS). */
+  constructor(private readonly timeoutMs: number = REQUEST_TIMEOUT_MS) {}
+
   private ensure(): Worker {
     if (this.worker) return this.worker;
     const w = new Worker(WORKER_FILE, WORKER_OPTS);
@@ -81,9 +93,41 @@ export class RenderWorker {
     const id = ++this.seq;
     const w = this.ensure();
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      // A render MUST NOT be able to hang forever. A worker that crashes is handled
+      // ('error'/'exit' reject everything pending), but one that simply never answers
+      // used to leave this promise unsettled for the life of the process — and the video
+      // pipeline gates its next render on the previous one finishing, so the screen froze
+      // on its last frame permanently while still looking healthy. Deadline + recycle.
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return; // already settled
+        log.warn(`render request timed out after ${this.timeoutMs}ms; recycling the worker`);
+        this.recycle(w);
+        reject(new Error(`render timed out after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+      timer.unref?.(); // never hold the process open on a pending render
+      this.pending.set(id, {
+        resolve: (m) => {
+          clearTimeout(timer);
+          resolve(m);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
       w.postMessage({ ...payload, id });
     });
+  }
+
+  /** Drop a wedged worker so the NEXT request starts a fresh thread instead of queueing
+   *  behind one that will never answer. This is what lets a hung render self-heal. */
+  private recycle(w: Worker): void {
+    if (this.worker === w) this.worker = null;
+    try {
+      void w.terminate();
+    } catch {
+      /* already gone */
+    }
   }
 
   /** An RGBA frame for the video pipeline. `renderWidth` (optional) rasterises the

@@ -16,11 +16,12 @@ import {
   makeToken,
   setCookieHeader,
   clearCookieHeader,
+  isSecureRequest,
 } from './auth';
 import { probePlatform, ssoConfigured, notify, siteInfo } from './fabric';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
-import { LoginLimiter } from './rateLimit';
+import { LoginLimiter, RequestLimiter } from './rateLimit';
 import { THEMES } from './render/theme';
 import { DEFAULT_SALAH_HADITH } from './render/defaultHadith';
 import {
@@ -80,9 +81,23 @@ interface Deps {
   volunteer: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 }
 
+/** Baseline security headers for the control panel + its API.
+ *
+ *  The app already does this properly where it thought about it — uploaded files get
+ *  `nosniff` + a sandbox CSP, and the public widget deliberately sets
+ *  `frame-ancestors *` because it is MEANT to be embedded. The panel and API had nothing.
+ *  Impact is modest (SameSite=Lax means a cross-site frame carries no session cookie, so
+ *  clickjacking can't reach an authenticated panel) but there is no reason to leave it off.
+ *  `frame-ancestors 'self'` only — deliberately NOT applied to the widget. */
+const SECURITY_HEADERS: Record<string, string> = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'content-security-policy': "frame-ancestors 'self'",
+};
+
 function sendJson(res: ServerResponse, status: number, obj: unknown): void {
   const body = JSON.stringify(obj);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8' });
   res.end(body);
 }
 
@@ -149,6 +164,7 @@ function serveStatic(res: ServerResponse, pathname: string): boolean {
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) return false;
   const ext = path.extname(full).toLowerCase();
   res.writeHead(200, {
+    ...SECURITY_HEADERS,
     'content-type': MIME[ext] ?? 'application/octet-stream',
     'cache-control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
   });
@@ -159,7 +175,7 @@ function serveStatic(res: ServerResponse, pathname: string): boolean {
 function serveIndex(res: ServerResponse): void {
   const idx = path.join(config.publicDir, 'index.html');
   if (fs.existsSync(idx)) {
-    res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
     fs.createReadStream(idx).pipe(res);
   } else {
     res.writeHead(200, { 'content-type': 'text/plain' });
@@ -218,6 +234,10 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 export function createApi(deps: Deps) {
   const { store, orchestrator, volunteer } = deps;
   const loginLimiter = new LoginLimiter();
+  // Public widget: 90 requests per minute per IP. The embedded page polls every 30s, so a
+  // real viewer uses ~2; this only bites on abuse. (DISPLAY-017)
+  const widgetLimiter = new RequestLimiter(90, 60_000);
+  setInterval(() => widgetLimiter.prune(), 5 * 60_000).unref?.();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
   // OpenMasjidOS SSO (see /api/session) — so every other endpoint stays a simple,
@@ -252,6 +272,16 @@ export function createApi(deps: Deps) {
       // it works both on the LAN and behind the tunnel.
       const widgetMatch = /^(?:\/[a-z0-9-]+)?\/w\/([\w-]+)(\.json)?$/.exec(pathname);
       if (widgetMatch && method === 'GET') {
+        // Unauthenticated compute: every hit works out a focus day plus seven days of
+        // prayer times and renders a page. It shares a CPU with the 1 fps render loop that
+        // feeds the actual screens, so widget load can degrade the signage itself. The cap
+        // is deliberately generous — a real viewer polls twice a minute, and throttling a
+        // masjid's own website visitors would be worse than the load.
+        if (!widgetLimiter.allow(req)) {
+          res.writeHead(429, { ...SECURITY_HEADERS, 'content-type': 'text/plain', 'retry-after': '60' });
+          res.end('Too many requests.');
+          return;
+        }
         const tt = store.db.timetables.find((t) => t.id === widgetMatch[1]);
         // 404 (not 403) when the widget is off, so an off timetable's id isn't probeable.
         if (!tt || !tt.widget?.enabled) {
@@ -269,7 +299,12 @@ export function createApi(deps: Deps) {
           // reaches THIS app before advertising it (see /widget-info).
           res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',
-            'cache-control': 'no-store',
+            // A few seconds of shared caching so a burst (or the Cloudflare tunnel in
+            // front of a remote-access install) absorbs load instead of recomputing seven
+            // days of prayer times per hit. Kept short on purpose: the page ticks its
+            // countdown locally from `inSeconds`, so a few seconds of staleness is
+            // invisible, but a long TTL would visibly skew it.
+            'cache-control': 'public, max-age=5',
             'access-control-allow-origin': '*',
           });
           res.end(JSON.stringify({ app: WIDGET_APP_MARKER, ...data }));
@@ -282,7 +317,11 @@ export function createApi(deps: Deps) {
         // Explicitly allow embedding in a masjid's own site (the widget is meant to be framed).
         res.writeHead(200, {
           'content-type': 'text/html; charset=utf-8',
-          'cache-control': 'no-store',
+          // The shell only seeds the first paint and then re-fetches its own JSON, so it
+          // can be cached longer than the data.
+          'cache-control': 'public, max-age=30',
+          // Deliberately permissive: this page EXISTS to be embedded in a masjid's own
+          // website. Do not replace with the panel's frame-ancestors 'self'.
           'content-security-policy': 'frame-ancestors *',
         });
         res.end(html);
@@ -303,7 +342,7 @@ export function createApi(deps: Deps) {
           const probe = await probePlatform(req);
           reachable = probe.reachable;
           if (probe.username) {
-            res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret, SSO_SESSION_MS), SSO_SESSION_MS));
+            res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret, SSO_SESSION_MS), SSO_SESSION_MS, isSecureRequest(req)));
             isAuthed = true;
             username = probe.username;
           }
@@ -344,7 +383,7 @@ export function createApi(deps: Deps) {
         store.update((db) => {
           db.admin = { hash, salt, name: name || undefined, createdAt: new Date().toISOString() };
         });
-        res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret)));
+        res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret), undefined, isSecureRequest(req)));
         return sendJson(res, 200, { ok: true });
       }
       if (pathname === '/api/login' && method === 'POST') {
@@ -354,14 +393,14 @@ export function createApi(deps: Deps) {
         if (!store.db.admin) return sendJson(res, 400, { error: 'This panel has not been set up yet.' });
         if (verifyPassword(String(body.password ?? ''), store.db.admin)) {
           loginLimiter.succeed(req);
-          res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret)));
+          res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret), undefined, isSecureRequest(req)));
           return sendJson(res, 200, { ok: true });
         }
         loginLimiter.fail(req);
         return sendJson(res, 401, { error: 'Incorrect password.' });
       }
       if (pathname === '/api/logout' && method === 'POST') {
-        res.setHeader('set-cookie', clearCookieHeader());
+        res.setHeader('set-cookie', clearCookieHeader(isSecureRequest(req)));
         return sendJson(res, 200, { ok: true });
       }
 
@@ -829,6 +868,13 @@ export function createApi(deps: Deps) {
         const ym = monthParam ? /^(\d{4})-(\d{2})$/.exec(monthParam) : null;
         const year = ym ? Number(ym[1]) : now.year;
         const mon = ym ? Number(ym[2]) : now.month;
+        // The regex constrains the SHAPE but not the range: `2026-00` rendered December
+        // 2025 and `2026-99` a month in 2034, each headed with whatever month it landed on.
+        // Reject rather than silently substitute — a printed calendar that is confidently
+        // the wrong month is a bad thing to hand a congregation.
+        if (ym && (mon < 1 || mon > 12 || year < 1970 || year > 2200)) {
+          return sendJson(res, 400, { error: 'That month isn’t valid. Choose a month from 1 to 12.' });
+        }
         const html = renderMonthPrintHtml(tt, year, mon);
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(html);

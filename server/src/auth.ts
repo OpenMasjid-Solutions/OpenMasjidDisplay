@@ -11,11 +11,41 @@ const VOL_COOKIE = 'omd_vol';
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 const VOL_MAX_AGE_MS = 12 * 3600 * 1000; // volunteer sessions are short-lived
 
-// Add `Secure` to session cookies when the panel is served over HTTPS. Default OFF
-// for the trusted-LAN plain-HTTP flow this app ships in (a `Secure` cookie would
-// silently never be sent over http and lock you out). Set COOKIE_SECURE=yes for an
-// HTTPS / cross-host deployment so the session cookie isn't sent in cleartext.
-const SECURE = (process.env.COOKIE_SECURE ?? '').trim().toLowerCase() === 'yes' ? '; Secure' : '';
+// COOKIE_SECURE=yes forces `Secure` on every session cookie regardless of how the request
+// arrived. Left as an escape hatch; it is no longer the only way to get `Secure`, because
+// in practice nothing ever set it — see isSecureRequest below.
+const FORCE_SECURE = (process.env.COOKIE_SECURE ?? '').trim().toLowerCase() === 'yes';
+
+/**
+ * Did THIS request arrive over HTTPS? Decided per request rather than per deployment.
+ *
+ * manifest.yaml opts into `https: true`, so the platform fronts the panel with a TLS
+ * proxy — but docker-compose.yml never set COOKIE_SECURE, so the flag was off everywhere
+ * and a 30-day admin cookie went out without `Secure`. Cookies aren't isolated by scheme
+ * and the plain-HTTP port stays published as a legacy fallback, so that cookie was also
+ * sent in cleartext and could be lifted by anyone watching the masjid LAN.
+ *
+ * Flipping COOKIE_SECURE on globally is NOT the fix: auth.ts has always warned (correctly)
+ * that a `Secure` cookie is silently never sent over http, which would lock admins out of
+ * the plain-HTTP LAN flow this app ships in. So decide per request instead — HTTPS callers
+ * get a `Secure` cookie, plain-HTTP LAN callers keep working exactly as before.
+ *
+ * X-Forwarded-Proto is trusted only because the OpenMasjidOS ingress sanitises it
+ * (CLAUDE.md §4). Reached directly the header is absent. Note the failure direction is
+ * safe: a spoofed `https` only ADDS `Secure`, so the spoofer's own cookie stops being sent
+ * over http — it can never remove protection or grant access.
+ */
+export function isSecureRequest(req: IncomingMessage): boolean {
+  if (FORCE_SECURE) return true;
+  const xfp = String(req.headers['x-forwarded-proto'] ?? '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  if (xfp) return xfp === 'https';
+  return (req.socket as { encrypted?: boolean }).encrypted === true;
+}
+
+const secureAttr = (secure: boolean): string => (secure ? '; Secure' : '');
 
 export function hashPassword(password: string): { hash: string; salt: string } {
   const salt = crypto.randomBytes(16);
@@ -64,13 +94,29 @@ function verifyToken(secret: Buffer, token: string, aud: Audience): boolean {
   }
 }
 
+/** Decode one cookie value, tolerating malformed percent-escapes.
+ *
+ *  The Cookie header is entirely attacker-controlled and `decodeURIComponent` THROWS a
+ *  URIError on input as trivial as `%`. That used to be fatal rather than cosmetic:
+ *  hasValidSession() is also called from the WebSocket 'upgrade' listener (see ws.ts),
+ *  and a throw inside an event listener is an uncaught exception that takes the whole
+ *  process down — an unauthenticated remote kill of every screen in the masjid.
+ *  A value that isn't valid percent-encoding is used verbatim; it simply won't verify. */
+function decodeCookieValue(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function parseCookies(header?: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
     if (i < 0) continue;
-    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    out[part.slice(0, i).trim()] = decodeCookieValue(part.slice(i + 1).trim());
   }
   return out;
 }
@@ -82,12 +128,14 @@ export function hasValidSession(req: IncomingMessage, secret: Buffer): boolean {
   return !!token && verifyToken(secret, token, 'admin');
 }
 
-export function setCookieHeader(token: string, maxAgeMs = MAX_AGE_MS): string {
-  return `${COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}${SECURE}`;
+/** @param secure add `Secure` — pass isSecureRequest(req) so an HTTPS caller's cookie is
+ *  protected while the plain-HTTP LAN flow keeps working. */
+export function setCookieHeader(token: string, maxAgeMs = MAX_AGE_MS, secure = FORCE_SECURE): string {
+  return `${COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}${secureAttr(secure)}`;
 }
 
-export function clearCookieHeader(): string {
-  return `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE}`;
+export function clearCookieHeader(secure = FORCE_SECURE): string {
+  return `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(secure)}`;
 }
 
 // ── Volunteer session (separate cookie + audience from the admin) ─────────────
@@ -100,10 +148,10 @@ export function hasValidVolunteerSession(req: IncomingMessage, secret: Buffer): 
   return !!token && verifyToken(secret, token, 'vol');
 }
 
-export function setVolunteerCookieHeader(token: string): string {
-  return `${VOL_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(VOL_MAX_AGE_MS / 1000)}${SECURE}`;
+export function setVolunteerCookieHeader(token: string, secure = FORCE_SECURE): string {
+  return `${VOL_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(VOL_MAX_AGE_MS / 1000)}${secureAttr(secure)}`;
 }
 
-export function clearVolunteerCookieHeader(): string {
-  return `${VOL_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE}`;
+export function clearVolunteerCookieHeader(secure = FORCE_SECURE): string {
+  return `${VOL_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(secure)}`;
 }

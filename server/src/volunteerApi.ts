@@ -21,6 +21,7 @@ import {
   hasValidVolunteerSession,
   setVolunteerCookieHeader,
   clearVolunteerCookieHeader,
+  isSecureRequest,
 } from './auth';
 import { normContent } from './validate';
 import { LoginLimiter } from './rateLimit';
@@ -158,14 +159,14 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
         const pin = String(body.pin ?? '');
         if (store.db.volunteerAuth && verifyPassword(pin, store.db.volunteerAuth)) {
           loginLimiter.succeed(req);
-          res.setHeader('set-cookie', setVolunteerCookieHeader(makeVolunteerToken(store.secret)));
+          res.setHeader('set-cookie', setVolunteerCookieHeader(makeVolunteerToken(store.secret), isSecureRequest(req)));
           return sendJson(res, 200, { ok: true });
         }
         loginLimiter.fail(req);
         return sendJson(res, 401, { error: 'Wrong PIN.' });
       }
       if (pathname === '/api/volunteer/logout' && method === 'POST') {
-        res.setHeader('set-cookie', clearVolunteerCookieHeader());
+        res.setHeader('set-cookie', clearVolunteerCookieHeader(isSecureRequest(req)));
         return sendJson(res, 200, { ok: true });
       }
 

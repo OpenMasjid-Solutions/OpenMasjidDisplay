@@ -11,10 +11,10 @@
 # Taken from the official multi-arch image, pinned by version. This stage has no
 # --platform override, so it is pulled for the TARGET architecture — the arm64
 # build gets the arm64 binary, the amd64 build gets the amd64 one.
-FROM bluenviron/mediamtx:1.19.1 AS mediamtx
+FROM bluenviron/mediamtx:1.19.1@sha256:61ebddaa43a6da78d4c6e98b9f9c12066856ffd85893656f5c000d870b88bbe4 AS mediamtx
 
 # ---- Build the web control panel (Vite → static files) --------------------
-FROM --platform=$BUILDPLATFORM node:22-slim AS web
+FROM --platform=$BUILDPLATFORM node:22-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -22,7 +22,7 @@ COPY web/ ./
 RUN npm run build
 
 # ---- Compile the server (TypeScript → dist) -------------------------------
-FROM --platform=$BUILDPLATFORM node:22-slim AS server
+FROM --platform=$BUILDPLATFORM node:22-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS server
 WORKDIR /server
 COPY server/package.json server/package-lock.json ./
 RUN npm ci
@@ -30,7 +30,7 @@ COPY server/ ./
 RUN npm run build
 
 # ---- Runtime (target architecture) ----------------------------------------
-FROM node:22-slim AS runtime
+FROM node:22-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS runtime
 ENV NODE_ENV=production
 
 LABEL org.opencontainers.image.title="OpenMasjid Display" \
@@ -85,6 +85,18 @@ ENV PORT=8080 \
     MTX_SRT=no
 EXPOSE 8080 8081 8554
 VOLUME ["/data"]
+
+# Let the host see whether the app is actually SERVING, not merely running. The app has
+# always exposed /healthz and nothing used it, so an orchestrator had no way to notice a
+# process that was up but not answering. Uses node's built-in fetch — no extra package.
+#
+# Deliberately process liveness only, NOT render freshness: a screen showing a stale
+# timetable is reported through /api/state and the Fabric alert instead. Restarting the
+# whole container (every screen, plus MediaMTX) because one timetable went stale would
+# turn a one-screen fault into an outage, and a persistent cause would restart-loop.
+# (DISPLAY-019)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js"]
