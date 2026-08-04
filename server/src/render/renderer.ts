@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config';
 import { makeLog } from '../logger';
-import { dimsFor, activeTicker, tickerTextColor, tickerLayout, TICKER_RED, type Dims } from '../core';
+import { dimsFor, activeTicker, tickerTextColor, tickerLayout, TICKER_RED, type Dims } from './svg';
 import { primaryFontFile } from './fonts';
 import { RenderWorker } from './renderPool';
 import type { Timetable } from '../types';

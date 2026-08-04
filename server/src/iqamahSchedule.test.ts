@@ -52,9 +52,7 @@ test('normalizeIqamahSchedule: cleans times/dates, sorts, dedups, drops empties'
   assert.equal(out[1].from, '2026-06-01');
   assert.equal(out[1].fajr, '05:00');
   assert.equal(out[1].isha, '21:15');
-  // Maghrib is never scheduled — assert the normalizer did not invent the key. Indexed
-  // rather than dotted because IqamahScheduleEntry deliberately has no `maghrib` field.
-  assert.equal((out[1] as unknown as Record<string, unknown>).maghrib, undefined);
+  assert.equal(out[1].maghrib as unknown, undefined); // Maghrib is never scheduled
 });
 
 test('normalizeIqamahSchedule: non-array / junk → empty', () => {

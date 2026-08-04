@@ -1,18 +1,15 @@
 {
   "name": "openmasjid-display-server",
   "private": true,
-  "version": "0.65.0",
+  "version": "0.61.0",
   "description": "Control plane + timetable renderer + embedded RTSP server for OpenMasjid Display",
   "license": "AGPL-3.0-only",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -w -p tsconfig.json",
-    "start": "node dist/server/src/index.js",
+    "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "typecheck:core": "tsc -p ../packages/render-core/tsconfig.json",
-    "test": "tsc -p tsconfig.check.json && node --import tsx --test ../packages/render-core/src/purity.test.ts ../packages/render-core/src/prayer/engine.test.ts ../packages/render-core/src/iqamahCsv.test.ts ../packages/render-core/src/iqamahSchedule.test.ts ../packages/render-core/src/salahHadith.test.ts ../packages/protocol/src/protocol.test.ts src/scheduler.test.ts src/validate.test.ts src/nodeContent.test.ts src/nodeAssets.test.ts src/nodeHub.test.ts src/render/iqamahOverride.test.ts",
-    "typecheck:protocol": "tsc -p ../packages/protocol/tsconfig.json",
-    "typecheck:all": "tsc -p tsconfig.check.json"
+    "test": "node --import tsx --test src/prayer/engine.test.ts src/scheduler.test.ts src/iqamahCsv.test.ts src/iqamahSchedule.test.ts src/validate.test.ts src/render/iqamahOverride.test.ts src/render/salahHadith.test.ts"
   },
   "dependencies": {
     "@resvg/resvg-js": "2.6.2",

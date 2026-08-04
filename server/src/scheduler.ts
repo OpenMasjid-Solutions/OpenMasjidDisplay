@@ -11,7 +11,7 @@
  * Times are evaluated in the masjid's configured timezone. Windows may wrap past
  * midnight (end <= start); a wrapping window belongs to its start day.
  */
-import { dayOfWeek, localParts, parseHHMM } from './core';
+import { dayOfWeek, localParts, parseHHMM } from './prayer/engine';
 import type { Tv, ScheduleRule, ContentRef } from './types';
 
 export interface Resolution {

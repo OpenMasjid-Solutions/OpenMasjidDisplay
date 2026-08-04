@@ -12,10 +12,10 @@
  * per-element toggles are honoured; a carousel option rotates the layout over the
  * day to avoid screen burn-in. No sacred/Arabic text appears in decorative chrome.
  */
-import type { Timetable, HadithItem, SalahHadith, TimeFormat, Lang } from './types';
+import type { Timetable, HadithItem, SalahHadith, TimeFormat, Lang } from '../types';
 import { getPalette, type Palette } from './theme';
 import { DEFAULT_SALAH_HADITH } from './defaultHadith';
-import { resolveSchedule } from './iqamahSchedule';
+import { resolveSchedule } from '../iqamahSchedule';
 import {
   prayerTimes,
   iqamahHours,
@@ -26,7 +26,7 @@ import {
   parseHHMM,
   METHODS,
   type PrayerTimes,
-} from './prayer/engine';
+} from '../prayer/engine';
 
 export interface Dims {
   width: number;
@@ -251,35 +251,21 @@ function inDailyWindow(nowMin: number, start: string, end: string): boolean {
 
 /** Which announcement image (if any) should be the backdrop right now. The display
  *  alternates: `everySeconds` of normal timetable, then `forSeconds` of cycling
- *  images (each `imageSeconds`). Stateless — derived from the clock so every
- *  screen/worker agrees. Returns the image filename or null.
- *
- *  Two sources feed the rotation:
- *   - the admin's uploaded slideshow images (only when the slideshow is enabled, and
- *     honoring its daily window), and
- *   - `reportFrames`: incorrect-parking alert cards, one per active volunteer report
- *     targeting this timetable. These rotate WHENEVER present — filing a report is
- *     the opt-in — independent of the image slideshow and its window. */
-export function activeAnnouncementImage(tt: Timetable, now: Date, reportFrames: string[] = []): string | null {
+ *  images (each `imageSeconds`), within the daily window. Stateless — derived from
+ *  the clock so every screen/worker agrees. Returns the image filename or null. */
+export function activeAnnouncementImage(tt: Timetable, now: Date): string | null {
   const a = tt.announcements;
-  const images = a?.enabled && a.images ? [...a.images] : [];
-  const pool = [...images, ...reportFrames];
-  if (pool.length === 0) return null;
+  if (!a || !a.enabled || !a.images || a.images.length === 0) return null;
   const parts = localParts(now, tt.timezone || undefined);
-  // Uploaded images respect the slideshow's daily window; alerts ignore it. So when
-  // there are no alerts, apply the window; when alerts are present, always rotate.
-  if (reportFrames.length === 0 && a && !inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
-  const every = Math.max(1, Math.floor(a?.everySeconds ?? 25));
-  const imgS = Math.max(1, Math.floor(a?.imageSeconds ?? 8));
-  // The "show" window must be long enough to cycle EVERY frame at least once, or a
-  // multi-photo report only ever shows its first photo before flipping back to the
-  // timetable. So stretch it to cover the whole pool when needed.
-  const forS = Math.max(Math.max(1, Math.floor(a?.forSeconds ?? 20)), pool.length * imgS);
+  if (!inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
+  const every = Math.max(1, Math.floor(a.everySeconds));
+  const forS = Math.max(1, Math.floor(a.forSeconds));
+  const imgS = Math.max(1, Math.floor(a.imageSeconds));
   const cycle = every + forS;
   const phase = ((Math.floor(now.getTime() / 1000) % cycle) + cycle) % cycle;
   if (phase < every) return null; // showing the normal timetable
-  const idx = Math.floor((phase - every) / imgS) % pool.length;
-  return pool[idx] ?? null;
+  const idx = Math.floor((phase - every) / imgS) % a.images.length;
+  return a.images[idx] ?? null;
 }
 
 // Separator between ticker messages. Uses non-breaking spaces ( ) because SVG
@@ -1429,16 +1415,13 @@ function layoutReference(a: Box, m: Model, c: Ctx): string {
 /** Announcement (slideshow) layout. Landscape: the full portrait column on the LEFT
  *  (brand, clock+ring, table, Jumu'ah) with the cycling image filling the RIGHT.
  *  Portrait: the image on top with the clock + ring side by side beneath it. */
-function announcementView(a: Box, m: Model, c: Ctx, image: string, alert = false): string {
+function announcementView(a: Box, m: Model, c: Ctx, image: string): string {
   const out: string[] = [];
   const gap = Math.min(a.w, a.h) * 0.02;
 
   function drawImage(x: number, y: number, w: number, h: number): void {
     const r = clamp(Math.min(w, h) * 0.03, 10, 28);
-    // Alert cards (incorrect-parking) are full-bleed red on their own dark backdrop,
-    // so we DON'T draw the glass panel behind them — that panel is what showed as a
-    // blue box around the card. The card just sits on the prayer scene.
-    if (!alert) out.push(glass(x, y, w, h, r, { raised: true }));
+    out.push(glass(x, y, w, h, r, { raised: true }));
     out.push(`<clipPath id="annclip"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${r.toFixed(1)}" ry="${r.toFixed(1)}"/></clipPath>`);
     out.push(`<image href="${image}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" clip-path="url(#annclip)"/>`);
   }
@@ -1897,9 +1880,6 @@ export interface RenderOpts {
   bg?: string | null;
   /** data: URI of an announcement image → timetable becomes a left sidebar, image fills the right */
   announcement?: string | null;
-  /** the announcement above is an incorrect-parking alert card → skip the glass backdrop
-   *  (the card is full-bleed red on its own dark scene, no blue panel around it) */
-  announcementAlert?: boolean;
   /** data: URI of an uploaded masjid logo, or null for the built-in mark */
   logo?: string | null;
   /** auto text-contrast: the render worker sets this true when the custom background
@@ -2089,7 +2069,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
 
   if (opts.announcement) {
     // Slideshow: the timetable becomes a left sidebar, the image fills the right.
-    out.push(announcementView(area, m, ctx, opts.announcement, opts.announcementAlert === true));
+    out.push(announcementView(area, m, ctx, opts.announcement));
   } else {
     out.push(layoutReference(area, m, ctx));
   }
