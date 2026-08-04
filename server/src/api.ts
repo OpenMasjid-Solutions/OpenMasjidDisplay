@@ -80,9 +80,23 @@ interface Deps {
   volunteer: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 }
 
+/** Baseline security headers for the control panel + its API.
+ *
+ *  The app already does this properly where it thought about it — uploaded files get
+ *  `nosniff` + a sandbox CSP, and the public widget deliberately sets
+ *  `frame-ancestors *` because it is MEANT to be embedded. The panel and API had nothing.
+ *  Impact is modest (SameSite=Lax means a cross-site frame carries no session cookie, so
+ *  clickjacking can't reach an authenticated panel) but there is no reason to leave it off.
+ *  `frame-ancestors 'self'` only — deliberately NOT applied to the widget. */
+const SECURITY_HEADERS: Record<string, string> = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'content-security-policy': "frame-ancestors 'self'",
+};
+
 function sendJson(res: ServerResponse, status: number, obj: unknown): void {
   const body = JSON.stringify(obj);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8' });
   res.end(body);
 }
 
@@ -149,6 +163,7 @@ function serveStatic(res: ServerResponse, pathname: string): boolean {
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) return false;
   const ext = path.extname(full).toLowerCase();
   res.writeHead(200, {
+    ...SECURITY_HEADERS,
     'content-type': MIME[ext] ?? 'application/octet-stream',
     'cache-control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
   });
@@ -159,7 +174,7 @@ function serveStatic(res: ServerResponse, pathname: string): boolean {
 function serveIndex(res: ServerResponse): void {
   const idx = path.join(config.publicDir, 'index.html');
   if (fs.existsSync(idx)) {
-    res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
     fs.createReadStream(idx).pipe(res);
   } else {
     res.writeHead(200, { 'content-type': 'text/plain' });
