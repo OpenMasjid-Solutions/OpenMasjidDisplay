@@ -844,6 +844,13 @@ export function createApi(deps: Deps) {
         const ym = monthParam ? /^(\d{4})-(\d{2})$/.exec(monthParam) : null;
         const year = ym ? Number(ym[1]) : now.year;
         const mon = ym ? Number(ym[2]) : now.month;
+        // The regex constrains the SHAPE but not the range: `2026-00` rendered December
+        // 2025 and `2026-99` a month in 2034, each headed with whatever month it landed on.
+        // Reject rather than silently substitute — a printed calendar that is confidently
+        // the wrong month is a bad thing to hand a congregation.
+        if (ym && (mon < 1 || mon > 12 || year < 1970 || year > 2200)) {
+          return sendJson(res, 400, { error: 'That month isn’t valid. Choose a month from 1 to 12.' });
+        }
         const html = renderMonthPrintHtml(tt, year, mon);
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(html);
