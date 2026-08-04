@@ -368,4 +368,11 @@ export interface TvStatus {
   ruleId?: string;
   /** is a screen currently pulling this RTSP stream (online); false = offline/no decoder */
   streamReady: boolean;
+  /** The timetable on this screen is publishing an OUT-OF-DATE picture — the renderer
+   *  stopped producing frames, so the times shown are not current. `streamReady` can
+   *  still be true at the same time: a decoder is happily reading a frozen picture,
+   *  which is exactly why this needs its own signal. */
+  contentStale?: boolean;
+  /** age in ms of the frame being published, when known (diagnostics) */
+  frameAgeMs?: number;
 }

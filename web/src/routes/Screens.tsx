@@ -151,6 +151,9 @@ function ScreenCard({
   const [copied, setCopied] = useState(false);
   const effective = status?.effective ?? tv.defaultContent;
   const ready = status?.streamReady ?? false;
+  // The screen is lit and pulling, but its timetable stopped updating — the times on it
+  // are wrong. That is worse than a dark screen, so it gets the louder badge.
+  const stale = !!status?.contentStale;
   // The link uses whatever address this panel was opened with — the same address
   // a decoder on the network reaches this server at. Nothing to configure.
   const url = `rtsp://${location.hostname}:${state.rtsp.port}/${tv.id}`;
@@ -161,12 +164,22 @@ function ScreenCard({
   return (
     <div className="screen-card glass">
       <div className="screen-card__head">
-        <span className={`status-dot${ready ? '' : ' status-dot--idle'}`} title={ready ? 'A screen is connected' : 'No screen connected yet'} />
+        <span className={`status-dot${ready && !stale ? '' : ' status-dot--idle'}`} title={stale ? 'This screen is showing out-of-date times' : ready ? 'A screen is connected' : 'No screen connected yet'} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="screen-name">
             {tv.name}
-            {effective.kind !== 'off' && !ready && (
-              <span className="tag" style={{ marginInlineStart: '0.5rem', background: 'rgba(229,115,107,0.16)', color: '#e5736b' }} title="This screen isn’t pulling its stream — the screen or its decoder may be off or disconnected.">Offline</span>
+            {stale ? (
+              <span
+                className="tag"
+                style={{ marginInlineStart: '0.5rem', background: 'rgba(229,115,107,0.24)', color: '#e5736b', fontWeight: 700 }}
+                title={`This screen's timetable stopped updating${status?.frameAgeMs ? ` about ${Math.round(status.frameAgeMs / 60000)} min ago` : ''}, so the prayer times on it are NOT current. It is marked on the screen itself too. Check the app log.`}
+              >
+                Times out of date
+              </span>
+            ) : (
+              effective.kind !== 'off' && !ready && (
+                <span className="tag" style={{ marginInlineStart: '0.5rem', background: 'rgba(229,115,107,0.16)', color: '#e5736b' }} title="This screen isn’t pulling its stream — the screen or its decoder may be off or disconnected.">Offline</span>
+              )
             )}
           </div>
           {tv.room && <div className="screen-room">{tv.room}</div>}

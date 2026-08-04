@@ -63,6 +63,11 @@ const TICKER_FPS = 20;
  *  carousel (which only changes SVG content, not ffmpeg args) still never respawns
  *  ffmpeg → the decoder never reconnects. Output ≤ 720p renders 1:1 (no upscale). */
 const RENDER_CAP = 1280; // longest side of the rasterised frame (keeps the per-second render cheap so the ticker + countdown never stutter on a 2-core box)
+/** How old the published frame may get before we stop treating it as current. The loop
+ *  renders once per second, so this is ~30 missed renders: comfortably past a slow frame
+ *  or a reconcile stealing CPU, and far short of anyone reading a wrong Iqamah time off
+ *  the wall. Beyond it the screen is marked and the status feed reports it. */
+const STALE_AFTER_MS = 30_000;
 export function renderDimsFor(out: Dims): Dims {
   const longest = Math.max(out.width, out.height);
   if (longest <= RENDER_CAP) return out;
@@ -401,6 +406,12 @@ class TimetablePipeline extends FfmpegPipeline {
   private lastWriteSlot = -1;
   /** most recent rendered frame; re-fed to ffmpeg every input-frame slot */
   private lastFrame: Awaited<ReturnType<RenderWorker['raw']>> | null = null;
+  /** when lastFrame was produced — the whole point is that a frame has an AGE */
+  private lastFrameAt = 0;
+  /** the dimmed + red-barred copy of a stale frame, built once and reused */
+  private staleFrame: Buffer | null = null;
+  private staleLogged = false;
+  private failStreakRender = 0;
 
   private loop(): void {
     if (this.stopped) {
@@ -482,10 +493,26 @@ class TimetablePipeline extends FfmpegPipeline {
         if (this.stopped) return;
         if (img.width !== this.renderDims.width || img.height !== this.renderDims.height) return;
         this.lastFrame = img; // the write pump feeds this to ffmpeg
+        this.lastFrameAt = Date.now();
+        this.staleFrame = null; // fresh picture — drop the marked copy
+        if (this.staleLogged) {
+          log.info(`timetable ${this.id} is rendering again; the screen is current`);
+          this.staleLogged = false;
+        }
+        this.failStreakRender = 0;
       })
       .catch((err) => {
         this.rendering = false;
-        if (!this.stopped) log.debug(`render ${this.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        if (this.stopped) return;
+        // A render that keeps failing is why a screen freezes on old prayer times, so it
+        // is a WARNING, not a debug line (debug is off unless OMD_DEBUG=1, so this used to
+        // be completely silent). Logged on the first failure and then every ~30th, so a
+        // persistent fault stays visible without flooding the log at 1/s.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (this.failStreakRender % 30 === 0) {
+          log.warn(`render ${this.id} failed (${this.failStreakRender + 1} in a row): ${msg}`);
+        }
+        this.failStreakRender++;
       });
     return false;
   }
@@ -504,8 +531,60 @@ class TimetablePipeline extends FfmpegPipeline {
     const slot = Math.floor(Date.now() / (1000 / inFps));
     if (slot === this.lastWriteSlot) return;
     if (s.writableLength >= img.pixels.length * 3) return; // ffmpeg stalled — don't buffer
-    s.write(img.pixels);
+    // A frame has an AGE. Without this check the last good frame was re-fed forever, so a
+    // broken renderer left a frozen clock and yesterday's Iqamah times on the wall,
+    // indefinitely, presented as current. Keep the stream alive (a dead stream just makes
+    // the TV say "no signal") but stop passing the picture off as up to date.
+    s.write(this.isStale() ? this.markStale(img) : img.pixels);
     this.lastWriteSlot = slot;
+  }
+
+  /** Is the picture we are publishing out of date? The loop renders once a second, so a
+   *  frame older than STALE_AFTER_MS means the renderer is broken, not merely busy. */
+  isStale(): boolean {
+    return this.lastFrameAt > 0 && Date.now() - this.lastFrameAt > STALE_AFTER_MS;
+  }
+
+  /** Age of the published frame in ms (0 before the first render). */
+  frameAgeMs(): number {
+    return this.lastFrameAt > 0 ? Date.now() - this.lastFrameAt : 0;
+  }
+
+  /** The frozen frame, visibly marked so a stale timetable can't be mistaken for a live
+   *  one: the picture is dimmed and a solid red bar is laid along the bottom edge.
+   *
+   *  Deliberately plain pixel arithmetic on the RGBA buffer rather than a re-render —
+   *  the SVG renderer is precisely what has failed by the time we get here, so anything
+   *  that needed it would fail too. Built once per stale frame and reused, because this
+   *  runs on a box that is already struggling. */
+  private markStale(img: NonNullable<TimetablePipeline['lastFrame']>): Buffer {
+    if (this.staleFrame) return this.staleFrame;
+    if (!this.staleLogged) {
+      this.staleLogged = true;
+      log.warn(
+        `timetable ${this.id} is showing a frame ${Math.round(this.frameAgeMs() / 1000)}s old — ` +
+          'the times on that screen are NOT current; it is marked on screen and reported offline',
+      );
+    }
+    const { width, height, pixels } = img;
+    const out = Buffer.from(pixels); // copy — lastFrame must stay pristine
+    for (let i = 0; i < out.length; i += 4) {
+      out[i] >>= 1;
+      out[i + 1] >>= 1;
+      out[i + 2] >>= 1;
+    }
+    const barH = Math.max(6, Math.round(height * 0.02));
+    for (let y = Math.max(0, height - barH); y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        out[i] = 0xd0;
+        out[i + 1] = 0x3a;
+        out[i + 2] = 0x2f;
+        out[i + 3] = 0xff;
+      }
+    }
+    this.staleFrame = out;
+    return out;
   }
 
   /** Full resolution while a ticker animates (drawtext stays crisp and there's no
@@ -589,6 +668,17 @@ export class RenderManager {
       this.transcodes.set(s.id, { pipe, sig });
       log.info(`started transcode ${s.id}`);
     }
+  }
+
+  /** Is the timetable stream `id` publishing an out-of-date picture? False when it isn't
+   *  running (nothing is being shown, so nothing is stale). */
+  isStale(id: string): boolean {
+    return this.timetables.get(id)?.isStale() ?? false;
+  }
+
+  /** Age in ms of the frame `id` is publishing (0 if unknown / not running). */
+  frameAgeMs(id: string): number {
+    return this.timetables.get(id)?.frameAgeMs() ?? 0;
   }
 
   stopAll(): void {

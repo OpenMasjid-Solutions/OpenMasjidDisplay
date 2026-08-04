@@ -181,12 +181,17 @@ export class Orchestrator {
         const st = await getPathState(tv.id);
         pulling = !!st && st.readers >= 1;
       }
+      // A decoder reading a FROZEN picture still counts as "pulling", so freshness has to
+      // be asked separately — otherwise a screen showing yesterday's times reports green.
+      const stale = res.content.kind === 'timetable' && !!cp && this.render.isStale(cp);
       statuses.push({
         tvId: tv.id,
         effective: res.content,
         source: res.source,
         ruleId: res.ruleId,
         streamReady: pulling,
+        contentStale: stale,
+        frameAgeMs: res.content.kind === 'timetable' && cp ? this.render.frameAgeMs(cp) : undefined,
       });
     }
     this.statuses = statuses;
@@ -196,7 +201,15 @@ export class Orchestrator {
     // platform/MediaMTX blip never makes every screen look offline at once).
     if (reachable) {
       this.runAlerts(
-        resolutions.map(({ tv, res }, i) => ({ tv, pulling: statuses[i].streamReady, off: res.content.kind === 'off' })),
+        resolutions.map(({ tv, res }, i) => ({
+          tv,
+          // A screen showing a FROZEN timetable is not "online" in any sense the masjid
+          // cares about — wrong prayer times on the wall are worse than a blank screen —
+          // so stale content raises the same alert as a disconnected decoder.
+          pulling: statuses[i].streamReady && !statuses[i].contentStale,
+          off: res.content.kind === 'off',
+          stale: !!statuses[i].contentStale,
+        })),
       );
     }
   }
@@ -207,13 +220,13 @@ export class Orchestrator {
    * "Off" are not monitored. Debounced so brief reconnects (content switches, power
    * cycles) don't flap. Fires only when a `notify` callback is wired and configured.
    */
-  private runAlerts(items: { tv: Tv; pulling: boolean; off: boolean }[]): void {
+  private runAlerts(items: { tv: Tv; pulling: boolean; off: boolean; stale?: boolean }[]): void {
     if (!this.notify) return;
     const now = Date.now();
     const present = new Set(items.map((i) => i.tv.id));
     for (const id of [...this.alerts.keys()]) if (!present.has(id)) this.alerts.delete(id);
 
-    for (const { tv, pulling, off } of items) {
+    for (const { tv, pulling, off, stale } of items) {
       let st = this.alerts.get(tv.id);
       if (!st) {
         st = { downSince: null, offlineNotified: false };
@@ -236,11 +249,19 @@ export class Orchestrator {
         if (st.downSince == null) st.downSince = now;
         if (now - st.downSince >= this.OFFLINE_MS && !st.offlineNotified) {
           st.offlineNotified = true;
-          void this.notify({
-            title: 'Screen offline',
-            text: `📺 "${name}" isn't pulling its video stream — the screen or its decoder may be turned off or disconnected.`,
-            level: 'warning',
-          });
+          void this.notify(
+            stale
+              ? {
+                  title: 'Screen showing out-of-date times',
+                  text: `⚠️ "${name}" is still lit up, but its timetable stopped updating — the prayer times on it are NOT current. Please check that screen.`,
+                  level: 'error',
+                }
+              : {
+                  title: 'Screen offline',
+                  text: `📺 "${name}" isn't pulling its video stream — the screen or its decoder may be turned off or disconnected.`,
+                  level: 'warning',
+                },
+          );
         }
       }
     }

@@ -170,6 +170,11 @@ export interface TvStatus {
   ruleId?: string;
   /** a screen is currently pulling this RTSP stream (online); false = offline */
   streamReady: boolean;
+  /** the timetable stopped updating, so the times on that screen are NOT current
+   *  (can be true while a decoder is happily reading the frozen picture) */
+  contentStale?: boolean;
+  /** age in ms of the frame being published, when known */
+  frameAgeMs?: number;
 }
 
 export interface ThemePreset {
