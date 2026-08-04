@@ -22,6 +22,29 @@ That is safe for existing installs only because the catalog pins by digest — s
 
 ---
 
+## 0b. The fixes are NOT shipped yet (DISPLAY-028)
+
+**Every masjid installing or recreating today still gets the pre-audit image.** The fixes are
+on `main`; they are not in the catalog.
+
+- All four version files still read `0.61.0`.
+- `docker-compose.yml` still pins `sha256:3642573141cf…` — the image built at `c1080cd`,
+  *before* any fix.
+- Verified live against GHCR: `:0.61.0` **and** `:latest` now resolve to
+  `sha256:77f48427…` (built from the audited code), while the digest the catalog actually
+  serves is now reachable by **no tag at all**.
+
+So the crash (DISPLAY-001) and the silently-stale prayer times (DISPLAY-002) are still live in
+the field. This is precisely the hazard DISPLAY-010 described, now materialised.
+
+**Action:** cut a release when you're ready — bump the four version files, tag, let CI publish,
+re-pin the **new** digest in `docker-compose.yml`, then point `registry.yaml` in
+OpenMasjidAPPS at the digest-pin commit. I have not done it: deciding when masjids receive an
+update is yours, and the follow-up branch below should land first so you ship the fixes
+*without* the two regressions they introduced.
+
+---
+
 ## 1. Secrets to rotate
 
 **None.** No secret was found in the working tree or anywhere in git history. The history

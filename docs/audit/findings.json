@@ -16,19 +16,38 @@
     },
     "counts": {
       "critical": 2,
-      "high": 1,
-      "medium": 7,
-      "low": 9,
-      "total": 19,
-      "fixed": 16,
-      "reportedOnly": 3
+      "high": 4,
+      "medium": 11,
+      "low": 11,
+      "total": 28,
+      "fixed": 24,
+      "reportedOnly": 4
     },
     "deliverablesUpdated": "2026-08-04",
     "reportedOnly": [
-      "DISPLAY-007 (needs a product decision: new auth endpoints)",
-      "DISPLAY-008 (root container: /data ownership migration)",
-      "DISPLAY-010 (release-channel policy)"
-    ]
+      "DISPLAY-007",
+      "DISPLAY-008",
+      "DISPLAY-010",
+      "DISPLAY-028"
+    ],
+    "postMergeReview": {
+      "date": "2026-08-04",
+      "method": "Six independent reviewers hunted for regressions introduced BY the fixes; every candidate was then handed to an independent skeptic instructed to refute it.",
+      "candidatesRaised": 42,
+      "survivedRefutation": 12,
+      "newFindings": [
+        "DISPLAY-020",
+        "DISPLAY-021",
+        "DISPLAY-022",
+        "DISPLAY-023",
+        "DISPLAY-024",
+        "DISPLAY-025",
+        "DISPLAY-026",
+        "DISPLAY-027",
+        "DISPLAY-028"
+      ],
+      "branch": "fix/audit-followups-2026-08-04"
+    }
   },
   "findings": [
     {
@@ -258,6 +277,114 @@
       "summary": "The app serves /healthz and neither the image nor docker-compose.yml uses it, leaving the orchestrator blind to a wedged-but-listening process, which is precisely the DISPLAY-002 state where the port answers and the picture is frozen. Once DISPLAY-002 lands, the endpoint should report render freshness rather than merely that the process is up.",
       "status": "fixed",
       "commit": "7534f99"
+    },
+    {
+      "id": "DISPLAY-020",
+      "title": "REGRESSION of DISPLAY-005: per-request Secure locks the admin out of the plain-HTTP panel",
+      "severity": "high",
+      "confidence": "confirmed",
+      "category": "availability",
+      "file": "server/src/auth.ts",
+      "line": 9,
+      "summary": "Cookies are keyed by (name, domain, path) and IGNORE the port, and this app is published on BOTH a TLS-proxied port and a plain-HTTP port of the SAME host (manifest.yaml `https: true` plus \"The plain HTTP port stays published as a legacy fallback\"); our cookies set no Domain and use Path=/. So once the HTTPS entry point stored `omd_session; Secure`, the plain-HTTP entry point could neither receive it NOR REPLACE it -- browsers refuse a non-Secure Set-Cookie that would overwrite a Secure cookie of the same name/domain/path (\"Leave Secure Cookies Alone\", RFC 6265bis 5.7). The admin typed the correct password on the HTTP port, got a 200, and bounced back to a blank login form with no in-app recovery; under SSO /api/session reported authed:true while /api/state returned 401, giving an unthrottled refetch loop on the process that runs the render loop. It bites precisely when TLS is broken, which is what the legacy port is for. My DISPLAY-005 commit claimed plain-HTTP users would \"behave exactly as before\"; that was wrong. Fixed by giving each scheme its own cookie name.",
+      "status": "fixed",
+      "commit": "77e6611"
+    },
+    {
+      "id": "DISPLAY-021",
+      "title": "REGRESSION of DISPLAY-017: the widget limiter throttles a masjid's own visitors",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "availability",
+      "file": "server/src/rateLimit.ts",
+      "line": 108,
+      "summary": "The limiter keyed on req.socket.remoteAddress, but every visitor arriving through the OpenMasjidOS remote-access tunnel comes from the ingress address, so all of them shared ONE 90/minute bucket -- and the widget route regex has an optional leading path segment precisely to serve that tunnel path, so the remote path is the designed path. A masjid embeds the timetable on their website and their own worshippers start 429ing each other off the prayer times. Separately, the 429 response reused SECURITY_HEADERS, swapping the widget's deliberate `frame-ancestors *` for 'self' and dropping access-control-allow-origin, so a throttled widget failed in a way the embedding page could neither frame nor read. Fixed by keying on the forwarded client (safe for a volume cap, unsafe for a credential cap -- LoginLimiter still keys on the socket) and preserving the widget's own headers on the error path.",
+      "status": "fixed",
+      "commit": "f30e575"
+    },
+    {
+      "id": "DISPLAY-022",
+      "title": "Incomplete DISPLAY-002: the volunteer page reported a frozen screen as ready",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "correctness",
+      "file": "server/src/volunteerApi.ts",
+      "line": 194,
+      "summary": "volunteerApi computed `ready: !!st?.streamReady` and never consulted contentStale, although the statuses it iterates already carried it; DISPLAY-002's commit never touched this file. So a volunteer standing in the hall saw a green \"ready\" for a screen displaying yesterday's Iqamah times -- the reader who most needs the truth. Fixed: ready now requires fresh content, and the payload carries `stale`.",
+      "status": "fixed",
+      "commit": "641d1bb"
+    },
+    {
+      "id": "DISPLAY-023",
+      "title": "Incomplete DISPLAY-002: frame age reported as ~0 when the fault is a wrong clock",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "correctness",
+      "file": "server/src/render/renderer.ts",
+      "line": 573,
+      "summary": "isStale() folded two different faults together, but a wrong clock renders successfully every second, so frameAgeMs was ~0 while contentStale was true. The panel therefore read \"Times out of date - about 0 min ago\", which looks like a bug in the panel rather than a wrong clock on the box. Fixed with staleReason(): frozen quotes an age (only when at least a minute); clock suppresses it and the badge reads \"Clock is wrong\".",
+      "status": "fixed",
+      "commit": "641d1bb"
+    },
+    {
+      "id": "DISPLAY-024",
+      "title": "Incomplete DISPLAY-002: the alert called a dark screen \"still lit up\"",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "correctness",
+      "file": "server/src/orchestrator.ts",
+      "line": 252,
+      "summary": "Alert wording was selected on `stale` alone, so a screen that was stale AND had no decoder attached was described as \"still lit up, but its timetable stopped updating\" when it was dark. A wrong clock also got the frozen-renderer text, whose advice (\"check that screen\") is useless for a clock fault. Fixed: selection also takes litUp, and a clock fault gets its own message naming its own remedy. Wording extracted into a pure alertFor() so it is testable.",
+      "status": "fixed",
+      "commit": "641d1bb"
+    },
+    {
+      "id": "DISPLAY-025",
+      "title": "REGRESSION of DISPLAY-002: a recycled worker's exit killed the live worker's render",
+      "severity": "medium",
+      "confidence": "confirmed",
+      "category": "availability",
+      "file": "server/src/render/renderPool.ts",
+      "line": 75,
+      "summary": "`pending` is one Map for the life of the RenderWorker, shared across worker generations, but the failure handler is per worker. When the new deadline recycled a wedged worker and a replacement took over, the zombie's 'exit' still rejected and cleared the whole map, taking the replacement's in-flight render with it -- turning one wedged render into a second failed render on a screen already in trouble. Fixed with a generation guard, plus recycle() now drains the queue itself, because the guard alone would have left a second concurrent render (the shared preview worker can have several) unsettled for ever. Also documented, after measuring it, that terminate() cannot interrupt a synchronous native resvg call, so a pathological SVG still costs one core until it returns.",
+      "status": "fixed",
+      "commit": "6e8ffc6"
+    },
+    {
+      "id": "DISPLAY-026",
+      "title": "REGRESSION of DISPLAY-018: a leftover db.json.tmp defeated the 0600 mode",
+      "severity": "low",
+      "confidence": "confirmed",
+      "category": "hardening",
+      "file": "server/src/store.ts",
+      "line": 216,
+      "summary": "fs.writeFileSync applies `mode` only when it CREATES the file, so a db.json.tmp left behind by an earlier crash kept its old permissions and rename() carried them onto db.json -- the file holding the admin scrypt hash and the volunteer PIN hash. Fixed with an unconditional best-effort chmod, so an unsupported filesystem can never stop the store persisting.",
+      "status": "fixed",
+      "commit": "6e8ffc6"
+    },
+    {
+      "id": "DISPLAY-027",
+      "title": "No CI job ran the tests, so the audit's own ship gate was local-only",
+      "severity": "high",
+      "confidence": "confirmed",
+      "category": "process",
+      "file": ".github/workflows/build-image.yml",
+      "line": 32,
+      "summary": "Nothing in CI ran `npm test` or `npm run build` outside Docker. The image build compiles TypeScript inside the Dockerfile, so a type error failed the build, but not one assertion had ever executed on a runner. Every test in this repo, including all the regression guards added by this audit, had only ever run on a maintainer machine -- so the \"ship gate\" reported in this audit was local-only and a green PR was much weaker evidence than it appeared. Fixed by adding .github/workflows/checks.yml (server build+test, web typecheck+build+audit, findings.json schema validation) on pull_request and on push to main.",
+      "status": "fixed",
+      "commit": "702134a"
+    },
+    {
+      "id": "DISPLAY-028",
+      "title": "None of the 16 fixes reach a masjid: the catalog still pins the pre-audit image",
+      "severity": "high",
+      "confidence": "confirmed",
+      "category": "release",
+      "file": "docker-compose.yml",
+      "line": 17,
+      "summary": "The fixes are merged to main but NOT shipped. manifest.yaml, server/package.json and web/package.json are all still 0.61.0, and docker-compose.yml still pins sha256:3642573141cf..., which is the image built at c1080cd -- i.e. before any fix. Verified live against GHCR: the :0.61.0 and :latest tags now both resolve to a DIFFERENT digest (sha256:77f48427...) built from the audited code, while the digest the catalog serves is now reachable by no tag at all. So every masjid installing or recreating today still gets the crashable, silently-stale build. This is exactly the hazard DISPLAY-010 described, now materialised. Shipping needs the release chain: bump the four version files, tag, let CI publish, re-pin the new digest in compose, then update registry.yaml in OpenMasjidAPPS. Reported only -- cutting a release is the maintainer's decision.",
+      "status": "reported-only",
+      "commit": null
     }
   ]
 }
