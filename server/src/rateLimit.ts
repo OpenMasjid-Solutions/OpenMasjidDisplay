@@ -86,3 +86,43 @@ export class LoginLimiter {
     this.map.delete(this.key(req));
   }
 }
+
+/**
+ * A plain request-rate cap keyed by client IP, for PUBLIC endpoints where the concern is
+ * volume rather than credential guessing (so unlike LoginLimiter there is no backoff and
+ * no notion of failure — every request counts).
+ *
+ * Deliberately generous where it is used: the public widget is meant to be embedded on a
+ * masjid's website, and throttling real visitors would be a worse outcome than the load.
+ */
+export class RequestLimiter {
+  private readonly hits = new Map<string, { count: number; windowStart: number }>();
+
+  constructor(
+    private readonly max: number,
+    private readonly windowMs: number,
+  ) {}
+
+  /** True if this request is within budget (and counts it). */
+  allow(req: IncomingMessage): boolean {
+    const k = req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const e = this.hits.get(k);
+    if (!e || now - e.windowStart >= this.windowMs) {
+      this.hits.set(k, { count: 1, windowStart: now });
+      return true;
+    }
+    e.count += 1;
+    return e.count <= this.max;
+  }
+
+  /** Drop windows that have expired — same lesson as LoginLimiter: a cleanup that cannot
+   *  actually delete is not cleanup. Takes `now` so it is testable. */
+  prune(now = Date.now()): void {
+    for (const [k, e] of this.hits) if (now - e.windowStart >= this.windowMs) this.hits.delete(k);
+  }
+
+  get tracked(): number {
+    return this.hits.size;
+  }
+}

@@ -21,7 +21,7 @@ import {
 import { probePlatform, ssoConfigured, notify, siteInfo } from './fabric';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
-import { LoginLimiter } from './rateLimit';
+import { LoginLimiter, RequestLimiter } from './rateLimit';
 import { THEMES } from './render/theme';
 import { DEFAULT_SALAH_HADITH } from './render/defaultHadith';
 import {
@@ -234,6 +234,10 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 export function createApi(deps: Deps) {
   const { store, orchestrator, volunteer } = deps;
   const loginLimiter = new LoginLimiter();
+  // Public widget: 90 requests per minute per IP. The embedded page polls every 30s, so a
+  // real viewer uses ~2; this only bites on abuse. (DISPLAY-017)
+  const widgetLimiter = new RequestLimiter(90, 60_000);
+  setInterval(() => widgetLimiter.prune(), 5 * 60_000).unref?.();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
   // OpenMasjidOS SSO (see /api/session) — so every other endpoint stays a simple,
@@ -268,6 +272,16 @@ export function createApi(deps: Deps) {
       // it works both on the LAN and behind the tunnel.
       const widgetMatch = /^(?:\/[a-z0-9-]+)?\/w\/([\w-]+)(\.json)?$/.exec(pathname);
       if (widgetMatch && method === 'GET') {
+        // Unauthenticated compute: every hit works out a focus day plus seven days of
+        // prayer times and renders a page. It shares a CPU with the 1 fps render loop that
+        // feeds the actual screens, so widget load can degrade the signage itself. The cap
+        // is deliberately generous — a real viewer polls twice a minute, and throttling a
+        // masjid's own website visitors would be worse than the load.
+        if (!widgetLimiter.allow(req)) {
+          res.writeHead(429, { ...SECURITY_HEADERS, 'content-type': 'text/plain', 'retry-after': '60' });
+          res.end('Too many requests.');
+          return;
+        }
         const tt = store.db.timetables.find((t) => t.id === widgetMatch[1]);
         // 404 (not 403) when the widget is off, so an off timetable's id isn't probeable.
         if (!tt || !tt.widget?.enabled) {
@@ -285,7 +299,12 @@ export function createApi(deps: Deps) {
           // reaches THIS app before advertising it (see /widget-info).
           res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',
-            'cache-control': 'no-store',
+            // A few seconds of shared caching so a burst (or the Cloudflare tunnel in
+            // front of a remote-access install) absorbs load instead of recomputing seven
+            // days of prayer times per hit. Kept short on purpose: the page ticks its
+            // countdown locally from `inSeconds`, so a few seconds of staleness is
+            // invisible, but a long TTL would visibly skew it.
+            'cache-control': 'public, max-age=5',
             'access-control-allow-origin': '*',
           });
           res.end(JSON.stringify({ app: WIDGET_APP_MARKER, ...data }));
@@ -298,7 +317,11 @@ export function createApi(deps: Deps) {
         // Explicitly allow embedding in a masjid's own site (the widget is meant to be framed).
         res.writeHead(200, {
           'content-type': 'text/html; charset=utf-8',
-          'cache-control': 'no-store',
+          // The shell only seeds the first paint and then re-fetches its own JSON, so it
+          // can be cached longer than the data.
+          'cache-control': 'public, max-age=30',
+          // Deliberately permissive: this page EXISTS to be embedded in a masjid's own
+          // website. Do not replace with the panel's frame-ancestors 'self'.
           'content-security-policy': 'frame-ancestors *',
         });
         res.end(html);

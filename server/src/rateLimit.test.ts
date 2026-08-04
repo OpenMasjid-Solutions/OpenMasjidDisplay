@@ -9,7 +9,7 @@
 import assert from 'node:assert';
 import test from 'node:test';
 import type { IncomingMessage } from 'node:http';
-import { LoginLimiter } from './rateLimit';
+import { LoginLimiter, RequestLimiter } from './rateLimit';
 
 const from = (ip: string) => ({ socket: { remoteAddress: ip } }) as unknown as IncomingMessage;
 const HOUR = 3_600_000;
@@ -68,6 +68,30 @@ test('backoff engages only after MAX_FREE, and a success clears the record', () 
   lim.succeed(req);
   assert.equal(lim.tracked, 0, 'a successful login forgets the client');
   assert.equal(lim.retryAfterMs(req), 0);
+});
+
+// ── RequestLimiter: the public widget's volume cap (DISPLAY-017) ──────────────
+test('the request limiter allows a normal viewer and stops a flood', () => {
+  const lim = new RequestLimiter(90, 60_000);
+  const viewer = from('203.0.113.20');
+  // A real embedded widget polls every 30s → ~2 requests a minute.
+  for (let i = 0; i < 90; i++) assert.equal(lim.allow(viewer), true, `request ${i + 1} should be allowed`);
+  assert.equal(lim.allow(viewer), false, 'the 91st in one window must be refused');
+});
+
+test('the request limiter is per IP and its window resets', () => {
+  const lim = new RequestLimiter(2, 60_000);
+  const a = from('198.51.100.1');
+  const b = from('198.51.100.2');
+  assert.equal(lim.allow(a), true);
+  assert.equal(lim.allow(a), true);
+  assert.equal(lim.allow(a), false, 'a is over budget');
+  assert.equal(lim.allow(b), true, 'b must be unaffected by a');
+
+  // Pruning expired windows must free the entry (same lesson as DISPLAY-011).
+  lim.prune(Date.now() + 60_001);
+  assert.equal(lim.tracked, 0, 'expired windows must be evicted');
+  assert.equal(lim.allow(a), true, 'a gets a fresh window after it expires');
 });
 
 test('clients are tracked separately, so one attacker cannot lock out another IP', () => {
