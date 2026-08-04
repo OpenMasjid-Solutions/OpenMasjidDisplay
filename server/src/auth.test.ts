@@ -13,7 +13,17 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { IncomingMessage } from 'node:http';
-import { hasValidSession, hasValidVolunteerSession, makeToken, makeVolunteerToken } from './auth';
+import {
+  hasValidSession,
+  hasValidVolunteerSession,
+  makeToken,
+  makeVolunteerToken,
+  isSecureRequest,
+  setCookieHeader,
+  clearCookieHeader,
+  setVolunteerCookieHeader,
+  clearVolunteerCookieHeader,
+} from './auth';
 import { WsHub } from './ws';
 
 const SECRET = crypto.randomBytes(32);
@@ -54,6 +64,53 @@ test('valid, tampered, foreign-secret and cross-audience tokens behave (no regre
   assert.equal(hasValidSession(reqWith(`omd_session=${vol}`), SECRET), false);
   assert.equal(hasValidVolunteerSession(reqWith(`omd_vol=${makeToken(SECRET)}`), SECRET), false);
   assert.equal(hasValidVolunteerSession(reqWith(`omd_vol=${vol}`), SECRET), true);
+});
+
+// ── Secure attribute, decided per request (DISPLAY-005) ───────────────────────
+const reqOver = (proto?: string, encrypted = false) =>
+  ({
+    headers: proto === undefined ? {} : { 'x-forwarded-proto': proto },
+    socket: { encrypted },
+  }) as unknown as IncomingMessage;
+
+test('a cookie is marked Secure for an HTTPS request and not for plain HTTP', () => {
+  // Behind the platform's TLS proxy (manifest https: true) the ingress sets and sanitises
+  // X-Forwarded-Proto, so an HTTPS visitor's 30-day admin cookie must not go out bare.
+  assert.equal(isSecureRequest(reqOver('https')), true);
+  assert.equal(setCookieHeader(makeToken(SECRET), undefined, true).includes('; Secure'), true);
+
+  // …and the plain-HTTP LAN flow this app ships in must keep working. A Secure cookie is
+  // silently never sent over http, so getting this wrong locks the admin out entirely.
+  assert.equal(isSecureRequest(reqOver('http')), false);
+  assert.equal(isSecureRequest(reqOver()), false, 'no header, plain socket → not secure');
+  assert.equal(setCookieHeader(makeToken(SECRET), undefined, false).includes('Secure'), false);
+});
+
+test('a direct TLS socket counts as secure even with no proxy header', () => {
+  assert.equal(isSecureRequest(reqOver(undefined, true)), true);
+});
+
+test('a comma-joined X-Forwarded-Proto uses the first (client-facing) hop', () => {
+  // Chained proxies append, so the value can be "https, http".
+  assert.equal(isSecureRequest(reqOver('https, http')), true);
+  assert.equal(isSecureRequest(reqOver('http, https')), false);
+  assert.equal(isSecureRequest(reqOver('  HTTPS  ')), true, 'case and padding must not matter');
+});
+
+test('clearing a cookie mirrors the Secure attribute, and the volunteer cookie behaves too', () => {
+  assert.equal(clearCookieHeader(true).includes('; Secure'), true);
+  assert.equal(clearCookieHeader(false).includes('Secure'), false);
+  assert.equal(setVolunteerCookieHeader(makeVolunteerToken(SECRET), true).includes('; Secure'), true);
+  assert.equal(setVolunteerCookieHeader(makeVolunteerToken(SECRET), false).includes('Secure'), false);
+  assert.equal(clearVolunteerCookieHeader(true).includes('; Secure'), true);
+});
+
+test('the hardening attributes every session cookie must keep', () => {
+  for (const c of [setCookieHeader(makeToken(SECRET)), setVolunteerCookieHeader(makeVolunteerToken(SECRET))]) {
+    assert.match(c, /HttpOnly/, 'must stay unreadable to JS');
+    assert.match(c, /SameSite=Lax/, 'this is what carries the CSRF defence');
+    assert.match(c, /Path=\//);
+  }
 });
 
 // ── End to end: the upgrade path must survive it ──────────────────────────────

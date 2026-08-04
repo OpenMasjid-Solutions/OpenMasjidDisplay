@@ -16,6 +16,7 @@ import {
   makeToken,
   setCookieHeader,
   clearCookieHeader,
+  isSecureRequest,
 } from './auth';
 import { probePlatform, ssoConfigured, notify, siteInfo } from './fabric';
 import { widgetPayload } from './render/svg';
@@ -318,7 +319,7 @@ export function createApi(deps: Deps) {
           const probe = await probePlatform(req);
           reachable = probe.reachable;
           if (probe.username) {
-            res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret, SSO_SESSION_MS), SSO_SESSION_MS));
+            res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret, SSO_SESSION_MS), SSO_SESSION_MS, isSecureRequest(req)));
             isAuthed = true;
             username = probe.username;
           }
@@ -359,7 +360,7 @@ export function createApi(deps: Deps) {
         store.update((db) => {
           db.admin = { hash, salt, name: name || undefined, createdAt: new Date().toISOString() };
         });
-        res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret)));
+        res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret), undefined, isSecureRequest(req)));
         return sendJson(res, 200, { ok: true });
       }
       if (pathname === '/api/login' && method === 'POST') {
@@ -369,14 +370,14 @@ export function createApi(deps: Deps) {
         if (!store.db.admin) return sendJson(res, 400, { error: 'This panel has not been set up yet.' });
         if (verifyPassword(String(body.password ?? ''), store.db.admin)) {
           loginLimiter.succeed(req);
-          res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret)));
+          res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret), undefined, isSecureRequest(req)));
           return sendJson(res, 200, { ok: true });
         }
         loginLimiter.fail(req);
         return sendJson(res, 401, { error: 'Incorrect password.' });
       }
       if (pathname === '/api/logout' && method === 'POST') {
-        res.setHeader('set-cookie', clearCookieHeader());
+        res.setHeader('set-cookie', clearCookieHeader(isSecureRequest(req)));
         return sendJson(res, 200, { ok: true });
       }
 
