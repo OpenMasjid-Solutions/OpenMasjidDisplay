@@ -407,24 +407,51 @@ OpenMasjidOS can no longer be flooded by someone on your network*"); Display has
 **Fix.** Rate-limit unauthenticated `/api/session` and `/api/setup` per IP, and add a
 short negative/reachability cache in `fabric.ts` so N requests collapse into one probe.
 
-## DISPLAY-007 — No session revocation: changing the password does not sign other devices out
+## DISPLAY-007 — No way to revoke a session, and no way to change the password
+
+> **Corrected after the initial write-up.** I first described this as "changing the password
+> does not sign other devices out", by analogy with the fix the Students app shipped. That
+> mechanism does not exist here: while implementing it I checked, and **this app has no
+> password-change endpoint and no password-change UI at all.** `git grep` for
+> `change.?password|newPassword|currentPassword` across `server/src` and `web/src` returns
+> nothing, and the only credential routes are `/api/setup` (one-shot; 409 once an admin
+> exists) and `/api/login`. The finding is real but the mechanism and the fix are different,
+> so it is recorded accurately here rather than quietly patched to match the original text.
 
 - **Category** session management · **Severity** Medium · **Confidence** Confirmed
-- **Where** [`server/src/auth.ts:42-65`](../../server/src/auth.ts#L42)
+- **Where** [`server/src/auth.ts:42-65`](../../server/src/auth.ts#L42), [`server/src/api.ts:335`](../../server/src/api.ts#L335), [`server/src/api.ts:365`](../../server/src/api.ts#L365)
+- **Status** **Reported only** — see [`ACTION_REQUIRED.md` §5](ACTION_REQUIRED.md)
 
 Tokens carry only `{ exp, aud }` and are validated purely by HMAC + expiry + audience.
-There is no token version, no session id, and no server-side session list, so there is no
-way to invalidate an issued token short of deleting `session.secret` (which is undocumented
-and also logs the admin out everywhere). Admin sessions last **30 days**.
+There is no token version, no session id, and no server-side session list. Combined with
+the absence of a password-change path, that means:
 
-**Failure scenario.** A volunteer signs in on a borrowed phone. The admin later changes the
-password from the office. The borrowed phone keeps full admin access for up to 30 more
-days. The Students app shipped a fix for exactly this ("*changing your password now signs
-you out on your other devices*"); Display has not.
+- an issued admin token is valid for its full **30 days** and **cannot be revoked by any
+  action available in the product**;
+- the local admin password, once set by first-run setup, **can never be changed** through
+  the app;
+- the only remedy for a leaked session is to delete `session.secret` from the data volume by
+  hand — undocumented, and it signs everyone out.
 
-**Fix.** Add a `tokenVersion` (or a stored secret generation) to `db.admin`, include it in
-the token payload, and bump it on password change — invalidating every other session while
-re-issuing the current one.
+**Failure scenario.** A volunteer signs in on a borrowed phone, or an admin's laptop is
+lost. There is nothing the masjid can do about it: no "sign out other devices", no password
+change, no session list. They wait up to 30 days, or they find someone willing to go into
+the Docker volume.
+
+**Why this is not fixed here.** The obvious mechanical fix — a `tokenVersion` in
+`db.admin`, bumped on password change — is unimplementable as written, because there is no
+password change to hook it to. Adding `tokenVersion` alone would change nothing observable.
+Making it useful means **adding new authenticated endpoints** (change-password and/or
+"sign out everywhere") plus the UI for them. That is a product feature, not a security
+patch, and inventing auth endpoints unprompted during an audit is exactly the kind of scope
+creep that turns a review into a regression. The design decision belongs to the maintainer.
+
+**Recommended fix, for whoever picks it up.** Add `POST /api/change-password` (verify the
+current password, then re-hash) and a `tokenVersion` on `db.admin` that is included in the
+token payload, checked in `verifyToken`, and bumped on both password change and an explicit
+"sign out other devices" action — re-issuing the caller's own cookie so they stay signed in.
+Under SSO the platform already owns identity, so this only needs to cover the local
+recovery password.
 
 ## DISPLAY-008 — Container runs everything as root
 

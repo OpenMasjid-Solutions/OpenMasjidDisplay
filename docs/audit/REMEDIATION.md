@@ -16,34 +16,45 @@ once at the end.
 
 ---
 
-## What ships on this branch
+## What shipped on this branch
 
-| # | Finding | Sev | Fix | Test added |
+16 findings fixed, **one commit each**, tests run on every commit. Where a test could be
+made to fail without the fix, that was checked explicitly ("revert-verified").
+
+| Finding | Sev | Commit | Fix | Verification |
 |---|---|---|---|---|
-| 1 | DISPLAY-001 | Critical | Decode cookie values defensively; add a process-level `uncaughtException` guard so no throw in an event listener can kill the app | Yes — regression test asserting a malformed cookie yields no throw, and a live-server test that the process survives `GET /ws` with `Cookie: omd_session=%` |
-| 2 | DISPLAY-002 | Critical | Timeout on `RenderWorker.request()` that rejects and recycles the worker; `renderedAt` stamp + staleness threshold in the write pump; on-screen stale indicator; raise repeated render failure from `debug` to `warn` and surface it in `TvStatus` | Yes — a hung worker must not wedge the pipeline; a stale frame must stop being served and must mark the screen not-fresh |
-| 3 | DISPLAY-003 | High | Require a ≥32-byte secret or regenerate (fail closed); write it atomically via tmp+rename | Yes — empty/short/malformed secret files each produce a fresh strong key, and a token forged with an empty key is rejected |
-| 4 | DISPLAY-011 | Low | Track `lastSeen` and evict on inactivity, so the sweep can actually delete | Yes — an entry with `fails > 0` is evicted once idle |
-| 5 | DISPLAY-016 | Low | Clamp/reject `month` outside 1–12 and constrain `year` | Yes |
-| 6 | DISPLAY-018 | Low | Write `db.json` and its tmp file with `mode: 0o600` | Covered by existing store tests + manual mode check |
-| 7 | DISPLAY-013 | Low | `nosniff`, `Referrer-Policy: no-referrer`, `CSP: frame-ancestors 'self'` on panel + API, leaving the widget's deliberate `frame-ancestors *` alone | Yes — headers present on panel/API, absent-by-design on the widget |
-| 8 | DISPLAY-004 | Medium | SHA-pin all five actions in `build-image.yml`, version in a trailing comment (house convention) | N/A — CI config; verified by the workflow running green |
-| 9 | DISPLAY-009 | Medium | Digest-pin `node:22-slim` and `bluenviron/mediamtx:1.19.1` | N/A — verified by the build succeeding |
-| 10 | DISPLAY-012 | Low | Override `postcss` to a patched version | N/A — verified by `npm audit` reaching 0 and the web build passing |
-| 11 | DISPLAY-015 | Low | Add `.github/dependabot.yml` for `server/`, `web/`, docker and github-actions | N/A |
-| 12 | DISPLAY-005 | Medium | Mark the session cookie `Secure` **per request** when the request arrived over HTTPS, so the plain-HTTP LAN flow keeps working | Yes — HTTPS request → `Secure`; plain HTTP → no `Secure` |
-| 13 | DISPLAY-006 | Medium | Rate-limit unauthenticated `/api/session` and `/api/setup`; add a short reachability cache in `fabric.ts` so N requests collapse to one probe | Yes |
-| 14 | DISPLAY-007 | Medium | `tokenVersion` in `db.admin`, carried in the token and bumped on password change | Yes — old token rejected after a password change, current session re-issued |
-| 15 | DISPLAY-014 | Low | Clock-sanity check with a discreet on-screen warning when the clock looks implausible | Yes |
-| 16 | DISPLAY-017 | Low | Per-IP limit + short `cache-control` on the public widget | Yes |
-| 17 | DISPLAY-019 | Low | `HEALTHCHECK` on `/healthz`; report render freshness there once #2 lands | N/A |
+| DISPLAY-001 | Critical | `08ac9f9` | Decode cookie values defensively; wrap the `'upgrade'` listener in try/catch so it can never again be the reason the app dies | Revert-verified — 3 tests fail with `URIError` without it, incl. an end-to-end test that the server still answers after the fatal request |
+| DISPLAY-002 | Critical | `b6f2a26` | 15s deadline on `RenderWorker.request()` that rejects **and recycles the worker**; `lastFrameAt` stamp + 30s staleness threshold; visible on-screen mark (dim + red bar, plain pixel maths, no re-render); `contentStale`/`frameAgeMs` in `TvStatus`; "Times out of date" badge; stale counts as not-online so the alert fires; render failure `debug` → `warn` | Revert-verified — without the deadline the test file hangs until killed, the production symptom exactly |
+| DISPLAY-003 | High | `77e1431` | Require ≥32 bytes or regenerate (fail closed); write atomically via tmp+rename | Revert-verified — fails with `short secret accepted for input ""` |
+| DISPLAY-004 | Medium | `e003ff6` | SHA-pin all five actions, version in a trailing comment | SHAs resolved from the GitHub API; `checkout` matches the pin OpenMasjidAPPS already uses; no `@vN` remains; YAML parses |
+| DISPLAY-005 | Medium | `8ff8afe` | `Secure` decided **per request** via `isSecureRequest(req)`, so the plain-HTTP LAN flow keeps working | 5 tests incl. chained `X-Forwarded-Proto` and the HttpOnly/SameSite guards |
+| DISPLAY-006 | Medium | `3b9d815` | 10 probes/s budget on outbound session validation + 5s reachability cache with in-flight coalescing | Revert-verified — 4 of 5 fail without it; one test exists purely to pin the fail-closed direction |
+| DISPLAY-009 | Medium | `669cb2c` | Digest-pin `node:22-slim` and `bluenviron/mediamtx:1.19.1` | Digests resolved live **and verified to be multi-arch indexes** (amd64+arm64), or the arm64 half of every release would break |
+| DISPLAY-011 | Low | `6b7bf12` | Evict on inactivity via `lastSeen`; never prune a client still locked out | Revert-verified — 4 of 5 fail with the old predicate |
+| DISPLAY-012 | Low | `396bbd1` | `overrides` postcss → 8.5.25 | `npm audit` 0 vulnerabilities; built bundle byte-identical (same asset hashes) |
+| DISPLAY-013 | Low | `da46000` | `nosniff`, `Referrer-Policy`, `frame-ancestors 'self'` on panel + API; widget untouched | Widget's permissive policy deliberately preserved |
+| DISPLAY-014 | Low | `5cadd87` | One-directional clock floor; reuses the DISPLAY-002 mark rather than touching the 2098-line renderer | 8 assertions incl. "no false positive on a 2030 clock" |
+| DISPLAY-015 | Low | `703fd07` | `.github/dependabot.yml` for npm ×2, docker, github-actions | Structure + no-tabs checked; GitHub validates on push (not yet proven) |
+| DISPLAY-016 | Low | `5cac6bb` | Reject an out-of-range month with 400 rather than silently substituting | — |
+| DISPLAY-017 | Low | `2d09662` | 90 req/min/IP `RequestLimiter` + short `cache-control` | 2 tests; cap deliberately generous |
+| DISPLAY-018 | Low | `4724346` | `db.json` written `0o600` (self-heals via rename) | Test asserts the mode **and** that the file really holds the credentials |
+| DISPLAY-019 | Low | `7534f99` | `HEALTHCHECK` on `/healthz` | Exact CMD verified: exit 0 serving, exit 1 against a dead port |
 
 ## What deliberately does NOT ship
 
 | Finding | Why held | Where recorded |
 |---|---|---|
+| **DISPLAY-007** (no session revocation) | **The fix in my own plan turned out to be unimplementable.** I planned a `tokenVersion` bumped on password change — then found this app has **no password-change endpoint or UI at all**. `tokenVersion` alone would change nothing observable; making it useful means adding new authenticated endpoints plus UI, which is a product feature, not a security patch. The finding is corrected in the report rather than patched to match the plan. | [`SECURITY_AUDIT.md` DISPLAY-007](SECURITY_AUDIT.md), [`ACTION_REQUIRED.md` §5](ACTION_REQUIRED.md) |
 | **DISPLAY-008** (root container) | Changing `USER` changes the uid that must own `/data`; every existing install has a root-owned volume, so shipping this without a migration would lock masjids out of their own configuration. Data-ownership migration = not autonomous. | [`ACTION_REQUIRED.md` §3](ACTION_REQUIRED.md) |
 | **DISPLAY-010** (tag overwrite policy) | Changes the release/update channel and interacts with the OpenMasjidAPPS catalog contract. Held for human review by rule. | [`ACTION_REQUIRED.md` §4](ACTION_REQUIRED.md) |
+
+### One scope change I made, and why
+
+DISPLAY-006's plan said "rate-limit unauthenticated `/api/session`". I bounded the
+**outbound** platform calls instead. The harm was the outbound fan-out, which is now capped
+at its source; adding an inbound limit to a GET the control panel legitimately polls would
+risk breaking the UI for no further benefit. Noted here rather than left as a silent
+divergence between plan and code.
 
 ---
 

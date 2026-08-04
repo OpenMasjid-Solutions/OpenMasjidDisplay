@@ -93,7 +93,37 @@ than shipped.
 
 ---
 
-## 5. Cross-repo
+## 5. Session revocation needs a product decision (DISPLAY-007)
+
+There is **no way to revoke an admin session, and no way to change the admin password.**
+`/api/setup` sets the local password once (409 afterwards) and `/api/login` checks it —
+that is the whole of it. Tokens carry only `{ exp, aud }`, so an issued admin cookie is
+valid for its full 30 days and nothing in the product can invalidate it. If a laptop is
+lost or a volunteer signs in on a borrowed phone, the masjid's only options are to wait up
+to 30 days or to delete `session.secret` out of the Docker volume by hand.
+
+**Why this was not fixed autonomously:** my own remediation plan said "add a `tokenVersion`
+and bump it on password change" — and there is no password change to bump it on. Adding
+`tokenVersion` by itself would change nothing observable. Making it useful means adding new
+**authenticated endpoints** (change-password, and/or "sign out other devices") together with
+the UI for them. That is a product feature, and inventing auth endpoints unprompted during a
+security review is how a review becomes a regression.
+
+**Action:** decide whether you want this, and in what shape. My recommendation:
+
+1. `POST /api/change-password` — verify the current password, re-hash, re-issue the caller's
+   own cookie.
+2. `tokenVersion` on `db.admin`, included in the token payload and checked in
+   `verifyToken()`.
+3. Bump it on password change and on an explicit "sign out other devices" button.
+
+Under SSO the platform already owns identity, so this only needs to cover the local recovery
+password. Until then, the honest workaround to document for admins is: stop the app, delete
+`<data volume>/session.secret`, start it again — everyone is signed out.
+
+---
+
+## 6. Cross-repo
 
 **No cross-repo API contract, wire protocol or shared schema change is required.** The
 Fabric contract (`OPENMASJID_*` env names, the `x-openmasjid-app-secret` header, the
@@ -114,7 +144,7 @@ Two cross-repo *observations*, offered as information rather than required work:
 
 ---
 
-## 6. Verification only you can do
+## 7. Verification only you can do
 
 - **DISPLAY-002 on real hardware.** I proved the code path but cannot reproduce a genuine
   resvg/worker hang on demand. Once the timeout and staleness indicator land, confirm on a
@@ -125,7 +155,7 @@ Two cross-repo *observations*, offered as information rather than required work:
 
 ---
 
-## 7. Not a security finding, but you should know
+## 8. Not a security finding, but you should know
 
 The revert to `v0.61.0` removed two CI improvements that were independent of the Pi-node
 work and are worth re-landing on their own merits:
