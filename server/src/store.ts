@@ -19,6 +19,11 @@ import type {
 
 const log = makeLog('store');
 const DB_VERSION = 1;
+/** Length of the session-cookie HMAC secret. A stored secret shorter than this is
+ *  treated as damaged and replaced rather than used (see loadSecret). */
+const SECRET_BYTES = 32;
+
+const errMsg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 const VALID_METHODS: CalcMethod[] = ['MWL', 'ISNA', 'Egypt', 'Makkah', 'Karachi', 'Custom'];
 
@@ -173,15 +178,31 @@ export class Store {
   private loadSecret(): Buffer {
     const f = path.join(config.dataDir, 'session.secret');
     try {
-      if (fs.existsSync(f)) return Buffer.from(fs.readFileSync(f, 'utf8').trim(), 'hex');
-    } catch {
-      /* regenerate below */
-    }
-    const secret = crypto.randomBytes(32);
-    try {
-      fs.writeFileSync(f, secret.toString('hex'), { mode: 0o600 });
+      if (fs.existsSync(f)) {
+        const stored = Buffer.from(fs.readFileSync(f, 'utf8').trim(), 'hex');
+        // Buffer.from(…, 'hex') NEVER throws: malformed or truncated hex silently decodes
+        // to a SHORT or EMPTY buffer, and createHmac will happily sign with a zero-length
+        // key — a key every attacker also knows, so anyone could then forge an admin
+        // session cookie. Fail CLOSED: accept only a full-length secret.
+        if (stored.length >= SECRET_BYTES) return stored;
+        log.warn(
+          'session.secret is truncated or not valid hex — generating a new one. ' +
+            'Everyone signed in will need to sign in again.',
+        );
+      }
     } catch (err) {
-      log.warn('could not persist session secret; sessions reset on restart');
+      log.warn(`could not read the session secret, generating a new one: ${errMsg(err)}`);
+    }
+    const secret = crypto.randomBytes(SECRET_BYTES);
+    try {
+      // tmp+rename, like persist() below: a crash or a full disk mid-write must not be
+      // able to leave a half-written secret on disk, since that was exactly the state
+      // that used to degrade into an empty (publicly known) signing key.
+      const tmp = `${f}.tmp`;
+      fs.writeFileSync(tmp, secret.toString('hex'), { mode: 0o600 });
+      fs.renameSync(tmp, f);
+    } catch (err) {
+      log.warn(`could not persist session secret; sessions reset on restart: ${errMsg(err)}`);
     }
     return secret;
   }
