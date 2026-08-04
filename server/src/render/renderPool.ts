@@ -29,7 +29,23 @@ const REQUEST_TIMEOUT_MS = (() => {
 
 const isTs = __filename.endsWith('.ts');
 const WORKER_FILE = path.join(__dirname, isTs ? 'renderWorker.ts' : 'renderWorker.js');
-const WORKER_OPTS = isTs ? { execArgv: ['--import', 'tsx'] } : undefined;
+/**
+ * Under tsx (local dev + tests) the worker has to load a .ts file. Register tsx's CJS hook,
+ * NOT `--import tsx`.
+ *
+ * `--import tsx` installs the ESM loader, so the worker loads renderWorker.ts as an ES
+ * module — and then its own extensionless `import './svg'` has to go through ESM resolution,
+ * which does not add extensions. On Node 24 that happened to resolve; on **Node 22 — the
+ * version the runtime image actually uses** — it fails with ERR_MODULE_NOT_FOUND, so
+ * rendering was broken for anyone running the server through tsx on the production Node
+ * version. It went unnoticed because nothing ran the tests on Node 22 until now.
+ *
+ * This package is CommonJS (no "type" in package.json, `module: CommonJS` in tsconfig), so
+ * tsx/cjs is the matching hook: renderWorker.ts loads as CJS and its extensionless requires
+ * resolve the way the rest of the codebase already expects. The compiled container path is
+ * unaffected — it loads plain .js with no hook at all.
+ */
+const WORKER_OPTS = isTs ? { execArgv: ['--require', 'tsx/cjs'] } : undefined;
 
 interface Pending {
   resolve: (m: WorkerMsg) => void;
