@@ -76,6 +76,30 @@ test('the secret is written atomically (no .tmp left behind)', () => {
   assert.ok(!fs.existsSync(`${SECRET_FILE}.tmp`), 'temp file should have been renamed away');
 });
 
+test('a leftover db.json.tmp cannot smuggle loose permissions onto db.json', { skip: process.platform === 'win32' ? 'POSIX modes only' : false }, () => {
+  // writeFileSync's `mode` applies only when it creates the file, so a tmp file left by an
+  // earlier crash kept its old permissions and rename() carried them onto db.json.
+  const dbFile = path.join(DIR, 'db.json');
+  const tmp = `${dbFile}.tmp`;
+  fs.writeFileSync(tmp, '{}');
+  fs.chmodSync(tmp, 0o644); // the hostile pre-existing state
+  const store = new Store();
+  store.update((db) => {
+    db.settings.scheduleTimezone = 'Europe/London';
+  });
+  return new Promise<void>((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        const mode = fs.statSync(dbFile).mode & 0o077;
+        assert.equal(mode, 0, `db.json inherited loose permissions (mode ${mode.toString(8)})`);
+        resolve();
+      } catch (e) {
+        reject(e as Error);
+      }
+    }, 400);
+  });
+});
+
 test('the credential files are not group/other-readable', { skip: process.platform === 'win32' ? 'POSIX modes only' : false }, () => {
   fs.writeFileSync(SECRET_FILE, ''); // force a regeneration through the write path
   const store = new Store();

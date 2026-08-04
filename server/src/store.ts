@@ -214,6 +214,16 @@ export class Store {
     // the file that actually contains the credentials was left to umask. Because rename
     // replaces the target inode, an existing 0644 db.json is corrected on the next save.
     fs.writeFileSync(tmp, JSON.stringify(db, null, 2), { mode: 0o600 });
+    // writeFileSync applies `mode` only when it CREATES the file (it is open(O_CREAT, mode)),
+    // so a db.json.tmp left behind by an earlier crash keeps whatever permissions it had —
+    // and rename() then carries them onto db.json, silently defeating the 0600 above.
+    // chmod unconditionally. Best-effort: some filesystems (and Windows) don't support it,
+    // and failing to persist the store would be a far worse outcome than a loose mode.
+    try {
+      fs.chmodSync(tmp, 0o600);
+    } catch {
+      /* not supported here */
+    }
     fs.renameSync(tmp, this.file);
   }
 

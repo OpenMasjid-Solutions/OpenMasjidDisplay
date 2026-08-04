@@ -43,6 +43,65 @@ test('a render request rejects instead of hanging when the worker never answers'
   await silent.terminate().catch(() => {});
 });
 
+test('a timeout settles EVERY request queued on the wedged worker, not just its own', async () => {
+  // The shared preview worker can have several renders in flight. `pending` is one Map for
+  // the life of the RenderWorker while the failure handler is per worker generation, so a
+  // naive generation guard would leave the second request unsettled for ever.
+  const silent = new Worker('require("node:worker_threads").parentPort.on("message", () => {});', {
+    eval: true,
+  });
+  const rw = new RenderWorker(400);
+  const internals = rw as unknown as {
+    worker: Worker | null;
+    pending: Map<number, unknown>;
+    request: (p: Record<string, unknown>) => Promise<unknown>;
+  };
+  internals.worker = silent;
+
+  const a = internals.request({ kind: 'raw' });
+  const b = internals.request({ kind: 'raw' });
+  assert.equal(internals.pending.size, 2, 'both should be queued on the same worker');
+
+  const settled = await Promise.allSettled([a, b]);
+  assert.deepEqual(settled.map((s) => s.status), ['rejected', 'rejected'], 'neither may hang');
+  assert.equal(internals.pending.size, 0, 'the queue must be drained so the pipeline unblocks');
+  assert.equal(internals.worker, null, 'the wedged worker must be dropped');
+
+  rw.dispose();
+  await silent.terminate().catch(() => {});
+});
+
+test("a zombie worker's exit must not kill the replacement's in-flight render", async () => {
+  // Reproduces the generation bug: worker1 is recycled, worker2 takes over, then worker1
+  // fires 'exit'. That must not reject worker2's pending work.
+  const rw = new RenderWorker(50_000); // long deadline: the timer must not be what settles it
+  const internals = rw as unknown as {
+    worker: Worker | null;
+    pending: Map<number, { reject: (e: Error) => void }>;
+    request: (p: Record<string, unknown>) => Promise<unknown>;
+    recycle: (w: Worker, e: Error) => void;
+  };
+
+  const w1 = new Worker('require("node:worker_threads").parentPort.on("message", () => {});', { eval: true });
+  internals.worker = w1;
+  internals.recycle(w1, new Error('recycled')); // drops w1, clears its queue
+
+  const w2 = new Worker('require("node:worker_threads").parentPort.on("message", () => {});', { eval: true });
+  internals.worker = w2;
+  const live = internals.request({ kind: 'raw' }); // queued on w2
+  assert.equal(internals.pending.size, 1);
+
+  await w1.terminate().catch(() => {}); // w1's 'exit' fires here
+  await new Promise((r) => setTimeout(r, 200));
+
+  assert.equal(internals.pending.size, 1, "the replacement's render must survive w1's exit");
+  assert.equal(internals.worker, w2, 'w2 must still be the current worker');
+
+  live.catch(() => {}); // we never answer it; stop an unhandled rejection at teardown
+  rw.dispose();
+  await w2.terminate().catch(() => {});
+});
+
 test('a real render worker still answers normally (the deadline must not break rendering)', async () => {
   const rw = new RenderWorker(); // production deadline
   try {
