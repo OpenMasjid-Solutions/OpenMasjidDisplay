@@ -209,7 +209,11 @@ export class Store {
 
   private persist(db: DB): void {
     const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+    // db.json holds the admin's scrypt hash + salt and the volunteer PIN hash, so it must
+    // not be group/other readable. session.secret next door was already written 0o600;
+    // the file that actually contains the credentials was left to umask. Because rename
+    // replaces the target inode, an existing 0644 db.json is corrected on the next save.
+    fs.writeFileSync(tmp, JSON.stringify(db, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
   }
 

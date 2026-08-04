@@ -76,9 +76,29 @@ test('the secret is written atomically (no .tmp left behind)', () => {
   assert.ok(!fs.existsSync(`${SECRET_FILE}.tmp`), 'temp file should have been renamed away');
 });
 
-test('session.secret is not group/other-readable', { skip: process.platform === 'win32' ? 'POSIX modes only' : false }, () => {
+test('the credential files are not group/other-readable', { skip: process.platform === 'win32' ? 'POSIX modes only' : false }, () => {
   fs.writeFileSync(SECRET_FILE, ''); // force a regeneration through the write path
-  new Store();
-  const mode = fs.statSync(SECRET_FILE).mode & 0o077;
-  assert.equal(mode, 0, `session.secret is group/other-accessible (mode ${mode.toString(8)})`);
+  const store = new Store();
+  // Force a save so db.json is written through persist().
+  store.update((db) => {
+    db.settings.scheduleTimezone = 'UTC';
+  });
+  const dbFile = path.join(DIR, 'db.json');
+  // persist() is debounced ~150ms.
+  return new Promise<void>((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        for (const f of [SECRET_FILE, dbFile]) {
+          const mode = fs.statSync(f).mode & 0o077;
+          assert.equal(mode, 0, `${path.basename(f)} is group/other-accessible (mode ${mode.toString(8)})`);
+        }
+        // db.json really does hold credentials — that is why the mode matters.
+        const raw = fs.readFileSync(dbFile, 'utf8');
+        assert.ok(raw.includes('"admin"') && raw.includes('"volunteerAuth"'), 'expected the credential fields');
+        resolve();
+      } catch (e) {
+        reject(e as Error);
+      }
+    }, 400);
+  });
 });
