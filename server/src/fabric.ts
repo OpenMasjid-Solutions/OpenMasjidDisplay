@@ -193,6 +193,48 @@ interface CacheEntry {
 const positiveCache = new Map<string, CacheEntry>();
 const CACHE_MS = 45_000;
 
+/**
+ * Cap on how often we will call OUT to the platform to validate a session.
+ *
+ * /api/session is unauthenticated, and /api/setup is permanently reachable under SSO
+ * (store.db.admin stays null for the life of the deployment, so its 409 short-circuit
+ * never fires). Both call probePlatform. A caller spamming DISTINCT cookie values misses
+ * the positive cache every time, so each request used to cause its own outbound fetch:
+ * one unauthenticated client could turn this app into a flood generator against
+ * OpenMasjidOS while burning an outbound socket here per request, held for up to 4s.
+ *
+ * 10 probes/second is far above any real panel (which validates once and then rides the
+ * 45s positive cache) and far below useful amplification.
+ */
+const PROBE_BUDGET = 10;
+const PROBE_WINDOW_MS = 1000;
+let probeWindowStart = 0;
+let probesThisWindow = 0;
+let throttleWarned = 0;
+
+function takeProbeBudget(): boolean {
+  const now = Date.now();
+  if (now - probeWindowStart >= PROBE_WINDOW_MS) {
+    probeWindowStart = now;
+    probesThisWindow = 0;
+  }
+  if (probesThisWindow >= PROBE_BUDGET) {
+    if (now - throttleWarned > 60_000) {
+      throttleWarned = now;
+      log.warn('throttling outbound platform session checks (more than 10/s) — someone is hammering /api/session');
+    }
+    return false;
+  }
+  probesThisWindow += 1;
+  return true;
+}
+
+/** Short cache for the bare "is the platform up?" probe, which /api/session performs on
+ *  EVERY request that carries no platform cookie — i.e. every anonymous visitor. */
+let reachCache: { at: number; ok: boolean } | null = null;
+const REACH_CACHE_MS = 5_000;
+let reachInFlight: Promise<boolean> | null = null;
+
 function nowMs(): number {
   return Date.now();
 }
@@ -223,6 +265,16 @@ export async function probePlatform(req: IncomingMessage): Promise<PlatformProbe
 
   const cached = positiveCache.get(token);
   if (cached && cached.expires > nowMs()) return { username: cached.username, reachable: true };
+
+  // Over the outbound budget: answer "platform is up, this visitor is not signed in".
+  //
+  // The `reachable` value here is load-bearing for SECURITY, not just for UI wording.
+  // /api/setup refuses an anonymous local-admin claim only when
+  // `probe.reachable && !probe.username`. Returning reachable:false under throttle would
+  // therefore let an attacker exhaust the budget and then claim permanent local admin —
+  // turning a DoS guard into an authentication bypass. So this fails CLOSED: reachable
+  // stays true, no session is granted, and /api/setup still returns 403.
+  if (!takeProbeBudget()) return { username: null, reachable: true };
 
   warnIfCleartextSecret(); // about to send the per-app secret — flag it if cleartext to a public host
   try {
@@ -264,15 +316,27 @@ export async function probePlatform(req: IncomingMessage): Promise<PlatformProbe
  *  response (even an error status) proves we reached it. */
 async function platformReachable(): Promise<boolean> {
   if (!config.omosBaseUrl) return false;
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 3000);
-    await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'error' });
-    clearTimeout(t);
-    return true;
-  } catch {
-    return false;
-  }
+  const now = Date.now();
+  if (reachCache && now - reachCache.at < REACH_CACHE_MS) return reachCache.ok;
+  // Collapse concurrent callers onto one in-flight probe, so a burst of anonymous
+  // requests produces a single outbound call rather than one each.
+  if (reachInFlight) return reachInFlight;
+  reachInFlight = (async () => {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3000);
+      await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'error' });
+      clearTimeout(t);
+      reachCache = { at: Date.now(), ok: true };
+      return true;
+    } catch {
+      reachCache = { at: Date.now(), ok: false };
+      return false;
+    } finally {
+      reachInFlight = null;
+    }
+  })();
+  return reachInFlight;
 }
 
 /**
