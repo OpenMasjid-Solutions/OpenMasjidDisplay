@@ -98,11 +98,75 @@ test('a comma-joined X-Forwarded-Proto uses the first (client-facing) hop', () =
 });
 
 test('clearing a cookie mirrors the Secure attribute, and the volunteer cookie behaves too', () => {
-  assert.equal(clearCookieHeader(true).includes('; Secure'), true);
-  assert.equal(clearCookieHeader(false).includes('Secure'), false);
+  assert.ok(clearCookieHeader(true).some((c) => c.includes('; Secure')));
+  assert.ok(clearCookieHeader(false).every((c) => !c.includes('Secure')));
   assert.equal(setVolunteerCookieHeader(makeVolunteerToken(SECRET), true).includes('; Secure'), true);
   assert.equal(setVolunteerCookieHeader(makeVolunteerToken(SECRET), false).includes('Secure'), false);
-  assert.equal(clearVolunteerCookieHeader(true).includes('; Secure'), true);
+  assert.ok(clearVolunteerCookieHeader(true).some((c) => c.includes('; Secure')));
+});
+
+// ── The dual-port cookie-jar trap (regression guard) ──────────────────────────
+// Cookies are keyed by (name, domain, path) and ignore the PORT, and this app is published
+// on both a TLS-proxied port and a plain-HTTP port of the SAME host. With one shared name,
+// the HTTPS cookie (Secure) could neither be received NOR REPLACED on the HTTP port —
+// browsers refuse a non-Secure Set-Cookie that would overwrite a Secure one ("Leave Secure
+// Cookies Alone"). The admin bounced back to the login form after a CORRECT password, with
+// no way out. Separate names per scheme are what prevent that.
+test('the HTTPS and plain-HTTP session cookies use DIFFERENT names so they cannot collide', () => {
+  const https = setCookieHeader(makeToken(SECRET), undefined, true);
+  const http = setCookieHeader(makeToken(SECRET), undefined, false);
+  const nameOf = (c: string) => c.slice(0, c.indexOf('='));
+  assert.notEqual(nameOf(https), nameOf(http), 'one shared name is what caused the lockout');
+  assert.match(https, /^omd_session_s=/);
+  assert.match(http, /^omd_session=/);
+  // Same for the volunteer page, which is served on a proxied path AND an unproxied port.
+  assert.notEqual(
+    nameOf(setVolunteerCookieHeader(makeVolunteerToken(SECRET), true)),
+    nameOf(setVolunteerCookieHeader(makeVolunteerToken(SECRET), false)),
+  );
+});
+
+test('an HTTP login still works when an HTTPS session already exists (the lockout)', () => {
+  const httpsTok = makeToken(SECRET);
+  const httpTok = makeToken(SECRET);
+  // The browser's jar after using BOTH entry points: the Secure cookie is only ever sent
+  // over HTTPS, the plain one over either.
+  const overHttp = (cookie: string) =>
+    ({ headers: { cookie }, socket: {} }) as unknown as IncomingMessage;
+  const overHttps = (cookie: string) =>
+    ({ headers: { cookie, 'x-forwarded-proto': 'https' }, socket: {} }) as unknown as IncomingMessage;
+
+  // The decisive assertion: with an HTTPS session already stored, a fresh HTTP session
+  // authenticates. Before the fix the HTTP cookie could not be stored at all.
+  assert.equal(hasValidSession(overHttp(`omd_session=${httpTok}`), SECRET), true);
+  assert.equal(
+    hasValidSession(overHttps(`omd_session_s=${httpsTok}; omd_session=${httpTok}`), SECRET),
+    true,
+    'both may coexist',
+  );
+});
+
+test('a Secure-named cookie never authenticates a plain-HTTP request', () => {
+  const tok = makeToken(SECRET);
+  const overHttp = ({ headers: { cookie: `omd_session_s=${tok}` }, socket: {} }) as unknown as IncomingMessage;
+  // A real browser would not even send it; refuse it regardless so the scheme boundary is
+  // enforced server-side too.
+  assert.equal(hasValidSession(overHttp, SECRET), false);
+});
+
+test('an HTTPS request accepts a session started on the legacy HTTP port', () => {
+  const tok = makeToken(SECRET);
+  const req = ({ headers: { cookie: `omd_session=${tok}`, 'x-forwarded-proto': 'https' }, socket: {} }) as unknown as IncomingMessage;
+  assert.equal(hasValidSession(req, SECRET), true, 'moving from the HTTP port to TLS must not sign you out');
+});
+
+test('an HTTPS logout clears BOTH names, so it is never partial', () => {
+  const cleared = clearCookieHeader(true);
+  assert.ok(cleared.some((c) => c.startsWith('omd_session_s=;')));
+  assert.ok(cleared.some((c) => c.startsWith('omd_session=;')));
+  // Plain HTTP can only clear its own; the Secure cookie is neither sent nor clearable
+  // there, and cannot authenticate an HTTP request anyway.
+  assert.deepEqual(clearCookieHeader(false).length, 1);
 });
 
 test('the hardening attributes every session cookie must keep', () => {

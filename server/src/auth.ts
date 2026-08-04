@@ -8,6 +8,30 @@ import type { IncomingMessage } from 'node:http';
 
 const COOKIE = 'omd_session';
 const VOL_COOKIE = 'omd_vol';
+/**
+ * The `Secure` variants get their OWN NAMES, and that is load-bearing.
+ *
+ * A cookie is identified by (name, domain, path) and IGNORES the port. This app is
+ * published on BOTH a TLS-proxied port and a plain-HTTP port of the SAME host —
+ * manifest.yaml opts into `https: true` and says in as many words that "The plain HTTP port
+ * stays published as a legacy fallback", and the volunteer page is served both on the
+ * proxied main port at /volunteer and on its own unproxied HTTP port. Our cookies set no
+ * `Domain` and use `Path=/`, so with ONE shared name both entry points contend for a single
+ * jar slot.
+ *
+ * That combination is a trap: once the HTTPS entry point stores a `Secure` cookie, the
+ * plain-HTTP entry point can neither receive it NOR replace it, because browsers refuse a
+ * non-`Secure` Set-Cookie that would overwrite a `Secure` cookie of the same name/domain/
+ * path ("Leave Secure Cookies Alone", RFC 6265bis §5.7 — Chrome/Firefox 52+, Safari). The
+ * admin then types the correct password on the HTTP port, gets a 200, and bounces straight
+ * back to the login form because the browser silently discarded the new cookie — with no
+ * in-app way out, exactly when TLS is broken and the fallback is what they need.
+ *
+ * Separate names mean the two schemes never collide, so each entry point can always mint
+ * and clear its own session. Do not merge them back into one name.
+ */
+const COOKIE_S = 'omd_session_s';
+const VOL_COOKIE_S = 'omd_vol_s';
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 const VOL_MAX_AGE_MS = 12 * 3600 * 1000; // volunteer sessions are short-lived
 
@@ -42,7 +66,12 @@ export function isSecureRequest(req: IncomingMessage): boolean {
     .trim()
     .toLowerCase();
   if (xfp) return xfp === 'https';
-  return (req.socket as { encrypted?: boolean }).encrypted === true;
+  // `socket` is optional-chained deliberately: hasValidSession() now calls this on EVERY
+  // request, and req.socket is null once the socket has been destroyed (an aborted request,
+  // or the WebSocket upgrade path). An unguarded dereference here would throw inside the
+  // auth check — the very shape of bug DISPLAY-001 was about. Absent socket → not secure,
+  // which fails safe (a non-Secure cookie is still usable).
+  return (req.socket as { encrypted?: boolean } | null | undefined)?.encrypted === true;
 }
 
 const secureAttr = (secure: boolean): string => (secure ? '; Secure' : '');
@@ -121,21 +150,37 @@ function parseCookies(header?: string): Record<string, string> {
   return out;
 }
 
+/** Names to look for, in order, for a request of this scheme. Over HTTPS the plain-named
+ *  cookie is also accepted, so a session started on the legacy HTTP port keeps working when
+ *  the admin moves to the TLS port. Over plain HTTP the `Secure` cookie is never sent by the
+ *  browser at all, so there is nothing extra to consider. */
+const namesFor = (base: string, secureName: string, secure: boolean): string[] =>
+  secure ? [secureName, base] : [base];
+
 /** A valid, unexpired session cookie. (The caller separately checks that an
  *  admin account exists — before setup, nobody is authed.) */
 export function hasValidSession(req: IncomingMessage, secret: Buffer): boolean {
-  const token = parseCookies(req.headers.cookie)[COOKIE];
-  return !!token && verifyToken(secret, token, 'admin');
+  const jar = parseCookies(req.headers.cookie);
+  return namesFor(COOKIE, COOKIE_S, isSecureRequest(req)).some(
+    (n) => !!jar[n] && verifyToken(secret, jar[n], 'admin'),
+  );
 }
 
-/** @param secure add `Secure` — pass isSecureRequest(req) so an HTTPS caller's cookie is
- *  protected while the plain-HTTP LAN flow keeps working. */
+/** @param secure add `Secure` AND use the Secure cookie name — pass isSecureRequest(req),
+ *  so an HTTPS caller's cookie is protected while the plain-HTTP flow keeps its own. */
 export function setCookieHeader(token: string, maxAgeMs = MAX_AGE_MS, secure = FORCE_SECURE): string {
-  return `${COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}${secureAttr(secure)}`;
+  const name = secure ? COOKIE_S : COOKIE;
+  return `${name}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}${secureAttr(secure)}`;
 }
 
-export function clearCookieHeader(secure = FORCE_SECURE): string {
-  return `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(secure)}`;
+/** Clear EVERY name this scheme could have authenticated with, so a logout is never
+ *  partial. Returns an array — `res.setHeader('set-cookie', …)` accepts one. */
+export function clearCookieHeader(secure = FORCE_SECURE): string[] {
+  const gone = (name: string, sec: boolean) =>
+    `${name}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(sec)}`;
+  // Over HTTPS hasValidSession accepts either name, so both must go. Over plain HTTP the
+  // Secure cookie is neither sent nor clearable (and cannot authenticate), so leave it.
+  return secure ? [gone(COOKIE_S, true), gone(COOKIE, false)] : [gone(COOKIE, false)];
 }
 
 // ── Volunteer session (separate cookie + audience from the admin) ─────────────
@@ -144,14 +189,19 @@ export function makeVolunteerToken(secret: Buffer): string {
 }
 
 export function hasValidVolunteerSession(req: IncomingMessage, secret: Buffer): boolean {
-  const token = parseCookies(req.headers.cookie)[VOL_COOKIE];
-  return !!token && verifyToken(secret, token, 'vol');
+  const jar = parseCookies(req.headers.cookie);
+  return namesFor(VOL_COOKIE, VOL_COOKIE_S, isSecureRequest(req)).some(
+    (n) => !!jar[n] && verifyToken(secret, jar[n], 'vol'),
+  );
 }
 
 export function setVolunteerCookieHeader(token: string, secure = FORCE_SECURE): string {
-  return `${VOL_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(VOL_MAX_AGE_MS / 1000)}${secureAttr(secure)}`;
+  const name = secure ? VOL_COOKIE_S : VOL_COOKIE;
+  return `${name}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(VOL_MAX_AGE_MS / 1000)}${secureAttr(secure)}`;
 }
 
-export function clearVolunteerCookieHeader(secure = FORCE_SECURE): string {
-  return `${VOL_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(secure)}`;
+export function clearVolunteerCookieHeader(secure = FORCE_SECURE): string[] {
+  const gone = (name: string, sec: boolean) =>
+    `${name}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(sec)}`;
+  return secure ? [gone(VOL_COOKIE_S, true), gone(VOL_COOKIE, false)] : [gone(VOL_COOKIE, false)];
 }
