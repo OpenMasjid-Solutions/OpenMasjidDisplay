@@ -9,10 +9,17 @@
 # the SHA-pinned `uses:` in the workflows — both are pinned deliberately for
 # supply-chain reasons (DISPLAY-004, DISPLAY-009), and Dependabot is what keeps a
 # deliberate pin from quietly becoming a stale one.
+#
+# EVERY entry sets `target-branch: dev`. Without it Dependabot opens against the default
+# branch, which is `main` — and `main` only ever moves as a release (CLAUDE.md →
+# "Branching policy"), so every bump would arrive as a PR nobody is allowed to merge.
+# Pointing it at `dev` means a bump lands where work belongs and ships with the next
+# release. Note this also makes `dev` the branch Dependabot reads the manifests from.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /server
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -24,6 +31,7 @@ updates:
 
   - package-ecosystem: npm
     directory: /web
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -34,12 +42,14 @@ updates:
 
   - package-ecosystem: docker
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
