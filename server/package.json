@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@resvg/resvg-js": "2.6.2",
-    "ws": "^8.18.0"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
