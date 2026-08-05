@@ -9,6 +9,78 @@
 
 ---
 
+## 0. Branching policy — check this before your first edit
+
+**This repo has two branches and they are not interchangeable. `main` is what every masjid
+installs.**
+
+**Session-start check — run it before changing anything:**
+
+```sh
+git branch --show-current      # must print: dev
+```
+
+If it prints anything else, `git checkout dev` first. Do not start work until it says `dev`.
+
+### The rules
+
+1. **All development happens on `dev`.** Every feature, every fix, every experiment, every
+   docs change — this session and every future one.
+2. **Never commit to `main`.** Not directly, not "just this once", not for a one-line docs
+   typo, not for a hotfix.
+3. **Never merge, rebase onto, or cherry-pick into `main` autonomously.** Not for a Critical
+   security finding — that is what a fast `dev` → *"merge to main"* turnaround is for.
+4. **`main` moves only when Hasan says the words "merge to main."** Nothing else authorises
+   it: not a green CI run, not an urgent-looking bug, not an inference that he'd obviously
+   want it.
+5. **That merge is a release**, not a merge. It carries the full release chain in §5 below.
+
+### Channels: `dev` and `main` are wired to different images
+
+OpenMasjidOS has an Update Channel toggle, and the dev catalog resolves this app from the
+`dev` branch. So the branch you are on decides which image real devices pull:
+
+| branch  | compose references              | image built by CI            | who installs it            |
+| ------- | ------------------------------- | ---------------------------- | -------------------------- |
+| `dev`   | `…/openmasjiddisplay:dev`       | `:dev` (moving, unpinned)    | the OpenMasjidOS dev channel |
+| `main`  | `…:<version>@sha256:<digest>`   | `:<version>` **and** `:latest` | every masjid (stable)      |
+
+[`.github/workflows/build-image.yml`](.github/workflows/build-image.yml) decides this from
+`GITHUB_REF` alone: a build on `dev` pushes the `:dev` tag and **nothing else**, so it can
+never overwrite a published version tag or move `:latest`. `:dev` is deliberately **not**
+digest-pinned — pinning it would freeze the dev channel on one build and make testing on it
+meaningless. The catalog warns about the missing `@sha256` for a dev entry; that warning is
+expected.
+
+**`docker-compose.yml`'s `image:` line is the only file that differs between the branches**,
+which makes it the one thing a careless merge breaks. The `channel` job in
+[`.github/workflows/checks.yml`](.github/workflows/checks.yml) fails the build in both
+directions — `:dev` on `main`, or a leftover digest pin on `dev` — so this is enforced, not
+merely documented. Don't "fix" a red `channel` job by relaxing the check.
+
+### On "merge to main" — the release chain
+
+Only when Hasan has said it. In order:
+
+1. Bump the version in **`manifest.yaml`**, **`server/package.json`**, **`web/package.json`**.
+2. Merge `dev` → `main`, and in that merge **repin `docker-compose.yml`** from `:dev` to
+   `…:<new version>@sha256:<digest>`. The digest doesn't exist yet — use the previous
+   release's temporarily, or land the merge and repin in the follow-up commit at step 5.
+3. Tag `v<version>` and push it. CI builds multi-arch (amd64 + arm64) and publishes
+   `:<version>` + `:latest`.
+4. Fetch the **manifest-list** digest of the published image (not a per-arch one).
+5. Commit the real `@sha256` pin to `docker-compose.yml` on `main`.
+6. Update `registry.yaml` in **OpenMasjidAPPS**: `ref:` = the tag, `commit:` = the SHA of the
+   digest-pin commit from step 5. Never hand-edit `catalog.json` — it is generated.
+
+Every push to `main` republishes `:<version>` and `:latest`, so a published version tag is
+**not** immutable (DISPLAY-010, [`docs/audit/ACTION_REQUIRED.md`](docs/audit/ACTION_REQUIRED.md)
+§4). The `@sha256` pin is the only thing protecting existing installs. Never remove it.
+
+Then return to `dev` and keep working there.
+
+---
+
 ## 1. What we are building (one paragraph)
 
 **OpenMasjidDisplay** is an app for
