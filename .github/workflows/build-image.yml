@@ -2,19 +2,32 @@
 # Copyright (C) 2026 OpenMasjid-Solutions
 name: Build image
 
-# Builds this app's Dockerfile multi-arch (amd64 + arm64) and pushes to GHCR as
-#   ghcr.io/<owner>/<repo-name>:<manifest version>   (+ :latest)
-# The owner is taken from the repo (lowercased), so under the OpenMasjid-Solutions
-# org the image is
+# Builds this app's Dockerfile multi-arch (amd64 + arm64) and pushes it to GHCR. The
+# owner is taken from the repo (lowercased), so under the OpenMasjid-Solutions org the
+# image is
 #   ghcr.io/openmasjid-solutions/openmasjiddisplay
 # which is what docker-compose.yml references.
+#
+# TWO CHANNELS, and which tags a build may write is decided ONLY by the ref it ran on:
+#
+#   ref                     tags pushed                    installed by
+#   ----------------------  -----------------------------  ---------------------------
+#   refs/heads/dev          :dev                           the OpenMasjidOS dev channel
+#   refs/heads/main         :<manifest version>, :latest    every masjid (stable)
+#   refs/tags/v*            :<manifest version>, :latest    every masjid (stable)
+#
+# The point of the split is that a dev build must never be able to become what a masjid
+# installs from the stable catalog. :dev is deliberately a MOVING tag — it is the head of
+# the dev branch and nothing else — so it is the one image reference in this repo that is
+# not digest-pinned. Stable installs are still pinned by @sha256 in docker-compose.yml on
+# main. See CLAUDE.md -> "Branching policy".
 #
 # After the first run, make the GHCR package Public (owner -> Packages -> package
 # settings) so masjid hosts can pull it without authentication.
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
     # Docs-only changes don't change the image — skip the (slow) multi-arch build.
     paths-ignore:
@@ -40,14 +53,40 @@ jobs:
       # repo and OpenMasjidAPPS/.github/workflows/build-catalog.yml. (DISPLAY-004)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Resolve image name + version
+      - name: Resolve image name + channel tags
         id: meta
         run: |
           ver=$(grep -E '^version:' manifest.yaml | head -1 | sed -E 's/^version:[[:space:]]*//' | tr -d "\"' \r")
           [ -n "$ver" ] || ver=latest
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          name=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/$owner/$name"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
-          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-          echo "name=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+          # The channel gate — ONE decision, made from GITHUB_REF and nothing else. Not an
+          # input, not a repo variable a caller could set: a dev build gets the moving :dev
+          # tag and NOTHING else, so it can never overwrite a published version tag or move
+          # :latest. Anything that is not refs/heads/dev (main, a v* tag, a manual dispatch
+          # on either) is stable.
+          if [ "$GITHUB_REF" = 'refs/heads/dev' ]; then
+            channel=dev
+            tags="$image:dev"
+          else
+            channel=stable
+            tags=$(printf '%s\n%s' "$image:$ver" "$image:latest")
+          fi
+
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          {
+            echo 'tags<<TAGS_EOF'
+            echo "$tags"
+            echo 'TAGS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          echo "channel=$channel for $GITHUB_REF; pushing:"
+          echo "$tags" | sed 's/^/  /'
 
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -65,11 +104,14 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/${{ steps.meta.outputs.owner }}/${{ steps.meta.outputs.name }}:${{ steps.meta.outputs.version }}
-            ghcr.io/${{ steps.meta.outputs.owner }}/${{ steps.meta.outputs.name }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Resolved by the channel gate above — do NOT hard-code :latest back in here.
+          tags: ${{ steps.meta.outputs.tags }}
+          # Scope the layer cache per CHANNEL (not per ref) so a dev build cannot poison the
+          # cache a stable release restores from, while main and every v* tag still share
+          # one warm cache — scoping per ref_name would give each release tag an empty
+          # cache and make every release a cold multi-arch build.
+          cache-from: type=gha,scope=${{ steps.meta.outputs.channel }}
+          cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.channel }}
 
       # Optional: tell the OpenMasjidAPPS catalog to rebuild after a release.
       # Requires a repo secret CATALOG_DISPATCH_TOKEN (a PAT with 'repo' scope).
