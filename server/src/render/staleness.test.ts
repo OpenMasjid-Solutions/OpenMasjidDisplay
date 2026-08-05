@@ -43,6 +43,65 @@ test('a render request rejects instead of hanging when the worker never answers'
   await silent.terminate().catch(() => {});
 });
 
+test('a timeout settles EVERY request queued on the wedged worker, not just its own', async () => {
+  // The shared preview worker can have several renders in flight. `pending` is one Map for
+  // the life of the RenderWorker while the failure handler is per worker generation, so a
+  // naive generation guard would leave the second request unsettled for ever.
+  const silent = new Worker('require("node:worker_threads").parentPort.on("message", () => {});', {
+    eval: true,
+  });
+  const rw = new RenderWorker(400);
+  const internals = rw as unknown as {
+    worker: Worker | null;
+    pending: Map<number, unknown>;
+    request: (p: Record<string, unknown>) => Promise<unknown>;
+  };
+  internals.worker = silent;
+
+  const a = internals.request({ kind: 'raw' });
+  const b = internals.request({ kind: 'raw' });
+  assert.equal(internals.pending.size, 2, 'both should be queued on the same worker');
+
+  const settled = await Promise.allSettled([a, b]);
+  assert.deepEqual(settled.map((s) => s.status), ['rejected', 'rejected'], 'neither may hang');
+  assert.equal(internals.pending.size, 0, 'the queue must be drained so the pipeline unblocks');
+  assert.equal(internals.worker, null, 'the wedged worker must be dropped');
+
+  rw.dispose();
+  await silent.terminate().catch(() => {});
+});
+
+test("a zombie worker's exit must not kill the replacement's in-flight render", async () => {
+  // Reproduces the generation bug: worker1 is recycled, worker2 takes over, then worker1
+  // fires 'exit'. That must not reject worker2's pending work.
+  const rw = new RenderWorker(50_000); // long deadline: the timer must not be what settles it
+  const internals = rw as unknown as {
+    worker: Worker | null;
+    pending: Map<number, { reject: (e: Error) => void }>;
+    request: (p: Record<string, unknown>) => Promise<unknown>;
+    recycle: (w: Worker, e: Error) => void;
+  };
+
+  const w1 = new Worker('require("node:worker_threads").parentPort.on("message", () => {});', { eval: true });
+  internals.worker = w1;
+  internals.recycle(w1, new Error('recycled')); // drops w1, clears its queue
+
+  const w2 = new Worker('require("node:worker_threads").parentPort.on("message", () => {});', { eval: true });
+  internals.worker = w2;
+  const live = internals.request({ kind: 'raw' }); // queued on w2
+  assert.equal(internals.pending.size, 1);
+
+  await w1.terminate().catch(() => {}); // w1's 'exit' fires here
+  await new Promise((r) => setTimeout(r, 200));
+
+  assert.equal(internals.pending.size, 1, "the replacement's render must survive w1's exit");
+  assert.equal(internals.worker, w2, 'w2 must still be the current worker');
+
+  live.catch(() => {}); // we never answer it; stop an unhandled rejection at teardown
+  rw.dispose();
+  await w2.terminate().catch(() => {});
+});
+
 test('a real render worker still answers normally (the deadline must not break rendering)', async () => {
   const rw = new RenderWorker(); // production deadline
   try {
@@ -165,6 +224,45 @@ test('an implausible host clock is detected, and a correct one is never flagged'
   assert.equal(clockSuspect(Date.parse('2026-08-04T12:00:00Z')), false);
   assert.equal(clockSuspect(Date.parse('2030-01-01T00:00:00Z')), false, 'a future clock must not be flagged');
   assert.equal(clockSuspect(), false, 'the real clock running these tests must not be flagged');
+});
+
+// Regression guards for how staleness is REPORTED (the sweep found three gaps here).
+test('the alert names the actual fault, and never claims a dark screen is lit up', () => {
+  const { Orchestrator } = require('../orchestrator') as typeof import('../orchestrator');
+  // alertFor is pure; no store/render needed to exercise the wording.
+  const o = Object.create(Orchestrator.prototype) as InstanceType<typeof Orchestrator>;
+
+  const clock = o.alertFor('Main hall', { stale: true, staleReason: 'clock', litUp: true });
+  assert.match(clock.title, /Clock wrong/i);
+  assert.match(clock.text, /clock/i);
+  assert.doesNotMatch(clock.text, /stopped updating/i, 'a wrong clock is not a frozen renderer');
+
+  const frozenLit = o.alertFor('Main hall', { stale: true, staleReason: 'frozen', litUp: true });
+  assert.match(frozenLit.text, /still lit up/i);
+
+  // The bug: "still lit up" was chosen on `stale` alone, so a screen with NO decoder
+  // attached was described as lit up when it was dark.
+  const frozenDark = o.alertFor('Main hall', { stale: true, staleReason: 'frozen', litUp: false });
+  assert.doesNotMatch(frozenDark.text, /still lit up/i, 'must not claim a dark screen is lit');
+  assert.match(frozenDark.text, /not pulling its stream/i);
+
+  const offline = o.alertFor('Main hall', { stale: false, litUp: false });
+  assert.match(offline.title, /offline/i);
+  assert.equal(offline.level, 'warning');
+  for (const a of [clock, frozenLit, frozenDark]) assert.equal(a.level, 'error');
+});
+
+test('staleReason separates a frozen renderer from a wrong clock', () => {
+  // Mirrors TimetablePipeline.staleReason(). A wrong clock renders fine every second, so
+  // its frame age is ~0 and must NOT be quoted as an age to a human.
+  const STALE_AFTER = 30_000;
+  const reason = (clockBad: boolean, lastFrameAt: number, now: number) =>
+    clockBad ? 'clock' : lastFrameAt > 0 && now - lastFrameAt > STALE_AFTER ? 'frozen' : null;
+  const t0 = Date.parse('2026-08-04T12:00:00Z');
+  assert.equal(reason(true, t0, t0), 'clock', 'a wrong clock wins even with a fresh frame');
+  assert.equal(reason(false, t0, t0 + 31_000), 'frozen');
+  assert.equal(reason(false, t0, t0 + 1_000), null);
+  assert.equal(reason(false, 0, t0 + 999_999), null, 'nothing rendered yet is not stale');
 });
 
 test('stale content is reported as NOT online, so the offline alert fires', () => {

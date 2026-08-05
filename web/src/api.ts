@@ -144,6 +144,8 @@ export interface VolunteerTv {
   now: { kind: 'timetable' | 'source' | 'off'; id?: string; label: string };
   overridden: boolean;
   ready: boolean;
+  /** the timetable on this screen stopped updating — times shown are NOT current */
+  stale?: boolean;
 }
 export interface VolunteerData {
   tvs: VolunteerTv[];

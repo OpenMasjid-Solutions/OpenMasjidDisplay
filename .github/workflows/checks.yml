@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+name: Checks
+
+# Build and TEST both halves of the app.
+#
+# Until now nothing in CI ran `npm test`. The only workflow was the image build, which
+# compiles TypeScript inside the Dockerfile — so a type error failed the build, but not one
+# assertion was ever executed on a runner. Every test in this repo, including the regression
+# guards for the 2026-08-04 security audit, only ever ran on a maintainer's laptop. That
+# makes a green PR far weaker evidence than it looks, and it is why this exists.
+#
+# Runs on PRs and on pushes to main so a merge is verified as well as proposed. Deliberately
+# cheap and hermetic: no Docker, no registry, no secrets, so it finishes in well under a
+# minute and cannot publish anything.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only. This job must never be able to publish an artifact.
+permissions:
+  contents: read
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: server — build, typecheck, test
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned, same convention as build-image.yml and cla.yml. Version in the comment.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22' # match the runtime in the Dockerfile
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      # `npm ci` not `npm install`: install may resolve a newer version inside a semver
+      # range and rewrite the lockfile, so CI would be testing something other than what
+      # the lockfile pins.
+      - run: npm ci
+        working-directory: server
+
+      - run: npm run build
+        working-directory: server
+
+      # tsconfig.json EXCLUDES **/*.test.ts, so the build above never typechecks the tests.
+      # Running them is what catches a test that no longer compiles.
+      - run: npm test
+        working-directory: server
+
+      # The audit's own deliverable: keep the machine-readable findings parseable and
+      # schema-complete, so it cannot rot into something nobody can consume.
+      - name: Validate docs/audit/findings.json
+        run: |
+          node -e '
+            const f = require("./docs/audit/findings.json");
+            const req = ["id","title","severity","confidence","category","file","line","summary","status","commit"];
+            let bad = 0;
+            for (const x of f.findings) for (const k of req) if (!(k in x)) { console.error("missing", k, "in", x.id); bad++; }
+            for (const x of f.findings) if (x.status === "fixed" && !x.commit) { console.error("fixed with no commit:", x.id); bad++; }
+            if (bad) process.exit(1);
+            console.log("findings.json OK —", f.findings.length, "findings");
+          '
+
+  web:
+    name: web — typecheck, build, audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+        working-directory: web
+
+      # `npm run build` is `tsc --noEmit && vite build`, so this typechecks as well as bundles.
+      - run: npm run build
+        working-directory: web
+
+      # The web half carries the only dependency advisory this app has had; fail on a new
+      # high/critical rather than waiting for someone to run audit by hand.
+      - run: npm audit --audit-level=high
+        working-directory: web

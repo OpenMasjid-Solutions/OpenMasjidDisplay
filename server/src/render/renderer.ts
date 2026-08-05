@@ -571,8 +571,20 @@ class TimetablePipeline extends FfmpegPipeline {
    *  is freshly rendered and still shows the wrong times. Both mean "do not present this as
    *  current", so both take the same visible mark. */
   isStale(): boolean {
-    if (clockSuspect()) return true;
-    return this.lastFrameAt > 0 && Date.now() - this.lastFrameAt > STALE_AFTER_MS;
+    return this.staleReason() !== null;
+  }
+
+  /** WHY the picture should not be trusted, or null if it should.
+   *
+   *  The two reasons need telling apart when reporting to a human: a 'frozen' screen has an
+   *  old frame and an age worth quoting, whereas a 'clock' screen is rendering perfectly
+   *  every second (so its frame age is ~0) and is wrong for an entirely different reason.
+   *  Collapsing them made the panel say "Times out of date — about 0 min ago", which reads
+   *  like a bug in the panel rather than a wrong clock on the box. */
+  staleReason(): 'frozen' | 'clock' | null {
+    if (clockSuspect()) return 'clock';
+    if (this.lastFrameAt > 0 && Date.now() - this.lastFrameAt > STALE_AFTER_MS) return 'frozen';
+    return null;
   }
 
   /** Age of the published frame in ms (0 before the first render). */
@@ -708,6 +720,11 @@ export class RenderManager {
    *  running (nothing is being shown, so nothing is stale). */
   isStale(id: string): boolean {
     return this.timetables.get(id)?.isStale() ?? false;
+  }
+
+  /** Why `id`'s picture is out of date ('frozen' | 'clock'), or null. */
+  staleReason(id: string): 'frozen' | 'clock' | null {
+    return this.timetables.get(id)?.staleReason() ?? null;
   }
 
   /** Age in ms of the frame `id` is publishing (0 if unknown / not running). */

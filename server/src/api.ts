@@ -234,9 +234,12 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 export function createApi(deps: Deps) {
   const { store, orchestrator, volunteer } = deps;
   const loginLimiter = new LoginLimiter();
-  // Public widget: 90 requests per minute per IP. The embedded page polls every 30s, so a
-  // real viewer uses ~2; this only bites on abuse. (DISPLAY-017)
-  const widgetLimiter = new RequestLimiter(90, 60_000);
+  // Public widget: 120 requests per minute per CLIENT. The embedded page polls every 30s,
+  // so a real viewer uses ~2 (a few more with several tabs); this only bites on abuse.
+  // Keyed via clientKey(), which prefers X-Forwarded-For's first hop — keying on the socket
+  // meant every visitor arriving through the remote-access tunnel shared ONE bucket, so a
+  // masjid's own website visitors throttled each other. (DISPLAY-017)
+  const widgetLimiter = new RequestLimiter(120, 60_000);
   setInterval(() => widgetLimiter.prune(), 5 * 60_000).unref?.();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
@@ -278,7 +281,18 @@ export function createApi(deps: Deps) {
         // is deliberately generous — a real viewer polls twice a minute, and throttling a
         // masjid's own website visitors would be worse than the load.
         if (!widgetLimiter.allow(req)) {
-          res.writeHead(429, { ...SECURITY_HEADERS, 'content-type': 'text/plain', 'retry-after': '60' });
+          // Keep the widget's OWN headers on the error path. Using SECURITY_HEADERS here
+          // was wrong: it swapped `frame-ancestors *` for `'self'` and dropped the CORS
+          // header, so a throttled widget didn't just fail — it failed in a way the
+          // embedding page could neither render nor read.
+          res.writeHead(429, {
+            'content-type': 'text/plain; charset=utf-8',
+            'retry-after': '60',
+            'cache-control': 'no-store',
+            'access-control-allow-origin': '*',
+            'content-security-policy': 'frame-ancestors *',
+            'x-content-type-options': 'nosniff',
+          });
           res.end('Too many requests.');
           return;
         }

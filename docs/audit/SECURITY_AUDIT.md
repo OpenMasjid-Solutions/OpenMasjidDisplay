@@ -10,7 +10,8 @@
 | **Scope** | `server/`, `web/`, `Dockerfile`, `docker-compose.yml`, `manifest.yaml`, `.github/workflows/`, full git history |
 | **Baseline** | server build clean · 50/50 server tests pass · `web tsc --noEmit` + `vite build` clean |
 | **Autonomous push to `main`** | **DISABLED** — see [Pre-flight](#pre-flight) |
-| **Findings** | 2 Critical · 1 High · 7 Medium · 9 Low |
+| **Findings** | 28 total — 2 Critical · 4 High · 11 Medium · 11 Low (24 fixed, 4 reported only) |
+| **Post-merge review** | The 16 shipped fixes were re-reviewed adversarially after merging; **9 further findings**, including two regressions the fixes themselves introduced. See [Post-merge review](#post-merge-review). |
 
 > **Read this first.** The single most urgent item is **DISPLAY-001**: any device that can
 > reach the control panel port can kill the whole app with one unauthenticated HTTP
@@ -695,6 +696,37 @@ non-negotiable invariants in `CLAUDE.md` §4, and a future change must not quiet
 | **Volunteer API isolation** | **Sound** | Separate cookie + audience, gated on `enabled()` **and** `authed()`, exposes no admin endpoint (`volunteerApi.ts:177-222`) |
 | **Collection caps** | **Present** | `MAX_PER_COLLECTION = 40` prevents pipeline fan-out (`api.ts:209-216`); body sizes capped per endpoint; image uploads byte-sniffed, not extension-trusted (`api.ts:130-135`) |
 | **`server/` dependencies** | **Clean** | `npm audit`: 0 vulnerabilities at every severity |
+
+---
+
+## Post-merge review
+
+After the 16 fixes were merged to `main`, they were re-reviewed by six independent reviewers
+whose brief was the opposite of the original audit: **not** to re-find vulnerabilities, but to
+find problems *the fixes themselves* introduced. Every candidate was then handed to an
+independent skeptic instructed to refute it. **42 candidates were raised; 12 survived
+refutation**, yielding nine further findings (DISPLAY-020 … DISPLAY-028).
+
+This pass was worth running, and the reason is uncomfortable: **two of the audit's own fixes
+were regressions**, and one of them could lock a masjid's admin out of their own control panel.
+
+| ID | What | Status |
+|---|---|---|
+| **DISPLAY-020** | **Regression of DISPLAY-005.** Per-request `Secure` locked the admin out of the plain-HTTP panel. Cookies ignore the port, and the app is published on a TLS-proxied port *and* a plain-HTTP port of the same host, so once the HTTPS side stored a `Secure` cookie the HTTP side could neither receive nor **replace** it ("Leave Secure Cookies Alone"). Correct password → 200 → straight back to a blank login form, with no in-app way out — and it bites exactly when TLS is broken, which is what the legacy port is for. My DISPLAY-005 commit's claim that plain-HTTP users would "behave exactly as before" was **wrong**. | Fixed `77e6611` |
+| **DISPLAY-021** | **Regression of DISPLAY-017.** The widget limiter keyed on the socket, so every visitor through the remote-access tunnel shared one bucket — a masjid's own website visitors would `429` each other off their prayer times. The `429` also dropped the widget's CORS and framing headers. | Fixed `f30e575` |
+| **DISPLAY-022** | The volunteer page reported a frozen screen as "ready" — DISPLAY-002 added `contentStale` but never touched `volunteerApi.ts`. | Fixed `641d1bb` |
+| **DISPLAY-023** | Frame age reported as ~0 when the fault was a wrong clock, so the panel read "out of date — about 0 min ago". | Fixed `641d1bb` |
+| **DISPLAY-024** | The alert called a dark screen "still lit up", and gave clock faults the frozen-renderer remedy. | Fixed `641d1bb` |
+| **DISPLAY-025** | **Regression of DISPLAY-002.** A recycled worker's `exit` rejected the *replacement* worker's in-flight render. The obvious guard would have left a second concurrent render hanging for ever, so `recycle()` now drains the queue itself. | Fixed `6e8ffc6` |
+| **DISPLAY-026** | **Regression of DISPLAY-018.** A leftover `db.json.tmp` defeated the `0600` mode, because `writeFileSync`'s `mode` applies only on create. | Fixed `6e8ffc6` |
+| **DISPLAY-027** | **No CI job ran the tests.** The image build compiles TypeScript inside Docker, so a type error failed the build — but not one assertion had ever executed on a runner. Every test here, including this audit's regression guards, had only ever run on a maintainer's laptop, so the "ship gate" claimed above was **local-only**. | Fixed `702134a` |
+| **DISPLAY-028** | **None of the fixes reach a masjid.** All four version files are still `0.61.0` and `docker-compose.yml` still pins `sha256:3642573…` — the image built *before* any fix. Verified against GHCR: `:0.61.0` and `:latest` now resolve to a different digest (`sha256:77f4842…`) built from the audited code, while the digest the catalog serves is reachable by no tag at all. Exactly the hazard DISPLAY-010 predicted, now real. | Reported only |
+
+Two honest conclusions from it. First, **self-written tests passing is not evidence a fix is
+sound** — every regression above passed its own tests, because a test encodes what its author
+already believed. Second, **the local ship gate was the weakest link**: DISPLAY-027 means none
+of it had run in CI, which is now fixed and would have caught nothing here but will catch the
+next one.
 
 ---
 

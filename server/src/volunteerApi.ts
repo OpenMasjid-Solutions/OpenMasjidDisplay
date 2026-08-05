@@ -191,7 +191,13 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
             room: tv.room ?? '',
             now: { kind: effective.kind, id: effective.id, label: labelFor(store, effective) },
             overridden: !!tv.override,
-            ready: !!st?.streamReady,
+            // A screen publishing a FROZEN timetable is not ready in any sense a volunteer
+            // cares about — they are standing in the hall deciding whether that screen is
+            // fine. DISPLAY-002 added contentStale to TvStatus but missed this call site, so
+            // the volunteer page still showed a green "ready" for a screen displaying
+            // yesterday's Iqamah times.
+            ready: !!st?.streamReady && !st?.contentStale,
+            ...(st?.contentStale ? { stale: true as const } : {}),
           };
         });
         const options = {

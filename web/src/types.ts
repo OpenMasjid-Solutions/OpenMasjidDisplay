@@ -173,6 +173,8 @@ export interface TvStatus {
   /** the timetable stopped updating, so the times on that screen are NOT current
    *  (can be true while a decoder is happily reading the frozen picture) */
   contentStale?: boolean;
+  /** why: frozen renderer, or a wrong machine clock (frame age says nothing then) */
+  staleReason?: 'frozen' | 'clock';
   /** age in ms of the frame being published, when known */
   frameAgeMs?: number;
 }
