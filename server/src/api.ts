@@ -22,6 +22,7 @@ import { probePlatform, ssoConfigured, notify, siteInfo } from './fabric';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
+import { parseChangelog, readChangelog } from './changelog';
 import { THEMES } from './render/theme';
 import { DEFAULT_SALAH_HADITH } from './render/defaultHadith';
 import {
@@ -429,6 +430,15 @@ export function createApi(deps: Deps) {
 
       if (pathname === '/api/state' && method === 'GET') {
         return sendJson(res, 200, statePayload(store, orchestrator));
+      }
+
+      // The release notes this build shipped with — the account menu's "What's new". Read
+      // from disk per request (it changes only when the image does, and it is a few KB) and
+      // parsed server-side so the parser is covered by the test suite; see changelog.ts.
+      // Authenticated like everything else here: the notes aren't secret, but there is no
+      // reason to answer an anonymous request, and it keeps this off the public surface.
+      if (pathname === '/api/changelog' && method === 'GET') {
+        return sendJson(res, 200, { releases: parseChangelog(readChangelog()) });
       }
 
       // Diagnose Fabric notifications: report what's configured + send a test alert,

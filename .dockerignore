@@ -5,4 +5,8 @@
 docs
 screenshots
 *.md
+# ...except the release notes, which the panel serves for "What's new" and so must be IN
+# the image. Without this negation the Dockerfile's `COPY CHANGELOG.md` fails the build,
+# because *.md above removes it from the build context entirely.
+!CHANGELOG.md
 server/public
