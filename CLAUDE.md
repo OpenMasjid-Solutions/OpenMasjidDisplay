@@ -35,6 +35,23 @@ If it prints anything else, `git checkout dev` first. Do not start work until it
    want it.
 5. **That merge is a release**, not a merge. It carries the full release chain in §5 below.
 
+### The push protocol — every turn, without being asked
+
+Work on `dev`, push to `dev`, and then **ask**:
+
+> After finishing a piece of work and pushing it to `dev`, **end the reply by asking whether to push to
+> `main`.** Keep working and keep pushing to `dev` for every following request. Do not push to `main` — and do
+> not stop asking — until Hasan replies **"push to main"** (or "merge to main").
+
+So the loop is: change → commit on `dev` → push `dev` → *"Do you want me to push this to `main`?"* → carry on
+on `dev`. The question is a prompt for a decision, never permission you can assume you already have: an
+unanswered ask, or silence, means the answer is still no. When the answer does come, treat it as the release
+in §5 — not a fast-forward of `main`.
+
+Dependabot is wired the same way: every entry in [`.github/dependabot.yml`](.github/dependabot.yml) sets
+`target-branch: dev`, so automated bumps arrive where work belongs instead of as PRs against a branch nobody
+may merge into.
+
 ### Channels: `dev` and `main` are wired to different images
 
 OpenMasjidOS has an Update Channel toggle, and the dev catalog resolves this app from the
