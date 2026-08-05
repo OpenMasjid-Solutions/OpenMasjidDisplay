@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 OpenMasjid-Solutions -->
 <p align="center">
   <img src="assets/Display - rounded corners.png" alt="OpenMasjid Display" width="280"/>
 </p>
@@ -5,7 +7,9 @@
 <h1 align="center"><b>OpenMasjid Display</b></h1>
 
 <p align="center">
+  <a href="#what-it-does">Features</a> |
   <a href="#how-it-works">How it works</a> |
+  <a href="#put-your-prayer-times-on-your-website">Website widget</a> |
   <a href="#install-through-openmasjidos">Install Guide</a> |
   <a href="#license">License</a>
 </p>
@@ -31,33 +35,160 @@ Leave a star if you like the project! ⭐️
 OpenMasjid Display turns one small computer (a mini-PC, a Raspberry Pi, or a Proxmox container) into the
 control room for every TV in your masjid. Each screen gets its own network video link (**RTSP**) that you
 point a cheap RTSP-to-HDMI decoder box at **once** — then you decide, from your phone or a computer, what
-each screen shows:
-
-- 🕌 **Prayer timetables** — beautiful, full-screen prayer clocks calculated on the device (no internet
-  needed). Make as many as you like, each with its own colours to match the room it hangs in. Shows a large
-  live clock (with optional ticking **seconds**), the Hijri and Gregorian dates, every prayer's **Adhan and
-  Iqamah** time, Jumu'ah, and a gentle countdown to the next prayer with the current prayer highlighted.
-  Design each one in a **live editor** — choose a layout (centered, a next-prayer **spotlight**, or a
-  MasjidBox-style split with a big countdown), colours, which elements show, your own **custom background
-  image** and **masjid logo** — and watch it update as you type. **Click any name, the masjid title or the footer right in the
-  preview to rename it.** A live **sun and moon** arc across the sky by your local time, casting rays and
-  glow onto the glass; optionally rotate the layout through the day to gently avoid TV burn-in. Prefer exact
-  times? **Upload a whole year of Iqamah times as a CSV** (with a ready-to-edit example you can download).
-- 📷 **Cameras** — bring in any IP/security camera or an imam camera and put it on a screen with one tap
-  (great for overflow rooms and the women's section). Works with both **RTSP** and secure **RTSPS** links,
-  including **UniFi** cameras (turn on RTSP in UniFi Protect and paste the link it shows).
-- 🖥️ **HDMI sources** — plug a laptop or a recording into an HDMI-to-network encoder and send it to the
-  screens you choose.
-- 🗓️ **Schedules** — switch a screen to the imam camera for Jumu'ah, then back to the timetable afterwards,
-  automatically. A volunteer can always take over instantly from the simple mobile page.
-- 📱 **Volunteer page** — turn on a bone-simple mobile page (its own address, unlocked with a short PIN) so a
-  volunteer can see every screen and switch what each shows with a tap — no admin login needed. Enable it and
-  set the PIN in **Settings**.
+each screen shows. No app on the TV, no browser to babysit, nothing to log into at the screen.
 
 <div align="center">
 <img src="screenshots/1.svg" width="49%" alt="Prayer timetable display" />
 <img src="screenshots/3.svg" width="49%" alt="Control panel" />
 </div>
+
+## What it does
+
+Everything below is in the app today.
+
+### 🕌 Prayer timetables
+
+Beautiful, full-screen prayer clocks **calculated on the device** — no internet needed, no subscription, and no
+third-party service that can go down or start charging. Make **as many as you like**, each with its own colours
+to match the room it hangs in, and design them in a **live editor** with a preview that updates as you type.
+
+**Layout and look**
+
+- **Three layouts** — centered, a next-prayer **spotlight**, or a split view with a big countdown.
+- **Layout carousel** — optionally rotate through the layouts over the day to gently avoid TV burn-in.
+- **Portrait or landscape**, 720p or 1080p, with an optional **bitrate cap per size** if your network is tight.
+- **Theme presets**, plus your own **accent colour**, **gold accent** (Arabic names, Jumu'ah, the next-prayer
+  highlight) and **text colour** — or leave text on **auto-contrast**, which adapts to a light photo behind it.
+- **Your own background image** and **masjid logo** (PNG, JPEG, WebP, GIF or SVG), or the built-in themed scene
+  and mark.
+- **A live sun and moon** arcing across the sky by your local time, casting rays and glow onto the glass.
+- **Rename anything by clicking it in the preview** — any prayer name, the masjid title, or the footer.
+- **Element toggles** — turn off individually: the countdown, Hijri/Gregorian dates, Sunrise, the logo, clock
+  seconds, the footer line, the sun & moon, and even the masjid name itself (for a logo-only header).
+- A **masjid name on screen** separate from the timetable's own name in the panel, plus an optional **location
+  line** underneath (e.g. "Lansdale, Pennsylvania") and a **footer note**.
+
+**Times and calculation**
+
+- **Every prayer's Adhan and Iqamah**, plus **Sunrise** and **Jumu'ah** — as many khutbah times as you need, and
+  they can start from a date you choose.
+- **Calculation methods**: MWL, ISNA, Egypt, Makkah, Karachi, or **Custom** with your own Fajr and Isha
+  sun-depression angles. Asr by the **Standard** (Shafi'i/Maliki/Hanbali) or **Hanafi** opinion.
+- **Your own time zone**, 12-hour or 24-hour clock, and a live big clock with optional ticking seconds.
+- **Hijri and Gregorian dates**, each nudgeable by ±days for local moon sighting.
+- **Precautionary Adhan delay** — add up to 60 minutes per prayer if your masjid calls the Adhan after the
+  astronomical time. It shifts the displayed Adhan, the countdown, and offset-based Iqamah with it, while
+  Sunrise and the sun/moon position stay on the true astronomical times.
+- **English, Arabic and Urdu** for dates and labels, right-to-left aware.
+- **A calculation-method footnote**, so anyone reading the screen can see how the times were derived.
+
+**Iqamah times, however your masjid keeps them**
+
+- Per prayer: a **fixed clock time**, **minutes after the Adhan**, or **none at all** (e.g. no separate Maghrib
+  Iqamah).
+- **Upload a whole year as a CSV** — download the ready-to-edit example first, **export** what's currently set,
+  and clear it again in one click. Each day takes effect on its own date, in that timetable's time zone.
+- **Or set scheduled changes** — "from this date the times are these, until the next change."
+- **Tell the congregation before it happens**: an upcoming change appears as a plain-language heads-up —
+  *"From Friday, Asr will be at 5:30 PM"* — starting however many days ahead you choose.
+- **Check any future day now** with the *Preview date* box, without waiting for it to arrive.
+
+**Around salah**
+
+- **Adhan pop-up** — a brief "it's time for Fajr" over the normal layout when the Adhan arrives.
+- **Full-screen Iqamah countdown** for the last few minutes before the jama'ah.
+- **Hadith during salah** — while the congregation prays, the screen shows ahadith on salah over a dimmed
+  background, rotating through a **built-in library** (turn individual ones off) plus **any you add yourself**,
+  in Arabic and/or English.
+- **Or blank the screen entirely** during salah, if you'd rather nothing be a distraction at all.
+- **Prohibited-time (zawāl) notice** before the Dhuhr Adhan — full-screen, or as a red message along the bottom.
+
+**Announcements**
+
+- **Scrolling ticker** along the bottom for short messages, each with its **own daily time window**, at a
+  **scroll speed** you pick from 1 to 10.
+- **Image slideshow** — upload announcement images and they cycle as the backdrop between spells of the normal
+  display, with prayer times still readable on top. You set how long the timetable shows, how long the
+  slideshow runs, how long each image stays up, and an optional daily window.
+
+**Managing them**
+
+- **Duplicate** a timetable to make a variant for another room, **delete** one, and open the editor in its own
+  tab. Settings are grouped into tabs so a long form stays navigable.
+
+### 📷 Cameras and 🖥️ HDMI sources
+
+- Bring in any IP/security camera or an imam camera and put it on a screen with one tap — great for overflow
+  rooms and the women's section. Works with **RTSP** and secure **RTSPS**, including **UniFi** cameras (turn on
+  RTSP in UniFi Protect and paste the link it shows).
+- Plug a laptop or a recording into an HDMI-to-network encoder and send it to the screens you choose.
+- **Test a link before you save it**, so a typo tells you immediately instead of at the screen.
+- Each source is relayed **Direct** (lightest — almost no CPU) or re-encoded for **Most compatible** if a
+  stubborn decoder won't play it directly, with its own picture quality for the re-encode.
+- **Enable or disable** a source without deleting it.
+- Any username and password in a camera link is **kept private** and never shown back in the panel.
+
+### 🖼️ Screens
+
+- Add a screen per TV, give it a **name** and a **room**, and set what it **normally shows**.
+- **Copy its link** with one tap — it already points at this server, so there's no IP to look up.
+- A **live status dot** per screen, and a badge telling you whether what's showing is the screen's **Default**,
+  a **Scheduled** choice, or a **Manual** override — with *"Back to schedule"* to undo the override.
+- Change what any screen shows instantly; the decoder keeps the same URL and never needs touching again.
+
+### 🗓️ Schedules
+
+- Weekly rules: **name** it, pick **what to show**, pick **which screens** (or all of them), pick **which days**,
+  and set a **from / until** window — which may run **past midnight**.
+- **Priorities**, so when two rules overlap you decide which one wins.
+- Classic use: switch to the imam camera for Jumu'ah, then back to the timetable afterwards, automatically.
+
+### 📱 Volunteer page
+
+- A bone-simple phone page on **its own address**, unlocked with a **4-digit PIN**, so a volunteer can see every
+  screen and switch what each shows with a tap — **no admin login**, and you only share that one address.
+- Optionally make it **reachable over remote access**, so a volunteer can use it from outside the masjid.
+
+### 🌐 Website widget and 🖨️ printable calendars
+
+Both covered in detail [below](#put-your-prayer-times-on-your-website): an embeddable prayer-times card for your
+masjid's own website (live countdown, browsable week table, opt-in per timetable), and printable month calendars.
+
+### 🚨 It tells you when something is wrong
+
+A frozen screen is worse than a dark one: nobody notices a clock that stopped, so the congregation trusts
+**wrong Iqamah times**. So:
+
+- If a timetable stops updating, the screen **dims itself and marks a red bar across the bottom**, the control
+  panel badges it **"Times out of date"** with how long ago it froze, and you get an alert.
+- If the machine's clock is clearly wrong — a dead battery, or it booted with no internet — screens say
+  **"Clock is wrong"** rather than showing confident, wrong prayer times.
+- If a screen stops pulling its stream you get a **"Screen offline"** notification, and a **"Screen back
+  online"** one when it recovers. A screen that's intentionally off is never reported as offline.
+
+Alerts relay through OpenMasjidOS to whatever Slack, Discord or webhook destination your masjid has configured —
+the app never sees the URL. There's a **Send a test** button that tells you in plain language exactly why a test
+didn't arrive (notifications not turned on, permission not granted, platform address unreachable, and so on).
+
+### ⚙️ The control panel itself
+
+- **Light and dark**, matching the OpenMasjidOS look, with a theme toggle in the account menu; a live wall clock
+  in the header; and a bottom dock so it works properly on a phone.
+- **Appearance matching** — pull the theme and wallpaper straight from your OpenMasjidOS dashboard, or set them
+  here, including a **custom wallpaper image URL**.
+- **Defaults** for new timetables (picture quality) and the **time zone schedules run in**.
+- Step-by-step *"Connecting a screen"* help right in Settings.
+- A **"Source code (AGPL-3.0)"** link in the account menu, as the licence requires.
+
+### 🔌 OpenMasjidOS integration
+
+- **Single sign-on** — click *Open* and you're already signed in with your dashboard login, verified
+  server-to-server. Standalone installs use their own control-panel password instead.
+- **HTTPS for the control panel** through the platform's TLS proxy, which is what makes clipboard copy and
+  `Secure` cookies work.
+- **Notifications** relayed to the masjid's configured destination (above).
+- **Remote access** — when it's on, the widget embed code and the volunteer page can use your public address
+  automatically instead of a LAN one.
 
 ## How it works
 
@@ -82,35 +213,63 @@ server ([MediaMTX](https://github.com/bluenviron/mediamtx)) — so there's a sin
   encoded by ffmpeg) and published into [MediaMTX](https://github.com/bluenviron/mediamtx).
 - Cameras and HDMI encoders are **relayed on demand** (only pulled while a screen is watching), or optionally
   re-encoded to a fixed H.264 geometry for maximum decoder compatibility.
+- The panel updates over a **WebSocket**, so screen status changes appear without a refresh.
+- Rendering runs in a **worker with a deadline**. A render that wedges is recycled rather than left to hang,
+  which is what makes the staleness marking above possible instead of a screen quietly freezing.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
+## Put your prayer times on your website
+
+Any timetable can also be **embedded on your masjid's own website** — the same times, no second system to keep
+in step. Turn on *"Allow embedding the prayer-times widget"* in the timetable editor and copy the **embed
+code** it gives you.
+
+The widget is a self-contained card: masjid name, today's date, a **live next-prayer countdown**, the day's
+Adhan/Iqamah table, and an **interactive week table** a visitor can page through (Prev / week picker / Next —
+click any day to load it) — side by side on a wide embed, stacked on a phone. It carries your masjid logo, has
+no external dependencies, and is served unauthenticated **only for the timetables you explicitly turned it on
+for** (off by default, and rate-limited).
+
+If you've enabled remote access in OpenMasjidOS, the embed code points at your public address automatically;
+otherwise it uses your LAN address.
+
+**Printable month calendars** come from the same timetable, too: a true month grid (weeks as rows, Sun–Sat
+columns) with every prayer's Adhan and Iqamah, Fridays highlighted and Jumu'ah called out. Print it, or use
+your browser's *Save as PDF* — the app ships no PDF library, to keep the container light.
+
 ## Install (through OpenMasjidOS)
 
-This app installs from the OpenMasjidOS **App Store**. Once it's in the catalog, open your dashboard → App
-Store → **OpenMasjid Display** → Install. **There's nothing to fill in** — it's a one-click install.
+This app installs from the OpenMasjidOS **App Store**. Open your dashboard → App Store → **OpenMasjid
+Display** → Install. **There's nothing to fill in** — it's a one-click install.
 
-To add it to the catalog, open a PR to [OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS)
-adding this entry to `registry.yaml`:
+To add or update it in the catalog, open a PR to
+[OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS) editing this app's entry in
+`registry.yaml` (never `catalog.json` — that file is generated):
 
 ```yaml
   - id: display
     repo: OpenMasjid-Solutions/OpenMasjidDisplay
-    # Immutable pin: a tag/branch can be moved to backdoored content, a commit SHA can't.
-    commit: <40-char commit SHA of the release>   # preferred over a movable `ref: v0.20.8`
+    ref: v0.66.0                                   # the release tag, for humans
+    commit: 715139b589f3376315bc74af919a46565e443920   # immutable pin — a tag can be moved, a SHA can't
 ```
+
+On `main`, the image itself is pinned by **digest** in [`docker-compose.yml`](docker-compose.yml)
+(`…:<version>@sha256:<digest>`), so a moved tag can never repoint an install at different content. On the
+`dev` branch that same line points at the moving `:dev` tag instead — that's the development channel, and it
+is the one place a digest pin would be wrong.
 
 ### No install-time settings
 
-By design, the install dialog is empty — you set everything up **inside the app** on first run (your
-admin password, masjid details, server address, screens, cameras, schedules), all saved to the data volume.
-This keeps install one-click and lets you change anything later without reinstalling.
+By design, the install dialog is empty — you set everything up **inside the app** on first run (masjid
+details, screens, timetables, cameras, schedules), all saved to the data volume. This keeps install one-click
+and lets you change anything later without reinstalling.
 
 ## After installing
 
 1. Click **Open** (the control panel, default host port `7860`). Installed through OpenMasjidOS you're
-   signed in automatically and it matches your dashboard's light/dark theme and wallpaper; on a standalone
-   install you create a control-panel password the first time.
+   signed in automatically over HTTPS, and it matches your dashboard's light/dark theme and wallpaper; on a
+   standalone install you create a control-panel password the first time.
 2. On the **Screens** page, add a screen and **copy its link** — it already points at this server (the
    address you opened the panel with), so there's no IP to look up.
 3. In your TV's RTSP decoder, paste the link and set the transport to **TCP**.
@@ -125,15 +284,16 @@ Full decoder guidance and troubleshooting: [docs/RTSP_SETUP.md](docs/RTSP_SETUP.
 - Relaying a camera "Direct" costs almost no CPU. The "Most compatible" (re-encode) option is heavier — use
   it on a mini-PC, or only where a screen won't play the camera directly.
 - RTSP is forced to **TCP** for the widest, most firewall-friendly compatibility with commodity decoders.
+- Images are published for **amd64 and arm64**, so the same install works on a Pi and on a mini-PC.
 
 ## Run / build from source
 
 ```bash
 # server (control plane + renderer)
-cd server && npm install && npm run build && npm test
+cd server && npm ci && npm run build && npm test
 
 # control panel (web)
-cd web && npm install && npm run build
+cd web && npm ci && npm run build
 
 # everything together (Docker; also what the App Store runs)
 docker compose up -d
@@ -143,15 +303,31 @@ For local development, run the server with `MEDIAMTX_MANAGED=no` (so it won't tr
 MediaMTX) alongside your own `mediamtx`, and `cd web && npm run dev` (proxies `/api` and `/ws` to the
 server). In the built container the server launches and supervises MediaMTX itself.
 
+**Contributing? Work on the `dev` branch.** This repo runs two channels: `dev` builds a moving `:dev` image
+for the OpenMasjidOS dev channel, and `main` is the stable release every masjid installs. Never commit to
+`main` — see [CLAUDE.md](CLAUDE.md) § *Branching policy* and [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Security
 
-- Runs least-privilege: no privileged mode, host networking, devices, or Docker socket.
-- The control panel is protected by a single admin password (signed, HTTP-only session cookie).
-- Installed through OpenMasjidOS it can sign you in with your dashboard login — verified
-  **server-to-server** with the platform (never trusting the browser), and it falls back to its own
-  password when the platform is absent or unreachable.
-- Camera credentials embedded in RTSP links are never shown in the panel.
+- Runs **least-privilege**: no privileged mode, host networking, devices, or Docker socket.
+- The control panel is protected by a single admin password — hashed with **scrypt** and compared in constant
+  time, with a signed, HTTP-only, **audience-bound** session cookie that is marked `Secure` whenever the panel
+  is served over HTTPS.
+- Installed through OpenMasjidOS it can sign you in with your dashboard login — verified **server-to-server**
+  with the platform (never trusting the browser), and it falls back to its own password only when the platform
+  is absent or unreachable.
+- **Stream links are scheme-allowlisted** and ffmpeg is always invoked with an argument array, never a
+  string-interpolated command, so a crafted camera URL can't inject arguments or reach where it shouldn't.
+- **Rate limits** on sign-in and on the public widget, plus `nosniff`, `no-referrer` and a
+  `frame-ancestors` policy on the panel.
+- Camera credentials embedded in RTSP links are never shown in the panel, and the platform's per-app secret is
+  never logged or returned.
+- Every CI action and base image is **pinned by SHA/digest**, so the app you install is the app that was built.
 - On a shared network, set a control-panel password and keep RTSP on your LAN.
+
+The findings and fixes from the last full security review are in
+[docs/audit/](docs/audit/) — including [`ACTION_REQUIRED.md`](docs/audit/ACTION_REQUIRED.md), which lists
+what is deliberately still open and why.
 
 ## License
 
