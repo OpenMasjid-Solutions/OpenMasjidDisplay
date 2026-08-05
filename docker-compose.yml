@@ -12,9 +12,21 @@
 # Screens find this server automatically from the address you open the panel with.
 services:
   app:
-    # Tag for humans + digest for integrity (the @sha256 is what actually pins). A
-    # moved tag can't repoint this to a different image. Bump both each release.
-    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.66.0@sha256:8b767f59821b264d819aa80022207fd6b973feac6e2acc78caffc89b58ece153
+    # ┌─────────────────────────────────────────────────────────────────────────┐
+    # │ DEV BRANCH — this line is the ONE difference between dev and main.      │
+    # └─────────────────────────────────────────────────────────────────────────┘
+    # :dev is a MOVING tag: the head of the dev branch, rebuilt by
+    # .github/workflows/build-image.yml on every push here. It is deliberately NOT
+    # digest-pinned — pinning a digest would freeze the dev channel on one build and
+    # make testing here meaningless. The catalog warns about the missing @sha256 for
+    # this entry; that warning is expected and correct for a dev channel.
+    #
+    # ON MERGE TO MAIN this MUST become a pinned release reference:
+    #     image: ghcr.io/…/openmasjiddisplay:<version>@sha256:<digest>
+    # because main is what every masjid installs. The `channel` job in
+    # .github/workflows/checks.yml fails the build if this line is ever wrong for the
+    # branch it is on, in either direction. See CLAUDE.md → "Branching policy".
+    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:dev
     restart: unless-stopped
     environment:
       PORT: "8080"
