@@ -10,13 +10,15 @@ name: Checks
 # guards for the 2026-08-04 security audit, only ever ran on a maintainer's laptop. That
 # makes a green PR far weaker evidence than it looks, and it is why this exists.
 #
-# Runs on PRs and on pushes to main so a merge is verified as well as proposed. Deliberately
+# Runs on PRs and on pushes to main AND dev, so a merge is verified as well as proposed —
+# all development happens on dev (CLAUDE.md → "Branching policy"), so leaving dev out would
+# mean the branch every change lands on was the one branch nothing tested. Deliberately
 # cheap and hermetic: no Docker, no registry, no secrets, so it finishes in well under a
 # minute and cannot publish anything.
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 # Read-only. This job must never be able to publish an artifact.
@@ -29,6 +31,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The dev channel's safety catch. Two symmetric mistakes are possible once this repo has
+  # two channels, and both are quiet — the app builds, boots and looks fine either way:
+  #
+  #   1. dev's moving :dev image reaches main. main is what the stable catalog serves, so
+  #      every masjid would install whatever happened to be on dev at the time. This is the
+  #      severe one, and merging dev -> main without repinning is all it takes.
+  #   2. a digest pin is left behind on dev. The dev channel would then keep installing one
+  #      frozen old build while CI happily publishes a :dev image nobody consumes, so dev
+  #      testing silently stops testing anything.
+  #
+  # Docs alone don't stop either (the merge is exactly when someone is in a hurry), so this
+  # asserts it. Runs on both channels: for a PR the target is base_ref, for a push it's the
+  # branch itself.
+  channel:
+    name: channel — compose image matches its branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Assert docker-compose.yml image matches the channel
+        env:
+          TARGET: ${{ github.base_ref || github.ref_name }}
+        run: |
+          img=$(grep -E '^[[:space:]]*image:' docker-compose.yml | head -1 \
+                | sed -E 's/^[[:space:]]*image:[[:space:]]*//' | tr -d "\"' \r")
+          echo "target branch : $TARGET"
+          echo "compose image : $img"
+          case "$TARGET" in
+            main)
+              # A digest-pinned ref ends in the hex digest, so `*:dev` also catches
+              # ":dev@sha256:…" — pinning the dev tag is still the dev image.
+              case "$img" in
+                *:dev|*:dev@*)
+                  echo "::error file=docker-compose.yml::main must never reference the moving :dev image. Repin to <version>@sha256:<digest> before merging to main."
+                  exit 1 ;;
+              esac
+              echo "$img" | grep -qE '@sha256:[0-9a-f]{64}$' || {
+                echo "::error file=docker-compose.yml::main requires a digest-pinned image (<version>@sha256:<64 hex>); got '$img'."
+                exit 1
+              }
+              echo "OK — stable channel, digest-pinned." ;;
+            dev)
+              case "$img" in
+                *:dev) echo "OK — dev channel, moving tag." ;;
+                *)
+                  echo "::error file=docker-compose.yml::the dev branch must reference the moving :dev tag, not '$img'. A leftover digest pin freezes the dev channel on an old build while still looking healthy."
+                  exit 1 ;;
+              esac ;;
+            *)
+              echo "No channel rule for '$TARGET' — nothing to assert." ;;
+          esac
+
   server:
     name: server — build, typecheck, test
     runs-on: ubuntu-latest
