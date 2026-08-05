@@ -16,8 +16,10 @@ import {
   IconSun,
   IconPower,
   IconUser,
+  IconSparkle,
   Spinner,
 } from './ui';
+import { WhatsNewModal } from './whatsnew';
 
 declare const __APP_VERSION__: string;
 import type { AppState } from './types';
@@ -177,11 +179,13 @@ function ProfileMenu({
   dark,
   onToggleTheme,
   onSettings,
+  onWhatsNew,
   onLogout,
 }: {
   dark: boolean;
   onToggleTheme: () => void;
   onSettings: () => void;
+  onWhatsNew: () => void;
   onLogout?: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -219,6 +223,10 @@ function ProfileMenu({
           <button className="menu-item" role="menuitem" onClick={onToggleTheme}>
             {dark ? <IconSun size={17} /> : <IconMoon size={17} />}
             <span>{dark ? 'Light mode' : 'Dark mode'}</span>
+          </button>
+          <button className="menu-item" role="menuitem" onClick={() => { onWhatsNew(); setOpen(false); }}>
+            <IconSparkle size={17} />
+            <span>What’s new</span>
           </button>
           <button className="menu-item" role="menuitem" onClick={() => { onSettings(); setOpen(false); }}>
             <IconCog size={17} />
@@ -263,6 +271,10 @@ function Shell({
 }) {
   const prefs = usePrefs();
   useOmosAppearanceSync(state.omosBase);
+  // Held here, not inside ProfileMenu: the menu is a positioned, backdrop-filtered box, and
+  // a `position: fixed` scrim rendered inside it would resolve against the menu instead of
+  // the viewport — covering a corner of the page rather than the page.
+  const [whatsNew, setWhatsNew] = useState(false);
   const dark = resolveTheme(prefs.theme) === 'dark';
   // A manual toggle is an explicit choice → stop mirroring OpenMasjidOS.
   const toggleTheme = () => prefsStore.patch({ theme: dark ? 'light' : 'dark', followOmos: false });
@@ -288,6 +300,7 @@ function Shell({
           dark={dark}
           onToggleTheme={toggleTheme}
           onSettings={() => setTab('settings')}
+          onWhatsNew={() => setWhatsNew(true)}
           onLogout={state.authRequired ? logout : undefined}
         />
       </header>
@@ -301,6 +314,8 @@ function Shell({
       </main>
 
       <Dock tab={tab} setTab={setTab} />
+
+      {whatsNew && <WhatsNewModal onClose={() => setWhatsNew(false)} />}
     </div>
   );
 }

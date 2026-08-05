@@ -545,3 +545,44 @@ h1, h2, h3, p { margin: 0; }
 .page-title, .brand b, .topclock-time { color: var(--ink-scene); }
 .page-sub, .topclock-date { color: var(--ink-scene-muted); }
 .page-title, .page-sub, .brand, .topclock { text-shadow: var(--text-shadow-scene); }
+
+/* ── "What's new" release notes ─────────────────────────────────────────────────
+   Matched to OpenMasjidKiosk's dialog so the two apps read alike. Appended after the
+   base .modal rules on purpose: .modal--window has to win the cascade, because the
+   base .modal scrolls as a whole while this one is a fixed-height window whose BODY
+   scrolls under a pinned header. */
+.modal--window {
+  width: min(52rem, 94vw); height: min(78vh, 46rem); max-height: none;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.modal--window .modal-head { display: flex; align-items: flex-start; gap: 0.6rem; margin-block-end: 0.8rem; }
+.modal--window .modal-body { overflow-y: auto; min-height: 0; }
+.card-head__main { min-width: 0; flex: 1; }
+.section-title-inline { font-family: var(--font-display); font-size: 1.05rem; font-weight: 600; }
+
+/* macOS-style window chrome on its own row above the title; the red one closes. */
+.tl-bar { display: flex; align-items: center; gap: 0.5rem; margin-block-end: 0.7rem; user-select: none; }
+.tl--red { background: #ff5f57; cursor: pointer; }
+.tl--amber { background: #febc2e; }
+.tl--red:active { transform: scale(0.9); }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; font-weight: 600;
+  padding: 0.2rem 0.6rem; border-radius: 999px; color: var(--color-ink-muted);
+  background: var(--glass-bg-inset); box-shadow: inset 0 0 0 1px var(--color-border);
+}
+.pill--ok { color: var(--color-success); }
+
+.wn-release { padding-block: 0.7rem; border-block-end: 1px solid var(--color-border); }
+.wn-release:last-child { border-block-end: 0; }
+.wn-version {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin: 0 0 0.4rem; font-size: 1.05rem; font-weight: 700; color: var(--color-ink);
+}
+.wn-list { margin: 0; padding-inline-start: 1.1rem; display: flex; flex-direction: column; gap: 0.45rem; }
+.wn-list li { font-size: 0.92rem; line-height: 1.6; color: var(--color-ink-muted); }
+.wn-list strong { color: var(--color-ink); font-weight: 650; }
+.wn-list code {
+  font-size: 0.86em; padding: 0.05rem 0.3rem; border-radius: 5px;
+  background: var(--glass-bg-inset); color: var(--color-ink);
+}
