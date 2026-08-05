@@ -12,8 +12,18 @@
 # Screens find this server automatically from the address you open the panel with.
 services:
   app:
-    # Tag for humans + digest for integrity (the @sha256 is what actually pins). A
-    # moved tag can't repoint this to a different image. Bump both each release.
+    # ┌─────────────────────────────────────────────────────────────────────────┐
+    # │ MAIN BRANCH — this line is the ONE difference between main and dev.     │
+    # └─────────────────────────────────────────────────────────────────────────┘
+    # Tag for humans + digest for integrity (the @sha256 is what actually pins). A moved
+    # tag can't repoint this to a different image, which matters because every push to
+    # main republishes the version tag (DISPLAY-010) — the digest is the only thing
+    # protecting existing installs. Bump both each release.
+    #
+    # On the dev branch this same line is the MOVING :dev tag instead, unpinned on
+    # purpose. The `channel` job in .github/workflows/checks.yml fails the build if this
+    # line is ever wrong for the branch it is on, in either direction. See CLAUDE.md →
+    # "Branching policy".
     image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.66.0@sha256:8b767f59821b264d819aa80022207fd6b973feac6e2acc78caffc89b58ece153
     restart: unless-stopped
     environment:
