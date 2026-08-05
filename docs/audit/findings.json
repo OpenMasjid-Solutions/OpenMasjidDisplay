@@ -20,15 +20,14 @@
       "medium": 11,
       "low": 11,
       "total": 28,
-      "fixed": 24,
-      "reportedOnly": 4
+      "fixed": 25,
+      "reportedOnly": 3
     },
     "deliverablesUpdated": "2026-08-04",
     "reportedOnly": [
       "DISPLAY-007",
       "DISPLAY-008",
-      "DISPLAY-010",
-      "DISPLAY-028"
+      "DISPLAY-010"
     ],
     "postMergeReview": {
       "date": "2026-08-04",
@@ -47,6 +46,13 @@
         "DISPLAY-028"
       ],
       "branch": "fix/audit-followups-2026-08-04"
+    },
+    "shipped": {
+      "version": "0.66.0",
+      "tag": "v0.66.0",
+      "digestPinCommit": "715139b589f3376315bc74af919a46565e443920",
+      "image": "ghcr.io/openmasjid-solutions/openmasjiddisplay:0.66.0@sha256:8b767f59821b264d819aa80022207fd6b973feac6e2acc78caffc89b58ece153",
+      "date": "2026-08-05"
     }
   },
   "findings": [
@@ -382,9 +388,9 @@
       "category": "release",
       "file": "docker-compose.yml",
       "line": 17,
-      "summary": "The fixes are merged to main but NOT shipped. manifest.yaml, server/package.json and web/package.json are all still 0.61.0, and docker-compose.yml still pins sha256:3642573141cf..., which is the image built at c1080cd -- i.e. before any fix. Verified live against GHCR: the :0.61.0 and :latest tags now both resolve to a DIFFERENT digest (sha256:77f48427...) built from the audited code, while the digest the catalog serves is now reachable by no tag at all. So every masjid installing or recreating today still gets the crashable, silently-stale build. This is exactly the hazard DISPLAY-010 described, now materialised. Shipping needs the release chain: bump the four version files, tag, let CI publish, re-pin the new digest in compose, then update registry.yaml in OpenMasjidAPPS. Reported only -- cutting a release is the maintainer's decision.",
-      "status": "reported-only",
-      "commit": null
+      "summary": "The fixes are merged to main but NOT shipped. manifest.yaml, server/package.json and web/package.json are all still 0.61.0, and docker-compose.yml still pins sha256:3642573141cf..., which is the image built at c1080cd -- i.e. before any fix. Verified live against GHCR: the :0.61.0 and :latest tags now both resolve to a DIFFERENT digest (sha256:77f48427...) built from the audited code, while the digest the catalog serves is now reachable by no tag at all. So every masjid installing or recreating today still gets the crashable, silently-stale build. This is exactly the hazard DISPLAY-010 described, now materialised. Shipping needs the release chain: bump the four version files, tag, let CI publish, re-pin the new digest in compose, then update registry.yaml in OpenMasjidAPPS. SHIPPED as v0.66.0 (2026-08-05): four version files bumped, tagged, CI published a multi-arch image, docker-compose.yml pinned sha256:8b767f59..., and the OpenMasjidAPPS registry now points at v0.66.0. 0.66.0 rather than 0.62.0 because GHCR already had published images for 0.62.0-0.65.0. Verified the published image contains the fixes by checking its config carries the DISPLAY-019 HEALTHCHECK, which the previously-served digest does not.",
+      "status": "fixed",
+      "commit": "715139b"
     }
   ]
 }

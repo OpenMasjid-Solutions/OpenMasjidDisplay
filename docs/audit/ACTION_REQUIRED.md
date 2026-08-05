@@ -22,10 +22,23 @@ That is safe for existing installs only because the catalog pins by digest — s
 
 ---
 
-## 0b. The fixes are NOT shipped yet (DISPLAY-028)
+## 0b. ~~The fixes are NOT shipped yet~~ — SHIPPED as v0.66.0 (DISPLAY-028) ✅
 
-**Every masjid installing or recreating today still gets the pre-audit image.** The fixes are
-on `main`; they are not in the catalog.
+**Done on 2026-08-05.** Released as **v0.66.0** and live in the catalog, so masjids are now
+offered the fixed build:
+
+- image `ghcr.io/openmasjid-solutions/openmasjiddisplay:0.66.0@sha256:8b767f59…` (amd64 + arm64)
+- registry pinned to `715139b589f3376315bc74af919a46565e443920`
+- numbered **0.66.0, not 0.62.0**, because GHCR already had published images for 0.62.0–0.65.0
+  (the withdrawn Pi-node releases); reusing one would make a published tag mean two different
+  things — DISPLAY-010's hazard.
+- verified the published image genuinely contains the fixes: its config carries the
+  DISPLAY-019 `HEALTHCHECK`, which the previously-served digest does not.
+
+The original problem, for the record:
+
+**Every masjid installing or recreating still got the pre-audit image.** The fixes were
+on `main`; they were not in the catalog.
 
 - All four version files still read `0.61.0`.
 - `docker-compose.yml` still pins `sha256:3642573141cf…` — the image built at `c1080cd`,
