@@ -79,7 +79,9 @@ merely documented. Don't "fix" a red `channel` job by relaxing the check.
 
 Only when Hasan has said it. In order:
 
-1. Bump the version in **`manifest.yaml`**, **`server/package.json`**, **`web/package.json`**.
+1. Bump the version — **6 fields across 5 files**: `manifest.yaml`, `server/package.json`,
+   `web/package.json`, and **both `package-lock.json`s, which each carry it twice** (the root object
+   and the `packages[""]` entry). Miss a lockfile and `npm ci` reports a version the release isn't.
 2. Merge `dev` → `main`, and in that merge **repin `docker-compose.yml`** from `:dev` to
    `…:<new version>@sha256:<digest>`. The digest doesn't exist yet — use the previous
    release's temporarily, or land the merge and repin in the follow-up commit at step 5.
