@@ -147,10 +147,46 @@ jobs:
           cache-from: type=gha,scope=${{ steps.meta.outputs.channel }}
           cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.channel }}
 
-      # Optional: tell the OpenMasjidAPPS catalog to rebuild after a release.
-      # Requires a repo secret CATALOG_DISPATCH_TOKEN (a PAT with 'repo' scope).
-      # - name: Notify catalog
-      #   if: startsWith(github.ref, 'refs/tags/v')
-      #   env:
-      #     GH_TOKEN: ${{ secrets.CATALOG_DISPATCH_TOKEN }}
-      #   run: gh api repos/OpenMasjid-Solutions/OpenMasjidAPPS/dispatches -f event_type=rebuild-catalog
+      # Tell OpenMasjidAPPS to rebuild its catalog, now that the image this commit declares
+      # actually exists in GHCR.
+      #
+      # Without this, publishing a dev build reached nobody. The catalog only ever rebuilt on
+      # a push to OpenMasjidAPPS itself, on its hourly schedule, or by hand — across its whole
+      # history, repository_dispatch had fired ZERO times, because this step was commented
+      # out here and in the sibling apps. So the only thing that picked up a dev build was the
+      # cron, and GitHub fires an "hourly" schedule roughly every three hours under load. A
+      # published dev build sat invisible until a tick happened to come round: Students
+      # published v0.46.0-dev.2 and the dev catalog still served -dev.1 hours later, so
+      # OpenMasjidOS correctly reported "up to date" and no masjid could get the build.
+      #
+      # It runs on BOTH publishing paths, not just releases. The commented-out version was
+      # `startsWith(github.ref, 'refs/tags/v')` — stable-only, so it would not have fired for
+      # a dev push at all, which is the case that actually needed it.
+      #
+      # Deliberately NOT blocking (continue-on-error): the image is already pushed by this
+      # point, and a catalog rebuild that fails must not turn a successful publish red. The
+      # hourly cron on the OpenMasjidAPPS side stays as the floor under this — this step makes
+      # the update prompt arrive in minutes instead of hours, it is not the only route.
+      #
+      # Dispatching from here also means the image is in GHCR before the catalog goes looking,
+      # which matters because the catalog pins an EXACT tag: an entry that lands before its
+      # image exists is a pull failure on someone's box. It does not close that window
+      # entirely — an hourly tick landing mid-build can still read the new manifest version
+      # before the image is pushed — which is the reason not to bump the version until the
+      # build that will publish it is the one being pushed.
+      #
+      # Copied verbatim from OpenMasjidKiosk's step so every app in the family behaves the
+      # same, including the empty-token skip: a fork or a contributor without the org secret
+      # prints why it skipped and exits 0 rather than failing.
+      - name: Notify catalog to rebuild
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.CATALOG_PUSH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "CATALOG_PUSH_TOKEN not set — skipping catalog dispatch (add it as an org/repo secret to auto-publish)."
+            exit 0
+          fi
+          gh api repos/OpenMasjid-Solutions/OpenMasjidAPPS/dispatches -f event_type=rebuild-catalog
+          echo "Requested an OpenMasjidAPPS catalog rebuild."
