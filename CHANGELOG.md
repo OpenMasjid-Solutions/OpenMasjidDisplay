@@ -6,6 +6,21 @@
 Release notes for OpenMasjid Display, newest first. These ship inside the app — the
 account menu (top right) → **What's new** shows them with no internet needed.
 
+## 0.67.0-dev.1
+- **New: "What's new" in the account menu.** OpenMasjidOS updates your apps quietly in the
+  background, so nothing in the panel ever said the app had changed under you. The account
+  button (top right) now opens the release notes for the version you are running — every
+  release back to the first one — and it works with no internet, because the notes ship
+  inside the app.
+- **Development-channel updates now actually arrive.** If you had switched OpenMasjidOS to
+  the Development channel, you were never offered anything: every dev build published under
+  the same version number and the same image reference, so the platform had no way to see
+  that anything had changed. Dev builds now carry their own version (this one is
+  `0.67.0-dev.1`) and their own image, so an update is offered the normal way. **Stable is
+  unaffected** — it worked correctly throughout, and it remains the channel to stay on for
+  the screens in the masjid.
+- This is a development build, working toward 0.67.0. Nothing you have set up needs redoing.
+
 ## 0.66.1
 - **Nothing on your screens changes in this release.** No new features and nothing to set up
   again: timetables, cameras, HDMI sources, schedules, the volunteer page and the website
