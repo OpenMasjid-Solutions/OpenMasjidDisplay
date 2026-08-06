@@ -256,8 +256,8 @@ To add or update it in the catalog, open a PR to
 
 On `main`, the image itself is pinned by **digest** in [`docker-compose.yml`](docker-compose.yml)
 (`…:<version>@sha256:<digest>`), so a moved tag can never repoint an install at different content. On the
-`dev` branch that same line points at the moving `:dev` tag instead — that's the development channel, and it
-is the one place a digest pin would be wrong.
+`dev` branch that same line names the branch's own prerelease version (`…:X.Y.Z-dev.N`), which CI publishes
+as an immutable tag — see below.
 
 ### No install-time settings
 
@@ -303,9 +303,21 @@ For local development, run the server with `MEDIAMTX_MANAGED=no` (so it won't tr
 MediaMTX) alongside your own `mediamtx`, and `cd web && npm run dev` (proxies `/api` and `/ws` to the
 server). In the built container the server launches and supervises MediaMTX itself.
 
-**Contributing? Work on the `dev` branch.** This repo runs two channels: `dev` builds a moving `:dev` image
-for the OpenMasjidOS dev channel, and `main` is the stable release every masjid installs. Never commit to
-`main` — see [CLAUDE.md](CLAUDE.md) § *Branching policy* and [CONTRIBUTING.md](CONTRIBUTING.md).
+**Contributing? Work on the `dev` branch.** This repo runs two channels, and `main` is the stable release
+every masjid installs — never commit to it.
+
+| branch | version         | CI publishes                  | installed by                 |
+| ------ | --------------- | ----------------------------- | ---------------------------- |
+| `dev`  | `X.Y.Z-dev.N`   | `:X.Y.Z-dev.N` **and** `:dev` | the OpenMasjidOS dev channel |
+| `main` | `X.Y.Z`         | `:X.Y.Z` **and** `:latest`    | every masjid (stable)        |
+
+Every dev build carries its own `X.Y.Z-dev.N` version and its own immutable image tag, bumped together with
+the compose reference. That isn't bookkeeping: the platform spots an update by comparing the catalog's
+version against the installed one, so a moving tag republishing new content under an unchanged version is
+invisible to it — which is precisely why the dev channel did nothing before `0.67.0-dev.1`. CI refuses to
+publish a dev build without the suffix (it would overwrite a stable tag) or a stable build with it.
+
+See [CLAUDE.md](CLAUDE.md) § *Branching policy* and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 

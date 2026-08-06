@@ -57,23 +57,58 @@ may merge into.
 OpenMasjidOS has an Update Channel toggle, and the dev catalog resolves this app from the
 `dev` branch. So the branch you are on decides which image real devices pull:
 
-| branch  | compose references              | image built by CI            | who installs it            |
-| ------- | ------------------------------- | ---------------------------- | -------------------------- |
-| `dev`   | `…/openmasjiddisplay:dev`       | `:dev` (moving, unpinned)    | the OpenMasjidOS dev channel |
-| `main`  | `…:<version>@sha256:<digest>`   | `:<version>` **and** `:latest` | every masjid (stable)      |
+| branch | `manifest.yaml` version | compose references            | CI publishes                   | who installs it              |
+| ------ | ----------------------- | ----------------------------- | ------------------------------ | ---------------------------- |
+| `dev`  | `X.Y.Z-dev.N`           | `…:X.Y.Z-dev.N`               | `:X.Y.Z-dev.N` **and** `:dev`  | the OpenMasjidOS dev channel |
+| `main` | `X.Y.Z`                 | `…:X.Y.Z@sha256:<digest>`     | `:X.Y.Z` **and** `:latest`     | every masjid (stable)        |
 
-[`.github/workflows/build-image.yml`](.github/workflows/build-image.yml) decides this from
-`GITHUB_REF` alone: a build on `dev` pushes the `:dev` tag and **nothing else**, so it can
-never overwrite a published version tag or move `:latest`. `:dev` is deliberately **not**
-digest-pinned — pinning it would freeze the dev channel on one build and make testing on it
-meaningless. The catalog warns about the missing `@sha256` for a dev entry; that warning is
-expected.
+### Dev builds must carry a real version — this is not cosmetic
+
+**Every dev build gets its own version: `X.Y.Z-dev.N`,** where `X.Y.Z` is the release being
+worked toward and `N` increments on every dev build you publish. If stable is `0.66.1`, dev
+is `0.67.0-dev.1`, then `-dev.2`, and so on. When that work ships, stable becomes `0.67.0`
+and dev moves to `0.68.0-dev.1`. **A dev version must never equal a stable one.** Ordering
+is `0.66.1 < 0.67.0-dev.1 < 0.67.0` — ahead of the last release, behind the next.
+
+Why it matters: **OpenMasjidOS detects an update by comparing the catalog's `version` with
+the installed one.** A moving `:dev` tag republishing new content under an unchanged version
+string changes nothing observable, so the platform cannot notify anyone and has nothing to
+update to. That is exactly why the dev channel silently did nothing before 0.67.0-dev.1.
+So `N` must be bumped for a dev build to reach anybody — an unbumped dev push is a no-op as
+far as the platform is concerned.
+
+The version therefore drives everything:
+
+- CI tags the image with the **exact** `manifest.yaml` version, so the catalog can pin an
+  immutable tag. `:dev` is still published as a convenience alias, and is never what the
+  catalog pins.
+- `docker-compose.yml` must name that same version, **for every service** — not just the
+  primary one. A single un-updated `image:` line means the dev channel installs something
+  other than this commit.
+- Bump the version and the compose reference **together**, in the same commit.
+
+### Enforcement, and the merge hazard
 
 **`docker-compose.yml`'s `image:` line is the only file that differs between the branches**,
 which makes it the one thing a careless merge breaks. The `channel` job in
-[`.github/workflows/checks.yml`](.github/workflows/checks.yml) fails the build in both
-directions — `:dev` on `main`, or a leftover digest pin on `dev` — so this is enforced, not
-merely documented. Don't "fix" a red `channel` job by relaxing the check.
+[`.github/workflows/checks.yml`](.github/workflows/checks.yml) fails the build in every
+direction that matters:
+
+- a dev image (`:dev` or any `-dev.` tag) on `main`, or a `main` image not digest-pinned;
+- a prerelease version on `main`, or a non-prerelease version on `dev`;
+- a compose tag on `dev` that doesn't match `manifest.yaml` — stale **or** the bare `:dev`;
+- any of the above on a **secondary** service, not only the first.
+
+[`build-image.yml`](.github/workflows/build-image.yml) re-checks the version format before
+it pushes anything, because the failure it prevents is silent: a dev build whose version
+lost its `-dev.N` would publish `:X.Y.Z` **over the stable release tag of that name**.
+
+Don't "fix" a red `channel` job by relaxing the check.
+
+Also: after pushing to `dev` the image takes a few minutes to build, and the dev catalog
+pins an exact tag. If the catalog is rebuilt inside that window it pins a tag that does not
+exist yet and a masjid on Development gets a pull failure. Let the build finish before the
+catalog picks the commit up.
 
 ### On "merge to main" — the release chain
 
@@ -82,6 +117,9 @@ Only when Hasan has said it. In order:
 1. Bump the version — **6 fields across 5 files**: `manifest.yaml`, `server/package.json`,
    `web/package.json`, and **both `package-lock.json`s, which each carry it twice** (the root object
    and the `packages[""]` entry). Miss a lockfile and `npm ci` reports a version the release isn't.
+   Going to stable means **dropping the `-dev.N` suffix**: `0.67.0-dev.4` → `0.67.0`. Add a
+   `## X.Y.Z` section to `CHANGELOG.md` for it — a test asserts the newest section matches the
+   running version, so a forgotten entry fails the build rather than shipping silently.
 2. Merge `dev` → `main`, and in that merge **repin `docker-compose.yml`** from `:dev` to
    `…:<new version>@sha256:<digest>`. The digest doesn't exist yet — use the previous
    release's temporarily, or land the merge and repin in the follow-up commit at step 5.
@@ -96,7 +134,8 @@ Every push to `main` republishes `:<version>` and `:latest`, so a published vers
 **not** immutable (DISPLAY-010, [`docs/audit/ACTION_REQUIRED.md`](docs/audit/ACTION_REQUIRED.md)
 §4). The `@sha256` pin is the only thing protecting existing installs. Never remove it.
 
-Then return to `dev` and keep working there.
+Then return to `dev`, set the next prerelease (`0.68.0-dev.1`) across the same 6 fields plus
+the compose reference, and keep working there.
 
 ---
 
