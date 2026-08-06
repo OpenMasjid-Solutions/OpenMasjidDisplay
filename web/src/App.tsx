@@ -242,9 +242,14 @@ function ProfileMenu({
           <div className="menu-version">
             OpenMasjid Display v{__APP_VERSION__}
             {' · '}
-            {/* AGPL-3.0 §13: offer the running version's source to every operator. */}
+            {/* AGPL-3.0 §13: offer the running version's source to every operator. A
+                dev build's version (X.Y.Z-dev.N) is NOT a git tag — only releases are
+                tagged — so point those at the dev branch, which is where that build was
+                made. Linking tree/v0.67.0-dev.1 would just 404. */}
             <a
-              href={`https://github.com/OpenMasjid-Solutions/OpenMasjidDisplay/tree/v${__APP_VERSION__}`}
+              href={`https://github.com/OpenMasjid-Solutions/OpenMasjidDisplay/tree/${
+                __APP_VERSION__.includes('-dev.') ? 'dev' : `v${__APP_VERSION__}`
+              }`}
               target="_blank"
               rel="noreferrer"
               className="menu-source-link"
