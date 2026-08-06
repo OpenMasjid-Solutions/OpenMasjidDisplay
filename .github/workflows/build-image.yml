@@ -10,17 +10,26 @@ name: Build image
 #
 # TWO CHANNELS, and which tags a build may write is decided ONLY by the ref it ran on:
 #
-#   ref                     tags pushed                    installed by
-#   ----------------------  -----------------------------  ---------------------------
-#   refs/heads/dev          :dev                           the OpenMasjidOS dev channel
-#   refs/heads/main         :<manifest version>, :latest    every masjid (stable)
-#   refs/tags/v*            :<manifest version>, :latest    every masjid (stable)
+#   ref                tags pushed                                installed by
+#   -----------------  -----------------------------------------  --------------------------
+#   refs/heads/dev     :<version> (X.Y.Z-dev.N)  +  :dev          the OpenMasjidOS dev channel
+#   refs/heads/main    :<version> (X.Y.Z)        +  :latest       every masjid (stable)
+#   refs/tags/v*       :<version> (X.Y.Z)        +  :latest       every masjid (stable)
 #
-# The point of the split is that a dev build must never be able to become what a masjid
-# installs from the stable catalog. :dev is deliberately a MOVING tag — it is the head of
-# the dev branch and nothing else — so it is the one image reference in this repo that is
-# not digest-pinned. Stable installs are still pinned by @sha256 in docker-compose.yml on
-# main. See CLAUDE.md -> "Branching policy".
+# Both channels publish an IMMUTABLE VERSIONED tag from manifest.yaml, and a moving alias
+# beside it. The catalog pins the versioned tag; the alias is a convenience for humans.
+#
+# The versioned dev tag is not cosmetic — it is what makes a dev update happen at all. The
+# platform detects an update by comparing the catalog's version against the installed one,
+# so a bare :dev tag republishing new content under an unchanged version string is
+# invisible to it: nothing to notify, nothing to update to. A distinct X.Y.Z-dev.N per dev
+# build is what the platform can actually see.
+#
+# The split still guarantees a dev build cannot become what a masjid installs from the
+# stable catalog: dev never moves :latest, the version-format checks below stop a dev build
+# from claiming a release version (or vice versa), and OpenMasjidAPPS fails its stable
+# build outright on any `-dev.` image tag. Stable installs are additionally pinned by
+# @sha256 in docker-compose.yml on main. See CLAUDE.md -> "Branching policy".
 #
 # After the first run, make the GHCR package Public (owner -> Packages -> package
 # settings) so masjid hosts can pull it without authentication.
@@ -66,15 +75,40 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
           # The channel gate — ONE decision, made from GITHUB_REF and nothing else. Not an
-          # input, not a repo variable a caller could set: a dev build gets the moving :dev
-          # tag and NOTHING else, so it can never overwrite a published version tag or move
-          # :latest. Anything that is not refs/heads/dev (main, a v* tag, a manual dispatch
-          # on either) is stable.
+          # input, not a repo variable a caller could set. Anything that is not
+          # refs/heads/dev (main, a v* tag, a manual dispatch on either) is stable.
+          #
+          # BOTH channels publish an IMMUTABLE, VERSIONED tag taken from manifest.yaml; they
+          # differ only in the moving alias beside it (:dev vs :latest). The versioned tag is
+          # what the catalog pins, and it is what makes a dev update detectable at all:
+          # OpenMasjidOS spots an update by comparing the catalog's version to the installed
+          # one, so republishing new content under an unchanged version (what a bare :dev tag
+          # does) is invisible to it — nothing to notify, nothing to update to.
+          #
+          # Which makes the version STRING load-bearing, so it is checked before anything is
+          # pushed. A dev build must carry a -dev.N prerelease and a stable build must not:
+          # without the first check, forgetting the suffix on dev would publish
+          # <image>:0.66.1 from the dev branch and OVERWRITE the stable release tag of that
+          # name; without the second, a prerelease would be published as a release and move
+          # :latest onto it. Both are silent in the registry, so they fail here instead.
+          case "$ver" in
+            *-dev.*) is_prerelease=yes ;;
+            *)       is_prerelease=no ;;
+          esac
+
           if [ "$GITHUB_REF" = 'refs/heads/dev' ]; then
             channel=dev
-            tags="$image:dev"
+            if [ "$is_prerelease" != 'yes' ]; then
+              echo "::error file=manifest.yaml::the dev branch must declare a prerelease version (X.Y.Z-dev.N), got '$ver'. Publishing it would overwrite the stable :$ver image tag. See CLAUDE.md → Branching policy."
+              exit 1
+            fi
+            tags=$(printf '%s\n%s' "$image:$ver" "$image:dev")
           else
             channel=stable
+            if [ "$is_prerelease" = 'yes' ]; then
+              echo "::error file=manifest.yaml::a stable build must not declare a prerelease version, got '$ver'. Set a release version (X.Y.Z) before merging to main."
+              exit 1
+            fi
             tags=$(printf '%s\n%s' "$image:$ver" "$image:latest")
           fi
 
