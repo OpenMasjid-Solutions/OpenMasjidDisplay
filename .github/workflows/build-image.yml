@@ -175,14 +175,27 @@ jobs:
       # before the image is pushed — which is the reason not to bump the version until the
       # build that will publish it is the one being pushed.
       #
-      # Copied verbatim from OpenMasjidKiosk's step so every app in the family behaves the
-      # same, including the empty-token skip: a fork or a contributor without the org secret
-      # prints why it skipped and exits 0 rather than failing.
+      # Copied from OpenMasjidKiosk's step so every app in the family behaves the same,
+      # including the empty-token skip: a fork or a contributor without the org secret prints
+      # why it skipped and exits 0 rather than failing.
+      #
+      # ONE deliberate difference, and it is the reason a verbatim copy would not have worked.
+      # The org secret is actually named CATLOG_PUSH_TOKEN — missing the "A" — while every app
+      # in the family references CATALOG_PUSH_TOKEN. So the token always resolved to empty and
+      # every notify step silently took the skip path: Kiosk's own runs print "CATALOG_PUSH_TOKEN
+      # not set — skipping catalog dispatch", which is why repository_dispatch has fired ZERO
+      # times org-wide even where this step was already enabled. Enabling it here without
+      # accepting the real name would have changed nothing.
+      #
+      # So take EITHER name: an unset secret is the empty string, which is falsy, so `||`
+      # picks whichever exists. That works today against the misspelt secret and keeps working
+      # after it is renamed, with no follow-up commit needed. Once every repo is on a correctly
+      # spelt secret the fallback can be dropped.
       - name: Notify catalog to rebuild
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.CATALOG_PUSH_TOKEN }}
+          GH_TOKEN: ${{ secrets.CATALOG_PUSH_TOKEN || secrets.CATLOG_PUSH_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "CATALOG_PUSH_TOKEN not set — skipping catalog dispatch (add it as an org/repo secret to auto-publish)."
