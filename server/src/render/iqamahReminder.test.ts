@@ -13,7 +13,7 @@ import assert from 'node:assert';
 import test from 'node:test';
 import { normTimetable } from '../validate';
 import { normalizeIqamahSchedule } from '../iqamahSchedule';
-import { bottomBandSplit, iqamahNoticeText, tickerLayout, renderDisplaySvg, dimsFor, TICKER_RED } from './svg';
+import { bottomBandSplit, iqamahNoticeText, tickerLayout, renderDisplaySvg, dimsFor, approxWidth, TICKER_RED } from './svg';
 import { timetableVf, timetableVfReserved, type TickerSpec } from './renderer';
 import type { Timetable } from '../types';
 
@@ -62,8 +62,8 @@ const spec = (text: string): TickerSpec => ({
 test('no upcoming change → nothing is carved out and the band is untouched', () => {
   const s = bottomBandSplit(base(), NOW, W, H, true);
   assert.equal(s.notice, '');
-  assert.equal(s.card, null);
-  assert.equal(s.lane, null);
+  assert.equal(s.reserveW, 0);
+  assert.equal(s.sep, null);
   assert.equal(s.scroll, null, 'with no reminder ffmpeg must keep its original chain');
 });
 
@@ -73,45 +73,57 @@ test('a change is due → there is a sentence to show', () => {
   assert.match(n, /will be at/);
 });
 
-test('reminder with NO ticker takes the whole band (inset, no lane)', () => {
+test('reminder with NO ticker takes the whole band, flush like the band itself', () => {
   const s = bottomBandSplit(withChange(), NOW, W, H, false);
-  assert.ok(s.card, 'expected a reminder card');
-  assert.equal(s.lane, null, 'nothing to share with → no well');
+  assert.equal(s.reserveW, W, 'it should span the full width, not be inset');
+  assert.equal(s.sep, null, 'nothing to divide it from');
   assert.equal(s.scroll, null);
-  assert.ok(s.card!.w > W * 0.9, 'it should span the band');
-  assert.ok(s.card!.x > 0 && s.card!.w < W, 'inset, so it reads as a card in the band');
-  assert.ok(s.card!.r > 0, 'rounded like the cards above it');
 });
 
 test('reminder WITH a ticker takes a slice, never the lot', () => {
   const s = bottomBandSplit(withTicker(withChange()), NOW, W, H, true);
-  assert.ok(s.card && s.lane && s.scroll);
-  assert.ok(s.card!.w >= W * 0.29, `too narrow to read: ${s.card!.w}`);
-  assert.ok(s.card!.w <= W * 0.59, `leaves the ticker no room: ${s.card!.w}`);
+  assert.ok(s.sep && s.scroll);
+  assert.ok(s.reserveW >= W * 0.21, `too narrow to read: ${s.reserveW}`);
+  assert.ok(s.reserveW <= W * 0.59, `leaves the ticker no room: ${s.reserveW}`);
 });
 
-test('the two cards never touch — there is a real gutter between them', () => {
+test('the divider sits exactly where the red zone ends', () => {
   const s = bottomBandSplit(withTicker(withChange()), NOW, W, H, true);
-  const gutter = s.lane!.x - (s.card!.x + s.card!.w);
-  assert.ok(gutter >= 5, `no visible separation: ${gutter}px`);
+  assert.equal(s.sep!.x, s.reserveW, 'the divider must butt against the red zone');
+  assert.ok(s.sep!.w >= 2, `too thin to read as a separator: ${s.sep!.w}px`);
 });
 
-test('both cards are inset inside the band, so the well has a visible edge', () => {
+test('the scroll starts AFTER the divider, with clearance', () => {
   const s = bottomBandSplit(withTicker(withChange()), NOW, W, H, true);
-  for (const [name, b] of [['card', s.card!], ['lane', s.lane!]] as const) {
-    assert.ok(b.y > s.y, `${name} should sit inside the band top`);
-    assert.ok(b.y + b.h < s.y + s.bandH, `${name} should sit inside the band bottom`);
-    assert.ok(b.r > 0, `${name} should be rounded`);
-  }
-  assert.ok(s.lane!.x + s.lane!.w < W, 'the well should be inset from the screen edge too');
+  const sepEnd = s.sep!.x + s.sep!.w;
+  assert.ok(s.scroll!.x > sepEnd, 'text would run into the divider');
+  assert.ok(s.scroll!.x - sepEnd >= 4, 'no clearance between the divider and the text');
+  assert.equal(s.scroll!.x + s.scroll!.w, W, 'the announcements should run to the screen edge as before');
 });
 
-test('the scroll strip is strictly INSIDE the well it is meant to run in', () => {
-  const s = bottomBandSplit(withTicker(withChange()), NOW, W, H, true);
-  const { lane, scroll } = s;
-  assert.ok(scroll!.x >= lane!.x, 'scroll starts before the well');
-  assert.ok(scroll!.x + scroll!.w <= lane!.x + lane!.w, 'scroll runs past the well');
-  assert.ok(scroll!.w >= 16, 'scroll strip collapsed');
+/**
+ * The red zone is sized to its sentence and the text is centred in it. Getting this wrong is
+ * what made it look off: the zone had a wide minimum, the text was left-aligned inside it,
+ * and short reminders sat hard against the left with a large empty gap to their right.
+ */
+test('the red zone is sized to its sentence, so the centred text is not adrift', () => {
+  const tt = withTicker(withChange());
+  const s = bottomBandSplit(tt, NOW, W, H, true);
+  const textW = approxWidth(s.notice, s.fs);
+  const slack = s.reserveW - textW;
+  assert.ok(slack > 0, 'the zone must fit its sentence');
+  assert.ok(slack < s.fs * 6, `zone is far wider than its text (${Math.round(slack)}px of slack) — it will look off-centre`);
+});
+
+test('a SHORT reminder does not get a zone far wider than it needs', () => {
+  const tt = withTicker(withChange());
+  const long = bottomBandSplit(tt, NOW, W, H, true);
+  // A shorter sentence must produce a narrower zone, not the same padded minimum.
+  const shortTt = withTicker(withChange());
+  shortTt.iqamahSchedule = normalizeIqamahSchedule([{ from: '2026-07-18', fajr: '05:15' }]);
+  const short = bottomBandSplit(shortTt, NOW, W, H, true);
+  assert.ok(short.notice.length < long.notice.length, 'sanity: expected a shorter sentence');
+  assert.ok(short.reserveW < long.reserveW, 'a shorter reminder should take a narrower zone');
 });
 
 test('the band sits exactly where the ticker band sits (it IS that strip)', () => {
