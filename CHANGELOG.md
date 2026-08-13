@@ -6,6 +6,12 @@
 Release notes for OpenMasjid Display, newest first. These ship inside the app — the
 account menu (top right) → **What's new** shows them with no internet needed.
 
+## 0.67.0-dev.5
+- **Fixed: the calculation-method footnote was printed on top of the Iqamah-change reminder**
+  when a masjid has scrolling announcements turned off. The footnote sits in the same strip
+  along the bottom, and it already stepped aside for the announcements — it now steps aside
+  for the reminder too, so the bar reads cleanly.
+
 ## 0.67.0-dev.4
 - **The reminder and your scrolling announcements are back to one flat bar**, with a clear
   divider between them. 0.67.0-dev.3 had turned each side into a rounded panel, which read as
