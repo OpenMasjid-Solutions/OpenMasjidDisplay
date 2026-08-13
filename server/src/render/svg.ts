@@ -2208,8 +2208,12 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     out.push(layoutReference(area, m, ctx));
   }
 
-  // ── Footer (hidden when the ticker is running — they share the bottom strip) ──
-  if (tt.showFooter && !tickerText) {
+  // ── Footer (hidden whenever the bottom band is showing — they share that strip) ──
+  //    The band is the footer's spot, so anything occupying it hides the footnote: the
+  //    scrolling ticker always did, and now the Iqāmah-change reminder does too. Keying this
+  //    on `tickerText` alone left the footnote drawn straight over the red reminder whenever
+  //    a masjid had no ticker configured.
+  if (tt.showFooter && !bandShown) {
     const methodNote =
       tt.method === 'Custom'
         ? `Custom ${tt.fajrAngle ?? 18}° / ${tt.ishaAngle ?? 17}° · Asr: ${tt.asrMadhab}`

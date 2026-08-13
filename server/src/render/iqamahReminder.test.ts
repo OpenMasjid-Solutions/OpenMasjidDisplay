@@ -187,6 +187,33 @@ test('the reminder does not shrink the layout in the slideshow either', () => {
   assert.equal(aboveBand(withTicker(withChange()), opts), aboveBand(withTicker(base()), opts));
 });
 
+/**
+ * The footnote lives in the same strip as the band, so whatever occupies that strip hides it.
+ * The ticker always did; the reminder did not, so a masjid with no ticker configured got the
+ * calculation-method footnote drawn straight over the red reminder.
+ */
+test('the footnote gives way to the reminder when there is no ticker', () => {
+  const mark = 'FOOTNOTE_MARKER_TEXT';
+  const plain = base();
+  plain.showFooter = true;
+  plain.footerNote = mark;
+  assert.ok(renderDisplaySvg(plain, NOW, {}).includes(mark), 'sanity: the footnote shows with an empty band');
+
+  const withIt = withChange();
+  withIt.showFooter = true;
+  withIt.footerNote = mark;
+  assert.ok(!renderDisplaySvg(withIt, NOW, {}).includes(mark), 'the footnote must not overlay the reminder');
+  assert.ok(renderDisplaySvg(withIt, NOW, {}).includes(iqamahNoticeText(withIt, NOW)), 'the reminder itself must still show');
+});
+
+test('the footnote still gives way to a ticker, as it always did', () => {
+  const mark = 'FOOTNOTE_MARKER_TEXT';
+  const tt = withTicker(base());
+  tt.showFooter = true;
+  tt.footerNote = mark;
+  assert.ok(!renderDisplaySvg(tt, NOW, {}).includes(mark));
+});
+
 test('the reminder still shows while announcement images are cycling', () => {
   const svg = renderDisplaySvg(withChange(), NOW, { announcement: 'data:image/png;base64,iVBORw0KGgo=' });
   assert.ok(svg.includes(iqamahNoticeText(withChange(), NOW)), 'the reminder must survive the slideshow');
