@@ -6,13 +6,18 @@
 Release notes for OpenMasjid Display, newest first. These ship inside the app — the
 account menu (top right) → **What's new** shows them with no internet needed.
 
+## 0.67.0-dev.4
+- **The reminder and your scrolling announcements are back to one flat bar**, with a clear
+  divider between them. 0.67.0-dev.3 had turned each side into a rounded panel, which read as
+  boxes inside a box.
+- **The reminder text is centred properly.** It was sitting hard against the left with an
+  empty gap beside it, because its area had a fixed minimum width regardless of how short the
+  sentence was. The area is now sized to the words in it.
+- The announcements still stop at the divider, so they no longer look like they slide
+  underneath the reminder and vanish.
+
 ## 0.67.0-dev.3
-- **The Iqamah-change reminder now looks part of the screen rather than stuck on top of it.**
-  It is a rounded red card lined up with the prayer table and the Jumu'ah bar above it,
-  instead of a flat block sitting against the edge.
-- **Your scrolling announcements now run inside their own outlined lane**, so the text
-  visibly reaches the end of its lane instead of appearing to slide underneath the reminder
-  and vanish.
+- Restyled the bottom bar (superseded by 0.67.0-dev.4 above).
 
 ## 0.67.0-dev.2
 - **The "Iqamah times are changing" reminder is much harder to miss.** It used to be a quiet
