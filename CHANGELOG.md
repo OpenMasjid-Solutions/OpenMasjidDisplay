@@ -6,6 +6,20 @@
 Release notes for OpenMasjid Display, newest first. These ship inside the app — the
 account menu (top right) → **What's new** shows them with no internet needed.
 
+## 0.67.0-dev.2
+- **The "Iqamah times are changing" reminder is much harder to miss.** It used to be a quiet
+  line in the masjid's own colours; it is now **red**, and it takes the left-hand part of the
+  bottom band — the same strip your scrolling announcements use — with the announcements
+  carrying on beside it. If you don't use scrolling announcements, the reminder simply takes
+  the whole strip, exactly as an announcement would.
+- **Nothing above it gets smaller.** Previously the reminder claimed a row of its own, so the
+  prayer table and the Jumu'ah bar shrank for the days a change was coming up. It now shares
+  the bottom band, so the rest of the screen is untouched.
+- **It stays on screen while announcement pictures are cycling**, so a change is not hidden
+  for the minutes a slideshow is up.
+- If the prohibited-time (zawāl) message is showing, that keeps the strip to itself — it is
+  happening now, and two red messages at once would only compete.
+
 ## 0.67.0-dev.1
 - **New: "What's new" in the account menu.** OpenMasjidOS updates your apps quietly in the
   background, so nothing in the panel ever said the app had changed under you. The account
