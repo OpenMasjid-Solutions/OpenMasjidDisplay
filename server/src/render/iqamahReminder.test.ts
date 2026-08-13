@@ -59,10 +59,12 @@ const spec = (text: string): TickerSpec => ({
 
 // ── the split geometry ──────────────────────────────────────────────────────────
 
-test('no upcoming change → nothing is reserved and the band is untouched', () => {
+test('no upcoming change → nothing is carved out and the band is untouched', () => {
   const s = bottomBandSplit(base(), NOW, W, H, true);
   assert.equal(s.notice, '');
-  assert.equal(s.reserveW, 0);
+  assert.equal(s.card, null);
+  assert.equal(s.lane, null);
+  assert.equal(s.scroll, null, 'with no reminder ffmpeg must keep its original chain');
 });
 
 test('a change is due → there is a sentence to show', () => {
@@ -71,15 +73,45 @@ test('a change is due → there is a sentence to show', () => {
   assert.match(n, /will be at/);
 });
 
-test('reminder with NO ticker takes the whole band', () => {
+test('reminder with NO ticker takes the whole band (inset, no lane)', () => {
   const s = bottomBandSplit(withChange(), NOW, W, H, false);
-  assert.equal(s.reserveW, W);
+  assert.ok(s.card, 'expected a reminder card');
+  assert.equal(s.lane, null, 'nothing to share with → no well');
+  assert.equal(s.scroll, null);
+  assert.ok(s.card!.w > W * 0.9, 'it should span the band');
+  assert.ok(s.card!.x > 0 && s.card!.w < W, 'inset, so it reads as a card in the band');
+  assert.ok(s.card!.r > 0, 'rounded like the cards above it');
 });
 
 test('reminder WITH a ticker takes a slice, never the lot', () => {
   const s = bottomBandSplit(withTicker(withChange()), NOW, W, H, true);
-  assert.ok(s.reserveW >= W * 0.3, `too narrow to read: ${s.reserveW}`);
-  assert.ok(s.reserveW <= W * 0.6, `leaves the ticker no room: ${s.reserveW}`);
+  assert.ok(s.card && s.lane && s.scroll);
+  assert.ok(s.card!.w >= W * 0.29, `too narrow to read: ${s.card!.w}`);
+  assert.ok(s.card!.w <= W * 0.59, `leaves the ticker no room: ${s.card!.w}`);
+});
+
+test('the two cards never touch — there is a real gutter between them', () => {
+  const s = bottomBandSplit(withTicker(withChange()), NOW, W, H, true);
+  const gutter = s.lane!.x - (s.card!.x + s.card!.w);
+  assert.ok(gutter >= 5, `no visible separation: ${gutter}px`);
+});
+
+test('both cards are inset inside the band, so the well has a visible edge', () => {
+  const s = bottomBandSplit(withTicker(withChange()), NOW, W, H, true);
+  for (const [name, b] of [['card', s.card!], ['lane', s.lane!]] as const) {
+    assert.ok(b.y > s.y, `${name} should sit inside the band top`);
+    assert.ok(b.y + b.h < s.y + s.bandH, `${name} should sit inside the band bottom`);
+    assert.ok(b.r > 0, `${name} should be rounded`);
+  }
+  assert.ok(s.lane!.x + s.lane!.w < W, 'the well should be inset from the screen edge too');
+});
+
+test('the scroll strip is strictly INSIDE the well it is meant to run in', () => {
+  const s = bottomBandSplit(withTicker(withChange()), NOW, W, H, true);
+  const { lane, scroll } = s;
+  assert.ok(scroll!.x >= lane!.x, 'scroll starts before the well');
+  assert.ok(scroll!.x + scroll!.w <= lane!.x + lane!.w, 'scroll runs past the well');
+  assert.ok(scroll!.w >= 16, 'scroll strip collapsed');
 });
 
 test('the band sits exactly where the ticker band sits (it IS that strip)', () => {
@@ -163,10 +195,10 @@ test('a prohibited-time message owns the band alone — no two reds at once', ()
  * transform applies to its clip-path as well, which shifted the clip off-screen and made the
  * ticker text vanish from the preview entirely.
  */
-test('the preview keeps its ticker text, positioned inside the reserved slice', () => {
+test('the preview keeps its ticker text, positioned inside the well', () => {
   const tt = withTicker(withChange());
   const d = dimsFor(tt.orientation, tt.quality);
-  const { reserveW } = bottomBandSplit(tt, NOW, d.width, d.height, true);
+  const { scroll } = bottomBandSplit(tt, NOW, d.width, d.height, true);
   const svg = renderDisplaySvg(tt, NOW, {});
   const g = /<g clip-path="url\(#tkclip[^"]*\)"([^>]*)>([\s\S]*?)<\/g>/.exec(svg);
   assert.ok(g, 'expected a clipped ticker group in the preview');
@@ -175,7 +207,7 @@ test('the preview keeps its ticker text, positioned inside the reserved slice', 
   // Every drawn segment starts at or after the reserved edge (absolute coordinates).
   const xs = [...g![2].matchAll(/<text x="(-?[\d.]+)"/g)].map((m) => Number(m[1]));
   assert.ok(xs.length > 0, 'expected text segments');
-  assert.ok(Math.max(...xs) >= reserveW - 1, `segments are not in the slice: ${xs.join(',')}`);
+  assert.ok(Math.max(...xs) >= scroll!.x - 1, `segments are not in the well: ${xs.join(',')}`);
 });
 
 test('with no reminder the preview ticker is not clipped at all', () => {
@@ -194,18 +226,24 @@ test('with no reserve, the ordinary chain is completely unchanged', () => {
   assert.ok(vf.endsWith('format=yuv420p'));
 });
 
-test('the reserved graph crops the band to the slice the reminder does NOT own', () => {
-  const reserve = 500;
-  const g = timetableVfReserved({ width: W, height: H }, spec('hello'), reserve);
+test('the reserved graph crops to exactly the strip inside the well', () => {
+  const scroll = { x: 500, w: 700 };
+  const g = timetableVfReserved({ width: W, height: H }, spec('hello'), scroll);
   const { y, bandH } = tickerLayout(W, H);
-  assert.ok(g.includes(`crop=${W - reserve}:${Math.round(bandH)}:${reserve}:${Math.round(y)}`), `crop missing/wrong in: ${g}`);
-  assert.ok(g.includes(`overlay=${reserve}:${Math.round(y)}`), 'overlay must put the slice back where it came from');
+  assert.ok(g.includes(`crop=${scroll.w}:${Math.round(bandH)}:${scroll.x}:${Math.round(y)}`), `crop missing/wrong in: ${g}`);
+  assert.ok(g.includes(`overlay=${scroll.x}:${Math.round(y)}`), 'overlay must put the slice back where it came from');
   assert.ok(g.includes('split=2[bg][sc]'));
   assert.ok(g.endsWith('format=yuv420p'));
 });
 
+test('the crop stops at the well, not at the screen edge', () => {
+  const g = timetableVfReserved({ width: W, height: H }, spec('hello'), { x: 500, w: 700 });
+  // 500 + 700 = 1200, i.e. 80px short of the 1280 frame — the text must not run to the edge.
+  assert.ok(!g.includes(`crop=${W - 500}:`), 'the crop still extends to the frame edge');
+});
+
 test('every drawtext lives inside the cropped slice, never on the full frame', () => {
-  const g = timetableVfReserved({ width: W, height: H }, spec('hello'), 400);
+  const g = timetableVfReserved({ width: W, height: H }, spec('hello'), { x: 400, w: 800 });
   const chains = g.split(';');
   const cropChain = chains.find((c) => c.includes('crop='));
   assert.ok(cropChain, 'expected a chain containing the crop');
@@ -218,19 +256,30 @@ test('every drawtext lives inside the cropped slice, never on the full frame', (
 });
 
 test('the scroll still tiles seamlessly inside the slice (wrap uses the real text width)', () => {
-  const g = timetableVfReserved({ width: W, height: H }, spec('hello'), 400);
+  const g = timetableVfReserved({ width: W, height: H }, spec('hello'), { x: 400, w: 800 });
   assert.ok(g.includes('mod(floor(t*20)*'), 'integer px/frame stepping must survive');
   assert.ok(g.includes('tw+'), 'the wrap period must still use the measured text width');
 });
 
-test('an absurd reserve still leaves a usable slice rather than a zero-width crop', () => {
-  const g = timetableVfReserved({ width: W, height: H }, spec('hello'), W + 999);
-  const m = /crop=(\d+):/.exec(g);
-  assert.ok(m, 'expected a crop');
-  assert.ok(Number(m![1]) >= 16, `crop width collapsed: ${m![1]}`);
-});
+// ffmpeg rejects a zero/negative crop outright, which would take the whole stream down —
+// so nonsense geometry has to degrade to a usable strip rather than a broken filter.
+for (const bad of [
+  { x: W + 999, w: 500 },
+  { x: 100, w: 0 },
+  { x: 100, w: -50 },
+  { x: 1270, w: 500 },
+]) {
+  test(`absurd lane ${JSON.stringify(bad)} still yields a usable crop`, () => {
+    const g = timetableVfReserved({ width: W, height: H }, spec('hello'), bad);
+    const m = /crop=(\d+):\d+:(\d+):/.exec(g);
+    assert.ok(m, `expected a crop in: ${g}`);
+    const [cw, cx] = [Number(m![1]), Number(m![2])];
+    assert.ok(cw >= 16, `crop width collapsed: ${cw}`);
+    assert.ok(cx >= 0 && cx + cw <= W, `crop runs off the frame: x=${cx} w=${cw}`);
+  });
+}
 
 test('a prohibited ticker keeps its red inside the reserved graph too', () => {
-  const g = timetableVfReserved({ width: W, height: H }, { ...spec('x'), prohibited: true }, 400);
+  const g = timetableVfReserved({ width: W, height: H }, { ...spec('x'), prohibited: true }, { x: 400, w: 800 });
   assert.ok(g.includes(TICKER_RED.replace('#', '0x')), 'prohibited text must stay red');
 });

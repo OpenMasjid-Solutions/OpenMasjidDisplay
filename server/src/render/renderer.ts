@@ -137,7 +137,8 @@ export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d
 
 /**
  * The same filter, but with the scroll CONFINED to the right of the band because the red
- * Iqāmah-change reminder owns `reserveW` px on the left (see svg.ts bottomBandSplit).
+ * Iqāmah-change reminder has taken the left of the band and the ticker now runs inside its
+ * own well (see svg.ts bottomBandSplit); `scroll` is the strip inside that well.
  *
  * drawtext has no clip region, so a plain `x` offset would not do: a message wider than the
  * remaining space keeps moving left and would slide straight over the reminder. Instead the
@@ -149,7 +150,7 @@ export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d
  * -filter_complex. It is only used while a reminder is actually up — a few days a year — so
  * the ordinary ticker keeps the exact, hard-won simple chain above.
  */
-export function timetableVfReserved(d: Dims, ticker: TickerSpec, reserveW: number, inDims: Dims = d): string {
+export function timetableVfReserved(d: Dims, ticker: TickerSpec, scroll: { x: number; w: number }, inDims: Dims = d): string {
   const up = inDims.width !== d.width || inDims.height !== d.height
     ? `scale=${d.width}:${d.height}:flags=lanczos,`
     : '';
@@ -159,8 +160,10 @@ export function timetableVfReserved(d: Dims, ticker: TickerSpec, reserveW: numbe
   const pxPerFrame = Math.max(1, Math.round((speed * 16) / TICKER_FPS));
   const gap = Math.round(size * 4);
   const period = `tw+${gap}`;
-  const rx = Math.round(clamp(reserveW, 0, d.width - 16)); // always leave a usable slice
-  const rw = d.width - rx;
+  // The strip INSIDE the ticker's well. Clamped so a nonsense lane can never produce a
+  // zero-width crop (which ffmpeg rejects outright, taking the whole stream down).
+  const rx = Math.round(clamp(scroll.x, 0, Math.max(0, d.width - 16)));
+  const rw = Math.round(clamp(scroll.w, 16, d.width - rx));
   const by = Math.round(y);
   const bh = Math.round(bandH);
   const periodEst = Math.max(100, ticker.text.length * size * 0.45);
@@ -186,7 +189,7 @@ function brFor(tt: Timetable, d: Dims): number {
   return d.height >= 1080 ? tt.bitrate1080 ?? 8000 : tt.bitrate720 ?? 4000;
 }
 
-function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDims: Dims = d, bitrate = 0, reserveW = 0): string[] {
+function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDims: Dims = d, bitrate = 0, scroll: { x: number; w: number } | null = null): string[] {
   // The display is mostly static high-detail (gradients, glass, crisp text), so a low
   // CBR starved it and it went blocky/banded. Give it a generous bitrate — the content
   // compresses well so this only spends bits where detail actually needs them — and use
@@ -204,8 +207,8 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
   // to what is left of it — which needs a filtergraph (-filter_complex), not a chain (-vf).
   // Only when both are on screen at once; otherwise the plain chain is used unchanged.
   const filter: string[] =
-    ticker && reserveW > 0
-      ? ['-filter_complex', timetableVfReserved(d, ticker, reserveW, inDims)]
+    ticker && scroll
+      ? ['-filter_complex', timetableVfReserved(d, ticker, scroll, inDims)]
       : ['-vf', timetableVf(d, ticker, inDims)];
   return [
     '-hide_banner', '-loglevel', 'warning',
@@ -405,10 +408,11 @@ class TimetablePipeline extends FfmpegPipeline {
   private tickerProhibited = false; // red prohibited-time message → drawtext colour is an ffmpeg arg
   private tickerColor = '#ffffff'; // themed ticker text colour (ffmpeg arg) → respawn on theme change
   private tickerSpeed = 5; // scroll speed is an ffmpeg arg → respawn when it changes
-  // Width the red Iqāmah-change reminder reserves on the left of the band. It is baked into
-  // the drawtext crop, so it has to respawn ffmpeg when it changes — which is when a change
-  // comes into range, drops out of range, or its wording (and so its width) moves.
-  private tickerReserveW = 0;
+  // The strip the ticker may scroll inside when the red Iqāmah-change reminder is sharing the
+  // band; null when it has the band to itself. Baked into the drawtext crop, so it has to
+  // respawn ffmpeg when it changes — which is when a change comes into range, drops out of
+  // range, or its wording (and so the card's width) moves.
+  private tickerScroll: { x: number; w: number } | null = null;
   private bitrate = 0; // configurable bitrate cap (kbps) — an ffmpeg arg → respawn on change
   private readonly tickerFile: string;
   // The size we rasterise (capped); ffmpeg upscales to this.dims. Keeps each render
@@ -427,7 +431,7 @@ class TimetablePipeline extends FfmpegPipeline {
     this.tickerColor = tt ? tickerTextColor(tt) : '#ffffff';
     this.tickerSpeed = tt?.tickerSpeed ?? 5;
     // Needs dims + tickerText/prohibited, all set above.
-    this.tickerReserveW = this.wantReserveW(tt);
+    this.tickerScroll = this.wantScroll(tt);
     // renderDims depends on tickerText (full-res while a ticker animates), so set it last.
     this.renderDims = this.computeRenderDims();
     this.writeTickerFile();
@@ -449,18 +453,19 @@ class TimetablePipeline extends FfmpegPipeline {
   }
 
   protected args(): string[] {
-    return timetableArgs(this.dims, this.target(), this.tickerSpec(), this.renderDims, this.bitrate, this.tickerReserveW);
+    return timetableArgs(this.dims, this.target(), this.tickerSpec(), this.renderDims, this.bitrate, this.tickerScroll);
   }
 
-  /** How much of the band the red reminder takes, for the CURRENT timetable. 0 when there is
-   *  no reminder, or when a prohibited-time message has taken the band instead — the SVG
-   *  makes the same call, and the two must agree or the scroll region won't match the panel. */
-  private wantReserveW(tt: Timetable | undefined): number {
-    if (!tt || !this.tickerText || this.tickerProhibited) return 0;
+  /** The strip the ticker may scroll inside for the CURRENT timetable, or null when it has the
+   *  whole band — no reminder, or a prohibited-time message has taken the band instead. The
+   *  SVG makes the same call, and the two must agree or the moving text and the well it is
+   *  supposed to run inside will not line up. */
+  private wantScroll(tt: Timetable | undefined): { x: number; w: number } | null {
+    if (!tt || !this.tickerText || this.tickerProhibited) return null;
     try {
-      return bottomBandSplit(tt, new Date(), this.dims.width, this.dims.height, true).reserveW;
+      return bottomBandSplit(tt, new Date(), this.dims.width, this.dims.height, true).scroll;
     } catch {
-      return 0; // never let a bad schedule stop the stream
+      return null; // never let a bad schedule stop the stream
     }
   }
 
@@ -570,11 +575,14 @@ class TimetablePipeline extends FfmpegPipeline {
       this.restartProc();
       return true;
     }
-    // The reminder's reserved slice is baked into the drawtext crop, so a change in it
-    // (appearing, clearing, or rewording to a different width) needs the filter rebuilt.
-    const wantReserve = this.wantReserveW(tt);
-    if (wantReserve !== this.tickerReserveW) {
-      this.tickerReserveW = wantReserve;
+    // The ticker's lane is baked into the drawtext crop, so a change in it (the reminder
+    // appearing, clearing, or rewording to a different width) needs the filter rebuilt.
+    // Compared by VALUE — these are fresh objects every call, so a reference check would
+    // respawn ffmpeg every reconcile and the decoder would reconnect for ever.
+    const wantScroll = this.wantScroll(tt);
+    const key = (s: { x: number; w: number } | null) => (s ? `${s.x}x${s.w}` : '');
+    if (key(wantScroll) !== key(this.tickerScroll)) {
+      this.tickerScroll = wantScroll;
       this.restartProc();
       return true;
     }
