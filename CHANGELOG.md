@@ -10,6 +10,8 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
+## Unreleased
+
 ## 0.67.0
 
 - **New: "What's new" in the account menu.** OpenMasjidOS updates your apps quietly in the
