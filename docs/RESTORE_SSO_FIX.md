@@ -3,9 +3,29 @@
 
 # Bug: the panel locks you out after an OpenMasjidOS backup is restored / the box is migrated
 
+> ## ✅ FIXED — but **not** the way §"The fix" below proposes. Read this box first.
+>
+> This document is kept for the diagnosis, which is still correct and still worth
+> understanding. **Its proposed fix is not what shipped, and following it verbatim today would
+> re-open an unauthenticated admin takeover.**
+>
+> Step 1 below says to drop the SSO refusal from `POST /api/setup` outright. That cannot be
+> done: under SSO the admin signs in through the dashboard and *never* sets a local password,
+> so `store.db.admin` stays `null` for the life of the deployment — and an unconditionally
+> open `/api/setup` is therefore a permanently open door for anyone who can reach the port to
+> claim admin and repoint every screen.
+>
+> What shipped is the conditional version, which fixes the lockout without opening that door:
+> `/api/setup` refuses an anonymous claim **only while the platform is actually reachable**
+> (`probePlatform(req).reachable`). Platform up → sign in through the dashboard. Platform down
+> — restore, migration, outage, i.e. exactly this bug — → the local recovery password is
+> available, as it must be. Steps 2 and 3 shipped as written.
+>
+> That guard is a standing invariant ([`CLAUDE.md`](../CLAUDE.md) §4). Do not remove it.
+
 **Severity:** high (no way into the control panel until fixed).
-**Where:** `server/src/api.ts` — `GET /api/session` (~line 189) and `POST /api/setup` (~line 213).
-**Applies to:** any OpenMasjidOS-integrated app; the same trap exists in OpenMasjid Donations.
+**Where:** `server/src/api.ts` — `GET /api/session` and `POST /api/setup`.
+**Applies to:** any OpenMasjidOS-integrated app; the same trap existed in OpenMasjid Donations.
 
 ---
 

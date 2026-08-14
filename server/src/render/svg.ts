@@ -71,7 +71,9 @@ const pad2 = (n: number) => String(n).padStart(2, '0');
 
 /** Rough rendered width of a string at a given font size (no real metrics; good
  *  enough to place an AM/PM marker and to size click-to-edit hotspots). */
-function approxWidth(s: string, size: number): number {
+/** Rough text width for autofitting. Exported so tests can assert a zone actually fits
+ *  (and is not far wider than) the sentence it is sized for. */
+export function approxWidth(s: string, size: number): number {
   let w = 0;
   for (const ch of s) {
     const cp = ch.codePointAt(0) ?? 0;
@@ -313,15 +315,74 @@ export function tickerTextColor(tt: Timetable): string {
   return getPalette(tt.themeId, tt.accent).text;
 }
 
-/** The active ticker string for the given instant (text only). */
-export function activeTickerString(tt: Timetable, now: Date): string {
-  return activeTicker(tt, now).text;
+/** The upcoming-Iqāmah-change sentence to show right now, or '' — the reminder that used
+ *  to sit in its own strip above the ticker and now shares the ticker's band. */
+export function iqamahNoticeText(tt: Timetable, now: Date): string {
+  const icn = tt.iqamahChangeNotice;
+  if (!icn?.enabled) return '';
+  try {
+    return upcomingIqamahChange(tt, now, icn.daysBefore) ?? '';
+  } catch {
+    return ''; // a malformed schedule must never take the screen down
+  }
 }
 
-/** Whether the timetable currently has a scrolling ticker. */
-export function tickerActive(tt: Timetable, now: Date): boolean {
-  if (!tt.ticker?.enabled || !tt.ticker.messages?.length) return false;
-  return activeTickerString(tt, now).length > 0;
+/**
+ * How the bottom band is divided between the red Iqāmah-change reminder and the scrolling
+ * ticker.
+ *
+ * Shared by the SVG and the ffmpeg drawtext for the same reason `tickerLayout` is: the live
+ * video's scrolling text is drawn by ffmpeg, which cannot read the SVG, so both sides must
+ * derive the geometry from one function or the moving text will run over the reminder.
+ *
+ * The band stays the FLAT, full-height strip it has always been — the reminder is a red zone
+ * at its left, the announcements scroll to its right, and a divider separates them. An
+ * earlier attempt made each side a rounded inset card, which read as boxes inside a box and
+ * was worse than what it replaced.
+ *
+ * `reserveW` is the red zone: 0 with no reminder (the band is untouched and the ticker keeps
+ * its original full-bleed look AND its original ffmpeg chain), the full width when there is
+ * no ticker to share with, and otherwise a slice sized to the sentence. `scroll` is where
+ * ffmpeg may draw — after the divider, so the moving text stops at a line you can see rather
+ * than appearing to slide underneath the reminder.
+ */
+export function bottomBandSplit(
+  tt: Timetable,
+  now: Date,
+  W: number,
+  H: number,
+  hasTicker: boolean,
+): {
+  y: number;
+  bandH: number;
+  fs: number;
+  notice: string;
+  reserveW: number;
+  sep: { x: number; w: number } | null;
+  scroll: { x: number; w: number } | null;
+} {
+  const { y, bandH, fs } = tickerLayout(W, H);
+  const notice = iqamahNoticeText(tt, now);
+  if (!notice) return { y, bandH, fs, notice: '', reserveW: 0, sep: null, scroll: null };
+  if (!hasTicker) return { y, bandH, fs, notice, reserveW: W, sep: null, scroll: null };
+
+  const pad = fs * 1.1; // breathing space each side of the sentence
+  // Sized to the sentence so the red zone is not much wider than the words in it — the text
+  // is centred within it, so a zone forced far wider than its content just looks off-centre.
+  const want = approxWidth(notice, fs) + 2 * pad;
+  const reserveW = Math.round(clamp(want, W * 0.22, W * 0.58));
+  const sepW = Math.max(2, Math.round(bandH * 0.055));
+  const gap = clamp(bandH * 0.22, 5, 14); // keeps the moving text off the divider
+  const scrollX = Math.round(reserveW + sepW + gap);
+  return {
+    y,
+    bandH,
+    fs,
+    notice,
+    reserveW,
+    sep: { x: reserveW, w: sepW },
+    scroll: { x: scrollX, w: Math.max(16, W - scrollX) },
+  };
 }
 
 /** Geometry of the bottom ticker strip — shared by the SVG band and the ffmpeg
@@ -1339,7 +1400,7 @@ function jumuahBar(b: Box, m: Model, c: Ctx): string {
 /** A scrolling ticker strip along the bottom. The text is tiled and offset by the
  *  clock so it scrolls continuously; smoothness depends on the frame cadence (the
  *  renderer speeds up while a ticker is active). */
-function tickerBand(msg: string, now: Date, p: Palette, W: number, H: number, bandOnly: boolean, prohibited = false): string {
+function tickerBand(msg: string, now: Date, p: Palette, W: number, H: number, bandOnly: boolean, prohibited = false, scrollAt: { x: number; w: number } | null = null): string {
   const { y, bandH, fs } = tickerLayout(W, H);
   const out: string[] = [];
   // A prohibited-time message scrolls in red, with a red top edge, so it reads clearly
@@ -1347,16 +1408,82 @@ function tickerBand(msg: string, now: Date, p: Palette, W: number, H: number, ba
   out.push(rect(0, y, W, bandH, 0, hexToRgba(p.bg, prohibited ? 0.72 : 0.6)));
   out.push(rect(0, y, W, Math.max(1.5, bandH * 0.025), 0, prohibited ? TICKER_RED : hexToRgba(p.primary, 0.55)));
   if (!bandOnly) {
+    // The still preview draws the scrolling text itself (the live video leaves this to
+    // ffmpeg). It has to honour the same strip, or the admin's preview would show the message
+    // sitting on top of the reminder while the real screen does not.
+    const scrollX = scrollAt ? scrollAt.x : 0;
+    const scrollW = scrollAt ? scrollAt.w : W;
     const seg = `${msg}${TICKER_SEP}`;
     const segW = Math.max(60, approxWidth(seg, fs));
     const speed = clamp(Math.min(W, H) * 0.04, 30, 90);
     const offset = ((now.getTime() / 1000) * speed) % segW;
     const baseline = y + bandH * 0.66;
-    for (let x = -offset; x < W; x += segW) {
-      out.push(text(x, baseline, seg, { size: fs, fill: prohibited ? TICKER_RED : p.text, family: FONT_SANS, weight: prohibited ? 700 : 600, anchor: 'start' }));
+    // ABSOLUTE x positions, and no transform on the clipping group. An element's own
+    // `transform` also applies to its `clip-path`, so translating the group would shift the
+    // clip rect by the same amount and clip everything away — which is exactly what it did.
+    const inner: string[] = [];
+    for (let x = -offset; x < scrollW; x += segW) {
+      inner.push(text(scrollX + x, baseline, seg, { size: fs, fill: prohibited ? TICKER_RED : p.text, family: FONT_SANS, weight: prohibited ? 700 : 600, anchor: 'start' }));
+    }
+    // Clip to the slice rather than trusting the loop bounds: a segment that starts inside
+    // the region can still be wider than what is left of it.
+    if (scrollAt) {
+      const cid = `tkclip${Math.round(scrollX)}x${Math.round(y)}`;
+      out.push(`<clipPath id="${cid}"><rect x="${scrollX}" y="${y}" width="${scrollW}" height="${bandH}"/></clipPath>`);
+      out.push(`<g clip-path="url(#${cid})">${inner.join('')}</g>`);
+    } else {
+      out.push(inner.join(''));
     }
   }
   return out.join('');
+}
+
+/** The upcoming-Iqāmah-change reminder, drawn INSIDE the bottom band on the left (or
+ *  filling it when there is no ticker to share with).
+ *
+ *  It used to be an emerald strip stacked ABOVE the band, which reserved its own height and
+ *  so shrank the prayer table and the Jumu'ah box whenever a change was coming up. Sharing
+ *  the band costs the layout nothing, and red reads as something to act on — this is the
+ *  masjid telling the congregation their jamā'ah time is about to move. */
+//  A FLAT zone filling the band's full height, matching the band it sits in — no rounding, no
+//  inset, no border. Rounding it into a card made it read as a box inside a box.
+//
+//  Deliberately theme-independent: the red is the same TICKER_RED the prohibited-time message
+//  uses on both light and dark themes, so a warning always looks like a warning.
+function iqamahReminderPanel(sentence: string, fs: number, y: number, bandH: number, reserveW: number): string {
+  const out: string[] = [];
+  out.push(rect(0, y, reserveW, bandH, 0, hexToRgba(TICKER_RED, 0.2)));
+  // Carry the band's own top edge across the zone in red, so the strip still reads as one
+  // continuous band rather than two stuck together.
+  out.push(rect(0, y, reserveW, Math.max(1.5, bandH * 0.025), 0, TICKER_RED));
+  const pad = fs * 0.8;
+  const maxW = reserveW - 2 * pad;
+  let size = fs;
+  while (approxWidth(sentence, size) > maxW && size > 10) size -= 1;
+  // ALWAYS centred in its own zone. Left-aligning it left a lopsided gap whenever the zone
+  // came out wider than the sentence needed.
+  out.push(
+    text(reserveW / 2, y + bandH / 2 + size * 0.35, sentence, {
+      size,
+      fill: TICKER_RED,
+      family: FONT_SANS,
+      weight: 700,
+      anchor: 'middle',
+    }),
+  );
+  return out.join('');
+}
+
+/** The divider between the reminder and the announcements.
+ *
+ *  This is the whole point of the separation: the scrolling text is clipped to stop just
+ *  after this line, so it visibly runs out AT a divider instead of appearing to slide
+ *  underneath the reminder and vanish. Full band height, so it reads as a wall. */
+function bandDivider(sep: { x: number; w: number }, y: number, bandH: number, p: Palette): string {
+  return (
+    rect(sep.x, y, sep.w, bandH, 0, hexToRgba(p.bg, 0.85)) +
+    rect(sep.x, y, sep.w, bandH, 0, hexToRgba(p.primary, 0.5))
+  );
 }
 
 /** The portrait column: brand, clock + ring side by side, the prayer table, and the
@@ -1640,20 +1767,6 @@ export function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: numbe
     return `From ${when}, ${joinList(clauses)}`;
   }
   return null;
-}
-
-/** Static heads-up strip about an upcoming Iqāmah change, sitting just above the ticker
- *  (or footer). Emerald-tinted so it reads as a notice, distinct from the gold Jumu'ah bar
- *  and the neutral ticker. Autofits the sentence to the width. */
-function iqamahChangeBand(b: Box, sentence: string, p: Palette): string {
-  const out: string[] = [];
-  out.push(glass(b.x, b.y, b.w, b.h, clamp(Math.min(b.w, b.h) * 0.28, 8, 26), { fill: hexToRgba(p.primary, 0.07), stroke: hexToRgba(p.primary, 0.3) }));
-  const pad = b.w * 0.03;
-  const maxW = b.w - 2 * pad;
-  let fs = clamp(b.h * 0.42, 13, 32);
-  while (approxWidth(sentence, fs) > maxW && fs > 11) fs -= 1;
-  out.push(text(b.x + b.w / 2, b.y + b.h * 0.5 + fs * 0.34, sentence, { size: fs, fill: p.text, family: FONT_SANS, weight: 600, anchor: 'middle' }));
-  return out.join('');
 }
 
 /** If an Adhan has just arrived (within adhanPopup.seconds of the DISPLAYED Adhan),
@@ -2019,7 +2132,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   if (!hasImage) out.push(rect(0, 0, W, H, 0, 'url(#khatam)'));
 
   // ── Full-takeover overlays (drawn over the scene, suppress the normal layout
-  //    AND the scrolling ticker — see activeTickerString) ──────────────────────
+  //    AND the scrolling ticker — see activeTicker) ─────────────────────────────
   const overlay = activeOverlay(tt, m, nowHours);
   if (overlay) {
     // Full-screen overlays always dim to a dark scrim, so use light text even on a light
@@ -2033,13 +2146,23 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
 
   // Working area: inset by P, with a reserved bottom band for the ticker (or the small
   // footer line). The Jumu'ah box now lives INSIDE each layout, not a global bottom bar.
-  // An upcoming-Iqāmah-change heads-up (if any) stacks ABOVE that core strip and reserves
-  // its own height, so it shows alongside the ticker AND when the ticker is off.
-  const bottomCore = tickerText ? tickerLayout(W, H).bandH : tt.showFooter ? clamp(H * 0.05, 24, 60) : P;
-  const icn = tt.iqamahChangeNotice;
-  const iqChange = icn?.enabled ? upcomingIqamahChange(tt, now, icn.daysBefore) : null;
-  const annH = iqChange ? clamp(H * 0.06, 30, 80) : 0;
-  const area: Box = { x: P, y: P, w: W - 2 * P, h: H - P - bottomCore - annH };
+  //
+  // The upcoming-Iqāmah-change reminder SHARES that band (left slice in red) rather than
+  // stacking above it. It used to reserve its own height, which shrank the prayer table and
+  // the Jumu'ah box for the days a change was pending — the reminder is a bottom-band
+  // matter and should cost the rest of the screen nothing.
+  //
+  // A prohibited-time (zawāl) message takes the band on its own: it is happening NOW, so it
+  // outranks a reminder about a change days away, and two different reds in one strip read
+  // as noise.
+  const split = bottomBandSplit(tt, now, W, H, !!tickerText);
+  const iqNotice = prohibitedTickerOn ? '' : split.notice;
+  const iqReserve = iqNotice ? split.reserveW : 0;
+  const tkSep = iqNotice ? split.sep : null;
+  const tkScroll = iqNotice ? split.scroll : null;
+  const bandShown = !!tickerText || !!iqNotice;
+  const bottomCore = bandShown ? split.bandH : tt.showFooter ? clamp(H * 0.05, 24, 60) : P;
+  const area: Box = { x: P, y: P, w: W - 2 * P, h: H - P - bottomCore };
   const ctx: Ctx = {
     p,
     L,
@@ -2074,8 +2197,12 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     out.push(layoutReference(area, m, ctx));
   }
 
-  // ── Footer (hidden when the ticker is running — they share the bottom strip) ──
-  if (tt.showFooter && !tickerText) {
+  // ── Footer (hidden whenever the bottom band is showing — they share that strip) ──
+  //    The band is the footer's spot, so anything occupying it hides the footnote: the
+  //    scrolling ticker always did, and now the Iqāmah-change reminder does too. Keying this
+  //    on `tickerText` alone left the footnote drawn straight over the red reminder whenever
+  //    a masjid had no ticker configured.
+  if (tt.showFooter && !bandShown) {
     const methodNote =
       tt.method === 'Custom'
         ? `Custom ${tt.fajrAngle ?? 18}° / ${tt.ishaAngle ?? 17}° · Asr: ${tt.asrMadhab}`
@@ -2083,12 +2210,20 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     out.push(text(W / 2, H - P * 0.5, tt.footerNote || methodNote, { size: clamp(Math.min(W, H) * 0.014, 11, 20), fill: p.textFaint, anchor: 'middle', letter: 0.5, editId: 'footerNote' }));
   }
 
-  // ── Upcoming-Iqāmah-change heads-up (static; sits just above the ticker/footer, and
-  //    shows even when the ticker is off) ────────────────────────────────────────
-  if (iqChange) out.push(iqamahChangeBand({ x: P, y: H - bottomCore - annH, w: W - 2 * P, h: annH }, iqChange, p));
-
-  // ── Scrolling ticker (drawn last, over everything) ───────────────────────────
-  if (tickerText) out.push(tickerBand(tickerText, now, p, W, H, !!opts.tickerBandOnly, prohibitedTickerOn));
+  // ── The bottom band: ticker and/or the red Iqāmah-change reminder ────────────
+  //    Drawn last, over everything — including the slideshow image, so the reminder stays
+  //    readable while announcement pictures are cycling.
+  if (tickerText) {
+    out.push(tickerBand(tickerText, now, p, W, H, !!opts.tickerBandOnly, prohibitedTickerOn, tkScroll));
+  } else if (iqNotice) {
+    // No ticker to share with: paint the band ourselves so the reminder has the same strip
+    // a ticker would have occupied.
+    out.push(rect(0, split.y, W, split.bandH, 0, hexToRgba(p.bg, 0.6)));
+  }
+  if (iqReserve > 0) {
+    out.push(iqamahReminderPanel(iqNotice, split.fs, split.y, split.bandH, iqReserve));
+    if (tkSep) out.push(bandDivider(tkSep, split.y, split.bandH, p));
+  }
 
   // ── Adhan-in pop-up (over everything, incl. the ticker) ──────────────────────
   const apRow = adhanPopupRow(tt, m, nowHours);

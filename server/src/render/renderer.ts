@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config';
 import { makeLog } from '../logger';
-import { dimsFor, activeTicker, tickerTextColor, tickerLayout, TICKER_RED, type Dims } from './svg';
+import { dimsFor, activeTicker, tickerTextColor, tickerLayout, bottomBandSplit, TICKER_RED, type Dims } from './svg';
 import { primaryFontFile } from './fonts';
 import { RenderWorker } from './renderPool';
 import type { Timetable } from '../types';
@@ -24,6 +24,27 @@ import type { Timetable } from '../types';
 const log = makeLog('render');
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+
+/**
+ * The only protocols ffmpeg may speak when it opens a source URL.
+ *
+ * Defence-in-depth behind validate.ts's ALLOWED_SOURCE_SCHEMES: even if a non-stream URL
+ * ever slipped past validation, ffmpeg still cannot open `file:` (read a local file onto a
+ * masjid screen), `http:`/`https:` (SSRF) or `concat:`. That property is what must not be
+ * given up — the list may grow to cover a STREAM protocol, never a local-read or general
+ * fetch one.
+ *
+ * `srtp`/`tls`/`crypto` are here so secure cameras work (e.g. UniFi's `rtsps://…?enableSrtp`).
+ * `rtmp`/`rtmps` are here because validate.ts ACCEPTS and stores those URLs: without them an
+ * admin could save an RTMP source that passed validation, and then both "Test link" and
+ * "Most compatible (re-encode)" failed with a raw ffmpeg protocol error, while plain relay
+ * of the same source worked — the two lists disagreeing is the bug, not the protocol.
+ *
+ * (We do NOT pass -tls_verify: ffmpeg doesn't verify rtsps certs by default, which is what
+ * self-signed local cameras need, and the flag isn't accepted by every ffmpeg build —
+ * passing it made some builds bail out, breaking rtsps.)
+ */
+const FF_PROTOCOLS = 'rtp,rtcp,udp,tcp,rtsp,rtsps,srtp,tls,crypto,rtmp,rtmps';
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
@@ -87,9 +108,12 @@ const STALE_AFTER_MS = 30_000;
  * back to the epoch or to a build date, they don't jump forward). That also means it has
  * no false positives — a correct clock in 2030 is simply later than this.
  *
- * Move this forward when cutting a release.
+ * Move this forward when cutting a release — it is the one line in the file with an expiry
+ * date, and a floor left behind stops catching the clocks that drifted since. It must never
+ * be set LATER than the release it ships in, or a correct clock would read as suspect on
+ * day one.
  */
-const CLOCK_FLOOR_MS = Date.parse('2026-08-01T00:00:00Z');
+export const CLOCK_FLOOR_MS = Date.parse('2026-08-13T00:00:00Z');
 export function renderDimsFor(out: Dims): Dims {
   const longest = Math.max(out.width, out.height);
   if (longest <= RENDER_CAP) return out;
@@ -102,7 +126,7 @@ export function renderDimsFor(out: Dims): Dims {
  *  frames only update once per second. The SVG paints just the strip. `inDims` is the
  *  rasterised (piped) size; when smaller than `d` ffmpeg upscales first so the ticker
  *  drawtext still lands on the full-resolution canvas. */
-function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d): string {
+export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d): string {
   const up = inDims.width !== d.width || inDims.height !== d.height
     ? `scale=${d.width}:${d.height}:flags=lanczos,`
     : '';
@@ -135,6 +159,52 @@ function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d): stri
   return `${up}fps=${TICKER_FPS},${dt.join(',')},format=yuv420p`;
 }
 
+/**
+ * The same filter, but with the scroll CONFINED to the right of the band because the red
+ * Iqāmah-change reminder has taken the left of the band and the ticker now runs inside its
+ * own well (see svg.ts bottomBandSplit); `scroll` is the strip inside that well.
+ *
+ * drawtext has no clip region, so a plain `x` offset would not do: a message wider than the
+ * remaining space keeps moving left and would slide straight over the reminder. Instead the
+ * band's right-hand slice is cropped out, the text is drawn on THAT (clipped to it by
+ * construction, and `w` inside the crop is the slice width, so the existing wrap arithmetic
+ * still tiles seamlessly), and the result is overlaid back.
+ *
+ * This is a filtergraph rather than a linear chain, so callers must pass it to
+ * -filter_complex. It is only used while a reminder is actually up — a few days a year — so
+ * the ordinary ticker keeps the exact, hard-won simple chain above.
+ */
+export function timetableVfReserved(d: Dims, ticker: TickerSpec, scroll: { x: number; w: number }, inDims: Dims = d): string {
+  const up = inDims.width !== d.width || inDims.height !== d.height
+    ? `scale=${d.width}:${d.height}:flags=lanczos,`
+    : '';
+  const { y, bandH, fs } = tickerLayout(d.width, d.height);
+  const size = Math.round(fs);
+  const speed = clamp(Math.round(ticker.speed || 5), 1, 10);
+  const pxPerFrame = Math.max(1, Math.round((speed * 16) / TICKER_FPS));
+  const gap = Math.round(size * 4);
+  const period = `tw+${gap}`;
+  // The strip INSIDE the ticker's well. Clamped so a nonsense lane can never produce a
+  // zero-width crop (which ffmpeg rejects outright, taking the whole stream down).
+  const rx = Math.round(clamp(scroll.x, 0, Math.max(0, d.width - 16)));
+  const rw = Math.round(clamp(scroll.w, 16, d.width - rx));
+  const by = Math.round(y);
+  const bh = Math.round(bandH);
+  const periodEst = Math.max(100, ticker.text.length * size * 0.45);
+  const copies = Math.min(20, Math.max(3, Math.ceil(rw / periodEst) + 2));
+  const color = ticker.prohibited ? `0x${TICKER_RED.replace('#', '')}` : `0x${ticker.color.replace('#', '')}`;
+  const dt: string[] = [];
+  for (let k = 0; k < copies; k++) {
+    const x = `w-mod(floor(t*${TICKER_FPS})*${pxPerFrame}\\,${period})${k > 0 ? `-${k}*(${period})` : ''}`;
+    dt.push(`drawtext=fontfile='${ticker.fontfile}':textfile='${ticker.textfile}':expansion=none:fontsize=${size}:fontcolor=${color}:x=${x}:y=(h-th)/2`);
+  }
+  return (
+    `[0:v]${up}fps=${TICKER_FPS},split=2[bg][sc];` +
+    `[sc]crop=${rw}:${bh}:${rx}:${by},${dt.join(',')}[tk];` +
+    `[bg][tk]overlay=${rx}:${by},format=yuv420p`
+  );
+}
+
 /** @param d output (encoded) dims; @param inDims the rasterised frame piped on stdin
  *  (== d unless capped, in which case ffmpeg upscales d ← inDims). */
 /** Bitrate cap (kbps) for a timetable's output size — the admin can override the
@@ -143,7 +213,7 @@ function brFor(tt: Timetable, d: Dims): number {
   return d.height >= 1080 ? tt.bitrate1080 ?? 8000 : tt.bitrate720 ?? 4000;
 }
 
-function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDims: Dims = d, bitrate = 0): string[] {
+function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDims: Dims = d, bitrate = 0, scroll: { x: number; w: number } | null = null): string[] {
   // The display is mostly static high-detail (gradients, glass, crisp text), so a low
   // CBR starved it and it went blocky/banded. Give it a generous bitrate — the content
   // compresses well so this only spends bits where detail actually needs them — and use
@@ -157,10 +227,17 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
   const inFps = ticker ? TICKER_FPS : 1;
   const br = bitrate > 0 ? bitrate : d.height >= 1080 ? 8000 : 4000;
   const buf = br * 2;
+  // A red Iqāmah-change reminder owns the left of the band, so the scroll has to be clipped
+  // to what is left of it — which needs a filtergraph (-filter_complex), not a chain (-vf).
+  // Only when both are on screen at once; otherwise the plain chain is used unchanged.
+  const filter: string[] =
+    ticker && scroll
+      ? ['-filter_complex', timetableVfReserved(d, ticker, scroll, inDims)]
+      : ['-vf', timetableVf(d, ticker, inDims)];
   return [
     '-hide_banner', '-loglevel', 'warning',
     '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${inDims.width}x${inDims.height}`, '-framerate', `${inFps}`, '-i', 'pipe:0',
-    '-vf', timetableVf(d, ticker, inDims), '-fps_mode', 'cfr',
+    ...filter, '-fps_mode', 'cfr',
     '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
     '-profile:v', 'baseline', '-level', levelFor(d.height),
     '-g', `${ofps}`, '-keyint_min', `${ofps}`, '-sc_threshold', '0', '-bf', '0',
@@ -174,13 +251,7 @@ function transcodeArgs(url: string, d: Dims, target: string): string[] {
   const br = d.height >= 1080 ? 4500 : 2500;
   return [
     '-hide_banner', '-loglevel', 'warning',
-    // Defence-in-depth: even if a non-rtsp URL ever slipped past validation, ffmpeg
-    // may only speak these protocols (no file:/http:/concat: local read or SSRF).
-    // `srtp` is included so secure cameras (e.g. UniFi's rtsps://…?enableSrtp) work.
-    // (We do NOT pass -tls_verify: ffmpeg doesn't verify rtsps certs by default, which
-    // is what self-signed local cameras need, and the flag isn't accepted by every
-    // ffmpeg build — passing it made some builds bail out, breaking rtsps.)
-    '-protocol_whitelist', 'rtp,rtcp,udp,tcp,rtsp,rtsps,srtp,tls,crypto',
+    '-protocol_whitelist', FF_PROTOCOLS,
     '-rtsp_transport', 'tcp', '-i', url,
     '-map', '0:v:0',
     '-vf', `scale=${d.width}:${d.height}:force_original_aspect_ratio=decrease,pad=${d.width}:${d.height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=15`,
@@ -207,7 +278,7 @@ function probeOnce(url: string, transport: string): Promise<{ ok: boolean; messa
     // which made this very test fail). We bound the runtime with our own kill timer.
     const args = [
       '-hide_banner', '-loglevel', 'error',
-      '-protocol_whitelist', 'rtp,rtcp,udp,tcp,rtsp,rtsps,srtp,tls,crypto',
+      '-protocol_whitelist', FF_PROTOCOLS,
       '-rtsp_transport', transport,
       '-i', url,
       '-map', '0:v:0', '-frames:v', '1', '-f', 'null', '-',
@@ -355,6 +426,11 @@ class TimetablePipeline extends FfmpegPipeline {
   private tickerProhibited = false; // red prohibited-time message → drawtext colour is an ffmpeg arg
   private tickerColor = '#ffffff'; // themed ticker text colour (ffmpeg arg) → respawn on theme change
   private tickerSpeed = 5; // scroll speed is an ffmpeg arg → respawn when it changes
+  // The strip the ticker may scroll inside when the red Iqāmah-change reminder is sharing the
+  // band; null when it has the band to itself. Baked into the drawtext crop, so it has to
+  // respawn ffmpeg when it changes — which is when a change comes into range, drops out of
+  // range, or its wording (and so the card's width) moves.
+  private tickerScroll: { x: number; w: number } | null = null;
   private bitrate = 0; // configurable bitrate cap (kbps) — an ffmpeg arg → respawn on change
   private readonly tickerFile: string;
   // The size we rasterise (capped); ffmpeg upscales to this.dims. Keeps each render
@@ -372,6 +448,8 @@ class TimetablePipeline extends FfmpegPipeline {
     this.tickerProhibited = st.prohibited;
     this.tickerColor = tt ? tickerTextColor(tt) : '#ffffff';
     this.tickerSpeed = tt?.tickerSpeed ?? 5;
+    // Needs dims + tickerText/prohibited, all set above.
+    this.tickerScroll = this.wantScroll(tt);
     // renderDims depends on tickerText (full-res while a ticker animates), so set it last.
     this.renderDims = this.computeRenderDims();
     this.writeTickerFile();
@@ -393,7 +471,20 @@ class TimetablePipeline extends FfmpegPipeline {
   }
 
   protected args(): string[] {
-    return timetableArgs(this.dims, this.target(), this.tickerSpec(), this.renderDims, this.bitrate);
+    return timetableArgs(this.dims, this.target(), this.tickerSpec(), this.renderDims, this.bitrate, this.tickerScroll);
+  }
+
+  /** The strip the ticker may scroll inside for the CURRENT timetable, or null when it has the
+   *  whole band — no reminder, or a prohibited-time message has taken the band instead. The
+   *  SVG makes the same call, and the two must agree or the moving text and the well it is
+   *  supposed to run inside will not line up. */
+  private wantScroll(tt: Timetable | undefined): { x: number; w: number } | null {
+    if (!tt || !this.tickerText || this.tickerProhibited) return null;
+    try {
+      return bottomBandSplit(tt, new Date(), this.dims.width, this.dims.height, true).scroll;
+    } catch {
+      return null; // never let a bad schedule stop the stream
+    }
   }
 
   private restartProc(): void {
@@ -499,6 +590,17 @@ class TimetablePipeline extends FfmpegPipeline {
     const col = tickerTextColor(tt);
     if (col !== this.tickerColor && this.tickerText) {
       this.tickerColor = col;
+      this.restartProc();
+      return true;
+    }
+    // The ticker's lane is baked into the drawtext crop, so a change in it (the reminder
+    // appearing, clearing, or rewording to a different width) needs the filter rebuilt.
+    // Compared by VALUE — these are fresh objects every call, so a reference check would
+    // respawn ffmpeg every reconcile and the decoder would reconnect for ever.
+    const wantScroll = this.wantScroll(tt);
+    const key = (s: { x: number; w: number } | null) => (s ? `${s.x}x${s.w}` : '');
+    if (key(wantScroll) !== key(this.tickerScroll)) {
+      this.tickerScroll = wantScroll;
       this.restartProc();
       return true;
     }

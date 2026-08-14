@@ -11,6 +11,7 @@ import type {
   Hotspot,
   IqamahYear,
   IqamahScheduleEntry,
+  Release,
 } from './types';
 
 let onUnauth: () => void = () => {};
@@ -134,6 +135,10 @@ export const api = {
 
   testNotification: () =>
     req<{ baseUrlSet: boolean; hasSecret: boolean; baseUrlLoopback: boolean; baseUrl: string; appId: string; delivered: boolean; reason?: string }>('POST', '/api/notify-test'),
+
+  /** Release notes shipped inside this build (account menu → "What's new"). Already split
+   *  into sections server-side; `items` keep their inline **bold** / `code` markers. */
+  changelog: () => req<{ releases: Release[] }>('GET', '/api/changelog'),
 };
 
 /** The simple mobile volunteer page (served on its own port; PIN-gated). */

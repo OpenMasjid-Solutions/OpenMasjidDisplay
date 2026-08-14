@@ -16,8 +16,10 @@ import {
   IconSun,
   IconPower,
   IconUser,
+  IconSparkle,
   Spinner,
 } from './ui';
+import { WhatsNewModal } from './whatsnew';
 
 declare const __APP_VERSION__: string;
 import type { AppState } from './types';
@@ -177,11 +179,13 @@ function ProfileMenu({
   dark,
   onToggleTheme,
   onSettings,
+  onWhatsNew,
   onLogout,
 }: {
   dark: boolean;
   onToggleTheme: () => void;
   onSettings: () => void;
+  onWhatsNew: () => void;
   onLogout?: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -220,6 +224,10 @@ function ProfileMenu({
             {dark ? <IconSun size={17} /> : <IconMoon size={17} />}
             <span>{dark ? 'Light mode' : 'Dark mode'}</span>
           </button>
+          <button className="menu-item" role="menuitem" onClick={() => { onWhatsNew(); setOpen(false); }}>
+            <IconSparkle size={17} />
+            <span>What’s new</span>
+          </button>
           <button className="menu-item" role="menuitem" onClick={() => { onSettings(); setOpen(false); }}>
             <IconCog size={17} />
             <span>Settings</span>
@@ -234,9 +242,14 @@ function ProfileMenu({
           <div className="menu-version">
             OpenMasjid Display v{__APP_VERSION__}
             {' · '}
-            {/* AGPL-3.0 §13: offer the running version's source to every operator. */}
+            {/* AGPL-3.0 §13: offer the running version's source to every operator. A
+                dev build's version (X.Y.Z-dev.N) is NOT a git tag — only releases are
+                tagged — so point those at the dev branch, which is where that build was
+                made. Linking tree/v0.67.0-dev.1 would just 404. */}
             <a
-              href={`https://github.com/OpenMasjid-Solutions/OpenMasjidDisplay/tree/v${__APP_VERSION__}`}
+              href={`https://github.com/OpenMasjid-Solutions/OpenMasjidDisplay/tree/${
+                __APP_VERSION__.includes('-dev.') ? 'dev' : `v${__APP_VERSION__}`
+              }`}
               target="_blank"
               rel="noreferrer"
               className="menu-source-link"
@@ -263,6 +276,10 @@ function Shell({
 }) {
   const prefs = usePrefs();
   useOmosAppearanceSync(state.omosBase);
+  // Held here, not inside ProfileMenu: the menu is a positioned, backdrop-filtered box, and
+  // a `position: fixed` scrim rendered inside it would resolve against the menu instead of
+  // the viewport — covering a corner of the page rather than the page.
+  const [whatsNew, setWhatsNew] = useState(false);
   const dark = resolveTheme(prefs.theme) === 'dark';
   // A manual toggle is an explicit choice → stop mirroring OpenMasjidOS.
   const toggleTheme = () => prefsStore.patch({ theme: dark ? 'light' : 'dark', followOmos: false });
@@ -288,6 +305,7 @@ function Shell({
           dark={dark}
           onToggleTheme={toggleTheme}
           onSettings={() => setTab('settings')}
+          onWhatsNew={() => setWhatsNew(true)}
           onLogout={state.authRequired ? logout : undefined}
         />
       </header>
@@ -301,6 +319,8 @@ function Shell({
       </main>
 
       <Dock tab={tab} setTab={setTab} />
+
+      {whatsNew && <WhatsNewModal onClose={() => setWhatsNew(false)} />}
     </div>
   );
 }

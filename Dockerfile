@@ -58,6 +58,12 @@ RUN npm ci --omit=dev
 COPY --from=server /server/dist ./dist
 COPY --from=web /web/dist ./public
 
+# The release notes the panel shows under the account menu → "What's new". Shipping them
+# in the image is what makes them readable with no internet, and ties what an admin reads
+# to the build they are actually running. Lands at /app/CHANGELOG.md; the entrypoint is
+# /app/dist/index.js, so changelog.ts finds it one directory up from its own __dirname.
+COPY CHANGELOG.md ./CHANGELOG.md
+
 # Vendored fonts (loaded with priority by render/fonts.ts). We bundle a STATIC Noto
 # Naskh Arabic that is verified to contain the ﷺ ligature (U+FDFA); the distro's
 # variable Noto Naskh can drop it to a tofu box under resvg. See assets/fonts/README.md.

@@ -57,31 +57,80 @@ may merge into.
 OpenMasjidOS has an Update Channel toggle, and the dev catalog resolves this app from the
 `dev` branch. So the branch you are on decides which image real devices pull:
 
-| branch  | compose references              | image built by CI            | who installs it            |
-| ------- | ------------------------------- | ---------------------------- | -------------------------- |
-| `dev`   | `…/openmasjiddisplay:dev`       | `:dev` (moving, unpinned)    | the OpenMasjidOS dev channel |
-| `main`  | `…:<version>@sha256:<digest>`   | `:<version>` **and** `:latest` | every masjid (stable)      |
+| branch | `manifest.yaml` version | compose references            | CI publishes                   | who installs it              |
+| ------ | ----------------------- | ----------------------------- | ------------------------------ | ---------------------------- |
+| `dev`  | `X.Y.Z-dev.N`           | `…:X.Y.Z-dev.N`               | `:X.Y.Z-dev.N` **and** `:dev`  | the OpenMasjidOS dev channel |
+| `main` | `X.Y.Z`                 | `…:X.Y.Z@sha256:<digest>`     | `:X.Y.Z` **and** `:latest`     | every masjid (stable)        |
 
-[`.github/workflows/build-image.yml`](.github/workflows/build-image.yml) decides this from
-`GITHUB_REF` alone: a build on `dev` pushes the `:dev` tag and **nothing else**, so it can
-never overwrite a published version tag or move `:latest`. `:dev` is deliberately **not**
-digest-pinned — pinning it would freeze the dev channel on one build and make testing on it
-meaningless. The catalog warns about the missing `@sha256` for a dev entry; that warning is
-expected.
+### Dev builds must carry a real version — this is not cosmetic
+
+**Every dev build gets its own version: `X.Y.Z-dev.N`,** where `X.Y.Z` is the release being
+worked toward and `N` increments on every dev build you publish. If stable is `0.66.1`, dev
+is `0.67.0-dev.1`, then `-dev.2`, and so on. When that work ships, stable becomes `0.67.0`
+and dev moves to `0.68.0-dev.1`. **A dev version must never equal a stable one.** Ordering
+is `0.66.1 < 0.67.0-dev.1 < 0.67.0` — ahead of the last release, behind the next.
+
+Why it matters: **OpenMasjidOS detects an update by comparing the catalog's `version` with
+the installed one.** A moving `:dev` tag republishing new content under an unchanged version
+string changes nothing observable, so the platform cannot notify anyone and has nothing to
+update to. That is exactly why the dev channel silently did nothing before 0.67.0-dev.1.
+So `N` must be bumped for a dev build to reach anybody — an unbumped dev push is a no-op as
+far as the platform is concerned.
+
+The version therefore drives everything:
+
+- CI tags the image with the **exact** `manifest.yaml` version, so the catalog can pin an
+  immutable tag. `:dev` is still published as a convenience alias, and is never what the
+  catalog pins.
+- `docker-compose.yml` must name that same version, **for every service** — not just the
+  primary one. A single un-updated `image:` line means the dev channel installs something
+  other than this commit.
+- Bump the version and the compose reference **together**, in the same commit.
+
+### Enforcement, and the merge hazard
 
 **`docker-compose.yml`'s `image:` line is the only file that differs between the branches**,
 which makes it the one thing a careless merge breaks. The `channel` job in
-[`.github/workflows/checks.yml`](.github/workflows/checks.yml) fails the build in both
-directions — `:dev` on `main`, or a leftover digest pin on `dev` — so this is enforced, not
-merely documented. Don't "fix" a red `channel` job by relaxing the check.
+[`.github/workflows/checks.yml`](.github/workflows/checks.yml) fails the build in every
+direction that matters:
+
+- a dev image (`:dev` or any `-dev.` tag) on `main`, or a `main` image not digest-pinned;
+- a prerelease version on `main`, or a non-prerelease version on `dev`;
+- a compose tag on `dev` that doesn't match `manifest.yaml` — stale **or** the bare `:dev`;
+- any of the above on a **secondary** service, not only the first.
+
+[`build-image.yml`](.github/workflows/build-image.yml) re-checks the version format before
+it pushes anything, because the failure it prevents is silent: a dev build whose version
+lost its `-dev.N` would publish `:X.Y.Z` **over the stable release tag of that name**.
+
+Don't "fix" a red `channel` job by relaxing the check.
+
+Also: after pushing to `dev` the image takes a few minutes to build, and the dev catalog
+pins an exact tag. If the catalog is rebuilt inside that window it pins a tag that does not
+exist yet and a masjid on Development gets a pull failure. Let the build finish before the
+catalog picks the commit up.
 
 ### On "merge to main" — the release chain
 
 Only when Hasan has said it. In order:
 
-1. Bump the version — **6 fields across 5 files**: `manifest.yaml`, `server/package.json`,
+1. Bump the version — **7 fields across 5 files**: `manifest.yaml`, `server/package.json`,
    `web/package.json`, and **both `package-lock.json`s, which each carry it twice** (the root object
    and the `packages[""]` entry). Miss a lockfile and `npm ci` reports a version the release isn't.
+   Don't count them by hand; the list is exactly what this prints, and it must come back empty
+   afterwards:
+
+   ```sh
+   grep -rn "<old version>" --include='*.json' --include='*.yaml' --include='*.yml' . \
+     | grep -v node_modules | grep -v /dist/
+   ```
+
+   That also catches the compose reference in step 2, which is the eighth place and the one that
+   is not a "version field" — hence the miscount this line used to carry (it said six).
+   Going to stable means **dropping the `-dev.N` suffix**: `0.67.0-dev.4` → `0.67.0`. Turn the
+   `## Unreleased` section into the `## X.Y.Z` section per §0b below — a test asserts the newest
+   released section matches the running version, so a forgotten entry fails the build rather
+   than shipping silently.
 2. Merge `dev` → `main`, and in that merge **repin `docker-compose.yml`** from `:dev` to
    `…:<new version>@sha256:<digest>`. The digest doesn't exist yet — use the previous
    release's temporarily, or land the merge and repin in the follow-up commit at step 5.
@@ -96,7 +145,57 @@ Every push to `main` republishes `:<version>` and `:latest`, so a published vers
 **not** immutable (DISPLAY-010, [`docs/audit/ACTION_REQUIRED.md`](docs/audit/ACTION_REQUIRED.md)
 §4). The `@sha256` pin is the only thing protecting existing installs. Never remove it.
 
-Then return to `dev` and keep working there.
+Then return to `dev`, set the next prerelease (`0.68.0-dev.1`) across the same 6 fields plus
+the compose reference, re-open an empty `## Unreleased` section in `CHANGELOG.md`, and keep
+working there.
+
+---
+
+## 0b. The changelog has two audiences — write for both
+
+`CHANGELOG.md` ships **inside the image** (the Dockerfile copies it, `/api/changelog` parses it,
+and the panel's account menu renders it as *"What's new"*). So it is not a developer artefact:
+a masjid admin whose app was updated in the background by OpenMasjidOS reads this file to find
+out what changed. That is the whole reason it exists offline.
+
+Two sections, two jobs, and **they are not written to the same standard**:
+
+### `## Unreleased` — on `dev`, and it is the working log
+
+The top section is always `## Unreleased`. **Every dev change gets an entry there, not just the
+notable ones** — fixes, small behaviour changes, dead code removed, a CI gate added, a doc
+correction. Write it when you make the change, in the same commit, in plain language. Be
+specific: *what changed, and what someone would notice.* "Fixed a bug" is not an entry.
+
+Why everything, when the release only tells the headline story: the section IS how the release
+notes get written. A change that was never written down is a change nobody remembers at release
+time, and the alternative — reconstructing three weeks of work from `git log` while cutting a
+release — is exactly how a real fix goes unmentioned and an admin never learns their problem
+was solved.
+
+### `## X.Y.Z` — on a release to `main`, and it is **major changes only**
+
+When Hasan says *"merge to main"*, the `## Unreleased` section is **condensed** into the new
+`## X.Y.Z` heading. Keep only what a masjid would actually want to be told: new features,
+behaviour they will see on a screen or in the panel, fixes to things that were visibly wrong,
+security fixes worth naming. Drop the internal detail — refactors, test scaffolding, CI
+plumbing, comment corrections, dead code.
+
+This is a **rewrite, not a copy**. Several `Unreleased` lines usually collapse into one sentence
+about the thing they add up to. The released section is read by someone standing in a masjid
+office wondering whether to click Update, and a wall of internal churn buries the one line that
+answers that.
+
+**Rules that hold for both:**
+
+- Newest section first; `## Unreleased` above every released section.
+- No ticket numbers, commit hashes, branch names or internal jargon — an admin is reading it.
+- Never rewrite a released section after it ships; a masjid running that build reads it as-is.
+- After the release, open a fresh empty `## Unreleased` on `dev`.
+- The parser (`server/src/changelog.ts`) is deliberately small and covers only the constructs
+  this file already uses: `##` headings, `-`/`*` bullets, plain paragraphs, and `###` subheadings.
+  Its tests parse the **real** file, so an exotic construct fails the build rather than silently
+  vanishing from the panel.
 
 ---
 
@@ -146,10 +245,21 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full contribution + signing flo
 - One-container `Dockerfile`; `docker-compose.yml`, `manifest.yaml`, `icon.png`, and `screenshots/`
   follow the OpenMasjidAPPS catalog contract (see
   [`OpenMasjidAPPS/docs/BUILDING_AN_APP.md`](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS)).
-- Don't weaken the security invariants noted in the code (stream-scheme allowlist, audience-bound
-  tokens, scrypt + constant-time compare, array-form `spawn`, Fabric private-range SSRF guard).
-- It must build (`cd server && npm run build`, `cd web && npm run build`) and pass `npm test` in
-  `server/` before a PR.
+- Don't weaken the security invariants noted in the code (stream-scheme allowlist, ffmpeg's
+  `-protocol_whitelist` + array-form `spawn`, audience-bound tokens, scrypt + constant-time
+  compare, server-to-server SSO verification, the `/api/setup` guard under a reachable platform).
+- **Before a PR, run what CI runs** — anything less is a weaker signal than it looks:
+
+  ```sh
+  cd server && npm run build && npm run typecheck:tests && npm test
+  cd web    && npm run build && npm audit --audit-level=high
+  ```
+
+  `server/tsconfig.json` **excludes `**/*.test.ts`** so tests never reach `dist/` or the image,
+  which means `npm run build` typechecks none of them — and the runner (tsx) strips types without
+  checking. `npm run typecheck:tests` (`tsconfig.check.json`) is the only thing that compiles
+  them; it caught a live assertion reading a property that isn't on the type the day it was
+  added. `web`'s build is `tsc --noEmit && vite build`, so it typechecks as it bundles.
 
 When this file and the actual code disagree on a mechanism, **read the code and follow it**, then fix
 this file.
@@ -165,11 +275,17 @@ this file.
   takeover (attacker can then repoint RTSP sources / reconfigure every screen). The local-password
   path is a recovery ONLY when the platform is **unreachable** (restore/migration/outage). Keep the
   `probePlatform(req).reachable` guard; standalone (no-SSO) behaviour is unchanged.
-- **Media pipeline:** keep the stream-scheme **allowlist** and **array-form `spawn`** (never build an
-  ffmpeg/gstreamer command by string-interpolating a stream URL) — that stops SSRF + argument
-  injection via a crafted source.
+- **Media pipeline:** keep the stream-scheme **allowlist** (`validate.ts`), ffmpeg's
+  **`-protocol_whitelist`** of stream protocols only, and **array-form `spawn`** (never build an
+  ffmpeg/gstreamer command by string-interpolating a stream URL) — together those stop SSRF,
+  local-file reads and argument injection via a crafted source. The two lists must agree: a
+  protocol the app accepts but ffmpeg refuses is a source that saves fine and then silently
+  won't play. The whitelist may grow to cover a **stream** protocol, never `file:`/`http:`/`concat:`.
 - **SSO is an identity assertion, not a credential** — verify it server-to-server against the
-  platform; never trust a browser-supplied identity. Keep the Fabric private-range SSRF guard and
-  audience-bound tokens.
+  platform; never trust a browser-supplied identity. Keep the audience-bound tokens, and keep
+  **`redirect: 'error'`** on every outbound Fabric fetch — that is the actual SSRF guard there,
+  stopping a compromised or misconfigured platform from bouncing us (and our per-app secret) at
+  some other internal host. (`isPrivateHost()` next to it is *not* that guard: it only decides
+  whether to warn that the secret is crossing a public network in cleartext.)
 - Behind the OS proxy you may trust `X-Forwarded-*` **only because the platform's ingress now
   sanitises them** — never trust them when the app is reached directly.

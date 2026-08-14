@@ -178,6 +178,9 @@ didn't arrive (notifications not turned on, permission not granted, platform add
   here, including a **custom wallpaper image URL**.
 - **Defaults** for new timetables (picture quality) and the **time zone schedules run in**.
 - Step-by-step *"Connecting a screen"* help right in Settings.
+- **"What's new"** in the account menu — the release notes for the version you're actually running, every
+  release back to the first, readable with **no internet** because they ship inside the app. OpenMasjidOS
+  updates apps quietly in the background, so otherwise nothing ever tells you the app changed under you.
 - A **"Source code (AGPL-3.0)"** link in the account menu, as the licence requires.
 
 ### 🔌 OpenMasjidOS integration
@@ -256,8 +259,8 @@ To add or update it in the catalog, open a PR to
 
 On `main`, the image itself is pinned by **digest** in [`docker-compose.yml`](docker-compose.yml)
 (`…:<version>@sha256:<digest>`), so a moved tag can never repoint an install at different content. On the
-`dev` branch that same line points at the moving `:dev` tag instead — that's the development channel, and it
-is the one place a digest pin would be wrong.
+`dev` branch that same line names the branch's own prerelease version (`…:X.Y.Z-dev.N`), which CI publishes
+as an immutable tag — see below.
 
 ### No install-time settings
 
@@ -289,23 +292,39 @@ Full decoder guidance and troubleshooting: [docs/RTSP_SETUP.md](docs/RTSP_SETUP.
 ## Run / build from source
 
 ```bash
-# server (control plane + renderer)
-cd server && npm ci && npm run build && npm test
+# server (control plane + renderer) — build, typecheck the tests, run them
+cd server && npm ci && npm run build && npm run typecheck:tests && npm test
 
-# control panel (web)
+# control panel (web) — `npm run build` is `tsc --noEmit && vite build`
 cd web && npm ci && npm run build
 
 # everything together (Docker; also what the App Store runs)
 docker compose up -d
 ```
 
+`typecheck:tests` is separate on purpose: `tsconfig.json` excludes `*.test.ts` so tests never reach the
+image, and the runner (tsx) strips types without checking them — so without it a test that no longer
+compiles still passes.
+
 For local development, run the server with `MEDIAMTX_MANAGED=no` (so it won't try to launch the bundled
 MediaMTX) alongside your own `mediamtx`, and `cd web && npm run dev` (proxies `/api` and `/ws` to the
 server). In the built container the server launches and supervises MediaMTX itself.
 
-**Contributing? Work on the `dev` branch.** This repo runs two channels: `dev` builds a moving `:dev` image
-for the OpenMasjidOS dev channel, and `main` is the stable release every masjid installs. Never commit to
-`main` — see [CLAUDE.md](CLAUDE.md) § *Branching policy* and [CONTRIBUTING.md](CONTRIBUTING.md).
+**Contributing? Work on the `dev` branch.** This repo runs two channels, and `main` is the stable release
+every masjid installs — never commit to it.
+
+| branch | version         | CI publishes                  | installed by                 |
+| ------ | --------------- | ----------------------------- | ---------------------------- |
+| `dev`  | `X.Y.Z-dev.N`   | `:X.Y.Z-dev.N` **and** `:dev` | the OpenMasjidOS dev channel |
+| `main` | `X.Y.Z`         | `:X.Y.Z` **and** `:latest`    | every masjid (stable)        |
+
+Every dev build carries its own `X.Y.Z-dev.N` version and its own immutable image tag, bumped together with
+the compose reference. That isn't bookkeeping: the platform spots an update by comparing the catalog's
+version against the installed one, so a moving tag republishing new content under an unchanged version is
+invisible to it — which is precisely why the dev channel did nothing before `0.67.0-dev.1`. CI refuses to
+publish a dev build without the suffix (it would overwrite a stable tag) or a stable build with it.
+
+See [CLAUDE.md](CLAUDE.md) § *Branching policy* and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 

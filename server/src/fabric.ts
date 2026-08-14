@@ -338,12 +338,3 @@ async function platformReachable(): Promise<boolean> {
   })();
   return reachInFlight;
 }
-
-/**
- * Returns the platform username if the request carries a session the platform
- * confirms, or null otherwise. Thin wrapper over probePlatform for callers that
- * only need the identity.
- */
-export async function platformUser(req: IncomingMessage): Promise<string | null> {
-  return (await probePlatform(req)).username;
-}

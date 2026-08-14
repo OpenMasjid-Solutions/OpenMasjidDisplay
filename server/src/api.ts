@@ -19,9 +19,11 @@ import {
   isSecureRequest,
 } from './auth';
 import { probePlatform, ssoConfigured, notify, siteInfo } from './fabric';
+import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
+import { parseChangelog, readChangelog } from './changelog';
 import { THEMES } from './render/theme';
 import { DEFAULT_SALAH_HADITH } from './render/defaultHadith';
 import {
@@ -81,26 +83,6 @@ interface Deps {
   volunteer: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 }
 
-/** Baseline security headers for the control panel + its API.
- *
- *  The app already does this properly where it thought about it — uploaded files get
- *  `nosniff` + a sandbox CSP, and the public widget deliberately sets
- *  `frame-ancestors *` because it is MEANT to be embedded. The panel and API had nothing.
- *  Impact is modest (SameSite=Lax means a cross-site frame carries no session cookie, so
- *  clickjacking can't reach an authenticated panel) but there is no reason to leave it off.
- *  `frame-ancestors 'self'` only — deliberately NOT applied to the widget. */
-const SECURITY_HEADERS: Record<string, string> = {
-  'x-content-type-options': 'nosniff',
-  'referrer-policy': 'no-referrer',
-  'content-security-policy': "frame-ancestors 'self'",
-};
-
-function sendJson(res: ServerResponse, status: number, obj: unknown): void {
-  const body = JSON.stringify(obj);
-  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8' });
-  res.end(body);
-}
-
 /** The instant to render a preview at: local noon on `dateStr` (YYYY-MM-DD) in the
  *  timetable's timezone when a valid date is given, else "now". Lets the admin preview
  *  the screen as it will look on a specific day (e.g. to confirm a per-day Iqamah change). */
@@ -114,29 +96,8 @@ function previewInstant(dateStr: unknown, timezone?: string): number {
   return zonedNoon(y, mo, da, timezone || undefined).getTime();
 }
 
-function readBody(req: IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    let size = 0;
-    req.on('data', (c: Buffer) => {
-      size += c.length;
-      if (size > maxBytes) {
-        reject(new Error('body too large'));
-        req.destroy();
-        return;
-      }
-      data += c.toString();
-    });
-    req.on('end', () => {
-      try {
-        resolve(data ? (JSON.parse(data) as Record<string, unknown>) : {});
-      } catch {
-        reject(new Error('invalid JSON'));
-      }
-    });
-    req.on('error', reject);
-  });
-}
+const readBody = (req: IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> =>
+  readJsonBody(req, maxBytes);
 
 /** Validate an uploaded image by its BYTES (not the browser's extension-derived label) and
  *  return the true mime to store — or a friendly error. Browsers label an upload's data-URI
@@ -178,7 +139,7 @@ function serveIndex(res: ServerResponse): void {
     res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
     fs.createReadStream(idx).pipe(res);
   } else {
-    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
     res.end('OpenMasjid Display is running. The control panel build was not found.');
   }
 }
@@ -431,6 +392,15 @@ export function createApi(deps: Deps) {
         return sendJson(res, 200, statePayload(store, orchestrator));
       }
 
+      // The release notes this build shipped with — the account menu's "What's new". Read
+      // from disk per request (it changes only when the image does, and it is a few KB) and
+      // parsed server-side so the parser is covered by the test suite; see changelog.ts.
+      // Authenticated like everything else here: the notes aren't secret, but there is no
+      // reason to answer an anonymous request, and it keeps this off the public surface.
+      if (pathname === '/api/changelog' && method === 'GET') {
+        return sendJson(res, 200, { releases: parseChangelog(readChangelog()) });
+      }
+
       // Diagnose Fabric notifications: report what's configured + send a test alert,
       // so the admin can see exactly why screen-offline alerts aren't arriving.
       if (pathname === '/api/notify-test' && method === 'POST') {
@@ -622,6 +592,7 @@ export function createApi(deps: Deps) {
           const csv = mode === 'template' ? templateCsv(tt) : toCsv(tt.iqamahYear);
           const fname = mode === 'template' ? 'iqamah-template.csv' : 'iqamah-times.csv';
           res.writeHead(200, {
+            ...SECURITY_HEADERS,
             'content-type': 'text/csv; charset=utf-8',
             'content-disposition': `attachment; filename="${fname}"`,
             'cache-control': 'no-store',
@@ -857,7 +828,7 @@ export function createApi(deps: Deps) {
         // local noon in the timetable's own timezone (a midday view of that calendar day).
         const nowMs = previewInstant(body.previewDate, tt.timezone);
         const png = await renderPreviewPng(tt, nowMs, width, bgFile, logoFile);
-        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+        res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'image/png', 'cache-control': 'no-store' });
         res.end(png);
         return;
       }
@@ -890,7 +861,7 @@ export function createApi(deps: Deps) {
           return sendJson(res, 400, { error: 'That month isn’t valid. Choose a month from 1 to 12.' });
         }
         const html = renderMonthPrintHtml(tt, year, mon);
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(html);
         return;
       }
@@ -932,7 +903,7 @@ export function createApi(deps: Deps) {
         const width = tt.orientation === 'portrait' ? 540 : 960;
         const nowMs = previewInstant(url.searchParams.get('date'), tt.timezone);
         const png = await renderPreviewPng(tt, nowMs, width, tt.backgroundImage || '', tt.logoImage || '');
-        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+        res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'image/png', 'cache-control': 'no-store' });
         res.end(png);
         return;
       }

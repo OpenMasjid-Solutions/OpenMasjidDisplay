@@ -50,38 +50,76 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Assert docker-compose.yml image matches the channel
+      - name: Assert the version and every compose image match the channel
         env:
           TARGET: ${{ github.base_ref || github.ref_name }}
         run: |
-          img=$(grep -E '^[[:space:]]*image:' docker-compose.yml | head -1 \
-                | sed -E 's/^[[:space:]]*image:[[:space:]]*//' | tr -d "\"' \r")
-          echo "target branch : $TARGET"
-          echo "compose image : $img"
+          ver=$(grep -E '^version:' manifest.yaml | head -1 | sed -E 's/^version:[[:space:]]*//' | tr -d "\"' \r")
+          # EVERY service, not just the first. One un-updated image line in a multi-service
+          # compose is the whole bug class this job exists to stop, and reading only the
+          # primary service would sail straight past it.
+          imgs=$(grep -E '^[[:space:]]*image:' docker-compose.yml \
+                 | sed -E 's/^[[:space:]]*image:[[:space:]]*//' | tr -d "\"'\r")
+          echo "target branch  : $TARGET"
+          echo "manifest ver   : $ver"
+          echo "compose images :"; echo "$imgs" | sed 's/^/  /'
+          [ -n "$imgs" ] || { echo "::error file=docker-compose.yml::no image: found"; exit 1; }
+
+          case "$ver" in *-dev.*) prerelease=yes ;; *) prerelease=no ;; esac
+          fail=0
+
           case "$TARGET" in
             main)
-              # A digest-pinned ref ends in the hex digest, so `*:dev` also catches
-              # ":dev@sha256:…" — pinning the dev tag is still the dev image.
-              case "$img" in
-                *:dev|*:dev@*)
-                  echo "::error file=docker-compose.yml::main must never reference the moving :dev image. Repin to <version>@sha256:<digest> before merging to main."
-                  exit 1 ;;
-              esac
-              echo "$img" | grep -qE '@sha256:[0-9a-f]{64}$' || {
-                echo "::error file=docker-compose.yml::main requires a digest-pinned image (<version>@sha256:<64 hex>); got '$img'."
-                exit 1
-              }
-              echo "OK — stable channel, digest-pinned." ;;
+              if [ "$prerelease" = 'yes' ]; then
+                echo "::error file=manifest.yaml::main must declare a release version (X.Y.Z), not the prerelease '$ver'."
+                fail=1
+              fi
+              # Unquoted on purpose: an image reference cannot contain whitespace, so word
+              # splitting iterates the lines without a pipe — a `| while` would run the body
+              # in a subshell and every fail=1 would be lost when it exited.
+              for img in $imgs; do
+                # A digest-pinned ref ends in hex, so match the TAG part: this catches
+                # ":dev", ":0.67.0-dev.1" and ":dev@sha256:…" alike — pinning a dev tag by
+                # digest still ships the dev image.
+                tag=${img##*/}; tag=${tag#*:}; tag=${tag%%@*}
+                case "$tag" in
+                  dev|*-dev.*|*-dev)
+                    echo "::error file=docker-compose.yml::main must never reference a dev image; '$img' has tag '$tag'. Repin to <version>@sha256:<digest> before merging to main."
+                    fail=1 ;;
+                esac
+                if ! echo "$img" | grep -qE '@sha256:[0-9a-f]{64}$'; then
+                  echo "::error file=docker-compose.yml::main requires every image digest-pinned (<version>@sha256:<64 hex>); got '$img'."
+                  fail=1
+                fi
+              done
+              if [ "$fail" -eq 0 ]; then echo "OK — stable channel: release version, every image digest-pinned."; fi ;;
+
             dev)
-              case "$img" in
-                *:dev) echo "OK — dev channel, moving tag." ;;
-                *)
-                  echo "::error file=docker-compose.yml::the dev branch must reference the moving :dev tag, not '$img'. A leftover digest pin freezes the dev channel on an old build while still looking healthy."
-                  exit 1 ;;
-              esac ;;
+              # The dev channel is only detectable if the catalog can pin an exact, immutable
+              # tag per build, so the compose must name the manifest's own version. A bare
+              # :dev here is the original bug: new content under an unchanged reference, which
+              # the platform cannot see. A STALE version is the mirror image — the dev channel
+              # would keep installing an old build while looking healthy.
+              if [ "$prerelease" != 'yes' ]; then
+                echo "::error file=manifest.yaml::the dev branch must declare a prerelease version (X.Y.Z-dev.N), got '$ver'. Publishing it would overwrite the stable :$ver image tag."
+                fail=1
+              fi
+              for img in $imgs; do
+                tag=${img##*/}; tag=${tag#*:}; tag=${tag%%@*}
+                if [ "$tag" = 'dev' ]; then
+                  echo "::error file=docker-compose.yml::'$img' pins the moving :dev tag. The dev catalog pins an exact tag, so use :$ver — a moving tag republishes new content under an unchanged reference, which the platform cannot detect as an update."
+                  fail=1
+                elif [ "$tag" != "$ver" ]; then
+                  echo "::error file=docker-compose.yml::'$img' has tag '$tag' but manifest.yaml says '$ver'. Every service must reference the version this build publishes, or the dev channel installs something other than this commit."
+                  fail=1
+                fi
+              done
+              if [ "$fail" -eq 0 ]; then echo "OK — dev channel: prerelease version, every image on :$ver."; fi ;;
+
             *)
               echo "No channel rule for '$TARGET' — nothing to assert." ;;
           esac
+          exit $fail
 
   server:
     name: server — build, typecheck, test
@@ -104,8 +142,15 @@ jobs:
       - run: npm run build
         working-directory: server
 
-      # tsconfig.json EXCLUDES **/*.test.ts, so the build above never typechecks the tests.
-      # Running them is what catches a test that no longer compiles.
+      # tsconfig.json EXCLUDES **/*.test.ts (they must never reach dist/ or the image), so
+      # the build above typechecks none of them — and tsx STRIPS types without checking, so
+      # a test can call a function that no longer exists, with arguments that no longer
+      # typecheck, and still pass. tsconfig.check.json is the same config with the tests
+      # included. It earned its place immediately: it caught a live assertion in
+      # iqamahSchedule.test.ts reading a property that is not on the type.
+      - run: npm run typecheck:tests
+        working-directory: server
+
       - run: npm test
         working-directory: server
 

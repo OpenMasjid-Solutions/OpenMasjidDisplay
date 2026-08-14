@@ -24,7 +24,7 @@ services:
     # purpose. The `channel` job in .github/workflows/checks.yml fails the build if this
     # line is ever wrong for the branch it is on, in either direction. See CLAUDE.md →
     # "Branching policy".
-    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.66.1@sha256:3a789623abff92a11d13d9a21e57c93b1e34765aa4dc9017082a28bc937d8b9f
+    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.67.0@sha256:3a789623abff92a11d13d9a21e57c93b1e34765aa4dc9017082a28bc937d8b9f
     restart: unless-stopped
     environment:
       PORT: "8080"

@@ -214,3 +214,11 @@ export interface AppState {
   volunteer: { pinSet: boolean; port: number };
   serverNow: number;
 }
+
+/** One release section of the shipped CHANGELOG.md, as parsed by the server
+ *  (server/src/changelog.ts). `items` are bullets/paragraphs in file order, still
+ *  carrying their inline **bold** and `code` markers for the panel to format. */
+export interface Release {
+  version: string;
+  items: string[];
+}

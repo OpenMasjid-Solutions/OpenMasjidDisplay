@@ -10,17 +10,26 @@ name: Build image
 #
 # TWO CHANNELS, and which tags a build may write is decided ONLY by the ref it ran on:
 #
-#   ref                     tags pushed                    installed by
-#   ----------------------  -----------------------------  ---------------------------
-#   refs/heads/dev          :dev                           the OpenMasjidOS dev channel
-#   refs/heads/main         :<manifest version>, :latest    every masjid (stable)
-#   refs/tags/v*            :<manifest version>, :latest    every masjid (stable)
+#   ref                tags pushed                                installed by
+#   -----------------  -----------------------------------------  --------------------------
+#   refs/heads/dev     :<version> (X.Y.Z-dev.N)  +  :dev          the OpenMasjidOS dev channel
+#   refs/heads/main    :<version> (X.Y.Z)        +  :latest       every masjid (stable)
+#   refs/tags/v*       :<version> (X.Y.Z)        +  :latest       every masjid (stable)
 #
-# The point of the split is that a dev build must never be able to become what a masjid
-# installs from the stable catalog. :dev is deliberately a MOVING tag — it is the head of
-# the dev branch and nothing else — so it is the one image reference in this repo that is
-# not digest-pinned. Stable installs are still pinned by @sha256 in docker-compose.yml on
-# main. See CLAUDE.md -> "Branching policy".
+# Both channels publish an IMMUTABLE VERSIONED tag from manifest.yaml, and a moving alias
+# beside it. The catalog pins the versioned tag; the alias is a convenience for humans.
+#
+# The versioned dev tag is not cosmetic — it is what makes a dev update happen at all. The
+# platform detects an update by comparing the catalog's version against the installed one,
+# so a bare :dev tag republishing new content under an unchanged version string is
+# invisible to it: nothing to notify, nothing to update to. A distinct X.Y.Z-dev.N per dev
+# build is what the platform can actually see.
+#
+# The split still guarantees a dev build cannot become what a masjid installs from the
+# stable catalog: dev never moves :latest, the version-format checks below stop a dev build
+# from claiming a release version (or vice versa), and OpenMasjidAPPS fails its stable
+# build outright on any `-dev.` image tag. Stable installs are additionally pinned by
+# @sha256 in docker-compose.yml on main. See CLAUDE.md -> "Branching policy".
 #
 # After the first run, make the GHCR package Public (owner -> Packages -> package
 # settings) so masjid hosts can pull it without authentication.
@@ -30,10 +39,21 @@ on:
     branches: [main, dev]
     tags: ['v*']
     # Docs-only changes don't change the image — skip the (slow) multi-arch build.
+    #
+    # Listed one by one rather than as `**/*.md`, because that blanket glob was wrong the
+    # moment CHANGELOG.md started shipping INSIDE the image (the Dockerfile COPYs it, and
+    # the panel serves it as "What's new"). Under the glob, a commit that only edited the
+    # release notes published nothing, so the notes an admin read in the panel could sit a
+    # build behind the notes in the repo — the one file where that is actively misleading.
+    # docker-compose.yml stays here: it is not in the image, and the `channel` job in
+    # checks.yml is what guards it.
     paths-ignore:
-      - '**/*.md'
       - 'docs/**'
       - 'screenshots/**'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - 'CLAUDE.md'
+      - 'CLA.md'
       - 'LICENSE'
       - 'docker-compose.yml'
   workflow_dispatch:
@@ -66,15 +86,40 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
           # The channel gate — ONE decision, made from GITHUB_REF and nothing else. Not an
-          # input, not a repo variable a caller could set: a dev build gets the moving :dev
-          # tag and NOTHING else, so it can never overwrite a published version tag or move
-          # :latest. Anything that is not refs/heads/dev (main, a v* tag, a manual dispatch
-          # on either) is stable.
+          # input, not a repo variable a caller could set. Anything that is not
+          # refs/heads/dev (main, a v* tag, a manual dispatch on either) is stable.
+          #
+          # BOTH channels publish an IMMUTABLE, VERSIONED tag taken from manifest.yaml; they
+          # differ only in the moving alias beside it (:dev vs :latest). The versioned tag is
+          # what the catalog pins, and it is what makes a dev update detectable at all:
+          # OpenMasjidOS spots an update by comparing the catalog's version to the installed
+          # one, so republishing new content under an unchanged version (what a bare :dev tag
+          # does) is invisible to it — nothing to notify, nothing to update to.
+          #
+          # Which makes the version STRING load-bearing, so it is checked before anything is
+          # pushed. A dev build must carry a -dev.N prerelease and a stable build must not:
+          # without the first check, forgetting the suffix on dev would publish
+          # <image>:0.66.1 from the dev branch and OVERWRITE the stable release tag of that
+          # name; without the second, a prerelease would be published as a release and move
+          # :latest onto it. Both are silent in the registry, so they fail here instead.
+          case "$ver" in
+            *-dev.*) is_prerelease=yes ;;
+            *)       is_prerelease=no ;;
+          esac
+
           if [ "$GITHUB_REF" = 'refs/heads/dev' ]; then
             channel=dev
-            tags="$image:dev"
+            if [ "$is_prerelease" != 'yes' ]; then
+              echo "::error file=manifest.yaml::the dev branch must declare a prerelease version (X.Y.Z-dev.N), got '$ver'. Publishing it would overwrite the stable :$ver image tag. See CLAUDE.md → Branching policy."
+              exit 1
+            fi
+            tags=$(printf '%s\n%s' "$image:$ver" "$image:dev")
           else
             channel=stable
+            if [ "$is_prerelease" = 'yes' ]; then
+              echo "::error file=manifest.yaml::a stable build must not declare a prerelease version, got '$ver'. Set a release version (X.Y.Z) before merging to main."
+              exit 1
+            fi
             tags=$(printf '%s\n%s' "$image:$ver" "$image:latest")
           fi
 
@@ -113,10 +158,59 @@ jobs:
           cache-from: type=gha,scope=${{ steps.meta.outputs.channel }}
           cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.channel }}
 
-      # Optional: tell the OpenMasjidAPPS catalog to rebuild after a release.
-      # Requires a repo secret CATALOG_DISPATCH_TOKEN (a PAT with 'repo' scope).
-      # - name: Notify catalog
-      #   if: startsWith(github.ref, 'refs/tags/v')
-      #   env:
-      #     GH_TOKEN: ${{ secrets.CATALOG_DISPATCH_TOKEN }}
-      #   run: gh api repos/OpenMasjid-Solutions/OpenMasjidAPPS/dispatches -f event_type=rebuild-catalog
+      # Tell OpenMasjidAPPS to rebuild its catalog, now that the image this commit declares
+      # actually exists in GHCR.
+      #
+      # Without this, publishing a dev build reached nobody. The catalog only ever rebuilt on
+      # a push to OpenMasjidAPPS itself, on its hourly schedule, or by hand — across its whole
+      # history, repository_dispatch had fired ZERO times, because this step was commented
+      # out here and in the sibling apps. So the only thing that picked up a dev build was the
+      # cron, and GitHub fires an "hourly" schedule roughly every three hours under load. A
+      # published dev build sat invisible until a tick happened to come round: Students
+      # published v0.46.0-dev.2 and the dev catalog still served -dev.1 hours later, so
+      # OpenMasjidOS correctly reported "up to date" and no masjid could get the build.
+      #
+      # It runs on BOTH publishing paths, not just releases. The commented-out version was
+      # `startsWith(github.ref, 'refs/tags/v')` — stable-only, so it would not have fired for
+      # a dev push at all, which is the case that actually needed it.
+      #
+      # Deliberately NOT blocking (continue-on-error): the image is already pushed by this
+      # point, and a catalog rebuild that fails must not turn a successful publish red. The
+      # hourly cron on the OpenMasjidAPPS side stays as the floor under this — this step makes
+      # the update prompt arrive in minutes instead of hours, it is not the only route.
+      #
+      # Dispatching from here also means the image is in GHCR before the catalog goes looking,
+      # which matters because the catalog pins an EXACT tag: an entry that lands before its
+      # image exists is a pull failure on someone's box. It does not close that window
+      # entirely — an hourly tick landing mid-build can still read the new manifest version
+      # before the image is pushed — which is the reason not to bump the version until the
+      # build that will publish it is the one being pushed.
+      #
+      # Copied from OpenMasjidKiosk's step so every app in the family behaves the same,
+      # including the empty-token skip: a fork or a contributor without the org secret prints
+      # why it skipped and exits 0 rather than failing.
+      #
+      # ONE deliberate difference, and it is the reason a verbatim copy would not have worked.
+      # The org secret is actually named CATLOG_PUSH_TOKEN — missing the "A" — while every app
+      # in the family references CATALOG_PUSH_TOKEN. So the token always resolved to empty and
+      # every notify step silently took the skip path: Kiosk's own runs print "CATALOG_PUSH_TOKEN
+      # not set — skipping catalog dispatch", which is why repository_dispatch has fired ZERO
+      # times org-wide even where this step was already enabled. Enabling it here without
+      # accepting the real name would have changed nothing.
+      #
+      # So take EITHER name: an unset secret is the empty string, which is falsy, so `||`
+      # picks whichever exists. That works today against the misspelt secret and keeps working
+      # after it is renamed, with no follow-up commit needed. Once every repo is on a correctly
+      # spelt secret the fallback can be dropped.
+      - name: Notify catalog to rebuild
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.CATALOG_PUSH_TOKEN || secrets.CATLOG_PUSH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "CATALOG_PUSH_TOKEN not set — skipping catalog dispatch (add it as an org/repo secret to auto-publish)."
+            exit 0
+          fi
+          gh api repos/OpenMasjid-Solutions/OpenMasjidAPPS/dispatches -f event_type=rebuild-catalog
+          echo "Requested an OpenMasjidAPPS catalog rebuild."

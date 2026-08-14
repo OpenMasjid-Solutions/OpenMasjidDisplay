@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 OpenMasjid-Solutions -->
+
 # OpenMasjidOS Fabric — appearance + single sign-on (the "Fabric")
 
 > **The OpenMasjidOS Fabric** is the platform↔app integration layer: the unified appearance + single
@@ -19,6 +22,14 @@
 >   relays alerts via `POST /api/fabric/notify` (per-app secret, `{text,title?,level?}`). The app never
 >   sees the webhook URL and the call fails soft. Used to alert when a screen stops/starts pulling its RTSP
 >   stream (offline/online), decided in `orchestrator.ts` from MediaMTX reader counts — no probe/config.
+> - **Public URL (since v0.30.0):** `manifest.yaml` sets `domain: true`; `fabric.ts` `siteInfo()` reads
+>   `GET /api/fabric/site` so the website-widget embed code and the volunteer-page link can point at the
+>   admin's tunnel address instead of a LAN one. Authoritative + fails soft to the LAN link. `basePath`
+>   is admin-renameable — read it, never hardcode `display`.
+> - **HTTPS panel:** `manifest.yaml` sets `https: true`, so the platform fronts the FIRST published port
+>   with its TLS proxy (secure context → clipboard + `Secure` cookies). The plain HTTP port stays as a
+>   legacy fallback and the volunteer port is not proxied — which is why `auth.ts` gives the `Secure`
+>   cookies their own names.
 > - **Compose security:** the app passes the platform's tightened compose risk-check (v0.19.2) — no
 >   privileged / host-namespace / `cap_add` / `devices` / `device_cgroup_rules` / `security_opt:unconfined`
 >   / `group_add` / Docker-socket / sensitive-mount / `extends:`/`include:`; pins the image, named volume.
