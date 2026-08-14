@@ -144,9 +144,13 @@ Only when Hasan has said it. In order:
    (`:0.67.0@sha256:<0.66.1's digest>`) — that pairing is a lie, and it is the exact bug in the
    box below. Replace the whole reference in one go at step 3, once the real digest exists.
 2. **Push `main` and let CI publish the image.** Then fetch the **manifest-list** digest of the
-   published image (not a per-arch one). Both the `main` push and, later, the tag push run
-   `build-image.yml`, and each republishes `:<version>` + `:latest` — so read the digest only
-   once every publishing build has finished. Whichever writes the tag last is what a puller gets.
+   published image (not a per-arch one — a per-arch digest pins amd64 only and breaks every Pi).
+
+   `main` is the **only** publisher of a stable image: `build-image.yml` deliberately does not
+   build on `v*` tags. It must not, because these builds are **not reproducible** — BuildKit
+   stamps `created` into the image config, so rebuilding an identical tree yields a different
+   digest (`:0.66.1` went out twice, with two digests). A tag build would therefore republish
+   `:X.Y.Z` over the digest pinned at step 3 and invalidate it on every single release.
 3. **Commit the real `@sha256` pin to `docker-compose.yml`.** That commit must touch compose and
    nothing else: `build-image.yml`'s `paths-ignore` excludes it, so it publishes nothing and
    cannot invalidate the digest it just pinned. Confirm no `Build image` run appears for it.
@@ -194,9 +198,11 @@ Only when Hasan has said it. In order:
 > # …the digest GHCR serves for :<version>
 > ```
 >
-> `build-image.yml` asserts the same equality on every release-tag build and fails when it doesn't
-> hold. That is a backstop, not the guard: it runs *after* the image has been pushed under the bad
-> tag. Getting the SHA right at `git tag` is the actual fix.
+> `verify-release-tag.yml` asserts the same thing on every `v*` tag — it compares the digest
+> pinned in the tagged tree against what GHCR actually serves for that version, and fails when
+> they differ. It builds and publishes nothing, so pushing the tag cannot disturb the pin. It is a
+> backstop, not the guard: getting the SHA right at `git tag` is the actual fix, and the local
+> check above costs nothing.
 
 Every push to `main` republishes `:<version>` and `:latest`, so a published version tag is
 **not** immutable (DISPLAY-010, [`docs/audit/ACTION_REQUIRED.md`](docs/audit/ACTION_REQUIRED.md)

@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+name: Verify release tag
+
+# A release tag must point at a commit whose docker-compose.yml already pins the digest of
+# the image that version actually publishes.
+#
+# The failure this exists for is silent and has happened three times. The chain is
+# publish -> pin -> tag (CLAUDE.md §0), and the pin lands in its own commit immediately after
+# the release commit. Tag the release commit instead — the obvious thing to do, since it is
+# "the release" and it is the pin commit's parent — and everything still looks right: the tag
+# exists, the version matches, the image is fine. The only thing wrong is that the tagged
+# tree's compose names the PREVIOUS release's digest, so anyone pinning the tag ships the
+# wrong code under the right name. It is off by one commit, not off by a step.
+#
+# Why this is its own workflow rather than a step in build-image.yml:
+#
+#  * build-image.yml deliberately does NOT build on tags. A tag build would republish
+#    :X.Y.Z over the digest just pinned, and these builds are not reproducible (BuildKit
+#    stamps `created` into the config, so an identical tree rebuilds to a different digest —
+#    :0.66.1 went out twice with two digests). So there is no tag build to hook a step onto.
+#  * build-image.yml also carries a `paths-ignore` that lists docker-compose.yml, and the
+#    digest-pin commit changes *only* that file. A path filter on this trigger could
+#    therefore skip the check on precisely the commit it exists to check. This file has no
+#    path filter, on purpose.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# Read-only, and it publishes nothing: it compares what is written in the tag against what
+# the registry already serves.
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    name: the tagged tree pins the published image
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned, same convention as every other workflow here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Compare the pinned digest with what GHCR serves
+        run: |
+          set -u
+          ver=$(grep -E '^version:' manifest.yaml | head -1 | sed -E 's/^version:[[:space:]]*//' | tr -d "\"' \r")
+          tag_name=${GITHUB_REF_NAME}
+          echo "tag           : $tag_name"
+          echo "manifest ver  : $ver"
+
+          # The tag name and the manifest must agree, or the rest of the comparison is
+          # answering a question about some other version.
+          if [ "$tag_name" != "v$ver" ]; then
+            echo "::error file=manifest.yaml::tag '$tag_name' does not match manifest.yaml version '$ver'."
+            exit 1
+          fi
+
+          case "$ver" in
+            *-dev.*)
+              echo "::error file=manifest.yaml::'$ver' is a prerelease; release tags are for stable versions only."
+              exit 1 ;;
+          esac
+
+          pinned=$(grep -oE 'sha256:[0-9a-f]{64}' docker-compose.yml | head -1)
+          if [ -z "$pinned" ]; then
+            echo "::error file=docker-compose.yml::a release tag must pin the image by @sha256; none found in the tagged tree."
+            exit 1
+          fi
+
+          # The tag part of the reference has to name this version too — a correct digest
+          # beside a stale tag is still a mislabelled release.
+          composetag=$(grep -E '^[[:space:]]*image:' docker-compose.yml | head -1 \
+                       | sed -E 's/.*:([^:@]+)@sha256:.*/\1/')
+          if [ "$composetag" != "$ver" ]; then
+            echo "::error file=docker-compose.yml::compose names tag '$composetag' but this release is '$ver'."
+            exit 1
+          fi
+
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')"
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:${image#ghcr.io/}:pull" | jq -r .token)
+          # Ask for the manifest LIST (multi-arch index), which is what the digest must name —
+          # a per-arch manifest digest would pin amd64-only and break every Raspberry Pi.
+          served=$(curl -fsSI -H "Authorization: Bearer $token" \
+                     -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json' \
+                     "https://ghcr.io/v2/${image#ghcr.io/}/manifests/$ver" \
+                   | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}')
+
+          echo "pinned in tag : ${pinned}"
+          echo "served by GHCR: ${served:-<the tag does not exist>}"
+
+          if [ -z "$served" ]; then
+            echo "::error::GHCR serves no image for :$ver. Publish it from main BEFORE tagging — the tag marks an image that already exists."
+            exit 1
+          fi
+          if [ "$pinned" != "$served" ]; then
+            echo "::error file=docker-compose.yml::this tag pins '$pinned' but GHCR serves '$served' for :$ver, so the tag advertises $tag_name over a different image. Almost always this means the tag was put on the release commit instead of the digest-pin commit that follows it — check with 'git rev-list -n1 $tag_name'. See CLAUDE.md -> the release chain."
+            exit 1
+          fi
+          echo "OK — $tag_name pins exactly the image GHCR serves for :$ver."

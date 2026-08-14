@@ -37,7 +37,19 @@ name: Build image
 on:
   push:
     branches: [main, dev]
-    tags: ['v*']
+    # NO `tags:` — a release tag must NOT republish the image, and that is load-bearing.
+    #
+    # The chain is publish → pin → tag (CLAUDE.md §0). The pin can only be written after the
+    # image exists, so the tag necessarily comes after it. If the tag also built, it would
+    # republish `:X.Y.Z` over the digest that had just been pinned — and these builds are not
+    # reproducible (BuildKit stamps `created` into the image config, so a rebuild of an
+    # identical tree yields a different digest; `:0.66.1` was published twice with two
+    # digests, which is how that was learned). The pin would be stale the moment it was made,
+    # every release, and the verify job below would fail every correctly-executed one.
+    #
+    # So `main` is the only publisher of a stable image, and the tag is a marker over a
+    # commit whose image already exists. `verify-tag` re-checks that rather than rebuilding.
+    #
     # Docs-only changes don't change the image — skip the (slow) multi-arch build.
     #
     # Listed one by one rather than as `**/*.md`, because that blanket glob was wrong the
@@ -158,40 +170,6 @@ jobs:
           # cache and make every release a cold multi-arch build.
           cache-from: type=gha,scope=${{ steps.meta.outputs.channel }}
           cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.channel }}
-
-      # A RELEASE TAG must already pin the digest of the image it publishes.
-      #
-      # The rule (CLAUDE.md §0) is publish → pin → tag, in that order, so that the tagged commit's
-      # docker-compose.yml names the bytes that version actually ships. Tag any earlier and the
-      # tag advertises the new version number over the PREVIOUS release's image, so anyone pinning
-      # the tag gets the wrong code under the right name. That has happened three times, and it is
-      # invisible at every step: the build is green, the image is fine, the version string is
-      # right, and only the digest inside the tagged tree is stale.
-      #
-      # So compare them. `steps.build.outputs.digest` is the manifest-list digest just pushed; the
-      # compose file in this checkout is the tagged tree. If they disagree, the tag was cut too
-      # early. The image is already published by this point — this cannot prevent the mistake, but
-      # it turns a silent one into a red release build, which is the whole difference between a
-      # bug caught in an hour and a bug caught by a masjid.
-      #
-      # Tag builds only: on `main` and `dev` the compose pin legitimately lags the build that is
-      # running right now, which is exactly why the pin lands in its own later commit.
-      - name: Assert the tagged commit pins the digest it just published
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          published='${{ steps.build.outputs.digest }}'
-          pinned=$(grep -oE 'sha256:[0-9a-f]{64}' docker-compose.yml | head -1)
-          echo "published: ${published:-<none>}"
-          echo "pinned    : ${pinned:-<none>}"
-          if [ -z "$pinned" ]; then
-            echo "::error file=docker-compose.yml::a release tag must pin the image by @sha256; none found."
-            exit 1
-          fi
-          if [ "$published" != "$pinned" ]; then
-            echo "::error file=docker-compose.yml::this tag was cut BEFORE the digest was repinned. It pins '$pinned' but publishes '$published', so the tag advertises $GITHUB_REF_NAME over a different image. Repin docker-compose.yml to the published digest, then move the tag onto that commit. See CLAUDE.md -> the release chain."
-            exit 1
-          fi
-          echo "OK — the tagged tree pins exactly the image this build published."
 
       # Tell OpenMasjidAPPS to rebuild its catalog, now that the image this commit declares
       # actually exists in GHCR.
