@@ -37,7 +37,19 @@ name: Build image
 on:
   push:
     branches: [main, dev]
-    tags: ['v*']
+    # NO `tags:` — a release tag must NOT republish the image, and that is load-bearing.
+    #
+    # The chain is publish → pin → tag (CLAUDE.md §0). The pin can only be written after the
+    # image exists, so the tag necessarily comes after it. If the tag also built, it would
+    # republish `:X.Y.Z` over the digest that had just been pinned — and these builds are not
+    # reproducible (BuildKit stamps `created` into the image config, so a rebuild of an
+    # identical tree yields a different digest; `:0.66.1` was published twice with two
+    # digests, which is how that was learned). The pin would be stale the moment it was made,
+    # every release, and the verify job below would fail every correctly-executed one.
+    #
+    # So `main` is the only publisher of a stable image, and the tag is a marker over a
+    # commit whose image already exists. `verify-tag` re-checks that rather than rebuilding.
+    #
     # Docs-only changes don't change the image — skip the (slow) multi-arch build.
     #
     # Listed one by one rather than as `**/*.md`, because that blanket glob was wrong the
@@ -144,6 +156,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .

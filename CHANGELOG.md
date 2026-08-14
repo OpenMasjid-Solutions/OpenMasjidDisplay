@@ -10,6 +10,33 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
+## Unreleased
+
+### Changed
+
+- **The Adhan and Iqamah times on the prayer timetable are set a little larger** — about a tenth
+  bigger — so they read more easily from the back of a hall. The prayer names, the columns and
+  everything else on the screen are unchanged; only the times grew. Nothing needs setting up
+  again, and it applies to all three layouts.
+
+### Internal
+
+- Corrected the release chain in CLAUDE.md. It used to say to pin the previous release's digest
+  "temporarily" and tag before repinning, which meant the tag advertised the new version number
+  over the previous release's image — so anyone pinning the tag got the wrong code under the
+  right name. The order is now publish → pin → tag, with the previous release's tag *and* digest
+  left intact together until the real digest exists. `v0.67.0` was the third time this happened.
+  Spelled out that the mistake is **off by one commit**, not off by a step: the release commit is
+  the immediate parent of the digest-pin commit and feels like the thing to tag, so the check is
+  "does `git rev-list -n1 v<version>` print the digest-pin SHA?", not "did I tag after publishing".
+- CI now enforces it: a release-tag build compares the digest it just published against the one
+  pinned in the tagged commit's compose file, and fails if they differ. Verified against the real
+  tags — it fails on `v0.67.0` and passes on the digest-pin commit.
+- Documented that the app catalogue is a separate repository with its own rules: a stable release
+  is *proposed* there as a pull request against its `dev`, and a catalogue maintainer runs the
+  release that moves its `main`. "Released" means the tag and image exist, not that masjids are
+  being offered it.
+
 ## 0.67.0
 
 - **New: "What's new" in the account menu.** OpenMasjidOS updates your apps quietly in the

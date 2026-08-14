@@ -1302,6 +1302,26 @@ function panelRing(b: Box, c: Ctx): string {
   return out.join('');
 }
 
+/**
+ * How much larger the TIMES are set than the prayer names beside them.
+ *
+ * The name is context; the time is the content. Someone glancing up from the back of a hall
+ * is reading the number, and they already know which row is Asr from where it sits — so the
+ * times carry the extra size and the names stay put.
+ *
+ * What actually limits this is the ROW BAND, not the columns. Both times are right-anchored
+ * (`colAd`/`colIq`) with the name growing at them from the left, and at 1080p that gap is
+ * ~880px wide — horizontal collision is nowhere near. But the size is a fraction of `rowH`
+ * (`nameSize` is `rowH * 0.38`), and the text is centred on a baseline at `rowH * 0.66`, so
+ * pushing the ratio far enough sends ascenders into the row above before anything overlaps
+ * sideways. 1.1 is a deliberate nudge that leaves both alone: verified against a rendered
+ * 1080p frame, not just the arithmetic.
+ *
+ * If this is ever raised much further, check the RENDERED frame at 720p portrait too — that
+ * is the tightest `rowH`, so it is where the band runs out first.
+ */
+const TIME_SCALE = 1.1;
+
 /** The prayer table: PRAYER · ADHAN · IQAMAH, bilingual names (English + Arabic gloss)
  *  on the leading side, active prayer highlighted with a primary accent bar. */
 function panelTable(b: Box, m: Model, c: Ctx): string {
@@ -1330,6 +1350,9 @@ function panelTable(b: Box, m: Model, c: Ctx): string {
     }
     const nameColor = row.active ? c.p.primarySoft : row.next ? c.p.goldSoft : c.p.text;
     const nameSize = clamp(rowH * 0.38, 12, 34);
+    // Sized off the name so the row still scales as one thing with rowH — only the ratio
+    // between name and time changes. See TIME_SCALE.
+    const timeSize = nameSize * TIME_SCALE;
     // Every prayer name starts at the SAME x (innerX): the active row's accent bar sits
     // in the padding well to the left of innerX, so an extra indent for the active row
     // only knocks it out of the column and reads as a misaligned row.
@@ -1339,14 +1362,14 @@ function panelTable(b: Box, m: Model, c: Ctx): string {
     const ar = PRAYER_LABELS.ar[row.label];
     if (ar && c.lang !== 'ar') out.push(text(nx + approxWidth(en, nameSize) + b.w * 0.02, midY, ar, { size: nameSize * 0.86, fill: hexToRgba(c.p.gold, 0.85), family: FONT_ARABIC, weight: 600, anchor: 'start' }));
     if (row.iqamah != null) {
-      out.push(text(colAd, midY, fmtShort(row.adhan, c.timeFormat), { size: nameSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'end' }));
-      out.push(text(colIq, midY, fmtShort(row.iqamah, c.timeFormat), { size: nameSize, fill: c.p.primarySoft, family: FONT_DISPLAY, weight: 700, anchor: 'end' }));
+      out.push(text(colAd, midY, fmtShort(row.adhan, c.timeFormat), { size: timeSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'end' }));
+      out.push(text(colIq, midY, fmtShort(row.iqamah, c.timeFormat), { size: timeSize, fill: c.p.primarySoft, family: FONT_DISPLAY, weight: 700, anchor: 'end' }));
     } else {
       // Sunrise: a single time (no Iqamah), centred BETWEEN the two time values. Both the
       // Adhan and Iqamah times are right-anchored (at colAd / colIq), so their visual
       // centres sit half a text-width left of those edges — shift the midpoint left by
       // that half-width so Sunrise lands truly between them, not skewed right.
-      const tsz = nameSize * 0.92;
+      const tsz = timeSize * 0.92;
       const tstr = fmtShort(row.adhan, c.timeFormat);
       const cxSun = (colAd + colIq) / 2 - approxWidth(tstr, tsz) / 2;
       out.push(text(cxSun, midY, tstr, { size: tsz, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle' }));
