@@ -131,23 +131,110 @@ Only when Hasan has said it. In order:
    `## Unreleased` section into the `## X.Y.Z` section per §0b below — a test asserts the newest
    released section matches the running version, so a forgotten entry fails the build rather
    than shipping silently.
-2. Merge `dev` → `main`, and in that merge **repin `docker-compose.yml`** from `:dev` to
-   `…:<new version>@sha256:<digest>`. The digest doesn't exist yet — use the previous
-   release's temporarily, or land the merge and repin in the follow-up commit at step 5.
-3. Tag `v<version>` and push it. CI builds multi-arch (amd64 + arm64) and publishes
-   `:<version>` + `:latest`.
-4. Fetch the **manifest-list** digest of the published image (not a per-arch one).
-5. Commit the real `@sha256` pin to `docker-compose.yml` on `main`.
-6. Update `registry.yaml` in **OpenMasjidAPPS**: `ref:` = the tag, `commit:` = the SHA of the
-   digest-pin commit from step 5. Never hand-edit `catalog.json` — it is generated.
+
+   Merge `dev` → `main` carrying that bump. `docker-compose.yml` is the one file that conflicts,
+   by design; resolve it to `main`'s form and **leave the PREVIOUS release's reference completely
+   intact — tag and digest together**, e.g. keep `:0.66.1@sha256:<0.66.1's digest>` untouched
+   while `manifest.yaml` already says `0.67.0`.
+
+   That looks inconsistent and is deliberately so: it is *accurate*. The pair names the image
+   that is actually pinned. The `channel` job only requires main to be digest-pinned and
+   non-prerelease, so it passes. **What you must never write is a new tag beside an old digest**
+   (`:0.67.0@sha256:<0.66.1's digest>`) — that pairing is a lie, and it is the exact bug in the
+   box below. Replace the whole reference in one go at step 3, once the real digest exists.
+2. **Push `main` and let CI publish the image.** Then fetch the **manifest-list** digest of the
+   published image (not a per-arch one). Both the `main` push and, later, the tag push run
+   `build-image.yml`, and each republishes `:<version>` + `:latest` — so read the digest only
+   once every publishing build has finished. Whichever writes the tag last is what a puller gets.
+3. **Commit the real `@sha256` pin to `docker-compose.yml`.** That commit must touch compose and
+   nothing else: `build-image.yml`'s `paths-ignore` excludes it, so it publishes nothing and
+   cannot invalidate the digest it just pinned. Confirm no `Build image` run appears for it.
+4. **Tag `v<version>` at THAT commit — the digest-pin commit — and push the tag.** Not before.
+5. Propose the catalog change in **OpenMasjidAPPS** — §0c below, which is a PR against its `dev`,
+   never a push to its `main`.
+
+> ### ⚠ Never tag before the digest is pinned
+>
+> **The tag must point at a commit whose `docker-compose.yml` already carries the digest of the
+> image that version publishes.** Tag earlier and the tag advertises the new version number over
+> the *previous* release's bytes, so anyone who pins the tag ships the wrong code under the right
+> name. **This has now happened three times** — most recently `v0.67.0`, whose tagged commit
+> carries `@sha256:3a789623…`, which is 0.66.1's image.
+>
+> The third time was this file's fault: the chain used to say *"the digest doesn't exist yet — use
+> the previous release's temporarily"*, tag at step 3, and repin at step 5. Following it exactly
+> produced the bug. The order above is the fix — **publish, pin, then tag** — and there is no
+> "temporarily" any more. If you find yourself typing a digest you did not just read out of the
+> registry for *this* version, stop.
+>
+> Check before pushing the tag, and after:
+>
+> ```sh
+> git show v<version>:docker-compose.yml | grep -oE 'sha256:[0-9a-f]{64}'   # must equal…
+> # …the digest GHCR serves for :<version>
+> ```
 
 Every push to `main` republishes `:<version>` and `:latest`, so a published version tag is
 **not** immutable (DISPLAY-010, [`docs/audit/ACTION_REQUIRED.md`](docs/audit/ACTION_REQUIRED.md)
 §4). The `@sha256` pin is the only thing protecting existing installs. Never remove it.
 
-Then return to `dev`, set the next prerelease (`0.68.0-dev.1`) across the same 6 fields plus
-the compose reference, re-open an empty `## Unreleased` section in `CHANGELOG.md`, and keep
+Then return to `dev`, merge `main` back, restore compose to the **dev** form (the merge carries
+main's digest-pinned line across), set the next prerelease (`0.68.0-dev.1`) across the same 7
+fields plus the compose reference, re-open an empty `## Unreleased` in `CHANGELOG.md`, and keep
 working there.
+
+That last step is not tidying. **OpenMasjidAPPS only accepts a dev entry that is at or *ahead of*
+the stable release**, so a `dev` branch left behind the version it just released makes the dev
+catalog silently fall back to stable — the dev channel stops testing anything while looking
+perfectly healthy.
+
+---
+
+## 0c. The catalog is somebody else's `main` — you may only propose
+
+Publishing the image is not the release. **OpenMasjidOS installs from `catalog.json` in
+[OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS), and stable moves only
+through a catalog release run by a catalog maintainer.** That repo has its own branching policy,
+and it is not ours to override — being told "merge to main" *here* authorises nothing there.
+
+**What we may do — and the whole of it:**
+
+Open a **pull request against `OpenMasjid-Solutions/OpenMasjidAPPS`, base branch `dev`**, changing
+**only this app's own entry** in `registry.yaml`:
+
+```yaml
+  - id: display
+    ref: v0.67.0                                       # the tag just published — the human label
+    commit: <40-char SHA of the TAGGED commit>         # what is actually fetched
+```
+
+- `commit:` is what the catalog builder fetches; `ref:` is only a label for humans. Get it with
+  `git rev-list -n1 v<version>`.
+- Follow §0's order and the two are the same commit. **If they ever differ, pin the commit that
+  carries the correct digest** — a wrong `commit:` ships the wrong build to every masjid, whereas
+  a stale `ref:` is only a mislabel.
+- Touch no other app's entry, and never hand-edit `catalog.json` — it is generated, and
+  `build-catalog.yml` regenerates and commits it per channel.
+
+**Then stop.** Do not push to the catalog's `main`. Do not merge the catalog's `dev` into its
+`main`: the two branches legitimately hold **different builds of `catalog.json`** (dev channel vs
+stable channel), so merging them is not a fast-forward of the same content — it publishes dev
+builds to every masjid. A catalog maintainer runs the release that moves `main`.
+
+Until that happens, **the stable catalog keeps serving the previous version**, and that is the
+correct state to report — "released" means the tag and image exist, not that masjids are being
+offered it.
+
+### The dev channel needs none of this
+
+`registry.yaml`'s `dev_ref: dev` tracks our `dev` branch on its own and rebuilds hourly (plus
+whenever `build-image.yml` dispatches a rebuild). Nothing has to be proposed, reviewed or merged
+in the catalog for a dev build to reach the people who opted into it. Two things are required of
+us, and they are the ones in §0's dev rules:
+
+1. keep the prerelease version (`X.Y.Z-dev.N`) and the version-tagged image current, and
+2. **publish the image before pushing the version bump** — the catalog pins an exact tag, so an
+   entry that lands before its image exists is a pull failure on a real masjid's screen.
 
 ---
 

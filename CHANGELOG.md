@@ -12,6 +12,21 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Internal
+
+- Corrected the release chain in CLAUDE.md. It used to say to pin the previous release's digest
+  "temporarily" and tag before repinning, which meant the tag advertised the new version number
+  over the previous release's image — so anyone pinning the tag got the wrong code under the
+  right name. The order is now publish → pin → tag, with the previous release's tag *and* digest
+  left intact together until the real digest exists. `v0.67.0` was the third time this happened.
+- CI now enforces it: a release-tag build compares the digest it just published against the one
+  pinned in the tagged commit's compose file, and fails if they differ. Verified against the real
+  tags — it fails on `v0.67.0` and passes on the digest-pin commit.
+- Documented that the app catalogue is a separate repository with its own rules: a stable release
+  is *proposed* there as a pull request against its `dev`, and a catalogue maintainer runs the
+  release that moves its `main`. "Released" means the tag and image exist, not that masjids are
+  being offered it.
+
 ## 0.67.0
 
 - **New: "What's new" in the account menu.** OpenMasjidOS updates your apps quietly in the
