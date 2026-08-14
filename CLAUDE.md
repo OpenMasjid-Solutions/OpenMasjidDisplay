@@ -125,8 +125,9 @@ Only when Hasan has said it. In order:
      | grep -v node_modules | grep -v /dist/
    ```
 
-   That also catches the compose reference in step 2, which is the eighth place and the one that
-   is not a "version field" — hence the miscount this line used to carry (it said six).
+   It also lists the compose `image:` reference — the eighth place, and the one that is *not* a
+   "version field" (hence the miscount this line used to carry: it said six). Do **not** update
+   that one here; it is replaced whole at step 3, once the digest exists.
    Going to stable means **dropping the `-dev.N` suffix**: `0.67.0-dev.4` → `0.67.0`. Turn the
    `## Unreleased` section into the `## X.Y.Z` section per §0b below — a test asserts the newest
    released section matches the running version, so a forgotten entry fails the build rather
@@ -149,11 +150,21 @@ Only when Hasan has said it. In order:
 3. **Commit the real `@sha256` pin to `docker-compose.yml`.** That commit must touch compose and
    nothing else: `build-image.yml`'s `paths-ignore` excludes it, so it publishes nothing and
    cannot invalidate the digest it just pinned. Confirm no `Build image` run appears for it.
-4. **Tag `v<version>` at THAT commit — the digest-pin commit — and push the tag.** Not before.
+4. **Tag `v<version>` at the digest-pin commit from step 3 — not the commit before it.** The
+   release commit and the digest-pin commit are adjacent, and tagging the release commit "because
+   that's the release" is off by exactly one. That parent is the commit whose compose still names
+   the *old* digest, so the tag ends up on the one tree in the whole repository that is wrong.
+
+   Tag it explicitly rather than relying on where `HEAD` happens to sit:
+
+   ```sh
+   git tag -a v<version> <digest-pin SHA> -m "…"     # not `git tag v<version>` on a stale HEAD
+   git rev-list -n1 v<version>                        # must print the digest-pin SHA
+   ```
 5. Propose the catalog change in **OpenMasjidAPPS** — §0c below, which is a PR against its `dev`,
    never a push to its `main`.
 
-> ### ⚠ Never tag before the digest is pinned
+> ### ⚠ Tag the digest-pin commit, not the commit before it
 >
 > **The tag must point at a commit whose `docker-compose.yml` already carries the digest of the
 > image that version publishes.** Tag earlier and the tag advertises the new version number over
@@ -161,18 +172,31 @@ Only when Hasan has said it. In order:
 > name. **This has now happened three times** — most recently `v0.67.0`, whose tagged commit
 > carries `@sha256:3a789623…`, which is 0.66.1's image.
 >
+> Note the shape of the mistake: it is **off by one commit**, not off by a step. The release
+> commit — the version bump, the merge, the changelog — *feels* like the thing to tag, and it is
+> the immediate parent of the digest-pin commit. Tag it and everything looks right: the tag exists,
+> the version matches, the image is fine. The only thing wrong is the digest one commit further
+> down. So the check is not "did I tag after publishing" but **"does `git rev-list -n1 v<version>`
+> print the digest-pin SHA?"**
+>
 > The third time was this file's fault: the chain used to say *"the digest doesn't exist yet — use
 > the previous release's temporarily"*, tag at step 3, and repin at step 5. Following it exactly
 > produced the bug. The order above is the fix — **publish, pin, then tag** — and there is no
 > "temporarily" any more. If you find yourself typing a digest you did not just read out of the
 > registry for *this* version, stop.
 >
-> Check before pushing the tag, and after:
+> Check the local tag **before** pushing it — after the push the image is already published under
+> it, and a red CI run is all that is left to tell you:
 >
 > ```sh
-> git show v<version>:docker-compose.yml | grep -oE 'sha256:[0-9a-f]{64}'   # must equal…
+> git rev-list -n1 v<version>                                              # the digest-pin commit?
+> git show v<version>:docker-compose.yml | grep -oE 'sha256:[0-9a-f]{64}'  # must equal…
 > # …the digest GHCR serves for :<version>
 > ```
+>
+> `build-image.yml` asserts the same equality on every release-tag build and fails when it doesn't
+> hold. That is a backstop, not the guard: it runs *after* the image has been pushed under the bad
+> tag. Getting the SHA right at `git tag` is the actual fix.
 
 Every push to `main` republishes `:<version>` and `:latest`, so a published version tag is
 **not** immutable (DISPLAY-010, [`docs/audit/ACTION_REQUIRED.md`](docs/audit/ACTION_REQUIRED.md)
@@ -209,10 +233,12 @@ Open a **pull request against `OpenMasjid-Solutions/OpenMasjidAPPS`, base branch
 ```
 
 - `commit:` is what the catalog builder fetches; `ref:` is only a label for humans. Get it with
-  `git rev-list -n1 v<version>`.
-- Follow §0's order and the two are the same commit. **If they ever differ, pin the commit that
-  carries the correct digest** — a wrong `commit:` ships the wrong build to every masjid, whereas
-  a stale `ref:` is only a mislabel.
+  `git rev-list -n1 v<version>` — and if §0 step 4 was done right, that **is** the digest-pin
+  commit, which is the whole point of tagging that commit rather than its parent.
+- **If `ref:` and `commit:` ever disagree, pin the commit that carries the correct digest**, and
+  say so in the PR. A wrong `commit:` ships the wrong build to every masjid; a stale `ref:` is
+  only a mislabel. (That is the state `v0.67.0` is in: `commit:` names the digest-pin commit,
+  `ref:` names a tag one commit behind it.)
 - Touch no other app's entry, and never hand-edit `catalog.json` — it is generated, and
   `build-catalog.yml` regenerates and commits it per channel.
 

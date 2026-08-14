@@ -19,6 +19,9 @@ CLAUDE.md § *The changelog has two audiences*.
   over the previous release's image — so anyone pinning the tag got the wrong code under the
   right name. The order is now publish → pin → tag, with the previous release's tag *and* digest
   left intact together until the real digest exists. `v0.67.0` was the third time this happened.
+  Spelled out that the mistake is **off by one commit**, not off by a step: the release commit is
+  the immediate parent of the digest-pin commit and feels like the thing to tag, so the check is
+  "does `git rev-list -n1 v<version>` print the digest-pin SHA?", not "did I tag after publishing".
 - CI now enforces it: a release-tag build compares the digest it just published against the one
   pinned in the tagged commit's compose file, and fails if they differ. Verified against the real
   tags — it fails on `v0.67.0` and passes on the digest-pin commit.
