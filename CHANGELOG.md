@@ -10,6 +10,8 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
+## Unreleased
+
 ## 0.68.0
 
 - **The prayer times on the timetable are a little larger.** The Adhan and Iqamah times are set
