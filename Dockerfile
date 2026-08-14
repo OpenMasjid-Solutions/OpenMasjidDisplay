@@ -60,8 +60,8 @@ COPY --from=web /web/dist ./public
 
 # The release notes the panel shows under the account menu → "What's new". Shipping them
 # in the image is what makes them readable with no internet, and ties what an admin reads
-# to the build they are actually running. Lands at /app/CHANGELOG.md, which is the second
-# candidate changelog.ts looks in (the entrypoint is /app/dist/server/src/index.js).
+# to the build they are actually running. Lands at /app/CHANGELOG.md; the entrypoint is
+# /app/dist/index.js, so changelog.ts finds it one directory up from its own __dirname.
 COPY CHANGELOG.md ./CHANGELOG.md
 
 # Vendored fonts (loaded with priority by render/fonts.ts). We bundle a STATIC Noto

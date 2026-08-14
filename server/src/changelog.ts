@@ -94,15 +94,25 @@ export function parseChangelog(md: string): Release[] {
 const MAX_BYTES = 256 * 1024;
 
 /**
- * Where CHANGELOG.md sits, depending on how the app is running: from the repo (tsx, so
- * `__dirname` is server/src) or from the image (compiled to dist/, with the file copied to
- * the app root by the Dockerfile). Checked in order; the first that exists wins.
+ * Where CHANGELOG.md sits, depending on how the app is running. Checked in order; the
+ * first that exists wins.
+ *
+ * The two layouts that actually occur:
+ *   • from the repo (tsx) — `__dirname` is `server/src`, so the repo root is two up.
+ *   • from the image — tsconfig has `rootDir: src`/`outDir: dist`, so the entrypoint is
+ *     `/app/dist/index.js` and `__dirname` is `/app/dist`; the Dockerfile copies the file
+ *     to `/app/CHANGELOG.md`, one up.
+ *
+ * There used to be a third candidate (`../../..`) commented as "dist/server/src -> app
+ * root". No such directory is ever produced: `path.resolve` clamps at the filesystem root,
+ * so from `/app/dist` it resolved to exactly the same `/CHANGELOG.md` as the entry above
+ * it, and from `server/src` it pointed at the repo's PARENT. It could never match in either
+ * mode, so it is gone rather than left looking like it covers the image.
  */
 export function changelogCandidates(dir: string = __dirname): string[] {
   return [
-    path.resolve(dir, '..', '..', 'CHANGELOG.md'), // server/src -> repo root
-    path.resolve(dir, '..', '..', '..', 'CHANGELOG.md'), // dist/server/src -> app root
-    path.resolve(dir, '..', 'CHANGELOG.md'),
+    path.resolve(dir, '..', '..', 'CHANGELOG.md'), // server/src -> repo root (tsx)
+    path.resolve(dir, '..', 'CHANGELOG.md'), // /app/dist -> /app (the image)
     path.resolve(process.cwd(), 'CHANGELOG.md'),
   ];
 }

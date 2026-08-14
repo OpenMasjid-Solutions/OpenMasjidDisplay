@@ -1,10 +1,15 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!-- Copyright (C) 2026 OpenMasjid-Solutions -->
 
-# New Fabric endpoints: Stripe vault + public URL (informational — not needed yet)
+# New Fabric endpoints: Stripe vault + public URL
 
-**For OpenMasjid Display, no change is required right now.** This note just records that the platform
-gained two new Fabric capabilities so you know they exist when/if Display ever needs them.
+> **Status update.** When this was written neither capability applied to Display. One of them
+> since did: **`domain: true` is now set** in [`../manifest.yaml`](../manifest.yaml) and used by
+> `fabric.ts` `siteInfo()`, because the website widget and the volunteer page both need a public
+> address when the admin has remote access on. The §"Does Display need `domain: true`?" answer
+> below is the *original* answer and is no longer current — see the amendment under it.
+>
+> **Stripe is unchanged: Display does not take payments, so `stripe: true` stays off.**
 
 ## What's new on the platform
 
@@ -31,9 +36,23 @@ GET ${OPENMASJID_BASE_URL}/api/fabric/site
 Until then, leave it off — least privilege (the platform only issues the per-app secret to apps that
 opt into a Fabric capability).
 
-## What you SHOULD act on
+### Amendment — that future arrived; `domain: true` is on
 
-The unrelated, **required** fix is in `docs/RESTORE_SSO_FIX.md` (this repo): the sign-in lockout after
-a backup restore. That one matters for Display; this Stripe/domain note does not.
+The "public link that works off-site" case above is exactly what shipped: the **website widget** hands
+a masjid an embed snippet for their own site, and the **volunteer page** can be opened from outside the
+masjid. Both need an absolute, internet-reachable URL, and only the platform knows it.
+
+`fabric.ts` `siteInfo()` calls `GET /api/fabric/site` and treats the answer as authoritative — the
+platform only returns a `publicUrl` when it is genuinely routing this app's path, so the app does not
+try to verify it by hairpinning a request at itself from inside the container (that was unreliable even
+when real visitors reached the path fine). It **fails soft**: no Fabric, tunnel off, or any error → the
+panel builds a LAN link instead. Note `basePath` is admin-renameable, so read it rather than assuming
+`/display`.
+
+## History: the fix this note pointed at
+
+It also flagged [`RESTORE_SSO_FIX.md`](RESTORE_SSO_FIX.md) — the sign-in lockout after a backup
+restore — as the thing that actually mattered for Display. That is **fixed**; see the note at the top
+of that file, which explains why the shipped fix is deliberately narrower than the one it proposed.
 
 See OpenMasjidAPPS `docs/BUILDING_AN_APP.md` §7 for the full Fabric capability contract.

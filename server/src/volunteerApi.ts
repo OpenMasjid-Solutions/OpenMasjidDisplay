@@ -24,6 +24,7 @@ import {
   isSecureRequest,
 } from './auth';
 import { normContent } from './validate';
+import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
 import { LoginLimiter } from './rateLimit';
 import type { ContentRef } from './types';
 
@@ -41,34 +42,10 @@ const MIME: Record<string, string> = {
   '.woff': 'font/woff',
 };
 
-function sendJson(res: ServerResponse, status: number, obj: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(obj));
-}
-
-function readBody(req: IncomingMessage, maxBytes = 100_000): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    let size = 0;
-    req.on('data', (c: Buffer) => {
-      size += c.length;
-      if (size > maxBytes) {
-        reject(new Error('body too large'));
-        req.destroy();
-        return;
-      }
-      data += c.toString();
-    });
-    req.on('end', () => {
-      try {
-        resolve(data ? (JSON.parse(data) as Record<string, unknown>) : {});
-      } catch {
-        reject(new Error('invalid JSON'));
-      }
-    });
-    req.on('error', reject);
-  });
-}
+// Volunteer bodies are tiny (a PIN, or a content ref) — a far smaller cap than the admin
+// API's, which has to carry uploaded images.
+const readBody = (req: IncomingMessage, maxBytes = 100_000): Promise<Record<string, unknown>> =>
+  readJsonBody(req, maxBytes);
 
 /** Inline boot script: flips the shared SPA bundle into the volunteer view and tells it the
  *  base path it's served under (so its /api/volunteer/… calls resolve under the tunnel prefix).
@@ -89,6 +66,7 @@ function serveSpa(res: ServerResponse, pathname: string, basePrefix: string): vo
     // serves /<appId>/assets/… itself).
     const ext = path.extname(full).toLowerCase();
     res.writeHead(200, {
+      ...SECURITY_HEADERS,
       'content-type': MIME[ext] ?? 'application/octet-stream',
       'cache-control': 'public, max-age=3600',
     });
@@ -103,10 +81,10 @@ function serveSpa(res: ServerResponse, pathname: string, basePrefix: string): vo
     if (basePrefix) html = html.replace(/="\/assets\//g, `="${basePrefix}/assets/`);
     const boot = volunteerBootScript(basePrefix);
     html = html.includes('</head>') ? html.replace('</head>', `${boot}</head>`) : boot + html;
-    res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
     res.end(html);
   } else {
-    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
     res.end('OpenMasjid Display — volunteer page (the control panel build was not found).');
   }
 }

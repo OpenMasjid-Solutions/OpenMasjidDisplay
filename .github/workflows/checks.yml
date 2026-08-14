@@ -142,8 +142,15 @@ jobs:
       - run: npm run build
         working-directory: server
 
-      # tsconfig.json EXCLUDES **/*.test.ts, so the build above never typechecks the tests.
-      # Running them is what catches a test that no longer compiles.
+      # tsconfig.json EXCLUDES **/*.test.ts (they must never reach dist/ or the image), so
+      # the build above typechecks none of them — and tsx STRIPS types without checking, so
+      # a test can call a function that no longer exists, with arguments that no longer
+      # typecheck, and still pass. tsconfig.check.json is the same config with the tests
+      # included. It earned its place immediately: it caught a live assertion in
+      # iqamahSchedule.test.ts reading a property that is not on the type.
+      - run: npm run typecheck:tests
+        working-directory: server
+
       - run: npm test
         working-directory: server
 

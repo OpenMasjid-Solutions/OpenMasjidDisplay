@@ -18,14 +18,23 @@ from the Fabric) to the data volume — the platform changes them across restart
 # manifest.yaml
 sso: true            # sign in with the dashboard login
 notifications: true  # alert the masjid when a screen goes offline/online
+domain: true         # learn our PUBLIC url behind the admin's tunnel (widget + volunteer links)
+https: true          # serve the control panel through the platform's TLS proxy
 ```
 
 ### 1. Single sign-on (implemented — keep it)
 
 Forward the request's `omos_session` cookie to `${OPENMASJID_BASE_URL}/api/auth/session` with the app
-secret; a `true` mints a local admin session (`server/src/fabric.ts`). **Required resilience fix** —
-never brick when the platform is unreachable: see `docs/RESTORE_SSO_FIX.md`. That is the one change
-Display must make.
+secret; a `true` mints a local admin session (`server/src/fabric.ts`).
+
+Two things there are load-bearing and must not be simplified away:
+
+- **Never brick when the platform is unreachable.** `probePlatform()` reports *reachable* separately
+  from *signed in*, so a momentary outage falls back to the local recovery password instead of locking
+  the panel (the restore/migration bug — [`RESTORE_SSO_FIX.md`](RESTORE_SSO_FIX.md), now fixed).
+- **But the recovery password is only offered while the platform is DOWN.** While it is reachable,
+  `POST /api/setup` refuses an anonymous claim, because under SSO no local password is ever set and an
+  unconditionally open setup endpoint is an unauthenticated admin takeover.
 
 ### 2. Appearance (implemented — keep it)
 
@@ -37,24 +46,37 @@ Match the dashboard's theme/wallpaper via the `#omos=` hash + `GET /api/public/a
 Relay screen offline/online alerts: `POST ${OPENMASJID_BASE_URL}/api/fabric/notify` with the app
 secret + `{ text, title?, level? }`. Fails soft.
 
-## What Display does NOT need (yet) — but exists
+### 4. Public URL / remote access (implemented — keep it)
+
+`GET ${OPENMASJID_BASE_URL}/api/fabric/site` with the app secret tells us our public address behind the
+admin's Cloudflare tunnel, so the **website-widget embed code** and the **volunteer page link** can point
+somewhere that works off-site:
+
+```
+GET ${OPENMASJID_BASE_URL}/api/fabric/site
+  X-OpenMasjid-App-Secret: <OPENMASJID_APP_SECRET>
+→ { "enabled": true, "domain": "omos.example.org",
+    "publicUrl": "https://omos.example.org/display", "basePath": "/display" }
+```
+
+Two rules:
+
+- **Read `basePath`; never hardcode `display`.** The admin can rename it.
+- **Be base-path aware.** The platform serves apps path-based under one `omos` subdomain and does **not**
+  strip the prefix, so routes and assets must match both the LAN form (`/w/:id`) and the tunnelled form
+  (`/<basePath>/w/:id`). Display already does — see `api.ts`'s widget and volunteer route patterns.
+
+Treat the answer as authoritative and fail soft: the platform only returns a `publicUrl` when it is
+actually routing this app's path, and no Fabric / tunnel off / any error simply means "use the LAN link".
+
+### 5. HTTPS for the panel (implemented — keep it)
+
+`https: true` puts the platform's TLS proxy in front of the **first** published port, which is what gives
+the panel a secure context (clipboard for the embed code, `Secure` cookies). The plain HTTP port stays
+published as a legacy fallback, and the volunteer port is deliberately not proxied. That dual-scheme
+setup is exactly why the session cookies use **separate names** for their `Secure` variants — see the
+comment in `server/src/auth.ts` before changing anything there.
+
+## What Display does NOT need — but exists
 
 - **Stripe (`stripe: true`) — skip.** Display takes no payments. Do not set it.
-- **Public URL / remote access (`domain: true`) — optional, not needed now.** Display's screens use
-  RTSP on the LAN and the panel builds links from the address it was opened with, so it has no need
-  for an internet-reachable URL. **Only** add `domain: true` if a future feature needs an absolute
-  public link (e.g. a "view this timetable" page reachable off-site). If so:
-
-  ```
-  GET ${OPENMASJID_BASE_URL}/api/fabric/site
-    X-OpenMasjid-App-Secret: <OPENMASJID_APP_SECRET>
-  → { "enabled": true, "domain": "omos.example.org",
-      "publicUrl": "https://omos.example.org/display", "basePath": "/display" }
-  ```
-
-  Note the platform serves apps **path-based under one subdomain `omos`**, so a `domain` app must be
-  **base-path aware** (mount routes/assets under `basePath`; Cloudflare does not strip the prefix).
-  Until you need that, leave it off — least privilege (the platform only issues the per-app secret to
-  apps that opt into a capability).
-
-See also `docs/RESTORE_SSO_FIX.md` — the one required fix for Display.

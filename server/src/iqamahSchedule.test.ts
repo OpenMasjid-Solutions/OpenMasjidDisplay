@@ -52,7 +52,11 @@ test('normalizeIqamahSchedule: cleans times/dates, sorts, dedups, drops empties'
   assert.equal(out[1].from, '2026-06-01');
   assert.equal(out[1].fajr, '05:00');
   assert.equal(out[1].isha, '21:15');
-  assert.equal(out[1].maghrib as unknown, undefined); // Maghrib is never scheduled
+  // Maghrib is never scheduled (it follows sunset), so the normalizer must not invent the
+  // key. The cast has to be on the OBJECT — `out[1].maghrib as unknown` casts the result of
+  // an access that doesn't typecheck in the first place, which is why this line only
+  // compiled while the test files went unchecked.
+  assert.equal((out[1] as unknown as Record<string, unknown>).maghrib, undefined);
 });
 
 test('normalizeIqamahSchedule: non-array / junk → empty', () => {

@@ -25,6 +25,27 @@ const log = makeLog('render');
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
+/**
+ * The only protocols ffmpeg may speak when it opens a source URL.
+ *
+ * Defence-in-depth behind validate.ts's ALLOWED_SOURCE_SCHEMES: even if a non-stream URL
+ * ever slipped past validation, ffmpeg still cannot open `file:` (read a local file onto a
+ * masjid screen), `http:`/`https:` (SSRF) or `concat:`. That property is what must not be
+ * given up — the list may grow to cover a STREAM protocol, never a local-read or general
+ * fetch one.
+ *
+ * `srtp`/`tls`/`crypto` are here so secure cameras work (e.g. UniFi's `rtsps://…?enableSrtp`).
+ * `rtmp`/`rtmps` are here because validate.ts ACCEPTS and stores those URLs: without them an
+ * admin could save an RTMP source that passed validation, and then both "Test link" and
+ * "Most compatible (re-encode)" failed with a raw ffmpeg protocol error, while plain relay
+ * of the same source worked — the two lists disagreeing is the bug, not the protocol.
+ *
+ * (We do NOT pass -tls_verify: ffmpeg doesn't verify rtsps certs by default, which is what
+ * self-signed local cameras need, and the flag isn't accepted by every ffmpeg build —
+ * passing it made some builds bail out, breaking rtsps.)
+ */
+const FF_PROTOCOLS = 'rtp,rtcp,udp,tcp,rtsp,rtsps,srtp,tls,crypto,rtmp,rtmps';
+
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
 /** Is the host clock obviously wrong? See CLOCK_FLOOR_MS. Exported so the status feed and
@@ -87,9 +108,12 @@ const STALE_AFTER_MS = 30_000;
  * back to the epoch or to a build date, they don't jump forward). That also means it has
  * no false positives — a correct clock in 2030 is simply later than this.
  *
- * Move this forward when cutting a release.
+ * Move this forward when cutting a release — it is the one line in the file with an expiry
+ * date, and a floor left behind stops catching the clocks that drifted since. It must never
+ * be set LATER than the release it ships in, or a correct clock would read as suspect on
+ * day one.
  */
-const CLOCK_FLOOR_MS = Date.parse('2026-08-01T00:00:00Z');
+export const CLOCK_FLOOR_MS = Date.parse('2026-08-13T00:00:00Z');
 export function renderDimsFor(out: Dims): Dims {
   const longest = Math.max(out.width, out.height);
   if (longest <= RENDER_CAP) return out;
@@ -227,13 +251,7 @@ function transcodeArgs(url: string, d: Dims, target: string): string[] {
   const br = d.height >= 1080 ? 4500 : 2500;
   return [
     '-hide_banner', '-loglevel', 'warning',
-    // Defence-in-depth: even if a non-rtsp URL ever slipped past validation, ffmpeg
-    // may only speak these protocols (no file:/http:/concat: local read or SSRF).
-    // `srtp` is included so secure cameras (e.g. UniFi's rtsps://…?enableSrtp) work.
-    // (We do NOT pass -tls_verify: ffmpeg doesn't verify rtsps certs by default, which
-    // is what self-signed local cameras need, and the flag isn't accepted by every
-    // ffmpeg build — passing it made some builds bail out, breaking rtsps.)
-    '-protocol_whitelist', 'rtp,rtcp,udp,tcp,rtsp,rtsps,srtp,tls,crypto',
+    '-protocol_whitelist', FF_PROTOCOLS,
     '-rtsp_transport', 'tcp', '-i', url,
     '-map', '0:v:0',
     '-vf', `scale=${d.width}:${d.height}:force_original_aspect_ratio=decrease,pad=${d.width}:${d.height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=15`,
@@ -260,7 +278,7 @@ function probeOnce(url: string, transport: string): Promise<{ ok: boolean; messa
     // which made this very test fail). We bound the runtime with our own kill timer.
     const args = [
       '-hide_banner', '-loglevel', 'error',
-      '-protocol_whitelist', 'rtp,rtcp,udp,tcp,rtsp,rtsps,srtp,tls,crypto',
+      '-protocol_whitelist', FF_PROTOCOLS,
       '-rtsp_transport', transport,
       '-i', url,
       '-map', '0:v:0', '-frames:v', '1', '-f', 'null', '-',

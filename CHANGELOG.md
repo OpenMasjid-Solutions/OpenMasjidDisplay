@@ -6,53 +6,76 @@
 Release notes for OpenMasjid Display, newest first. These ship inside the app — the
 account menu (top right) → **What's new** shows them with no internet needed.
 
-## 0.67.0-dev.5
-- **Fixed: the calculation-method footnote was printed on top of the Iqamah-change reminder**
-  when a masjid has scrolling announcements turned off. The footnote sits in the same strip
-  along the bottom, and it already stepped aside for the announcements — it now steps aside
-  for the reminder too, so the bar reads cleanly.
+**`## Unreleased`** is the working log on the `dev` branch and lists *every* change; a release
+condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
+CLAUDE.md § *The changelog has two audiences*.
 
-## 0.67.0-dev.4
-- **The reminder and your scrolling announcements are back to one flat bar**, with a clear
-  divider between them. 0.67.0-dev.3 had turned each side into a rounded panel, which read as
-  boxes inside a box.
-- **The reminder text is centred properly.** It was sitting hard against the left with an
-  empty gap beside it, because its area had a fixed minimum width regardless of how short the
-  sentence was. The area is now sized to the words in it.
-- The announcements still stop at the divider, so they no longer look like they slide
-  underneath the reminder and vanish.
+## Unreleased
 
-## 0.67.0-dev.3
-- Restyled the bottom bar (superseded by 0.67.0-dev.4 above).
+### Added
 
-## 0.67.0-dev.2
+- **"What's new" in the account menu.** OpenMasjidOS updates your apps quietly in the
+  background, so nothing in the panel ever said the app had changed under you. The account
+  button (top right) now opens the release notes for the version you are running — every
+  release back to the first one — and it works with no internet, because the notes ship inside
+  the app.
 - **The "Iqamah times are changing" reminder is much harder to miss.** It used to be a quiet
   line in the masjid's own colours; it is now **red**, and it takes the left-hand part of the
   bottom band — the same strip your scrolling announcements use — with the announcements
-  carrying on beside it. If you don't use scrolling announcements, the reminder simply takes
-  the whole strip, exactly as an announcement would.
-- **Nothing above it gets smaller.** Previously the reminder claimed a row of its own, so the
-  prayer table and the Jumu'ah bar shrank for the days a change was coming up. It now shares
-  the bottom band, so the rest of the screen is untouched.
-- **It stays on screen while announcement pictures are cycling**, so a change is not hidden
-  for the minutes a slideshow is up.
+  carrying on beside it, separated by a clear divider. If you don't use scrolling
+  announcements, the reminder simply takes the whole strip, exactly as an announcement would.
+- **Nothing above the reminder gets smaller.** Previously it claimed a row of its own, so the
+  prayer table and the Jumu'ah bar shrank for the days a change was coming up.
+- **The reminder stays on screen while announcement pictures are cycling**, so a change is not
+  hidden for the minutes a slideshow is up.
 - If the prohibited-time (zawāl) message is showing, that keeps the strip to itself — it is
   happening now, and two red messages at once would only compete.
+- **Development-channel updates now actually arrive.** If you had switched OpenMasjidOS to the
+  Development channel, you were never offered anything: every dev build published under the same
+  version number and the same image reference, so the platform had no way to see that anything
+  had changed. Dev builds now carry their own version and their own image, and publishing one
+  tells the app catalogue to refresh instead of waiting for its hourly sweep. **Stable is
+  unaffected** — it worked correctly throughout.
 
-## 0.67.0-dev.1
-- **New: "What's new" in the account menu.** OpenMasjidOS updates your apps quietly in the
-  background, so nothing in the panel ever said the app had changed under you. The account
-  button (top right) now opens the release notes for the version you are running — every
-  release back to the first one — and it works with no internet, because the notes ship
-  inside the app.
-- **Development-channel updates now actually arrive.** If you had switched OpenMasjidOS to
-  the Development channel, you were never offered anything: every dev build published under
-  the same version number and the same image reference, so the platform had no way to see
-  that anything had changed. Dev builds now carry their own version (this one is
-  `0.67.0-dev.1`) and their own image, so an update is offered the normal way. **Stable is
-  unaffected** — it worked correctly throughout, and it remains the channel to stay on for
-  the screens in the masjid.
-- This is a development build, working toward 0.67.0. Nothing you have set up needs redoing.
+### Fixed
+
+- **The calculation-method footnote was printed on top of the Iqamah-change reminder** when a
+  masjid has scrolling announcements turned off. The footnote sits in the same strip along the
+  bottom, and it already stepped aside for the announcements — it now steps aside for the
+  reminder too, so the bar reads cleanly.
+- **Arabic and Urdu text could arrive with one character replaced by a black diamond.** A long
+  save — a timetable carrying Arabic hadith text, Urdu labels or an Arabic masjid name — is
+  delivered to the server in pieces, and a letter that happened to straddle the seam between
+  two pieces was decoded as two broken halves and stored that way, permanently. The text is now
+  reassembled before it is read, so the seam can fall anywhere.
+- **A camera link starting `rtmp://` could be saved and then never play.** The app accepted the
+  address, but the video engine was not allowed to speak that protocol, so both *Test link* and
+  *Most compatible (re-encode)* failed with a raw error while a plain relay of the same camera
+  worked. The two now agree.
+- The wrong-clock check knows what "too old to be believable" means as of this release, rather
+  than of two weeks ago — so a machine whose clock has drifted since is caught.
+
+### Changed
+
+- The volunteer page and the printable calendar, PNG previews and CSV exports now carry the
+  same baseline browser-security headers the rest of the panel already sent.
+- Editing only the release notes now rebuilds the app. They ship *inside* it, so previously the
+  "What's new" an admin read in the panel could sit a build behind the notes in the repository.
+
+### Internal
+
+- Test files are now type-checked (`npm run typecheck:tests`, and in CI). The build deliberately
+  excludes them and the test runner strips types without checking, so a broken test could pass
+  quietly. It found one the day it was added.
+- The wrong-clock test no longer carries its own copy of the cut-off date, which had to be
+  hand-edited every release; it now asserts the behaviour and that the cut-off is never set into
+  the future.
+- Removed dead code: an unused platform-identity helper, two unused ticker helpers, two unused
+  icons, and a changelog lookup path that could never match in either the repository or the
+  image. Folded the duplicated request-body reader and response headers in the admin and
+  volunteer APIs into one module, so a fix lands on both.
+- Refreshed the architecture and RTSP documents, which described settings that no longer exist,
+  a config file at a path that isn't there, and encoder settings that had since changed.
 
 ## 0.66.1
 - **Nothing on your screens changes in this release.** No new features and nothing to set up

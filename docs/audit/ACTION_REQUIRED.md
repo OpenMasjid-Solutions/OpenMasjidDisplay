@@ -8,17 +8,20 @@ From the 2026-08-04 audit of `OpenMasjidDisplay` @ `c1080cd` (see
 
 ---
 
-## 0. Read first: autonomous push to `main` was disabled
+## 0. Read first: pushing to `main` publishes the image every masjid installs
 
 `.github/workflows/build-image.yml` publishes
 `ghcr.io/openmasjid-solutions/openmasjiddisplay:<manifest version>` **and `:latest`** to
-GHCR on **every** push to `main`. Pushing audit commits there would build and publish a new
-production container image that every masjid installs from. All audit work therefore lives
-on **`audit/security-2026-08-04`** and needs your review on the PR before it merges.
+GHCR on **every** push to `main`. That is why no work — audit or otherwise — is pushed there
+autonomously.
 
-**When you merge, expect a new image to be published.** The version in `manifest.yaml` is
-`0.61.0`, so the merge will **overwrite the published `:0.61.0` tag** (see DISPLAY-010).
-That is safe for existing installs only because the catalog pins by digest — see item 2.
+> **Historical note.** This audit was carried out on a branch called
+> `audit/security-2026-08-04`, which was merged and deleted after v0.66.0 shipped. The repo
+> has since adopted a standing two-branch policy that generalises the same rule: **all work
+> happens on `dev`, and `main` moves only as a deliberate release.** See
+> [`CLAUDE.md`](../../CLAUDE.md) § *Branching policy* — that is the live rule; this section
+> records why it exists. The version numbers quoted below are the ones current during the
+> audit and are left as written.
 
 ---
 
@@ -198,9 +201,11 @@ work and are worth re-landing on their own merits:
 
 - the **published-image smoke test** (boot the container, assert `/healthz`, `GET /` → 200,
   `GET /api/state` → 401) — this is the check that would catch a broken release before a
-  masjid does;
-- the **`tsconfig.check.json` test-file typecheck** for `server/`, which caught real broken
-  call sites that the build config skipped because it excludes `*.test.ts`.
+  masjid does; **still outstanding.**
+- ~~the **`tsconfig.check.json` test-file typecheck** for `server/`~~ — **re-landed** in the
+  2026-08-13 sweep as `npm run typecheck:tests`, wired into the `server` job in `checks.yml`.
+  It justified itself on the first run, catching an assertion in `iqamahSchedule.test.ts` that
+  read a property which is not on the type it was asserting against.
 
 The GitHub Release for **v0.65.0 still exists and still advertises the Pi node image**, and
 tags `v0.62.0`–`v0.65.0` remain. Nothing was deleted (no history was rewritten). If you

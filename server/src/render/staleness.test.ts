@@ -210,20 +210,31 @@ test('the stale mark visibly alters the frame and never mutates the original', (
 
 // ── Clock sanity (DISPLAY-014) ────────────────────────────────────────────────
 test('an implausible host clock is detected, and a correct one is never flagged', () => {
-  const { clockSuspect } = require('./renderer') as typeof import('./renderer');
+  const { clockSuspect, CLOCK_FLOOR_MS } = require('./renderer') as typeof import('./renderer');
   // The failures that actually happen in the field: a box with no RTC that booted with no
-  // network falls back to the epoch or to a stale build date.
+  // network falls back to the epoch or to a stale build date. These are absolute because
+  // they are wrong under ANY floor this project will ever set.
   assert.equal(clockSuspect(0), true, 'the epoch is not a believable time');
   assert.equal(clockSuspect(Date.parse('1970-01-01T00:00:00Z')), true);
   assert.equal(clockSuspect(Date.parse('2020-06-01T00:00:00Z')), true, 'years behind → wrong');
-  assert.equal(clockSuspect(Date.parse('2026-07-31T23:59:59Z')), true, 'just before the floor → wrong');
+
+  // The boundary is asserted RELATIVE to the floor, not against a copy of its date. The
+  // floor moves forward every release by design, and a test carrying its own copy of the
+  // literal turns that into a failing build each time — which teaches the next person to
+  // edit the test instead of reading it. What must hold is the shape, not the date.
+  assert.equal(clockSuspect(CLOCK_FLOOR_MS - 1), true, 'one ms before the floor → wrong');
+  assert.equal(clockSuspect(CLOCK_FLOOR_MS), false, 'the floor itself is believable');
 
   // No false positives: the check is one-directional, so a correct clock now or later is
   // always fine. A display marked wrong when it is right would be its own bug.
-  assert.equal(clockSuspect(Date.parse('2026-08-01T00:00:00Z')), false);
-  assert.equal(clockSuspect(Date.parse('2026-08-04T12:00:00Z')), false);
+  assert.equal(clockSuspect(CLOCK_FLOOR_MS + 86_400_000), false, 'a day after the floor is fine');
   assert.equal(clockSuspect(Date.parse('2030-01-01T00:00:00Z')), false, 'a future clock must not be flagged');
   assert.equal(clockSuspect(), false, 'the real clock running these tests must not be flagged');
+
+  // The one way moving the floor can go wrong: setting it LATER than the release it ships
+  // in would flag every correctly-set clock in the field from day one. Nothing else in the
+  // build catches that, because a floor in the future looks perfectly valid on its own.
+  assert.ok(CLOCK_FLOOR_MS <= Date.now(), 'the clock floor must not be in the future');
 });
 
 // Regression guards for how staleness is REPORTED (the sweep found three gaps here).

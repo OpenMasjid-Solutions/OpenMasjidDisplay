@@ -90,11 +90,26 @@ test('readChangelog returns empty string when no candidate exists', () => {
 test('changelogCandidates covers both the repo and image layouts', () => {
   // path.resolve() is absolutised against the cwd's drive on Windows, so build the
   // expectations the same way rather than assuming a leading separator is enough.
-  const src = path.join(path.sep, 'app', 'server', 'src');
-  const c = changelogCandidates(src);
-  assert.ok(c.includes(path.resolve(src, '..', '..', 'CHANGELOG.md')), 'repo root (server/src -> ..)');
-  assert.ok(c.includes(path.resolve(src, '..', '..', '..', 'CHANGELOG.md')), 'image root (dist/server/src -> ...)');
-  assert.ok(c.includes(path.resolve(process.cwd(), 'CHANGELOG.md')), 'cwd fallback');
+  const repoSrc = path.join(path.sep, 'work', 'server', 'src');
+  assert.ok(
+    changelogCandidates(repoSrc).includes(path.resolve(repoSrc, '..', '..', 'CHANGELOG.md')),
+    'repo root, running under tsx from server/src',
+  );
+  assert.ok(
+    changelogCandidates(repoSrc).includes(path.resolve(process.cwd(), 'CHANGELOG.md')),
+    'cwd fallback',
+  );
+});
+
+// The layout inside the image, asserted as the concrete path rather than as an offset —
+// the previous version of this test asserted an offset derived from a `dist/server/src`
+// layout the build never produces, so it passed while the entry it was guarding could not
+// match anything. tsconfig maps rootDir `src` -> outDir `dist`, so the entrypoint really is
+// /app/dist/index.js and the Dockerfile really does COPY CHANGELOG.md to /app.
+test('in the image, /app/dist finds the changelog the Dockerfile copies to /app', () => {
+  const distDir = path.join(path.sep, 'app', 'dist');
+  const appRoot = path.resolve(path.join(path.sep, 'app'), 'CHANGELOG.md');
+  assert.ok(changelogCandidates(distDir).includes(appRoot), `expected a candidate at ${appRoot}`);
 });
 
 // The real file is the one that actually ships, so assert on it rather than only on
@@ -107,23 +122,62 @@ test('the shipped CHANGELOG.md parses, and loses no line of its content', () => 
   const releases = parseChangelog(md);
   assert.ok(releases.length > 50, `expected the full history, got ${releases.length} sections`);
 
-  // Every release heading in the file must appear exactly once.
-  const heads = [...md.matchAll(/^##[ \t]+(.+?)[ \t]*$/gm)].map((m) => m[1]);
-  assert.deepEqual(releases.map((r) => r.version), heads);
-
-  // The newest section must be the running version, so "You're on this" can land.
-  const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8')) as { version: string };
-  assert.equal(releases[0].version, pkg.version, 'the top section must match this build');
-
   // No content dropped: every non-blank line below the first heading must be reachable in
   // the parsed output. This is the Students regression, checked against the real notes.
-  const body = md.slice(md.indexOf('\n## '));
-  const sourceWords = body
-    .split(/\r?\n/)
+  //
+  // A heading with nothing under it is skipped on BOTH sides: the parser drops empty
+  // sections on purpose (an empty heading is not worth showing an admin), and `##
+  // Unreleased` sits empty on `dev` for exactly as long as it takes someone to make the
+  // first change after a release — so counting it as source content would fail the build
+  // during the one window where the file is perfectly correct.
+  const lines = md.slice(md.indexOf('\n## ')).split(/\r?\n/);
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim();
+    if (/^##[ \t]+/.test(l)) {
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;
+      if (j >= lines.length || /^##[ \t]+/.test(lines[j].trim())) continue; // empty section
+    }
+    kept.push(l);
+  }
+
+  // Every heading that has something under it must appear exactly once in the parsed output,
+  // in order — no section silently swallowed into the one above it.
+  const heads = kept.filter((l) => /^##[ \t]+/.test(l)).map((l) => l.replace(/^##[ \t]+/, '').trim());
+  assert.deepEqual(releases.map((r) => r.version), heads);
+
+  const sourceWords = kept
     .map((l) => l.replace(/^\s*[-*]\s+/, '').replace(/^#{2,}\s+/, '').trim())
     .filter(Boolean)
     .join(' ');
   const parsedWords = releases.flatMap((r) => [r.version, ...r.items]).join(' ');
   const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
   assert.equal(norm(parsedWords), norm(sourceWords), 'parsed text must contain every source line, in order');
+});
+
+// The two-section discipline in CLAUDE.md §0b, asserted rather than trusted: `## Unreleased`
+// is the working log on `dev`, and a release condenses it into a `## X.Y.Z` heading. Getting
+// this wrong is silent — the notes still parse and still render, they just describe a
+// different build than the one the admin is running.
+test('the changelog section at the top matches the channel this build is on', () => {
+  const md = readChangelog();
+  const releases = parseChangelog(md);
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8')) as { version: string };
+  const isPrerelease = pkg.version.includes('-dev.');
+
+  if (isPrerelease) {
+    // The heading is matched in the RAW markdown, not the parsed output, because a freshly
+    // reopened section is legitimately empty and the parser drops those.
+    assert.match(md, /^##[ \t]+Unreleased[ \t]*$/m, 'a dev build must keep a ## Unreleased section for its notes');
+    assert.ok(
+      !releases.some((r) => r.version.includes('-dev.')),
+      'dev changes belong in ## Unreleased — a section per dev build turns the release into a changelog of changelogs',
+    );
+  } else {
+    // The released build: the newest section must be the running version, so the panel's
+    // "You're on this" marker can land, and a forgotten release entry fails here instead of
+    // shipping notes that stop one version short.
+    assert.equal(releases[0].version, pkg.version, 'the top section must match this build');
+  }
 });

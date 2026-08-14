@@ -178,6 +178,9 @@ didn't arrive (notifications not turned on, permission not granted, platform add
   here, including a **custom wallpaper image URL**.
 - **Defaults** for new timetables (picture quality) and the **time zone schedules run in**.
 - Step-by-step *"Connecting a screen"* help right in Settings.
+- **"What's new"** in the account menu — the release notes for the version you're actually running, every
+  release back to the first, readable with **no internet** because they ship inside the app. OpenMasjidOS
+  updates apps quietly in the background, so otherwise nothing ever tells you the app changed under you.
 - A **"Source code (AGPL-3.0)"** link in the account menu, as the licence requires.
 
 ### 🔌 OpenMasjidOS integration
@@ -289,15 +292,19 @@ Full decoder guidance and troubleshooting: [docs/RTSP_SETUP.md](docs/RTSP_SETUP.
 ## Run / build from source
 
 ```bash
-# server (control plane + renderer)
-cd server && npm ci && npm run build && npm test
+# server (control plane + renderer) — build, typecheck the tests, run them
+cd server && npm ci && npm run build && npm run typecheck:tests && npm test
 
-# control panel (web)
+# control panel (web) — `npm run build` is `tsc --noEmit && vite build`
 cd web && npm ci && npm run build
 
 # everything together (Docker; also what the App Store runs)
 docker compose up -d
 ```
+
+`typecheck:tests` is separate on purpose: `tsconfig.json` excludes `*.test.ts` so tests never reach the
+image, and the runner (tsx) strips types without checking them — so without it a test that no longer
+compiles still passes.
 
 For local development, run the server with `MEDIAMTX_MANAGED=no` (so it won't try to launch the bundled
 MediaMTX) alongside your own `mediamtx`, and `cd web && npm run dev` (proxies `/api` and `/ws` to the

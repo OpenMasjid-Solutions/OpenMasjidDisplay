@@ -1,0 +1,19 @@
+{
+  // Typecheck-only config that INCLUDES the test files.
+  //
+  // tsconfig.json deliberately excludes `**/*.test.ts` so they are never emitted into dist/
+  // and never ship in the image — but that also meant `npm run build` never typechecked a
+  // single test. The runner is tsx, which strips types without checking them, so a test
+  // could call a function that no longer exists with arguments that no longer typecheck and
+  // still pass, right up until the call happened to be on a branch the assertions took.
+  // That is how a green suite stops being evidence.
+  //
+  // This is a separate file rather than a change to tsconfig.json because the build config
+  // has to keep excluding tests; run it with `npm run typecheck:tests` (CI does).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

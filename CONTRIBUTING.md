@@ -5,6 +5,38 @@
 
 Thanks for helping! A few ground rules.
 
+## Branch: work on `dev`, never on `main`
+
+This repo runs **two channels**, and they are not interchangeable:
+
+| branch | version         | CI publishes                  | installed by                 |
+| ------ | --------------- | ----------------------------- | ---------------------------- |
+| `dev`  | `X.Y.Z-dev.N`   | `:X.Y.Z-dev.N` **and** `:dev` | the OpenMasjidOS dev channel |
+| `main` | `X.Y.Z`         | `:X.Y.Z` **and** `:latest`    | every masjid (stable)        |
+
+**Branch from `dev` and open your pull request against `dev`.** A push to `main` publishes the container
+image every masjid installs, so `main` only ever moves as a deliberate release by a maintainer. A PR
+against `main` will be asked to retarget. (Dependabot is configured the same way — every entry sets
+`target-branch: dev`.)
+
+CI enforces the difference: the `channel` job fails if `docker-compose.yml` references a dev image on
+`main`, an un-pinned image on `main`, or a stale/moving tag on `dev`. Don't "fix" a red `channel` job by
+relaxing the check — it is guarding what a masjid installs.
+
+## Note your change in the changelog
+
+`CHANGELOG.md` has an **`## Unreleased`** section at the top. Add a line there describing your change in
+plain language — what a masjid admin would notice, not the implementation. Every change gets an entry:
+fixes, small behaviour changes, and internal work all count, because that section is also how the next
+release is written.
+
+Released sections below it are different: they carry only the changes worth telling a masjid about. A
+maintainer condenses `Unreleased` into one when cutting the release, so write your entry for a reader, and
+don't worry about which half of it survives.
+
+The panel serves this file as "What's new" (it ships inside the image), so keep it readable: no ticket
+numbers, no commit hashes, no internal jargon.
+
 ## Licensing
 
 This project is licensed **AGPL-3.0-only** (see [`LICENSE`](LICENSE)) and contributions are
@@ -29,11 +61,38 @@ commercial/dual licenses; you keep your copyright. If you cannot accept the reli
 ## Code
 
 - Keep it **AGPL-3.0-only** — every source file carries an SPDX header
-  (`// SPDX-License-Identifier: AGPL-3.0-only`); add one to new files.
-- It must build (`cd server && npm run build`, `cd web && npm run build`) and pass
-  `npm test` in `server/`.
+  (`// SPDX-License-Identifier: AGPL-3.0-only`, in the right comment syntax for the file type), followed by
+  `Copyright (C) 2026 OpenMasjid-Solutions`. Add one to new files; never remove or alter an existing one.
+- Never add code, assets or dependencies under a licence incompatible with AGPL-3.0. In particular, never
+  copy from umbrelOS / `umbrel-apps` (PolyForm-Noncommercial) — reimplement from behaviour.
 - Match the surrounding style; UI follows the OpenMasjidOS design language
   (dark default, WCAG AA, RTL-ready, honors `prefers-reduced-motion`).
-- Don't weaken the security invariants noted in the code (stream-scheme allowlist,
-  audience-bound tokens, scrypt + constant-time compare, array-form `spawn`, Fabric
-  private-range SSRF guard).
+- Don't weaken the security invariants noted in the code (stream-scheme allowlist, ffmpeg's
+  `-protocol_whitelist` and array-form `spawn`, audience-bound tokens, scrypt + constant-time compare,
+  server-to-server SSO verification, the `/api/setup` guard under a reachable platform).
+
+## Run it locally
+
+```bash
+cd server && npm ci && npm run build && npm test
+cd web    && npm ci && npm run build
+```
+
+For a live loop, run the server with `MEDIAMTX_MANAGED=no` (so it won't launch the bundled MediaMTX)
+alongside your own `mediamtx`, and `cd web && npm run dev` — the Vite dev server proxies `/api` and `/ws`
+to the server.
+
+## Before you open the PR
+
+Everything below is what CI runs, so running it first saves a round trip:
+
+```bash
+cd server && npm run build && npm run typecheck:tests && npm test
+cd web    && npm run build && npm audit --audit-level=high
+```
+
+- `npm run build` (server) compiles, but **deliberately excludes `*.test.ts`** — the tests are never emitted
+  into the image. `npm run typecheck:tests` is what typechecks them; the runner (tsx) strips types without
+  checking, so without it a broken test can still pass.
+- `web`'s `npm run build` is `tsc --noEmit && vite build`, so it typechecks as well as bundles.
+- New behaviour wants a test. The server suite is plain `node:test` — no framework to learn.

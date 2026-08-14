@@ -39,10 +39,21 @@ on:
     branches: [main, dev]
     tags: ['v*']
     # Docs-only changes don't change the image — skip the (slow) multi-arch build.
+    #
+    # Listed one by one rather than as `**/*.md`, because that blanket glob was wrong the
+    # moment CHANGELOG.md started shipping INSIDE the image (the Dockerfile COPYs it, and
+    # the panel serves it as "What's new"). Under the glob, a commit that only edited the
+    # release notes published nothing, so the notes an admin read in the panel could sit a
+    # build behind the notes in the repo — the one file where that is actively misleading.
+    # docker-compose.yml stays here: it is not in the image, and the `channel` job in
+    # checks.yml is what guards it.
     paths-ignore:
-      - '**/*.md'
       - 'docs/**'
       - 'screenshots/**'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - 'CLAUDE.md'
+      - 'CLA.md'
       - 'LICENSE'
       - 'docker-compose.yml'
   workflow_dispatch:

@@ -315,17 +315,6 @@ export function tickerTextColor(tt: Timetable): string {
   return getPalette(tt.themeId, tt.accent).text;
 }
 
-/** The active ticker string for the given instant (text only). */
-export function activeTickerString(tt: Timetable, now: Date): string {
-  return activeTicker(tt, now).text;
-}
-
-/** Whether the timetable currently has a scrolling ticker. */
-export function tickerActive(tt: Timetable, now: Date): boolean {
-  if (!tt.ticker?.enabled || !tt.ticker.messages?.length) return false;
-  return activeTickerString(tt, now).length > 0;
-}
-
 /** The upcoming-Iqāmah-change sentence to show right now, or '' — the reminder that used
  *  to sit in its own strip above the ticker and now shares the ticker's band. */
 export function iqamahNoticeText(tt: Timetable, now: Date): string {
@@ -2143,7 +2132,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   if (!hasImage) out.push(rect(0, 0, W, H, 0, 'url(#khatam)'));
 
   // ── Full-takeover overlays (drawn over the scene, suppress the normal layout
-  //    AND the scrolling ticker — see activeTickerString) ──────────────────────
+  //    AND the scrolling ticker — see activeTicker) ─────────────────────────────
   const overlay = activeOverlay(tt, m, nowHours);
   if (overlay) {
     // Full-screen overlays always dim to a dark scrim, so use light text even on a light
