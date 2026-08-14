@@ -12,6 +12,13 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Changed
+
+- **The Adhan and Iqamah times on the prayer timetable are set a little larger** — about a tenth
+  bigger — so they read more easily from the back of a hall. The prayer names, the columns and
+  everything else on the screen are unchanged; only the times grew. Nothing needs setting up
+  again, and it applies to all three layouts.
+
 ### Internal
 
 - Corrected the release chain in CLAUDE.md. It used to say to pin the previous release's digest
