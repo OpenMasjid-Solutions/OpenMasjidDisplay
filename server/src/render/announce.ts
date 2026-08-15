@@ -371,14 +371,15 @@ function waSafe(s: string): string {
  * nothing else.
  */
 export function announceCaption(m: PosterModel): string {
+  // No masjid name: the poster carries it in the largest type on the image, directly above
+  // this line, and the group already knows whose times these are. Repeating it just pushes
+  // the part that matters — what moved — further down.
   const lines = [`*${announceHeadline(m)}*`];
-  const who = waSafe(m.masjidName);
-  if (who) lines.push(who);
-  lines.push('');
   lines.push(`${m.past ? 'Since' : 'From'} ${m.dateLine} (${m.whenNote})`);
 
   const moved = m.rows.filter((r) => r.changed);
   if (moved.length) {
+    lines.push('');
     lines.push(moved.map((r) => `${waSafe(r.name)} ${r.was} → ${r.iqamah}`).join('  ·  '));
   }
   return lines.join('\n');

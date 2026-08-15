@@ -139,6 +139,10 @@ test('the caption is short, names what moved, and fits the platform limit', asyn
     assert.match(text, /Asr .+ → 5:15 PM/, 'it must still say what changed if the image never loads');
     assert.ok(text.length <= 1024, `the platform refuses a caption over 1024, got ${text.length}`);
     assert.ok(!text.includes('Maghrib'), 'the poster carries the table; repeating it under the image is noise');
+    assert.ok(
+      !text.includes('Madani Academy Masjid'),
+      'the poster names the masjid in the largest type on the image, right above this line',
+    );
   } finally {
     h.cleanup();
   }
