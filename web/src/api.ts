@@ -82,6 +82,11 @@ export const api = {
   iqamahCsvUrl: (id: string, mode?: 'template') =>
     `/api/timetables/${id}/iqamah-csv${mode ? `?mode=${mode}` : ''}`,
 
+  /** The announcement poster for the NEXT scheduled Iqamah change (PNG attachment).
+   *  404s with a JSON reason when nothing is scheduled ahead, so fetch it rather than
+   *  linking straight to it. */
+  iqamahChangeImageUrl: (id: string) => `/api/timetables/${id}/iqamah-change.png`,
+
   uploadAnnouncement: (id: string, dataUrl: string) =>
     req<Timetable>('POST', `/api/timetables/${id}/announcements`, { data: dataUrl }),
   removeAnnouncement: (id: string, file: string) =>

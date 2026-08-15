@@ -186,6 +186,13 @@ export class RenderWorker {
     return Buffer.from(m.buf as ArrayBuffer);
   }
 
+  /** The downloadable Iqāmah-change poster as PNG bytes. Rejects when the timetable has
+   *  no upcoming change — the caller turns that into a 404 with a plain-language reason. */
+  async announce(tt: Timetable, nowMs: number): Promise<Buffer> {
+    const m = await this.request({ kind: 'announce', tt, nowMs });
+    return Buffer.from(m.buf as ArrayBuffer);
+  }
+
   /** Click-to-edit text regions for the live editor (fractional coordinates). */
   async meta(tt: Timetable, nowMs: number): Promise<Hotspot[]> {
     const m = await this.request({ kind: 'meta', tt, nowMs });
@@ -213,4 +220,11 @@ export function renderPreviewPng(tt: Timetable, nowMs: number, width: number, bg
 export function renderPreviewMeta(tt: Timetable, nowMs: number): Promise<Hotspot[]> {
   if (!previewWorker) previewWorker = new RenderWorker();
   return previewWorker.meta(tt, nowMs);
+}
+
+/** The Iqāmah-change announcement poster (PNG). Shares the preview worker: it is a one-off
+ *  admin action, and putting it on the live pipeline's worker would stall a screen. */
+export function renderAnnouncePng(tt: Timetable, nowMs: number): Promise<Buffer> {
+  if (!previewWorker) previewWorker = new RenderWorker();
+  return previewWorker.announce(tt, nowMs);
 }

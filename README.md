@@ -289,6 +289,28 @@ Full decoder guidance and troubleshooting: [docs/RTSP_SETUP.md](docs/RTSP_SETUP.
 - RTSP is forced to **TCP** for the widest, most firewall-friendly compatibility with commodity decoders.
 - Images are published for **amd64 and arm64**, so the same install works on a Pi and on a mini-PC.
 
+### Intel Quick Sync (optional, standalone installs only)
+
+Encoding uses **libx264** by default, which needs no special hardware and is comfortably fast enough for
+the timetable stream. On a box that re-encodes several cameras at once ("Most compatible" mode), the CPU
+is what limits how many screens you can run — and there, an Intel GPU can take over:
+
+```yaml
+# docker-compose.yml
+    environment:
+      VIDEO_ENCODER: qsv        # or "auto" — use Quick Sync when it's available
+    devices:
+      - /dev/dri:/dev/dri       # the GPU has to be inside the container
+```
+
+The log then says `using Intel Quick Sync (h264_qsv) for video encoding`. If the encoder or the GPU isn't
+there, it says why and **falls back to libx264** — your screens keep working either way.
+
+> **This can't be enabled on an App Store install.** OpenMasjidOS refuses to install any app whose compose
+> file passes host devices through, so the `devices:` line above would block the install for *every*
+> masjid, with or without an Intel GPU. It's available for a standalone `docker compose up`, where you own
+> the box. The shipped compose keeps it commented out for exactly this reason.
+
 ## Run / build from source
 
 ```bash

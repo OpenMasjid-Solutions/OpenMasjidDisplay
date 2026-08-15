@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
 import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, IqamahScheduleEntry, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
-import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, copyText, useToast } from '../ui';
+import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, IconDownload, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 import { readImageForUpload } from '../image';
 
@@ -278,6 +278,41 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     setIqSchedule(r.schedule);
     return r.schedule; // the server-cleaned list — the editor re-syncs to it (drops empty rows)
   };
+  // The downloadable poster for the next scheduled change.
+  //
+  // Fetched rather than linked with a plain <a download>: the endpoint answers 404 + JSON
+  // when there is nothing scheduled ahead, and a bare link would hand the admin a browser
+  // error page (or silently save a file containing JSON) instead of saying so.
+  const [posterBusy, setPosterBusy] = useState(false);
+  const downloadChangeImage = async () => {
+    if (!tt) return;
+    setPosterBusy(true);
+    try {
+      const res = await fetch(api.iqamahChangeImageUrl(tt.id));
+      if (!res.ok) {
+        const msg = await res.json().then((j) => (j as { error?: string }).error).catch(() => null);
+        throw new Error(msg || 'Could not make the announcement image.');
+      }
+      const blob = await res.blob();
+      // Take the filename the server chose (it carries the masjid name and today's date).
+      const cd = res.headers.get('content-disposition') || '';
+      const named = /filename="([^"]+)"/.exec(cd)?.[1];
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = named || 'iqamah-change.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoking immediately can cancel the download in some browsers; a tick is enough.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not make the announcement image.', 'error');
+    } finally {
+      setPosterBusy(false);
+    }
+  };
+
   const importCsv = (file: File) => {
     if (!tt) return;
     const reader = new FileReader();
@@ -558,7 +593,16 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
               shift). Leave a prayer blank to keep it on your normal rule (or the previous change). Maghrib
               always follows the calculated sunset time plus its offset, so it isn't set here.
             </p>
-            <IqamahScheduleEditor schedule={iqSchedule} onSave={saveIqSchedule} />
+            <IqamahScheduleEditor schedule={iqSchedule} onSave={saveIqSchedule} timezone={f.timezone} />
+            <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.9rem', flexWrap: 'wrap', paddingBlockStart: '0.9rem', borderBlockStart: '1px solid var(--color-border)' }}>
+              <button type="button" className="btn btn--ghost btn--sm" onClick={downloadChangeImage} disabled={posterBusy}>
+                <IconDownload size={14} /> {posterBusy ? 'Preparing…' : 'Download announcement image'}
+              </button>
+              <span className="hint" style={{ margin: 0 }}>
+                A picture of the <b>next</b> change — your masjid name, logo and the full timetable with the
+                new times marked, in this timetable's colours. Send it to the WhatsApp group or print it.
+              </span>
+            </div>
           </div>
         ) : (
           <span className="hint">Create the timetable first, then you can schedule Iqamah changes.</span>
@@ -1257,17 +1301,51 @@ function JumuahEditor({ times, onChange }: { times: string[]; onChange: (t: stri
  *  each setting the daily prayers (and, optionally, the Jumu'ah time(s)) that take effect
  *  from that date until the next entry. Maghrib is never scheduled. Edits are kept locally
  *  and saved together; the server returns the cleaned, date-sorted list we re-sync from. */
-function IqamahScheduleEditor({ schedule, onSave }: { schedule: IqamahScheduleEntry[]; onSave: (next: IqamahScheduleEntry[]) => Promise<IqamahScheduleEntry[]> }) {
+/** Today as "YYYY-MM-DD" in `tz` — the schedule's dates are calendar dates in the
+ *  timetable's own timezone, so "has this one already happened?" has to be asked there.
+ *  A masjid in Auckland editing from London would otherwise see an entry hide a day early. */
+function todayIn(tz?: string): string {
+  try {
+    // en-CA formats as YYYY-MM-DD, which is exactly the schedule's own date format.
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz || undefined, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10); // unknown tz — the browser's date will do
+  }
+}
+
+/** How long a change stays on the list after it takes effect. Long enough to notice a
+ *  mistake in the one that just landed, short enough that the list is the *upcoming*
+ *  schedule rather than a growing archive. */
+const KEEP_PAST_DAYS = 3;
+
+function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: IqamahScheduleEntry[]; onSave: (next: IqamahScheduleEntry[]) => Promise<IqamahScheduleEntry[]>; timezone?: string }) {
   const toast = useToast();
   const PR = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
   const [rows, setRows] = useState<IqamahScheduleEntry[]>(() => JSON.parse(JSON.stringify(schedule)));
+  const [showPast, setShowPast] = useState(false);
   const [busy, setBusy] = useState(false);
   const saved = JSON.stringify(schedule);
   // Re-sync when the saved schedule changes under us (a save normalizes + date-sorts it).
   useEffect(() => { setRows(JSON.parse(JSON.stringify(schedule))); }, [saved]);
   const dirty = JSON.stringify(rows) !== saved;
 
-  const today = () => new Date().toISOString().slice(0, 10);
+  const today = () => todayIn(timezone);
+
+  // Which rows have already taken effect and are more than KEEP_PAST_DAYS old.
+  //
+  // These are HIDDEN, never dropped. Every entry carries forward independently — a later
+  // entry that only sets Fajr leaves Dhuhr/Asr/Isha on whatever an earlier one gave — so
+  // deleting a past entry silently CHANGES today's times. Folding them away is a view
+  // decision; the rows state (and therefore what `save` posts) still holds every one.
+  const cutoff = (() => {
+    const t = todayIn(timezone);
+    const d = new Date(`${t}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - KEEP_PAST_DAYS);
+    return d.toISOString().slice(0, 10);
+  })();
+  const isPast = (r: IqamahScheduleEntry) => !!r.from && r.from < cutoff;
+  const pastCount = rows.filter(isPast).length;
+
   const update = (i: number, patch: Partial<IqamahScheduleEntry>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const setTime = (i: number, pr: (typeof PR)[number], v: string) =>
@@ -1296,8 +1374,19 @@ function IqamahScheduleEditor({ schedule, onSave }: { schedule: IqamahScheduleEn
       {rows.length === 0 && (
         <p className="hint" style={{ marginBlockStart: 0 }}>No scheduled changes yet — add one to set Iqamah times from a chosen date onward.</p>
       )}
-      {rows.map((r, i) => (
-        <div key={i} className="iqsched-entry" style={{ background: 'var(--glass-bg-inset)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-card)', padding: '0.85rem 0.9rem', marginBlockEnd: '0.6rem' }}>
+      {pastCount > 0 && (
+        <div className="row" style={{ gap: '0.5rem', alignItems: 'center', marginBlockEnd: '0.6rem', flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setShowPast((v) => !v)}>
+            {showPast ? 'Hide' : 'Show'} {pastCount} past change{pastCount === 1 ? '' : 's'}
+          </button>
+          <span className="hint" style={{ margin: 0 }}>
+            Changes older than {KEEP_PAST_DAYS} days are tucked away to keep this list to what's coming.
+            They are still in effect — each one carries forward until a later change replaces it.
+          </span>
+        </div>
+      )}
+      {rows.map((r, i) => (isPast(r) && !showPast ? null : (
+        <div key={i} className="iqsched-entry" style={{ background: 'var(--glass-bg-inset)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-card)', padding: '0.85rem 0.9rem', marginBlockEnd: '0.6rem', ...(isPast(r) ? { opacity: 0.72 } : {}) }}>
           <div className="row-between" style={{ alignItems: 'flex-end', gap: '0.6rem', flexWrap: 'wrap', marginBlockEnd: '0.6rem' }}>
             <label className="field" style={{ margin: 0 }}>
               <span className="label">From this date</span>
@@ -1318,7 +1407,7 @@ function IqamahScheduleEditor({ schedule, onSave }: { schedule: IqamahScheduleEn
             <JumuahEditor times={r.jumuah ?? []} onChange={(j) => update(i, { jumuah: j.length ? j : undefined })} />
           </div>
         </div>
-      ))}
+      )))}
       <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.4rem', flexWrap: 'wrap' }}>
         <button type="button" className="btn btn--ghost btn--sm" onClick={addRow} disabled={busy}><IconPlus size={14} /> Add a change</button>
         <button type="button" className="btn btn--primary btn--sm" onClick={save} disabled={busy || !dirty}><IconCheck size={14} /> Save schedule</button>

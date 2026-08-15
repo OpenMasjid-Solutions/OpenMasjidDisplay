@@ -12,6 +12,28 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Added
+
+- **Download an announcement image for the next Iqamah change.** In Salah times → Scheduled Iqamah
+  changes there is now a *Download announcement image* button. It gives you a picture to send to the
+  WhatsApp group or print for the noticeboard: your masjid name and logo, the date the change takes
+  effect, and the **whole timetable for that day** with the prayers that are changing highlighted and
+  the time each one is replacing shown struck through beside the new one. It follows the timetable's
+  own theme and colours, its language and its 12/24-hour setting, so it looks like your screens.
+- **Intel Quick Sync (hardware video encoding), for self-hosted installs.** Set `VIDEO_ENCODER=qsv`
+  and pass the GPU into the container and encoding moves off the CPU — worth it on a box re-encoding
+  several cameras at once. If the GPU or the encoder isn't there it says so in the log and carries on
+  with the normal encoder, so it can't leave you with dark screens. **Not available on an App Store
+  install:** OpenMasjidOS blocks any app that asks for host devices, so this is for a standalone
+  `docker compose up` only. Nothing changes for anyone who doesn't turn it on.
+
+### Changed
+
+- **Scheduled Iqamah changes that already happened no longer clutter the list.** Once a change is more
+  than three days old it is tucked behind a *Show N past changes* button, so the list shows what is
+  coming rather than everything you have ever set. **They are still in effect and still saved** — each
+  change carries forward until a later one replaces it, so they are hidden, never deleted.
+
 ## 0.68.0
 
 - **The prayer times on the timetable are a little larger.** The Adhan and Iqamah times are set

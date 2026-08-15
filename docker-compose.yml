@@ -31,7 +31,7 @@ services:
     # .github/workflows/checks.yml fails the build if the version format or ANY image
     # line is wrong for the branch it is on, in either direction. See CLAUDE.md →
     # "Branching policy".
-    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.69.0-dev.1
+    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.69.0-dev.2
     restart: unless-stopped
     environment:
       PORT: "8080"
@@ -45,6 +45,32 @@ services:
       OPENMASJID_BASE_URL: ${OPENMASJID_BASE_URL:-}
       OPENMASJID_APP_ID: ${OPENMASJID_APP_ID:-}
       OPENMASJID_APP_SECRET: ${OPENMASJID_APP_SECRET:-}
+      # Video encoder: unset/x264 (default, always works) | qsv | auto.
+      # See the block below before setting this to qsv — it needs a device the App Store
+      # install cannot be given. Unset here so it can be supplied via .env / the environment.
+      VIDEO_ENCODER: ${VIDEO_ENCODER:-}
+    # ── Intel Quick Sync (hardware H.264) — OFF, and it must stay off in THIS file ───────
+    #
+    # QSV needs the GPU inside the container, i.e.:
+    #
+    #     devices:
+    #       - /dev/dri:/dev/dri
+    #
+    # That line CANNOT be added here. OpenMasjidOS's compose risk-check treats any `devices:`
+    # entry as BLOCKING (packages/core/src/apps/compose-validate.ts — dangers are merged into
+    # the refusals that stop an install), so adding it would not degrade the app for masjids
+    # without an Intel GPU: it would make the app refuse to install for every masjid, with or
+    # without one.
+    #
+    # A STANDALONE `docker compose up` is a different situation — there is no risk-check, and
+    # the operator owns the box. To turn it on there: uncomment the devices block above, set
+    # VIDEO_ENCODER=qsv, and check the log says "using Intel Quick Sync". If the encoder or
+    # the render node is missing the app says so and stays on libx264 — screens keep working
+    # either way, which is the point of falling back rather than failing.
+    #
+    # For an App Store install this stays unavailable until the platform grows a device
+    # allowlist. libx264 is the default and is comfortably fast enough for the timetable
+    # stream; QSV is for a box re-encoding several cameras at once.
     ports:
       # host:container. OpenMasjidOS offers "Open" on the LOWEST published port,
       # so the control panel (7860) must stay below the RTSP port (8554). The

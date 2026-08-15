@@ -96,6 +96,15 @@ respawns ffmpeg when it changes; everything else is just new SVG content.
 Because the frame is mostly static, encoding is cheap (duplicated frames cost almost nothing), which is what
 keeps it viable on a Raspberry Pi. Pipelines self-heal: if ffmpeg exits, it is respawned with backoff.
 
+**Encoder choice** (`render/encoder.ts`) is decided once per process. libx264 is the default and the only
+option an App Store install has. `VIDEO_ENCODER=qsv|auto` selects Intel Quick Sync (`h264_qsv`) *if* the
+ffmpeg build carries the encoder **and** a DRM render node exists — otherwise it logs the reason and falls
+back, so a wrong setting is never a dark screen. QSV needs `/dev/dri` in the container, and the platform's
+compose risk-check treats any `devices:` entry as blocking, so it is reachable only from a standalone
+`docker compose up`. The x264 argument list is asserted byte-for-byte in the tests: it was tuned against
+real decoder behaviour (baseline profile, in-band SPS/PPS, no B-frames, CBR HRD) and drift shows up as a TV
+that won't play the stream.
+
 Per-timetable touches the renderer honours: an optional uploaded **masjid logo** (`render/background.ts`,
 inlined like the background), an optional **seconds** clock, a live **sun/moon with rays** that lights the
 glass panels, **custom label overrides** (rename a prayer/masjid/footer), and per-day Iqamah times from
@@ -135,6 +144,19 @@ costs the video pipeline nothing (it never passes a sink).
 4. samples each screen path's live state and pushes a status update over WebSocket.
 
 Reconciles are coalesced so overlapping triggers collapse into one trailing run.
+
+## The Iqāmah-change announcement poster
+
+A masjid announces a change twice: on the screens, and in the WhatsApp group. The screens are the red
+bottom band; `render/announce.ts` is the second one — a 4:5 PNG the admin downloads from the Salah-times
+tab (`GET /api/timetables/:id/iqamah-change.png`) carrying the masjid name, logo, the whole timetable for
+the change date, and the changed rows marked with the time each is replacing.
+
+Two things keep it honest. The detection is `nextIqamahChange` in `svg.ts` — the *same* function the
+on-screen band formats its sentence from, so the poster and the wall cannot announce different things. The
+times come from `buildModel`, evaluated on the change date and the day before it, so "what will Asr be" has
+exactly one implementation. It renders on the preview worker like every other raster, because a synchronous
+resvg call on the main thread would stutter every live screen the moment someone pressed the button.
 
 ## Public web widget
 

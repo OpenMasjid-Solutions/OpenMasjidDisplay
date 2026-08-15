@@ -41,7 +41,7 @@ import {
   copyAsset,
   logoDataUri,
 } from './render/background';
-import { renderPreviewPng, renderPreviewMeta } from './render/renderPool';
+import { renderPreviewPng, renderPreviewMeta, renderAnnouncePng } from './render/renderPool';
 import { probeSource } from './render/renderer';
 import { parseIqamahCsv, toCsv, templateCsv, normalizeIqamahYear } from './iqamahCsv';
 import { normalizeIqamahSchedule } from './iqamahSchedule';
@@ -840,6 +840,42 @@ export function createApi(deps: Deps) {
         const hotspots = await renderPreviewMeta(tt, Date.now());
         return sendJson(res, 200, { hotspots });
       }
+      // The downloadable "Iqāmah times are changing" poster for the NEXT scheduled change —
+      // the thing a masjid sends to its WhatsApp group and pins to the noticeboard. Served
+      // as an attachment so the browser saves it rather than showing it.
+      const annPosterMatch = /^\/api\/timetables\/([\w-]+)\/iqamah-change\.png$/.exec(pathname);
+      if (annPosterMatch && method === 'GET') {
+        const tt = store.db.timetables.find((t) => t.id === annPosterMatch[1]);
+        if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
+        if (tt.latitude == null || tt.longitude == null) {
+          return sendJson(res, 400, { error: 'Add the masjid location before making an announcement image.' });
+        }
+        let png: Buffer;
+        try {
+          png = await renderAnnouncePng(tt, Date.now());
+        } catch (err) {
+          // The only expected failure is "nothing scheduled ahead", which is a normal state
+          // and not an error worth a 500 — the button is simply not applicable yet.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('no upcoming Iqamah change')) {
+            return sendJson(res, 404, {
+              error: 'There is no upcoming Iqamah change to announce. Add one under “Scheduled Iqamah changes” first.',
+            });
+          }
+          throw err;
+        }
+        const stamp = new Date().toISOString().slice(0, 10);
+        const safeName = (tt.masjidName || 'masjid').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'masjid';
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'content-type': 'image/png',
+          'content-disposition': `attachment; filename="${safeName}-iqamah-change-${stamp}.png"`,
+          'cache-control': 'no-store',
+        });
+        res.end(png);
+        return;
+      }
+
       // Printable month of prayer times (browser "Save as PDF").
       const printMatch = /^\/api\/timetables\/([\w-]+)\/print$/.exec(pathname);
       if (printMatch && method === 'GET') {
