@@ -130,6 +130,9 @@ function freshDB(): DB {
       scheduleTimezone: config.seed.timezone,
       volunteerEnabled: false,
       volunteerRemote: true,
+      // Off, with no group and no timetable chosen. Configuring a WhatsApp gateway for
+      // something else is not a request to start messaging the congregation from here.
+      whatsapp: { iqamahChange: false, groupId: '', groupLabel: '', timetableId: '', daysBefore: 1 },
     },
     timetables: [seededTimetable()],
     sources: [],
@@ -163,7 +166,19 @@ export class Store {
           parsed.timetables = parsed.timetables.map(migrateTimetable);
           const fresh = freshDB();
           // Merge settings so fields added in later versions (e.g. volunteerEnabled) default in.
-          return { ...fresh, ...parsed, settings: { ...fresh.settings, ...parsed.settings }, version: DB_VERSION };
+          // `whatsapp` needs its own merge: the spread above replaces a nested object wholesale,
+          // so a db written before a field was added would come back with it undefined — and this
+          // one gates sending, where an undefined is not a harmless blank.
+          return {
+            ...fresh,
+            ...parsed,
+            settings: {
+              ...fresh.settings,
+              ...parsed.settings,
+              whatsapp: { ...fresh.settings.whatsapp, ...(parsed.settings?.whatsapp ?? {}) },
+            },
+            version: DB_VERSION,
+          };
         }
       }
     } catch (err) {

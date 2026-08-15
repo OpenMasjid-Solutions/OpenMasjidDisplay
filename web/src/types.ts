@@ -155,12 +155,54 @@ export interface ScheduleRule {
   createdAt: string;
 }
 
+/** Posting the Iqāmah-change notice to a WhatsApp group, via OpenMasjidOS. All off by default. */
+export interface WhatsAppSettings {
+  iqamahChange: boolean;
+  /** the approved group's JID, or '' */
+  groupId: string;
+  /** its label when chosen, so it can still be named if approval is later withdrawn */
+  groupLabel: string;
+  /** whose changes to announce; '' = the first timetable */
+  timetableId: string;
+  /** days ahead of the change to post; 0 = on the day */
+  daysBefore: number;
+}
+
 export interface Settings {
   defaultQuality: Quality;
   scheduleTimezone: string;
   volunteerEnabled: boolean;
   /** also serve the volunteer page on the main address / over remote access (default on) */
   volunteerRemote: boolean;
+  whatsapp: WhatsAppSettings;
+}
+
+/** Why this masjid can or cannot send — the platform's vocabulary, each needing its own
+ *  sentence. `no-fabric` and `not-allowed` are this app's own additions. */
+export type WhatsAppReason = 'ready' | 'not-configured' | 'not-linked' | 'unreachable' | 'not-allowed' | 'no-fabric';
+
+export interface WhatsAppLogEntry {
+  at: string;
+  event: 'iqamah-change';
+  /** the group JID — an id, never a name or a body */
+  recipient: string;
+  effectiveFrom: string;
+  outcome: 'queued' | 'failed';
+  error?: string;
+  manual?: boolean;
+}
+
+export interface WhatsAppStatus {
+  available: boolean;
+  reason: WhatsAppReason;
+  /** only the groups the OpenMasjidOS admin approved for this app */
+  groups: { id: string; label: string }[];
+  /** the exact message that would be posted, or null when there is nothing to announce */
+  preview: string | null;
+  /** why there is no preview */
+  previewNote: string | null;
+  /** newest first */
+  log: WhatsAppLogEntry[];
 }
 
 export interface TvStatus {

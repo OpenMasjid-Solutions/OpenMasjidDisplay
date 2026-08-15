@@ -174,6 +174,156 @@ export async function siteInfo(): Promise<SiteInfo | null> {
   }
 }
 
+/**
+ * Can this masjid send WhatsApp at all, and if not, why?
+ *
+ * The platform answers with a deliberately tiny vocabulary (docs/WHATSAPP.md) so an app
+ * renders one of a few sentences rather than tracking the gateway's lifecycle. We ask
+ * before offering the feature: without this, "post to WhatsApp" is a switch that looks
+ * available on every install and fails only when a real announcement was due.
+ *
+ * Two reasons are ours, not the platform's: `no-fabric` (running standalone — there is no
+ * platform to ask) and `not-allowed` (the platform's 403, i.e. this build's manifest is
+ * missing `whatsapp: true` or OpenMasjidOS hasn't picked the new manifest up yet). Both
+ * need different words on screen from "the gateway is down", so they stay distinct.
+ * FAILS SOFT — never throws.
+ */
+export type WhatsAppReason =
+  | 'ready'
+  | 'not-configured'
+  | 'not-linked'
+  | 'unreachable'
+  | 'not-allowed'
+  | 'no-fabric';
+
+export interface WhatsAppAvailability {
+  available: boolean;
+  reason: WhatsAppReason;
+}
+
+const WA_REASONS: readonly WhatsAppReason[] = [
+  'ready',
+  'not-configured',
+  'not-linked',
+  'unreachable',
+  'not-allowed',
+  'no-fabric',
+];
+
+export async function whatsappAvailability(): Promise<WhatsAppAvailability> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return { available: false, reason: 'no-fabric' };
+  warnIfCleartextSecret();
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp`, {
+      headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    clearTimeout(t);
+    // 403 is the platform saying this app may not send — a different sentence from a
+    // gateway that is merely down, so don't collapse it into 'unreachable'.
+    if (res.status === 403) return { available: false, reason: 'not-allowed' };
+    if (!res.ok) return { available: false, reason: 'unreachable' };
+    const j = (await res.json().catch(() => ({}))) as { available?: unknown; reason?: unknown };
+    // Nothing from the platform is trusted as typed: an unknown reason word becomes
+    // 'unreachable' rather than reaching the UI as a raw string with no sentence for it.
+    const reason = WA_REASONS.includes(j.reason as WhatsAppReason) ? (j.reason as WhatsAppReason) : 'unreachable';
+    return { available: j.available === true && reason === 'ready', reason };
+  } catch (err) {
+    log.debug(`fabric whatsapp status failed: ${err instanceof Error ? err.message : err}`);
+    return { available: false, reason: 'unreachable' };
+  }
+}
+
+export interface WhatsAppGroup {
+  /** the group's JID, e.g. "1203630…@g.us" — opaque to us */
+  id: string;
+  label: string;
+}
+
+/**
+ * The WhatsApp groups this app may post into — only the ones the ADMIN approved in
+ * OpenMasjidOS. We never see the masjid's other groups, and an id we did not get from
+ * this list is refused by the platform with a 403.
+ *
+ * Approval can be withdrawn at any time, so an empty list means "no groups available"
+ * and the UI hides the feature rather than erroring. FAILS SOFT → [].
+ */
+export async function whatsappGroups(): Promise<WhatsAppGroup[]> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return [];
+  warnIfCleartextSecret();
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp/groups`, {
+      headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    clearTimeout(t);
+    if (!res.ok) return [];
+    const j = (await res.json().catch(() => ({}))) as { groups?: unknown };
+    if (!Array.isArray(j.groups)) return [];
+    return j.groups
+      .map((g) => g as { id?: unknown; label?: unknown })
+      .filter((g) => typeof g.id === 'string' && g.id)
+      .map((g) => ({ id: String(g.id), label: typeof g.label === 'string' ? g.label : String(g.id) }))
+      .slice(0, 100);
+  } catch (err) {
+    log.debug(`fabric whatsapp groups failed: ${err instanceof Error ? err.message : err}`);
+    return [];
+  }
+}
+
+/**
+ * Post a message to an approved WhatsApp group through the platform's queue.
+ *
+ * QUEUED IS NOT SENT. The platform paces every sender through one serialised queue —
+ * randomised gaps, per-recipient cooldowns, rolling caps, quiet hours — because ban risk
+ * attaches to the masjid's NUMBER, not to whichever app had something to say. Delivery is
+ * seconds to minutes away and hours if it lands in quiet hours, so nothing here may block
+ * on it or report "sent" to anyone. A 202 means accepted for later delivery, full stop.
+ *
+ * We never touch the gateway, its key, or the linked number — that is what makes the
+ * pacing enforceable for every installed app at once. FAILS SOFT — never throws.
+ */
+export async function whatsappSendToGroup(group: string, text: string): Promise<{ queued: boolean; error?: string }> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return { queued: false, error: 'OpenMasjidOS is not connected.' };
+  if (!group.trim()) return { queued: false, error: 'No WhatsApp group chosen.' };
+  if (!text.trim()) return { queued: false, error: 'Nothing to send.' };
+  warnIfCleartextSecret();
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-openmasjid-app-secret': config.omosAppSecret,
+      },
+      body: JSON.stringify({ group, text }),
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    clearTimeout(t);
+    const j = (await res.json().catch(() => ({}))) as { queued?: unknown; error?: unknown };
+    if (!res.ok || j.queued !== true) {
+      // The platform's own wording is the useful one here (an unapproved group, a full
+      // queue, a cap reached) — pass it through, and never log the message body.
+      const error = typeof j.error === 'string' && j.error ? j.error : `The platform refused the message (HTTP ${res.status}).`;
+      log.warn(`WhatsApp post not queued: ${error}`);
+      return { queued: false, error };
+    }
+    return { queued: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`WhatsApp post could not reach the platform at ${config.omosBaseUrl || '(unset)'}: ${msg}`);
+    return { queued: false, error: 'Could not reach OpenMasjidOS.' };
+  }
+}
+
 /** Pull the platform's session token out of the request's Cookie header. */
 function omosCookie(req: IncomingMessage): string | null {
   const raw = req.headers.cookie;

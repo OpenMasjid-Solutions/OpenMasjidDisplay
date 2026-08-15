@@ -214,15 +214,10 @@ export function renderAnnounceSvg(tt: Timetable, m: PosterModel, logo: string | 
   // space between the header and the footer, makes every combination look composed.
   y += 52;
   // Past tense when the change has already landed — the poster is then a "these are the
-  // times now" notice, and announcing it as upcoming would be plainly wrong.
-  const eyebrow = m.past
-    ? m.changedCount === 1
-      ? 'IQĀMAH TIME HAS CHANGED'
-      : 'IQĀMAH TIMES HAVE CHANGED'
-    : m.changedCount === 1
-      ? 'IQĀMAH TIME IS CHANGING'
-      : 'IQĀMAH TIMES ARE CHANGING';
-  block.push(text(W / 2, y, eyebrow, { size: 26, fill: p.gold, weight: 800, anchor: 'middle', letter: 5 }));
+  // times now" notice, and announcing it as upcoming would be plainly wrong. Shared with the
+  // WhatsApp text (`announceHeadline`) so a poster and a message about the same change can
+  // never disagree about tense.
+  block.push(text(W / 2, y, announceHeadline(m), { size: 26, fill: p.gold, weight: 800, anchor: 'middle', letter: 5 }));
   y += 30;
   block.push(rect(W / 2 - 46, y, 92, 3, 1.5, hexToRgba(p.gold, 0.55)));
   y += 58;
@@ -318,4 +313,74 @@ function approxW(s: string, size: number): number {
 
 function labelOr(tt: Timetable, key: string, fallback: string): string {
   return labels(tt.language, tt.labels)[key] ?? fallback;
+}
+
+/**
+ * The eyebrow — the one line that says what this notice IS. Shared by the poster and the
+ * WhatsApp text so the two never disagree about tense or number.
+ */
+export function announceHeadline(m: PosterModel): string {
+  return m.past
+    ? m.changedCount === 1
+      ? 'IQĀMAH TIME HAS CHANGED'
+      : 'IQĀMAH TIMES HAVE CHANGED'
+    : m.changedCount === 1
+      ? 'IQĀMAH TIME IS CHANGING'
+      : 'IQĀMAH TIMES ARE CHANGING';
+}
+
+/**
+ * WhatsApp's four formatting characters. A masjid name containing one would otherwise open
+ * a bold/italic run that swallows the rest of the message, so they are stripped from every
+ * interpolated value. There is no escape syntax in WhatsApp markup — removing is the only
+ * option, and losing a stray asterisk from a masjid name costs nothing.
+ */
+function waSafe(s: string): string {
+  return s.replace(/[*_~`]/g, '').trim();
+}
+
+/**
+ * The same notice as the poster, as a WhatsApp message.
+ *
+ * This exists because the platform's Fabric WhatsApp API carries **text only** — there is no
+ * media field on `POST /api/fabric/whatsapp`, so the poster PNG cannot be put through the
+ * masjid's queue. Rather than not announce at all, we say the same thing in the one format
+ * that does go through.
+ *
+ * It is built from `PosterModel`, the poster's own model, on purpose: the times, the "was"
+ * values, which rows count as changed and how the date reads are all decided once. A second
+ * implementation of "what will Asr be" is exactly the bug this avoids — a group told one time
+ * and a wall showing another.
+ *
+ * Two deliberate differences from the poster:
+ *  - The headline comes FIRST. In a group, line one is the notification preview, and everyone
+ *    there already knows which masjid it is.
+ *  - The old time is struck through with `~…~` rather than a drawn line, which is the same
+ *    idea in the medium's own vocabulary.
+ */
+export function announceText(tt: Timetable, m: PosterModel): string {
+  const lines: string[] = [];
+  lines.push(`*${announceHeadline(m)}*`);
+
+  const who = [waSafe(m.masjidName), waSafe(m.location)].filter(Boolean).join(' · ');
+  if (who) lines.push(who);
+
+  lines.push('');
+  lines.push(`${m.past ? 'Since' : 'From'} ${m.dateLine} (${m.whenNote})`);
+  lines.push('');
+
+  for (const r of m.rows) {
+    const name = waSafe(r.name);
+    const time = r.iqamah || '—';
+    // Changed rows are bold and carry the struck-through old time; unchanged rows are plain,
+    // so the eye lands on the difference without having to compare two columns.
+    lines.push(r.changed && r.was ? `*${name} — ${time}*  (was ~${r.was}~)` : `${name} — ${time}`);
+  }
+
+  if (m.jumuah.length) {
+    lines.push('');
+    lines.push(`${waSafe(labelOr(tt, 'jumuah', "Jumu'ah"))} — ${m.jumuah.join(' · ')}`);
+  }
+
+  return lines.join('\n');
 }

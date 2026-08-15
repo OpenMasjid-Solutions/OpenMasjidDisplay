@@ -109,3 +109,114 @@ test('a cookie that does not look like a cookie value is never forwarded', async
     assert.ok(count() - before <= 1);
   });
 });
+
+// ── WhatsApp: asking whether this masjid can send, and posting to a group ─────
+//
+// The reason word decides which sentence an admin reads, and the four the platform can
+// return have four different fixes ("set it up", "link a phone", "the gateway is down",
+// "update the app in OpenMasjidOS"). Collapsing any of them into a generic failure sends
+// someone looking in the wrong place, so each mapping is pinned here.
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+test('a ready platform is reported as available', async () => {
+  await withFetch(() => json({ available: true, reason: 'ready' }), async () => {
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: true, reason: 'ready' });
+  });
+});
+
+test('each not-ready reason survives the round trip intact', async () => {
+  for (const reason of ['not-configured', 'not-linked', 'unreachable'] as const) {
+    await withFetch(() => json({ available: false, reason }), async () => {
+      assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason });
+    });
+  }
+});
+
+test('a 403 is "not allowed", not "unreachable"', async () => {
+  // The platform refusing us (no `whatsapp: true` in the manifest it knows about) needs the
+  // admin to update this app there — nothing like the fix for a gateway that is down.
+  await withFetch(() => json({ available: false, reason: 'not-allowed' }, 403), async () => {
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'not-allowed' });
+  });
+});
+
+test('an unrecognised reason word never reaches the UI as-is', async () => {
+  // Nothing from the platform is trusted as typed: a word we have no sentence for would
+  // otherwise render as a blank explanation.
+  await withFetch(() => json({ available: true, reason: 'something-new' }), async () => {
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'unreachable' });
+  });
+});
+
+test('available is never true unless the reason is exactly ready', async () => {
+  await withFetch(() => json({ available: true, reason: 'not-linked' }), async () => {
+    const r = await fabric.whatsappAvailability();
+    assert.equal(r.available, false, 'a contradictory answer must fail closed');
+  });
+});
+
+test('the group list is validated, not trusted', async () => {
+  await withFetch(
+    () =>
+      json({
+        groups: [
+          { id: '120363012345678901@g.us', label: 'Announcements' },
+          { id: '120363099999999999@g.us' }, // no label → falls back to the id
+          { label: 'no id at all' }, // dropped
+          'not an object', // dropped
+        ],
+      }),
+    async () => {
+      const groups = await fabric.whatsappGroups();
+      assert.equal(groups.length, 2);
+      assert.deepEqual(groups[0], { id: '120363012345678901@g.us', label: 'Announcements' });
+      assert.equal(groups[1].label, '120363099999999999@g.us');
+    },
+  );
+});
+
+test('a failed group lookup is an empty list, never a throw', async () => {
+  await withFetch(() => json({ error: 'nope' }, 500), async () => {
+    assert.deepEqual(await fabric.whatsappGroups(), []);
+  });
+});
+
+test('a queued post is reported as queued — and only on an explicit 202-style body', async () => {
+  await withFetch(() => json({ queued: true }, 202), async () => {
+    assert.deepEqual(await fabric.whatsappSendToGroup('120363012345678901@g.us', 'hello'), { queued: true });
+  });
+});
+
+test("the platform's own refusal wording is passed through", async () => {
+  // "That group has not been approved" is far more actionable than "HTTP 403".
+  await withFetch(() => json({ queued: false, error: 'That group has not been approved for sending in OpenMasjidOS.' }, 403), async () => {
+    const r = await fabric.whatsappSendToGroup('120363012345678901@g.us', 'hello');
+    assert.equal(r.queued, false);
+    assert.match(r.error ?? '', /has not been approved/);
+  });
+});
+
+test('an empty message or group is refused before any request is made', async () => {
+  await withFetch(() => json({ queued: true }, 202), async (count) => {
+    const before = count();
+    assert.equal((await fabric.whatsappSendToGroup('', 'hi')).queued, false);
+    assert.equal((await fabric.whatsappSendToGroup('120363012345678901@g.us', '   ')).queued, false);
+    assert.equal(count() - before, 0, 'neither should have reached the platform');
+  });
+});
+
+test('a send never throws, even when the platform is unreachable', async () => {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error('ECONNREFUSED');
+  }) as typeof globalThis.fetch;
+  try {
+    const r = await fabric.whatsappSendToGroup('120363012345678901@g.us', 'hello');
+    assert.equal(r.queued, false);
+    assert.match(r.error ?? '', /Could not reach/);
+  } finally {
+    globalThis.fetch = real;
+  }
+});

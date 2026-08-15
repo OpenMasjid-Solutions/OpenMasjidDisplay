@@ -14,6 +14,21 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ### Added
 
+- **Send the Iqamah change to a WhatsApp group, automatically.** Settings → WhatsApp lets you pick a
+  group and how far ahead to post — from a fortnight before down to the day itself — and the notice
+  goes out on its own. Add a change at the last minute, even for the same day, and it is posted within
+  a minute of you saving it. Each change is announced **once**; if you edit a time afterwards, *Send
+  now* posts the correction. There is a preview of the exact message before you send anything, and a
+  list of what has been queued. It is **off until you turn it on**, and it needs WhatsApp set up in
+  OpenMasjidOS → Settings → WhatsApp, with the group approved for apps to post into. If it isn't set
+  up, the page says which part is missing rather than offering a switch that would do nothing.
+- The WhatsApp message says the same thing as the announcement image — your masjid name, the date, the
+  whole timetable for that day, with the changing prayers in bold and the time each one replaces struck
+  through. It is **text, not the picture**: OpenMasjidOS's WhatsApp connection carries text only at the
+  moment, so the image itself can't be sent that way yet.
+- WhatsApp messages are **queued, not sent**. OpenMasjidOS spaces them out to protect the masjid's
+  number from being blocked by WhatsApp, so arrival takes a few minutes — longer inside the quiet hours
+  set there. The app will never tell you a message was delivered, because it cannot know.
 - **Download an announcement image for the next Iqamah change.** In Salah times → Scheduled Iqamah
   changes there is now a *Download announcement image* button. It gives you a picture to send to the
   WhatsApp group or print for the noticeboard: your masjid name and logo, the date the change takes

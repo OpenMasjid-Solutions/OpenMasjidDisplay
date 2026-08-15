@@ -20,6 +20,7 @@ sso: true            # sign in with the dashboard login
 notifications: true  # alert the masjid when a screen goes offline/online
 domain: true         # learn our PUBLIC url behind the admin's tunnel (widget + volunteer links)
 https: true          # serve the control panel through the platform's TLS proxy
+whatsapp: true       # post the Iqamah-change notice to a group the admin approved
 ```
 
 ### 1. Single sign-on (implemented — keep it)
@@ -76,6 +77,49 @@ the panel a secure context (clipboard for the embed code, `Secure` cookies). The
 published as a legacy fallback, and the volunteer port is deliberately not proxied. That dual-scheme
 setup is exactly why the session cookies use **separate names** for their `Secure` variants — see the
 comment in `server/src/auth.ts` before changing anything there.
+
+### 6. WhatsApp (implemented — keep it)
+
+`whatsapp: true` lets the app post the **Iqāmah-change notice** to a group the OpenMasjidOS admin
+approved. Three calls, all server→server with the app secret, all failing soft
+(`server/src/fabric.ts`):
+
+```
+GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → { available, reason }
+GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp/groups  → { groups: [{ id, label }] }
+POST ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → 202 { queued: true }
+     { "group": "…@g.us", "text": "…" }
+```
+
+The rules that are not ours to bend:
+
+- **We never touch the gateway.** No URL, no API key, no session, no idea which number is linked.
+  The platform runs **one paced queue** shared by every installed app — randomised gaps, typing
+  indicators, per-recipient cooldowns, rolling caps, quiet hours — because ban risk attaches to the
+  masjid's *number*, not to whichever app had something to say. It only works because no app can go
+  around it.
+- **`queued` is not `sent`.** Delivery is seconds to minutes away and hours inside quiet hours. There
+  is no delivery receipt. Nothing here blocks on it and nothing tells an admin a message arrived.
+- **Nothing auth-critical, ever.** No login codes, no password resets, no OTPs — WhatsApp is an
+  unofficial client and the number can be restricted overnight. Those go by email.
+- **Ask before offering the feature.** `reason` is one of `ready` / `not-configured` / `not-linked` /
+  `unreachable`, each needing a different sentence; we add `not-allowed` (the platform's 403) and
+  `no-fabric` (running standalone). Without this, the switch looks available on every install and
+  fails only when a real announcement was due.
+- **Only approved groups.** The list holds nothing but what the admin put in front of us, approval
+  can be withdrawn at any time, and an empty list means hide the feature rather than error. An id we
+  were not given is refused with a 403.
+- **Never log a message body.** The log we keep is event + group id + timestamp + the change's date.
+
+**Text only, for now.** There is no media field on `POST /api/fabric/whatsapp`, so the announcement
+**poster PNG cannot go through the queue**. We send the same notice as text instead, built from the
+poster's own model (`announceText` in `server/src/render/announce.ts`) so the two cannot disagree
+about times or tense. If the platform grows a media field, `whatsappSendToGroup` takes one more
+argument and the poster goes out as an image — the rest of `whatsappAnnounce.ts` is unaffected.
+
+Which event goes out, to whom, and how early is **our** setting, not the platform's: its alerts matrix
+has no WhatsApp column for apps, because those rows route to the admin's one number and our messages
+are for the congregation.
 
 ## What Display does NOT need — but exists
 

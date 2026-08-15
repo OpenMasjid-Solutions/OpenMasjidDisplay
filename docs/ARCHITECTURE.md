@@ -212,6 +212,16 @@ behaves exactly as a standalone install. Full contract in [`FABRIC.md`](FABRIC.m
   admin's Cloudflare tunnel, so the widget embed code and the volunteer link can point at it instead of a
   LAN address. Authoritative (the platform only answers when it is actually routing this app's path) and
   fails soft to the LAN link.
+- **WhatsApp** (`whatsapp: true`) — the app posts the Iqāmah-change notice to a group the admin approved,
+  via `GET/POST <base>/api/fabric/whatsapp` and `GET .../groups` (`fabric.ts`). The **platform owns the
+  sending**: one paced queue shared by every installed app, because ban risk attaches to the masjid's
+  number rather than to any one app. The app never learns the gateway address, its key, or which number
+  is linked, and a post returns `202 {queued:true}` — accepted for later delivery, never a delivery
+  receipt. `whatsappAnnounce.ts` decides *whether* and *what*: it re-checks the lead-time window every
+  minute (so a change added on the day still goes out), announces each change exactly once by reading
+  the dedupe key back out of the persisted `whatsappLog`, and gives up after 5 failures. The message is
+  **text** — the Fabric carries no media, so the poster PNG cannot go through it — built from the
+  poster's own `PosterModel` so the two can never disagree.
 
 ## Screen offline/online alerts
 

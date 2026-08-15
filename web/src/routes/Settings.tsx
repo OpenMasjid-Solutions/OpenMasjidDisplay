@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { AppState, Settings } from '../types';
+import type { AppState, Settings, WhatsAppStatus, WhatsAppReason, WhatsAppLogEntry } from '../types';
 import { Field, Toggle, Spinner, IconCheck, useToast } from '../ui';
 import { usePrefs, prefsStore, WALLPAPERS, fetchOmosAppearance } from '../prefs';
 import { timezoneOptions } from '../timezones';
@@ -142,6 +142,8 @@ export function SettingsPage({ state, refetch }: Props) {
 
       <NotificationsPanel />
 
+      <WhatsAppPanel state={state} refetch={refetch} />
+
       <div className="panel glass">
         <h3 className="section-title" style={{ marginTop: 0 }}>Connecting a screen</h3>
         <p className="muted" style={{ marginBottom: '1rem' }}>
@@ -226,6 +228,220 @@ function NotificationsPanel() {
           {detail.reason ? <> · relay reason: {detail.reason}</> : null}
         </div>
       )}
+    </div>
+  );
+}
+
+/** The sentence to show when this masjid cannot send. Each `reason` has a different fix, and
+ *  none of them are this app's to guess at — so each gets its own words and points at the
+ *  place the admin actually has to go. */
+const WA_REASON_TEXT: Record<WhatsAppReason, string> = {
+  ready: '',
+  'not-configured': 'WhatsApp isn’t set up on this server yet. An admin can add it in OpenMasjidOS → Settings → WhatsApp.',
+  'not-linked': 'WhatsApp is set up, but no phone is linked yet. Link one in OpenMasjidOS → Settings → WhatsApp.',
+  unreachable: 'The WhatsApp gateway isn’t responding. Check it in OpenMasjidOS → Settings → WhatsApp.',
+  'not-allowed': 'OpenMasjidOS hasn’t allowed this app to send WhatsApp messages. Update OpenMasjid Display there, then reopen this page.',
+  'no-fabric': 'This works only when OpenMasjid Display is running under OpenMasjidOS.',
+};
+
+/**
+ * Post the "Iqāmah times are changing" notice to the masjid's WhatsApp group.
+ *
+ * The platform does the sending — we never see the gateway, its key or the linked number —
+ * and it paces every message through one queue shared by every installed app, which is the
+ * whole defence for the masjid's number. So this panel is only ever choosing *what*, *where*
+ * and *how early*, and it says "queued" rather than "sent" everywhere, because that is all
+ * anyone here actually knows.
+ */
+function WhatsAppPanel({ state, refetch }: Props) {
+  const toast = useToast();
+  const wa = state.settings.whatsapp;
+  const [status, setStatus] = useState<WhatsAppStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [enabled, setEnabled] = useState(wa.iqamahChange);
+  const [groupId, setGroupId] = useState(wa.groupId);
+  const [ttId, setTtId] = useState(wa.timetableId);
+  const [daysBefore, setDaysBefore] = useState(wa.daysBefore);
+  const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      setStatus(await api.whatsappStatus());
+    } catch {
+      // A failed lookup is indistinguishable to an admin from a gateway that is down, so say
+      // the same thing rather than surfacing a request error they cannot act on.
+      setStatus({ available: false, reason: 'unreachable', groups: [], preview: null, previewNote: null, log: [] });
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void load(); }, []);
+
+  const save = async () => {
+    // Switching it on with nowhere to send is the one combination that looks configured and
+    // silently does nothing, so it is refused rather than saved.
+    if (enabled && !groupId) {
+      toast('Choose a WhatsApp group first.', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const label = status?.groups.find((g) => g.id === groupId)?.label ?? wa.groupLabel;
+      await api.saveSettings({ whatsapp: { iqamahChange: enabled, groupId, groupLabel: groupId ? label : '', timetableId: ttId, daysBefore } });
+      await refetch();
+      await load();
+      toast('WhatsApp settings saved.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendNow = async () => {
+    setSending(true);
+    try {
+      await api.whatsappSendNow();
+      await load();
+      toast('Queued. WhatsApp messages are paced, so it may take a few minutes to arrive.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not queue the message.', 'error');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const groups = status?.groups ?? [];
+  // Approval can be withdrawn in OpenMasjidOS at any time. If that happened to the group we
+  // were using, keep naming it rather than showing a blank select — the admin needs to see
+  // what is now missing, not an empty box.
+  const chosenMissing = !!groupId && !groups.some((g) => g.id === groupId);
+
+  return (
+    <div className="panel glass">
+      <h3 className="section-title" style={{ marginTop: 0 }}>WhatsApp</h3>
+      <p className="muted" style={{ marginBottom: '1rem' }}>
+        Post your <b>Iqāmah change notice</b> to a WhatsApp group automatically, a few days before it takes effect.
+        The message is sent by OpenMasjidOS through the masjid’s own gateway — set it up in
+        <b> OpenMasjidOS → Settings → WhatsApp</b>, and approve there which groups apps may post into.
+      </p>
+
+      {loading ? (
+        <div className="hint"><Spinner /> Checking WhatsApp…</div>
+      ) : !status?.available ? (
+        <div className="hint" style={{ color: 'var(--color-warning)', maxWidth: 620 }}>
+          {WA_REASON_TEXT[status?.reason ?? 'unreachable']}
+        </div>
+      ) : groups.length === 0 && !chosenMissing ? (
+        <div className="hint" style={{ maxWidth: 620 }}>
+          No groups have been approved for this app yet. In <b>OpenMasjidOS → Settings → WhatsApp → Groups</b>,
+          press <b>Find my groups</b> and approve the one you want announcements posted to.
+        </div>
+      ) : (
+        <>
+          <div className="toggle-row row-between" style={{ marginBlockEnd: '0.9rem' }}>
+            <span className="label" style={{ margin: 0 }}>Post the Iqāmah change to a group</span>
+            <Toggle checked={enabled} onChange={setEnabled} label="Post the Iqamah change to a WhatsApp group" />
+          </div>
+
+          <div className="grid2">
+            <Field label="Group" hint="Only groups an admin approved in OpenMasjidOS appear here.">
+              <select className="select" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+                <option value="">Choose a group…</option>
+                {groups.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+                {chosenMissing && <option value={groupId}>{wa.groupLabel || groupId} (no longer approved)</option>}
+              </select>
+            </Field>
+
+            <Field label="Timetable" hint="Whose Iqāmah changes to announce. One only — announcing from every timetable would send the same change several times.">
+              <select className="select" value={ttId} onChange={(e) => setTtId(e.target.value)}>
+                <option value="">{state.timetables[0]?.name ?? 'First timetable'} (default)</option>
+                {state.timetables.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </Field>
+
+            <Field label="When to post" hint="A change added later than this — even on the day — is posted within a minute of you saving it.">
+              <select className="select" value={daysBefore} onChange={(e) => setDaysBefore(Number(e.target.value))}>
+                <option value={0}>On the day it takes effect</option>
+                {[1, 2, 3, 4, 5, 7, 10, 14].map((d) => (
+                  <option key={d} value={d}>{d} day{d === 1 ? '' : 's'} before</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          {chosenMissing && (
+            <div className="hint" style={{ color: 'var(--color-warning)', marginBlockStart: '0.6rem', maxWidth: 620 }}>
+              That group is no longer approved in OpenMasjidOS, so nothing can be posted to it. Approve it again there, or choose another.
+            </div>
+          )}
+
+          <div className="row" style={{ gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap', marginBlockStart: '1rem' }}>
+            <button className="btn btn--primary btn--sm" onClick={save} disabled={busy}>
+              {busy ? <><Spinner /> Saving…</> : <><IconCheck size={16} /> Save WhatsApp settings</>}
+            </button>
+            <button className="btn btn--ghost btn--sm" onClick={sendNow} disabled={sending || !wa.groupId || !status.preview}>
+              {sending ? <><Spinner /> Queueing…</> : 'Send now'}
+            </button>
+            {status.preview && (
+              <button className="btn btn--ghost btn--sm" onClick={() => setShowPreview((v) => !v)}>
+                {showPreview ? 'Hide message' : 'Show the message'}
+              </button>
+            )}
+          </div>
+
+          <p className="hint" style={{ marginBlockStart: '0.6rem', maxWidth: 620 }}>
+            Messages are <b>queued, not sent</b> — OpenMasjidOS spaces them out to protect the masjid’s number, so
+            delivery takes a few minutes, and longer inside the quiet hours set there. Each change is posted once
+            automatically; use <b>Send now</b> if you edit a time afterwards and need to correct it.
+          </p>
+
+          {status.previewNote && !status.preview && (
+            <div className="hint" style={{ marginBlockStart: '0.6rem' }}>{status.previewNote}</div>
+          )}
+
+          {showPreview && status.preview && (
+            <pre
+              className="glass-inset"
+              style={{ marginBlockStart: '0.8rem', padding: '0.9rem 1rem', borderRadius: 'var(--radius-card)', whiteSpace: 'pre-wrap', fontSize: '0.85rem', lineHeight: 1.7, maxWidth: 620, overflowX: 'auto' }}
+            >
+              {status.preview}
+            </pre>
+          )}
+
+          {status.log.length > 0 && <WhatsAppLog entries={status.log} groups={groups} fallbackLabel={wa.groupLabel} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** What we handed to the platform's queue. Event, group and time only — never the message,
+ *  which is a rule worth keeping unconditional rather than re-argued per message. */
+function WhatsAppLog({ entries, groups, fallbackLabel }: { entries: WhatsAppLogEntry[]; groups: { id: string; label: string }[]; fallbackLabel: string }) {
+  const name = (id: string) => groups.find((g) => g.id === id)?.label || fallbackLabel || id;
+  return (
+    <div style={{ marginBlockStart: '1.2rem' }}>
+      <div className="label" style={{ marginBlockEnd: '0.4rem' }}>Recently queued</div>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: '0.35rem' }}>
+        {entries.map((e, i) => (
+          <li key={`${e.at}-${i}`} className="hint" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'baseline' }}>
+            <span style={{ color: e.outcome === 'queued' ? 'var(--color-success)' : 'var(--color-danger)' }}>
+              {e.outcome === 'queued' ? '✓' : '✗'}
+            </span>
+            <span>{new Date(e.at).toLocaleString()}</span>
+            <span className="muted">·</span>
+            <span>Iqāmah change from {e.effectiveFrom}</span>
+            <span className="muted">·</span>
+            <span>{name(e.recipient)}</span>
+            {e.manual && <span className="muted">· sent by hand</span>}
+            {e.error && <span style={{ color: 'var(--color-danger)' }}>· {e.error}</span>}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

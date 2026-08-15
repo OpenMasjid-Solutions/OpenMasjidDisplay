@@ -1,7 +1,7 @@
 {
   "name": "openmasjid-display-server",
   "private": true,
-  "version": "0.69.0-dev.4",
+  "version": "0.69.0-dev.5",
   "description": "Control plane + timetable renderer + embedded RTSP server for OpenMasjid Display",
   "license": "AGPL-3.0-only",
   "scripts": {
@@ -10,7 +10,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.check.json",
-    "test": "node --import tsx --test src/prayer/engine.test.ts src/scheduler.test.ts src/iqamahCsv.test.ts src/iqamahSchedule.test.ts src/validate.test.ts src/render/iqamahOverride.test.ts src/render/salahHadith.test.ts src/auth.test.ts src/store.test.ts src/render/staleness.test.ts src/rateLimit.test.ts src/fabric.test.ts src/changelog.test.ts src/render/iqamahReminder.test.ts src/httpio.test.ts src/render/announce.test.ts"
+    "test": "node --import tsx --test src/prayer/engine.test.ts src/scheduler.test.ts src/iqamahCsv.test.ts src/iqamahSchedule.test.ts src/validate.test.ts src/render/iqamahOverride.test.ts src/render/salahHadith.test.ts src/auth.test.ts src/store.test.ts src/render/staleness.test.ts src/rateLimit.test.ts src/fabric.test.ts src/changelog.test.ts src/render/iqamahReminder.test.ts src/httpio.test.ts src/render/announce.test.ts src/whatsappAnnounce.test.ts"
   },
   "dependencies": {
     "@resvg/resvg-js": "2.6.2",
