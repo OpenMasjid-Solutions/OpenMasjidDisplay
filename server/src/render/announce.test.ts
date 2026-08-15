@@ -59,6 +59,44 @@ test('the on-screen sentence and the structured result agree', () => {
   }
 });
 
+// A masjid that sets exact times for the whole year by CSV never touches the "scheduled
+// changes" list, and its poster has to work all the same. This is inherited rather than
+// added: the detector considers BOTH sources, and the poster reuses it. These tests exist so
+// that stays true — a future "simplification" of the poster to read only iqamahSchedule
+// would silently give every CSV masjid a dead button.
+test('a CSV-only timetable (no schedule at all) still produces a change', () => {
+  const tt = ttWith([]);
+  tt.iqamahYear = { '09-01': { fajr: '05:45', asr: '17:15' } };
+  const c = nextIqamahChange(tt, NOW, 400);
+  assert.ok(c, 'the CSV date must be found with no iqamahSchedule present');
+  assert.deepEqual([c!.month, c!.day], [9, 1]);
+  assert.deepEqual(c!.changed.map((x) => x.key).sort(), ['asr', 'fajr']);
+});
+
+test('with several CSV dates ahead, the SOONEST one is announced', () => {
+  const tt = ttWith([]);
+  tt.iqamahYear = { '10-15': { fajr: '06:15' }, '09-01': { fajr: '05:45' } };
+  const c = nextIqamahChange(tt, NOW, 400)!;
+  assert.deepEqual([c.month, c.day], [9, 1], 'October must not win over September');
+});
+
+test('the poster renders from a CSV change, with the times the CSV sets', () => {
+  const tt = ttWith([]);
+  tt.iqamahYear = { '09-01': { fajr: '05:45', asr: '17:15' } };
+  const m = posterModel(tt, nextIqamahChange(tt, NOW, 400)!);
+  assert.equal(m.rows.find((r) => r.name === 'Fajr')!.iqamah, '5:45 AM');
+  assert.equal(m.rows.find((r) => r.name === 'Asr')!.iqamah, '5:15 PM');
+  assert.equal(m.changedCount, 2);
+  assert.ok(m.rows.find((r) => r.name === 'Fajr')!.was, 'it still shows what it replaces');
+});
+
+test('when a CSV day and a scheduled change collide, the CSV wins — as it does on screen', () => {
+  const tt = ttWith([{ from: '2026-09-01', fajr: '05:30' }]);
+  tt.iqamahYear = { '09-01': { fajr: '05:45' } };
+  const m = posterModel(tt, nextIqamahChange(tt, NOW, 400)!);
+  assert.equal(m.rows.find((r) => r.name === 'Fajr')!.iqamah, '5:45 AM', 'the per-day CSV overrides the schedule');
+});
+
 // ── The poster model ──────────────────────────────────────────────────────────
 
 test('the poster carries the whole timetable, not only the prayers that moved', () => {

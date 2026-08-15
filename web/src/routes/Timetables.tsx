@@ -1325,33 +1325,58 @@ function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: Iqamah
   const [showPast, setShowPast] = useState(false);
   const [busy, setBusy] = useState(false);
   const saved = JSON.stringify(schedule);
+
+  /** The cutoff date: entries effective before this are folded away. */
+  const cutoff = (() => {
+    const d = new Date(`${todayIn(timezone)}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - KEEP_PAST_DAYS);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  /**
+   * Which rows are folded away — decided from the SAVED schedule when it syncs, and then
+   * left alone. Deliberately NOT recomputed from the live rows on every render.
+   *
+   * `<input type="date">` reports partial values while you type: entering 2026 walks through
+   * "0002-…", "0020-…", "0202-…", every one of which sorts before the cutoff as a string. A
+   * live predicate therefore judged the row past mid-keystroke, unmounted it, and the date
+   * you were typing into vanished — so a scheduled change could not be added at all.
+   *
+   * Freezing the decision also gets the behaviour right: whether a row is "old" is a fact
+   * about the saved schedule, not about what someone is halfway through typing.
+   */
+  const isPastEntry = (r: IqamahScheduleEntry) => !!r.from && r.from < cutoff;
+  const [hidden, setHidden] = useState<boolean[]>(() => schedule.map(isPastEntry));
+
   // Re-sync when the saved schedule changes under us (a save normalizes + date-sorts it).
-  useEffect(() => { setRows(JSON.parse(JSON.stringify(schedule))); }, [saved]);
+  useEffect(() => {
+    const next: IqamahScheduleEntry[] = JSON.parse(JSON.stringify(schedule));
+    setRows(next);
+    setHidden(next.map(isPastEntry));
+  }, [saved]);
   const dirty = JSON.stringify(rows) !== saved;
 
   const today = () => todayIn(timezone);
 
-  // Which rows have already taken effect and are more than KEEP_PAST_DAYS old.
-  //
-  // These are HIDDEN, never dropped. Every entry carries forward independently — a later
-  // entry that only sets Fajr leaves Dhuhr/Asr/Isha on whatever an earlier one gave — so
-  // deleting a past entry silently CHANGES today's times. Folding them away is a view
-  // decision; the rows state (and therefore what `save` posts) still holds every one.
-  const cutoff = (() => {
-    const t = todayIn(timezone);
-    const d = new Date(`${t}T00:00:00Z`);
-    d.setUTCDate(d.getUTCDate() - KEEP_PAST_DAYS);
-    return d.toISOString().slice(0, 10);
-  })();
-  const isPast = (r: IqamahScheduleEntry) => !!r.from && r.from < cutoff;
-  const pastCount = rows.filter(isPast).length;
+  // Hidden rows are HIDDEN, never dropped. Every entry carries forward independently — a
+  // later entry that only sets Fajr leaves Dhuhr/Asr/Isha on whatever an earlier one gave —
+  // so deleting a past entry silently CHANGES today's times. This is a view decision only;
+  // `rows` (and therefore what `save` posts) still holds every one.
+  const pastCount = hidden.filter(Boolean).length;
 
   const update = (i: number, patch: Partial<IqamahScheduleEntry>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const setTime = (i: number, pr: (typeof PR)[number], v: string) =>
     update(i, { [pr]: v || undefined } as Partial<IqamahScheduleEntry>);
-  const addRow = () => setRows((rs) => [...rs, { from: today() }]);
-  const removeRow = (i: number) => setRows((rs) => rs.filter((_, j) => j !== i));
+  // `hidden` is index-parallel to `rows`, so it has to move with them.
+  const addRow = () => {
+    setRows((rs) => [...rs, { from: today() }]);
+    setHidden((h) => [...h, false]); // a row you just added is never "past"
+  };
+  const removeRow = (i: number) => {
+    setRows((rs) => rs.filter((_, j) => j !== i));
+    setHidden((h) => h.filter((_, j) => j !== i));
+  };
 
   const save = async () => {
     setBusy(true);
@@ -1385,8 +1410,8 @@ function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: Iqamah
           </span>
         </div>
       )}
-      {rows.map((r, i) => (isPast(r) && !showPast ? null : (
-        <div key={i} className="iqsched-entry" style={{ background: 'var(--glass-bg-inset)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-card)', padding: '0.85rem 0.9rem', marginBlockEnd: '0.6rem', ...(isPast(r) ? { opacity: 0.72 } : {}) }}>
+      {rows.map((r, i) => (hidden[i] && !showPast ? null : (
+        <div key={i} className="iqsched-entry" style={{ background: 'var(--glass-bg-inset)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-card)', padding: '0.85rem 0.9rem', marginBlockEnd: '0.6rem', ...(hidden[i] ? { opacity: 0.72 } : {}) }}>
           <div className="row-between" style={{ alignItems: 'flex-end', gap: '0.6rem', flexWrap: 'wrap', marginBlockEnd: '0.6rem' }}>
             <label className="field" style={{ margin: 0 }}>
               <span className="label">From this date</span>

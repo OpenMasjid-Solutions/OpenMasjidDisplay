@@ -27,12 +27,25 @@ CLAUDE.md § *The changelog has two audiences*.
   install:** OpenMasjidOS blocks any app that asks for host devices, so this is for a standalone
   `docker compose up` only. Nothing changes for anyone who doesn't turn it on.
 
+- The announcement image works from **either** way of setting Iqamah times — a scheduled "from this
+  date" change or an imported CSV year — and announces whichever change comes soonest. (This was
+  already how it behaved; it is now covered by tests so it stays that way.)
+
 ### Changed
 
 - **Scheduled Iqamah changes that already happened no longer clutter the list.** Once a change is more
   than three days old it is tucked behind a *Show N past changes* button, so the list shows what is
   coming rather than everything you have ever set. **They are still in effect and still saved** — each
   change carries forward until a later one replaces it, so they are hidden, never deleted.
+
+### Fixed
+
+- **You couldn't add a scheduled Iqamah change — the entry vanished as you typed the date.** Typing a
+  year goes through part-formed values (`0002`, `0020`, `0202` on the way to `2026`), and each of those
+  reads as a date in the distant past, so the new "hide old changes" rule folded the entry away
+  mid-keystroke and took the box you were typing in with it. Whether a change counts as old is now
+  settled when the list loads instead of being re-judged on every keypress. Introduced in
+  `0.69.0-dev.2` and never in a stable release.
 
 ## 0.68.0
 
