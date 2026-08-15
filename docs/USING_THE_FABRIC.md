@@ -85,10 +85,11 @@ approved. Three calls, all server→server with the app secret, all failing soft
 (`server/src/fabric.ts`):
 
 ```
-GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → { available, reason }
+GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → { available, reason, media, maxMediaBytes }
 GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp/groups  → { groups: [{ id, label }] }
 POST ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → 202 { queued: true }
-     { "group": "…@g.us", "text": "…" }
+     { "group": "…@g.us", "text": "…",
+       "media": { "data": "<base64>", "mimeType": "image/png", "filename": "…" } }
 ```
 
 The rules that are not ours to bend:
@@ -111,11 +112,26 @@ The rules that are not ours to bend:
   were not given is refused with a 403.
 - **Never log a message body.** The log we keep is event + group id + timestamp + the change's date.
 
-**Text only, for now.** There is no media field on `POST /api/fabric/whatsapp`, so the announcement
-**poster PNG cannot go through the queue**. We send the same notice as text instead, built from the
-poster's own model (`announceText` in `server/src/render/announce.ts`) so the two cannot disagree
-about times or tense. If the platform grows a media field, `whatsappSendToGroup` takes one more
-argument and the poster goes out as an image — the rest of `whatsappAnnounce.ts` is unaffected.
+**The poster goes as an image, when the platform can carry one** (OpenMasjidOS 0.50.5+). Three rules
+here, each of which was a bug waiting to happen:
+
+- **Read `media` before rendering.** Rasterising a 1080×1350 poster is real work on a Pi, and on an
+  older platform every byte of it is thrown away. An absent `media` field MUST read as `false`.
+- **Read `maxMediaBytes`; never hardcode it.** It is the platform's number to change (2 MB today; a
+  poster is 150–400 KB). Over it, we fall back to text rather than eat a refusal after the upload.
+- **Never degrade to the caption alone.** The caption is written to sit *under* an image — it names
+  what moved and nothing else — so posting it by itself would be an announcement with no timetable in
+  it. Every media failure (no capability, render threw, over the cap) falls back to the **full**
+  `announceText`, and a test pins that.
+
+Both forms are built from the poster's own `PosterModel`, so image and text cannot disagree about
+times or tense. `renderPool.announce()` takes that model rather than re-detecting: its own rule is the
+download button's ("next change, else the most recent past one"), which **skips a change taking effect
+today** — exactly the case the announcer exists to catch.
+
+A 202 still is not delivery, and now less so: the platform validates mime, size, caption length and its
+queue depth while our request is open, but a gateway-side failure lands in *its* log, not our response.
+Nothing here reports a poster as published.
 
 Which event goes out, to whom, and how early is **our** setting, not the platform's: its alerts matrix
 has no WhatsApp column for apps, because those rows route to the admin's one number and our messages

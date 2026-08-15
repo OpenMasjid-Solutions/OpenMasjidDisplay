@@ -219,9 +219,11 @@ behaves exactly as a standalone install. Full contract in [`FABRIC.md`](FABRIC.m
   is linked, and a post returns `202 {queued:true}` — accepted for later delivery, never a delivery
   receipt. `whatsappAnnounce.ts` decides *whether* and *what*: it re-checks the lead-time window every
   minute (so a change added on the day still goes out), announces each change exactly once by reading
-  the dedupe key back out of the persisted `whatsappLog`, and gives up after 5 failures. The message is
-  **text** — the Fabric carries no media, so the poster PNG cannot go through it — built from the
-  poster's own `PosterModel` so the two can never disagree.
+  the dedupe key back out of the persisted `whatsappLog`, and gives up after 5 failures. It posts the
+  **poster PNG** when the platform advertises `media` (checked *before* rendering, which is not free on
+  a Pi) with a short caption naming what moved; every media failure falls back to the **full** text
+  notice, never the caption alone. Both are built from the poster's own `PosterModel`, and the renderer
+  is handed that model rather than re-detecting — its own rule skips a change taking effect today.
 
 ## Screen offline/online alerts
 

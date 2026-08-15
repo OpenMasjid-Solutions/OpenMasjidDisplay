@@ -173,7 +173,7 @@ test('the poster renders at the intended size and says the essential things', ()
   assert.match(svg, new RegExp(`width="${POSTER_W}" height="${POSTER_H}"`));
   assert.ok(svg.includes('Madani Academy Masjid'), 'the masjid name');
   assert.ok(svg.includes('IQĀMAH TIME IS CHANGING'), 'singular heading for one change');
-  assert.ok(svg.includes('1 September 2026'), 'the date it takes effect');
+  assert.ok(svg.includes('September 1, 2026'), 'the date it takes effect, month first');
   assert.ok(svg.trim().endsWith('</svg>'), 'well-formed');
 });
 

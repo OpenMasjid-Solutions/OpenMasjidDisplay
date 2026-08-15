@@ -273,7 +273,7 @@ function WhatsAppPanel({ state, refetch }: Props) {
     } catch {
       // A failed lookup is indistinguishable to an admin from a gateway that is down, so say
       // the same thing rather than surfacing a request error they cannot act on.
-      setStatus({ available: false, reason: 'unreachable', groups: [], preview: null, previewNote: null, log: [] });
+      setStatus({ available: false, reason: 'unreachable', media: false, maxMediaBytes: 0, groups: [], preview: null, previewNote: null, log: [] });
     } finally {
       setLoading(false);
     }
@@ -304,9 +304,9 @@ function WhatsAppPanel({ state, refetch }: Props) {
   const sendNow = async () => {
     setSending(true);
     try {
-      await api.whatsappSendNow();
+      const r = await api.whatsappSendNow();
       await load();
-      toast('Queued. WhatsApp messages are paced, so it may take a few minutes to arrive.');
+      toast(`${r.asImage ? 'Image' : 'Message'} queued. WhatsApp messages are paced, so it may take a few minutes to arrive.`);
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not queue the message.', 'error');
     } finally {
@@ -388,13 +388,24 @@ function WhatsAppPanel({ state, refetch }: Props) {
             </button>
             {status.preview && (
               <button className="btn btn--ghost btn--sm" onClick={() => setShowPreview((v) => !v)}>
-                {showPreview ? 'Hide message' : 'Show the message'}
+                {showPreview ? 'Hide message' : status.media ? 'Show the caption' : 'Show the message'}
               </button>
             )}
           </div>
 
           <p className="hint" style={{ marginBlockStart: '0.6rem', maxWidth: 620 }}>
-            Messages are <b>queued, not sent</b> — OpenMasjidOS spaces them out to protect the masjid’s number, so
+            {status.media ? (
+              <>
+                The <b>announcement image</b> is posted, with a short caption naming what changed — the same picture
+                as the <i>Download announcement image</i> button on the Salah times tab.
+              </>
+            ) : (
+              <>
+                This version of OpenMasjidOS can’t send pictures over WhatsApp, so the notice goes as <b>text</b> —
+                the same times, written out. Updating OpenMasjidOS will send the image instead.
+              </>
+            )}{' '}
+            Messages are <b>queued, not sent</b>: OpenMasjidOS spaces them out to protect the masjid’s number, so
             delivery takes a few minutes, and longer inside the quiet hours set there. Each change is posted once
             automatically; use <b>Send now</b> if you edit a time afterwards and need to correct it.
           </p>
@@ -437,6 +448,7 @@ function WhatsAppLog({ entries, groups, fallbackLabel }: { entries: WhatsAppLogE
             <span>Iqāmah change from {e.effectiveFrom}</span>
             <span className="muted">·</span>
             <span>{name(e.recipient)}</span>
+            <span className="muted">· {e.asImage ? 'image' : 'text'}</span>
             {e.manual && <span className="muted">· sent by hand</span>}
             {e.error && <span style={{ color: 'var(--color-danger)' }}>· {e.error}</span>}
           </li>

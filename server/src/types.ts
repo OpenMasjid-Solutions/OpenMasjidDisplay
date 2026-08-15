@@ -362,6 +362,8 @@ export interface WhatsAppLogEntry {
   /** the date the announced change takes effect, "YYYY-MM-DD" */
   effectiveFrom: string;
   outcome: 'queued' | 'failed';
+  /** true when the poster image went with it, false/absent when only the text did */
+  asImage?: boolean;
   /** why the platform refused; never contains the message */
   error?: string;
   /** true when an admin pressed "Send now" rather than the schedule firing */

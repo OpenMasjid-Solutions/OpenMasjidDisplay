@@ -19,7 +19,7 @@ import {
   isSecureRequest,
 } from './auth';
 import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, whatsappGroups } from './fabric';
-import { decideAnnounce, announceMessage, type WhatsAppAnnouncer } from './whatsappAnnounce';
+import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
 import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
@@ -904,7 +904,10 @@ export function createApi(deps: Deps) {
         let previewNote: string | null = null;
         try {
           const d = decideAnnounce(store.db, Date.now(), true);
-          if (d.act === 'post') preview = announceMessage(d.target);
+          // With media the poster carries the timetable and the message is a short caption;
+          // without it the full notice IS the message. Preview whichever will actually go,
+          // or the preview is of something that never gets sent.
+          if (d.act === 'post') preview = status.media ? announceCaptionFor(d.target) : announceMessage(d.target);
           else previewNote = d.why;
         } catch (err) {
           log.debug(`whatsapp preview failed: ${err instanceof Error ? err.message : err}`);
@@ -933,7 +936,7 @@ export function createApi(deps: Deps) {
         // 202, matching the platform: accepted for later delivery is all anyone knows. The
         // pacing puts real delivery minutes away, and hours inside the masjid's quiet hours.
         if (!r.queued) return sendJson(res, 400, { error: r.reason ?? 'Could not queue the message.' });
-        return sendJson(res, 202, { queued: true });
+        return sendJson(res, 202, { queued: true, asImage: !!r.asImage });
       }
 
       // Printable month of prayer times (browser "Save as PDF").

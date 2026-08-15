@@ -148,7 +148,10 @@ export function posterModel(tt: Timetable, change: NextIqamahChange): PosterMode
   return {
     masjidName: tt.masjidName || 'Our Masjid',
     location: tt.location || '',
-    dateLine: `${WEEKDAYS[dow]}, ${change.day} ${MONTH_NAMES[change.month - 1]} ${change.year}`,
+    // Month, day, year — matching the on-screen reminder band, which already reads
+    // "Monday, August 17" (svg.ts). The poster was the only place saying "17 August", so a
+    // masjid comparing the wall with the notice it just sent saw two different orders.
+    dateLine: `${WEEKDAYS[dow]}, ${MONTH_NAMES[change.month - 1]} ${change.day}, ${change.year}`,
     daysUntil: change.daysUntil,
     past: change.daysUntil <= 0,
     whenNote: whenNoteFor(change.daysUntil),
@@ -358,6 +361,29 @@ function waSafe(s: string): string {
  *  - The old time is struck through with `~…~` rather than a drawn line, which is the same
  *    idea in the medium's own vocabulary.
  */
+/**
+ * The caption under the poster, when the image itself is going out.
+ *
+ * Short on purpose. The poster already carries the whole timetable, and repeating it under a
+ * tall 4:5 image is a wall of text WhatsApp collapses behind "Read more" anyway. What the
+ * caption has to do is (a) be a useful notification preview and (b) still say what moved if
+ * the image never loads — so it names the changed prayers with their old and new times, and
+ * nothing else.
+ */
+export function announceCaption(m: PosterModel): string {
+  const lines = [`*${announceHeadline(m)}*`];
+  const who = waSafe(m.masjidName);
+  if (who) lines.push(who);
+  lines.push('');
+  lines.push(`${m.past ? 'Since' : 'From'} ${m.dateLine} (${m.whenNote})`);
+
+  const moved = m.rows.filter((r) => r.changed);
+  if (moved.length) {
+    lines.push(moved.map((r) => `${waSafe(r.name)} ${r.was} → ${r.iqamah}`).join('  ·  '));
+  }
+  return lines.join('\n');
+}
+
 export function announceText(tt: Timetable, m: PosterModel): string {
   const lines: string[] = [];
   lines.push(`*${announceHeadline(m)}*`);

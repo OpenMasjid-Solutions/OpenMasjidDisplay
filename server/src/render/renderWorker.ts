@@ -20,7 +20,7 @@
 import { parentPort } from 'node:worker_threads';
 import { Resvg } from '@resvg/resvg-js';
 import { renderDisplaySvg, activeAnnouncementImage, nextIqamahChange, lastIqamahChange } from './svg';
-import { renderAnnounceSvg, posterModel, POSTER_W } from './announce';
+import { renderAnnounceSvg, posterModel, POSTER_W, type PosterModel } from './announce';
 import { backgroundDataUri, logoDataUri, announcementDataUri } from './background';
 import { fontOptions } from './fonts';
 import { getPalette } from './theme';
@@ -47,6 +47,10 @@ interface Req {
   kind: 'raw' | 'png' | 'meta' | 'announce';
   tt: Timetable;
   nowMs: number;
+  /** (announce) draw THIS change rather than re-detecting one. The WhatsApp announcer has
+   *  already chosen which change it is announcing, and its window rule differs from the
+   *  download button's — see renderPool.announce(). */
+  model?: PosterModel;
   width?: number;
   /** rasterise the (raw) video frame at this width instead of the SVG's native size */
   renderWidth?: number;
@@ -179,14 +183,22 @@ port.on('message', (msg: Req) => {
       // taken effect. A masjid that made its seasonal change last week still wants the
       // notice — to send to whoever missed it, or to print for the board — and "nothing is
       // scheduled" is a useless answer to "give me the current times".
-      const change =
-        nextIqamahChange(tt, now, ANNOUNCE_LOOKAHEAD_DAYS) ?? lastIqamahChange(tt, now, ANNOUNCE_LOOKBACK_DAYS);
-      if (!change) {
-        port.postMessage({ id, ok: false, error: 'no upcoming Iqamah change' });
-        return;
+      // A caller that already knows which change it means hands the model over. Re-detecting
+      // here would apply the DOWNLOAD button's rule, which skips a change taking effect
+      // today — so the WhatsApp announcer would have posted an image of a different change
+      // than the one it decided to announce.
+      let model = msg.model;
+      if (!model) {
+        const change =
+          nextIqamahChange(tt, now, ANNOUNCE_LOOKAHEAD_DAYS) ?? lastIqamahChange(tt, now, ANNOUNCE_LOOKBACK_DAYS);
+        if (!change) {
+          port.postMessage({ id, ok: false, error: 'no upcoming Iqamah change' });
+          return;
+        }
+        model = posterModel(tt, change);
       }
       const { logo } = assets(tt);
-      const svg = renderAnnounceSvg(tt, posterModel(tt, change), logo);
+      const svg = renderAnnounceSvg(tt, model, logo);
       const png = new Resvg(svg, { font: fontOptions(), fitTo: { mode: 'width', value: POSTER_W } })
         .render()
         .asPng();

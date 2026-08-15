@@ -12,6 +12,7 @@ import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import { makeLog } from '../logger';
 import type { Timetable } from '../types';
+import type { PosterModel } from './announce';
 
 const log = makeLog('render');
 
@@ -186,10 +187,19 @@ export class RenderWorker {
     return Buffer.from(m.buf as ArrayBuffer);
   }
 
-  /** The downloadable Iqāmah-change poster as PNG bytes. Rejects when the timetable has
-   *  no upcoming change — the caller turns that into a 404 with a plain-language reason. */
-  async announce(tt: Timetable, nowMs: number): Promise<Buffer> {
-    const m = await this.request({ kind: 'announce', tt, nowMs });
+  /**
+   * The Iqāmah-change poster as PNG bytes. Rejects when the timetable has no upcoming
+   * change — the caller turns that into a 404 with a plain-language reason.
+   *
+   * `model` pins WHICH change is drawn. Without it the worker re-detects, and its rule is
+   * the download button's ("the next change, else the most recent past one"), which is NOT
+   * the announcer's ("the next change within the lead window, today included"). On the day a
+   * change takes effect those two disagree — the worker would skip today and draw the *next*
+   * change instead — so the announcer hands over the model it already decided on rather than
+   * asking for the same answer twice and hoping.
+   */
+  async announce(tt: Timetable, nowMs: number, model?: PosterModel): Promise<Buffer> {
+    const m = await this.request(model ? { kind: 'announce', tt, nowMs, model } : { kind: 'announce', tt, nowMs });
     return Buffer.from(m.buf as ArrayBuffer);
   }
 
@@ -224,7 +234,7 @@ export function renderPreviewMeta(tt: Timetable, nowMs: number): Promise<Hotspot
 
 /** The Iqāmah-change announcement poster (PNG). Shares the preview worker: it is a one-off
  *  admin action, and putting it on the live pipeline's worker would stall a screen. */
-export function renderAnnouncePng(tt: Timetable, nowMs: number): Promise<Buffer> {
+export function renderAnnouncePng(tt: Timetable, nowMs: number, model?: PosterModel): Promise<Buffer> {
   if (!previewWorker) previewWorker = new RenderWorker();
-  return previewWorker.announce(tt, nowMs);
+  return previewWorker.announce(tt, nowMs, model);
 }

@@ -148,7 +148,7 @@ export const api = {
 
   /** Post the Iqāmah-change notice now. Resolves on 202 — QUEUED, not sent: the platform
    *  paces every message, so delivery is minutes away and hours inside quiet hours. */
-  whatsappSendNow: () => req<{ queued: boolean }>('POST', '/api/whatsapp/send-now'),
+  whatsappSendNow: () => req<{ queued: boolean; asImage: boolean }>('POST', '/api/whatsapp/send-now'),
 
   /** Release notes shipped inside this build (account menu → "What's new"). Already split
    *  into sections server-side; `items` keep their inline **bold** / `code` markers. */

@@ -199,6 +199,13 @@ export type WhatsAppReason =
 export interface WhatsAppAvailability {
   available: boolean;
   reason: WhatsAppReason;
+  /** can the platform carry an image? Absent on older platforms, and MUST read as false —
+   *  ask before rendering, because building a 1080×1350 poster is real work on a Pi and the
+   *  capability read costs nothing. */
+  media: boolean;
+  /** the platform's own decoded-bytes cap. Read it rather than hardcoding: it is theirs to
+   *  change, and a number baked in here would silently become wrong. 0 when unknown. */
+  maxMediaBytes: number;
 }
 
 const WA_REASONS: readonly WhatsAppReason[] = [
@@ -210,8 +217,10 @@ const WA_REASONS: readonly WhatsAppReason[] = [
   'no-fabric',
 ];
 
+const NO_MEDIA = { media: false, maxMediaBytes: 0 };
+
 export async function whatsappAvailability(): Promise<WhatsAppAvailability> {
-  if (!config.omosBaseUrl || !config.omosAppSecret) return { available: false, reason: 'no-fabric' };
+  if (!config.omosBaseUrl || !config.omosAppSecret) return { available: false, reason: 'no-fabric', ...NO_MEDIA };
   warnIfCleartextSecret();
   try {
     const ctrl = new AbortController();
@@ -224,16 +233,28 @@ export async function whatsappAvailability(): Promise<WhatsAppAvailability> {
     clearTimeout(t);
     // 403 is the platform saying this app may not send — a different sentence from a
     // gateway that is merely down, so don't collapse it into 'unreachable'.
-    if (res.status === 403) return { available: false, reason: 'not-allowed' };
-    if (!res.ok) return { available: false, reason: 'unreachable' };
-    const j = (await res.json().catch(() => ({}))) as { available?: unknown; reason?: unknown };
+    if (res.status === 403) return { available: false, reason: 'not-allowed', ...NO_MEDIA };
+    if (!res.ok) return { available: false, reason: 'unreachable', ...NO_MEDIA };
+    const j = (await res.json().catch(() => ({}))) as {
+      available?: unknown;
+      reason?: unknown;
+      media?: unknown;
+      maxMediaBytes?: unknown;
+    };
     // Nothing from the platform is trusted as typed: an unknown reason word becomes
     // 'unreachable' rather than reaching the UI as a raw string with no sentence for it.
     const reason = WA_REASONS.includes(j.reason as WhatsAppReason) ? (j.reason as WhatsAppReason) : 'unreachable';
-    return { available: j.available === true && reason === 'ready', reason };
+    // `media` absent = an older platform that cannot carry an image. It must read as false,
+    // or we would render a poster and post nothing.
+    const media = j.media === true;
+    const maxMediaBytes =
+      media && typeof j.maxMediaBytes === 'number' && Number.isFinite(j.maxMediaBytes) && j.maxMediaBytes > 0
+        ? Math.floor(j.maxMediaBytes)
+        : 0;
+    return { available: j.available === true && reason === 'ready', reason, media, maxMediaBytes };
   } catch (err) {
     log.debug(`fabric whatsapp status failed: ${err instanceof Error ? err.message : err}`);
-    return { available: false, reason: 'unreachable' };
+    return { available: false, reason: 'unreachable', ...NO_MEDIA };
   }
 }
 
@@ -289,21 +310,41 @@ export async function whatsappGroups(): Promise<WhatsAppGroup[]> {
  * We never touch the gateway, its key, or the linked number — that is what makes the
  * pacing enforceable for every installed app at once. FAILS SOFT — never throws.
  */
-export async function whatsappSendToGroup(group: string, text: string): Promise<{ queued: boolean; error?: string }> {
+export interface WhatsAppMedia {
+  /** the image itself. Base64 is the platform's wire format (OpenWA takes base64, not a URL). */
+  data: string;
+  mimeType: 'image/png';
+  filename: string;
+}
+
+/** The platform caps a caption at 1024 characters and refuses a longer one at enqueue —
+ *  while our request is still open, so it surfaces here rather than as a silent gateway
+ *  failure after the 202. We stay under it ourselves so that never has to happen. */
+export const WA_CAPTION_MAX = 1024;
+
+export async function whatsappSendToGroup(
+  group: string,
+  text: string,
+  media?: WhatsAppMedia,
+): Promise<{ queued: boolean; error?: string }> {
   if (!config.omosBaseUrl || !config.omosAppSecret) return { queued: false, error: 'OpenMasjidOS is not connected.' };
   if (!group.trim()) return { queued: false, error: 'No WhatsApp group chosen.' };
-  if (!text.trim()) return { queued: false, error: 'Nothing to send.' };
+  // Text is optional when an image carries the message — a poster can speak for itself — but
+  // a post with neither is nothing at all.
+  if (!text.trim() && !media) return { queued: false, error: 'Nothing to send.' };
   warnIfCleartextSecret();
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 6000);
+    // Longer than a text post: this uploads a few hundred KB, and the platform validates the
+    // image while our request is open so a refusal is answered rather than logged remotely.
+    const t = setTimeout(() => ctrl.abort(), media ? 20000 : 6000);
     const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-openmasjid-app-secret': config.omosAppSecret,
       },
-      body: JSON.stringify({ group, text }),
+      body: JSON.stringify(media ? { group, text, media } : { group, text }),
       signal: ctrl.signal,
       redirect: 'error',
     });

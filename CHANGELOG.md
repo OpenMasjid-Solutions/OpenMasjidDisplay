@@ -22,10 +22,10 @@ CLAUDE.md § *The changelog has two audiences*.
   list of what has been queued. It is **off until you turn it on**, and it needs WhatsApp set up in
   OpenMasjidOS → Settings → WhatsApp, with the group approved for apps to post into. If it isn't set
   up, the page says which part is missing rather than offering a switch that would do nothing.
-- The WhatsApp message says the same thing as the announcement image — your masjid name, the date, the
-  whole timetable for that day, with the changing prayers in bold and the time each one replaces struck
-  through. It is **text, not the picture**: OpenMasjidOS's WhatsApp connection carries text only at the
-  moment, so the image itself can't be sent that way yet.
+- **The announcement image itself is what gets posted** — the same picture as the *Download announcement
+  image* button, with a short caption naming which prayers moved and what they moved from. If your
+  OpenMasjidOS is older than this and can't send pictures, the notice goes as text instead — the same
+  times, written out — and the page tells you which one you'll get.
 - WhatsApp messages are **queued, not sent**. OpenMasjidOS spaces them out to protect the masjid's
   number from being blocked by WhatsApp, so arrival takes a few minutes — longer inside the quiet hours
   set there. The app will never tell you a message was delivered, because it cannot know.
@@ -47,6 +47,9 @@ CLAUDE.md § *The changelog has two audiences*.
 - **You can download the announcement image even when no change is coming up.** It then shows your most
   recent change instead, worded for it — *"Iqamah times have changed — since Monday, 1 June"* — so you
   can still send the current times to anyone who missed them.
+- **The date on the announcement image now reads month first** — *"Monday, August 17, 2026"* rather than
+  *"Monday, 17 August 2026"*. The reminder on the screens already read it that way, so the wall and the
+  notice you send out no longer disagree.
 - The announcement image is tidier: **no Adhan column and no Sunrise row** (it is an Iqamah notice, and
   Sunrise has no jama'ah), the highlight now sits behind the whole changed row instead of being
   overflowed by the new time, and the background is a plain gradient without the grid pattern.

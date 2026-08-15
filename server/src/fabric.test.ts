@@ -122,14 +122,14 @@ const json = (body: unknown, status = 200) =>
 
 test('a ready platform is reported as available', async () => {
   await withFetch(() => json({ available: true, reason: 'ready' }), async () => {
-    assert.deepEqual(await fabric.whatsappAvailability(), { available: true, reason: 'ready' });
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: true, reason: 'ready', media: false, maxMediaBytes: 0 });
   });
 });
 
 test('each not-ready reason survives the round trip intact', async () => {
   for (const reason of ['not-configured', 'not-linked', 'unreachable'] as const) {
     await withFetch(() => json({ available: false, reason }), async () => {
-      assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason });
+      assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason, media: false, maxMediaBytes: 0 });
     });
   }
 });
@@ -138,7 +138,7 @@ test('a 403 is "not allowed", not "unreachable"', async () => {
   // The platform refusing us (no `whatsapp: true` in the manifest it knows about) needs the
   // admin to update this app there — nothing like the fix for a gateway that is down.
   await withFetch(() => json({ available: false, reason: 'not-allowed' }, 403), async () => {
-    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'not-allowed' });
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'not-allowed', media: false, maxMediaBytes: 0 });
   });
 });
 
@@ -146,7 +146,7 @@ test('an unrecognised reason word never reaches the UI as-is', async () => {
   // Nothing from the platform is trusted as typed: a word we have no sentence for would
   // otherwise render as a blank explanation.
   await withFetch(() => json({ available: true, reason: 'something-new' }), async () => {
-    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'unreachable' });
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'unreachable', media: false, maxMediaBytes: 0 });
   });
 });
 
@@ -219,4 +219,70 @@ test('a send never throws, even when the platform is unreachable', async () => {
   } finally {
     globalThis.fetch = real;
   }
+});
+
+// ── The media capability ─────────────────────────────────────────────────────
+
+test('media support is only believed when the platform says so', async () => {
+  await withFetch(() => json({ available: true, reason: 'ready', media: true, maxMediaBytes: 2097152 }), async () => {
+    const r = await fabric.whatsappAvailability();
+    assert.equal(r.media, true);
+    assert.equal(r.maxMediaBytes, 2097152);
+  });
+});
+
+test('an older platform, with no media field, reads as no media', async () => {
+  // Absent MUST be false. Rendering a poster for a platform that cannot take one wastes real
+  // work on a Pi, and attaching it would post nothing at all.
+  await withFetch(() => json({ available: true, reason: 'ready' }), async () => {
+    const r = await fabric.whatsappAvailability();
+    assert.equal(r.media, false);
+    assert.equal(r.maxMediaBytes, 0);
+  });
+});
+
+test('a nonsense size cap is treated as unknown rather than trusted', async () => {
+  for (const bad of [-1, 0, 'lots', null, Infinity]) {
+    await withFetch(() => json({ available: true, reason: 'ready', media: true, maxMediaBytes: bad }), async () => {
+      assert.equal((await fabric.whatsappAvailability()).maxMediaBytes, 0, String(bad));
+    });
+  }
+});
+
+test('media is never reported when the platform cannot send at all', async () => {
+  await withFetch(() => json({ available: false, reason: 'not-linked', media: true, maxMediaBytes: 999 }, 200), async () => {
+    const r = await fabric.whatsappAvailability();
+    assert.equal(r.available, false);
+    assert.equal(r.reason, 'not-linked');
+  });
+});
+
+test('an image is sent as base64 alongside the caption', async () => {
+  let body: Record<string, unknown> = {};
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (_u: unknown, init: { body?: string }) => {
+    body = JSON.parse(init.body ?? '{}');
+    return json({ queued: true }, 202);
+  }) as unknown as typeof globalThis.fetch;
+  try {
+    const media = { data: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' as const, filename: 'x.png' };
+    const r = await fabric.whatsappSendToGroup('120363012345678901@g.us', 'caption', media);
+    assert.equal(r.queued, true);
+    assert.equal(body.group, '120363012345678901@g.us');
+    assert.equal(body.text, 'caption');
+    assert.deepEqual(body.media, media);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test('a post with an image but no caption is allowed; one with neither is not', async () => {
+  // The platform made text optional when media is present — a poster can speak for itself.
+  await withFetch(() => json({ queued: true }, 202), async (count) => {
+    const media = { data: 'AAAA', mimeType: 'image/png' as const, filename: 'x.png' };
+    assert.equal((await fabric.whatsappSendToGroup('120363012345678901@g.us', '', media)).queued, true);
+    const before = count();
+    assert.equal((await fabric.whatsappSendToGroup('120363012345678901@g.us', '')).queued, false);
+    assert.equal(count() - before, 0, 'a post with nothing in it must not reach the platform');
+  });
 });

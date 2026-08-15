@@ -17,7 +17,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normTimetable, normSettings } from './validate';
 import { normalizeIqamahSchedule } from './iqamahSchedule';
-import { decideAnnounce, announceMessage, announceTimetable, WA_MAX_ATTEMPTS, WA_RETRY_MS } from './whatsappAnnounce';
+import { decideAnnounce, announceMessage, announceTimetable, fitCaption, WA_MAX_ATTEMPTS, WA_RETRY_MS } from './whatsappAnnounce';
+import { WA_CAPTION_MAX } from './fabric';
 import type { AnnounceDecision, AnnounceTarget } from './whatsappAnnounce';
 import type { DB, Settings, Timetable, WhatsAppLogEntry } from './types';
 
@@ -246,7 +247,7 @@ test('the message names the change, marks what moved, and strikes the old time',
 
   assert.match(msg, /^\*IQĀMAH TIME IS CHANGING\*/, 'the headline leads — it is the group notification preview');
   assert.match(msg, /Madani Academy Masjid/);
-  assert.match(msg, /From Monday, 17 August 2026 \(in 2 days\)/);
+  assert.match(msg, /From Monday, August 17, 2026 \(in 2 days\)/);
   // The changed row is bold and carries the previous time struck through.
   assert.match(msg, /\*Asr — 5:15 PM\*\s+\(was ~\d{1,2}:\d{2} [AP]M~\)/);
   // …and an unchanged row is plain, so the eye lands on the difference.
@@ -265,7 +266,7 @@ test('a past change is announced in the past tense', () => {
   const d = decideAnnounce(db, NOW, true);
   const msg = announceMessage(mustPost(d));
   assert.match(msg, /^\*IQĀMAH TIME HAS CHANGED\*/);
-  assert.match(msg, /Since Monday, 1 June 2026 \(in effect for 75 days\)/);
+  assert.match(msg, /Since Monday, June 1, 2026 \(in effect for 75 days\)/);
 });
 
 test("a masjid name containing WhatsApp's formatting characters cannot break the message", () => {
@@ -291,4 +292,16 @@ test('a CSV-driven timetable announces too — the same detector serves both', (
   const tt = ttWith([]);
   tt.iqamahYear = { '08-17': { asr: '17:15' } };
   assert.equal(decideAnnounce(dbWith([tt]), NOW).act, 'post');
+});
+
+test('a caption too long for the platform is trimmed on a word boundary', () => {
+  // Ours runs to a couple of hundred characters; this only bites for a masjid with four
+  // changing prayers and very long custom labels. The platform refuses over 1024 at enqueue,
+  // so being under it ourselves means that refusal never has to happen.
+  const long = `${'word '.repeat(400)}end`;
+  const cut = fitCaption(long);
+  assert.ok(cut.length <= WA_CAPTION_MAX, `got ${cut.length}`);
+  assert.ok(cut.endsWith('…'));
+  assert.ok(!/wor…$/.test(cut), 'a word must not be sliced in half');
+  assert.equal(fitCaption('short'), 'short', 'anything already short is untouched');
 });

@@ -44,8 +44,9 @@
 import type { Store } from './store';
 import type { DB, Timetable, WhatsAppLogEntry } from './types';
 import { findIqamahChange, type NextIqamahChange } from './render/svg';
-import { posterModel, announceText } from './render/announce';
-import { whatsappSendToGroup } from './fabric';
+import { posterModel, announceText, announceCaption, type PosterModel } from './render/announce';
+import { renderAnnouncePng } from './render/renderPool';
+import { whatsappSendToGroup, whatsappAvailability, WA_CAPTION_MAX, type WhatsAppMedia, type WhatsAppAvailability } from './fabric';
 import { makeLog } from './logger';
 
 const log = makeLog('whatsapp');
@@ -158,16 +159,41 @@ export function announceMessage(target: AnnounceTarget): string {
   return announceText(target.tt, posterModel(target.tt, target.change));
 }
 
+/** The caption that would ride under the poster, when the platform can carry one. */
+export function announceCaptionFor(target: AnnounceTarget): string {
+  return fitCaption(announceCaption(posterModel(target.tt, target.change)));
+}
+
+/**
+ * Cut a caption to the platform's limit without leaving a word in half.
+ *
+ * The platform refuses an over-long caption at enqueue — while our request is open, so it
+ * would surface as a plain failure rather than a silent one. Staying under it ourselves means
+ * that never has to happen: ours runs to a couple of hundred characters, and this only exists
+ * because a masjid with four changing prayers and very long custom labels could in principle
+ * reach it.
+ */
+export function fitCaption(s: string, max = WA_CAPTION_MAX): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max - 1);
+  const sp = cut.lastIndexOf(' ');
+  return `${(sp > max * 0.6 ? cut.slice(0, sp) : cut).trimEnd()}…`;
+}
+
 export interface AnnounceResult {
   queued: boolean;
   /** why nothing was queued — a plain sentence, safe to show an admin */
   reason?: string;
+  /** did the poster itself go, or only the text? */
+  asImage?: boolean;
 }
 
 export interface AnnouncerDeps {
   store: Store;
   /** injected so tests never touch the network */
-  send?: (group: string, text: string) => Promise<{ queued: boolean; error?: string }>;
+  send?: (group: string, text: string, media?: WhatsAppMedia) => Promise<{ queued: boolean; error?: string }>;
+  capability?: () => Promise<WhatsAppAvailability>;
+  render?: (tt: Timetable, nowMs: number, model: PosterModel) => Promise<Buffer>;
   now?: () => number;
 }
 
@@ -182,12 +208,16 @@ export class WhatsAppAnnouncer {
   private timer: NodeJS.Timeout | null = null;
   private busy = false;
   private readonly store: Store;
-  private readonly send: (group: string, text: string) => Promise<{ queued: boolean; error?: string }>;
+  private readonly send: (group: string, text: string, media?: WhatsAppMedia) => Promise<{ queued: boolean; error?: string }>;
+  private readonly capability: () => Promise<WhatsAppAvailability>;
+  private readonly render: (tt: Timetable, nowMs: number, model: PosterModel) => Promise<Buffer>;
   private readonly now: () => number;
 
   constructor(deps: AnnouncerDeps) {
     this.store = deps.store;
     this.send = deps.send ?? whatsappSendToGroup;
+    this.capability = deps.capability ?? whatsappAvailability;
+    this.render = deps.render ?? ((tt, nowMs, model) => renderAnnouncePng(tt, nowMs, model));
     this.now = deps.now ?? Date.now;
   }
 
@@ -228,24 +258,57 @@ export class WhatsAppAnnouncer {
     return this.post(d.target, true);
   }
 
+  /**
+   * Build the poster, if the platform can carry one.
+   *
+   * The capability is read BEFORE rendering, deliberately: rasterising a 1080×1350 poster is
+   * real work on a Pi, and on a platform that cannot take an image it would all be thrown
+   * away. Every failure here returns null and the notice goes as text — an announcement that
+   * arrives as words beats one that does not arrive.
+   */
+  private async poster(target: AnnounceTarget, model: PosterModel): Promise<WhatsAppMedia | null> {
+    const cap = await this.capability();
+    if (!cap.media) return null;
+    let png: Buffer;
+    try {
+      png = await this.render(target.tt, this.now(), model);
+    } catch (err) {
+      log.warn(`could not render the Iqamah-change poster, sending it as text: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+    // The platform's cap, read from the platform. A poster is 150–400 KB against their 2 MB,
+    // so this is a guard rather than a live constraint — but a masjid with a huge logo could
+    // reach it, and a refusal after the upload is a worse answer than text.
+    if (cap.maxMediaBytes > 0 && png.byteLength > cap.maxMediaBytes) {
+      log.warn(`the Iqamah-change poster is ${png.byteLength} bytes, over the platform's ${cap.maxMediaBytes} — sending it as text instead`);
+      return null;
+    }
+    return { data: png.toString('base64'), mimeType: 'image/png', filename: `iqamah-change-${target.effectiveFrom}.png` };
+  }
+
   private async post(target: AnnounceTarget, manual: boolean): Promise<AnnounceResult> {
-    const text = announceMessage(target);
-    const res = await this.send(target.groupId, text);
+    const model = posterModel(target.tt, target.change);
+    const media = await this.poster(target, model);
+    // With the poster attached the caption is short — the image carries the timetable, and
+    // repeating it underneath is a wall of text. Without it, the full notice IS the message.
+    const text = media ? fitCaption(announceCaption(model)) : announceText(target.tt, model);
+    const res = await this.send(target.groupId, text, media ?? undefined);
     this.record({
       at: new Date(this.now()).toISOString(),
       event: 'iqamah-change',
       recipient: target.groupId,
       effectiveFrom: target.effectiveFrom,
       outcome: res.queued ? 'queued' : 'failed',
+      ...(media ? { asImage: true } : {}),
       ...(res.error ? { error: res.error } : {}),
       ...(manual ? { manual: true } : {}),
     });
     if (res.queued) {
-      // The change date, never the message — an app log carrying WhatsApp message text is a
-      // rule not worth re-arguing per message.
-      log.info(`queued the Iqamah-change notice for ${target.effectiveFrom} to the WhatsApp group`);
+      // The change date and the format, never the message — an app log carrying WhatsApp
+      // message text is a rule not worth re-arguing per message.
+      log.info(`queued the Iqamah-change notice for ${target.effectiveFrom} to the WhatsApp group (${media ? 'poster' : 'text'})`);
     }
-    return { queued: res.queued, reason: res.error };
+    return { queued: res.queued, reason: res.error, asImage: !!media };
   }
 
   private record(entry: WhatsAppLogEntry): void {

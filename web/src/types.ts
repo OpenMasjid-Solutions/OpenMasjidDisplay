@@ -188,6 +188,8 @@ export interface WhatsAppLogEntry {
   recipient: string;
   effectiveFrom: string;
   outcome: 'queued' | 'failed';
+  /** the poster image went too, rather than text alone */
+  asImage?: boolean;
   error?: string;
   manual?: boolean;
 }
@@ -195,9 +197,15 @@ export interface WhatsAppLogEntry {
 export interface WhatsAppStatus {
   available: boolean;
   reason: WhatsAppReason;
+  /** can OpenMasjidOS carry the poster image? False on an older platform, which means the
+   *  notice goes as text instead. */
+  media: boolean;
+  /** the platform's own decoded-bytes cap for an image; 0 when unknown */
+  maxMediaBytes: number;
   /** only the groups the OpenMasjidOS admin approved for this app */
   groups: { id: string; label: string }[];
-  /** the exact message that would be posted, or null when there is nothing to announce */
+  /** the exact message that would be posted — the caption when the poster goes with it,
+   *  the whole notice when it cannot. Null when there is nothing to announce. */
   preview: string | null;
   /** why there is no preview */
   previewNote: string | null;
