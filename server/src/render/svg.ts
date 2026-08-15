@@ -1714,7 +1714,12 @@ export interface NextIqamahChange {
  * screens announce — so the masjid would hand out a notice for a change the screens never
  * mentioned, or vice versa.
  */
-export function nextIqamahChange(tt: Timetable, now: Date, withinDays: number): NextIqamahChange | null {
+export function findIqamahChange(
+  tt: Timetable,
+  now: Date,
+  opts: { minDays: number; maxDays: number; preferLatest?: boolean },
+): NextIqamahChange | null {
+  const { minDays, maxDays, preferLatest = false } = opts;
   const year = tt.iqamahYear;
   const schedule = tt.iqamahSchedule;
   const hasYear = !!year && Object.keys(year).length > 0;
@@ -1761,7 +1766,7 @@ export function nextIqamahChange(tt: Timetable, now: Date, withinDays: number): 
     const candUTC = Date.UTC(y, mo - 1, da, 12);
     if (new Date(candUTC).getUTCMonth() !== mo - 1) return false; // invalid (e.g. Feb-29 non-leap)
     const daysUntil = Math.round((candUTC - todayUTC) / 86400000);
-    if (daysUntil < 1 || daysUntil > withinDays) return false;
+    if (daysUntil < minDays || daysUntil > maxDays) return false;
     const key = `${y}-${mo}-${da}`;
     if (seen.has(key)) return true;
     seen.add(key);
@@ -1775,15 +1780,19 @@ export function nextIqamahChange(tt: Timetable, now: Date, withinDays: number): 
       const mo = Number(mm[1]);
       const da = Number(mm[2]);
       if (mo < 1 || mo > 12 || da < 1 || da > 31) continue;
-      // First occurrence (this year, else next) that lands within the window.
-      if (!addCand(today.year, mo, da)) addCand(today.year + 1, mo, da);
+      // A CSV key is MM-DD, so it recurs annually. Try this year, then the neighbouring one
+      // in whichever direction the window runs — looking forward for the NEXT change, back
+      // for the most recent one.
+      if (!addCand(today.year, mo, da)) addCand(today.year + (preferLatest ? -1 : 1), mo, da);
     }
   if (hasSched)
     for (const e of schedule!) {
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(e.from);
       if (m) addCand(Number(m[1]), Number(m[2]), Number(m[3]));
     }
-  cands.sort((a, b) => a.daysUntil - b.daysUntil);
+  // Nearest first, from whichever side of today we are looking at: ascending for the next
+  // change, descending so the MOST RECENT past change wins when looking back.
+  cands.sort((a, b) => (preferLatest ? b.daysUntil - a.daysUntil : a.daysUntil - b.daysUntil));
 
   for (const c of cands) {
     const prev = new Date(Date.UTC(c.y, c.mo - 1, c.da - 1, 12)); // the calendar day before
@@ -1806,6 +1815,25 @@ export function nextIqamahChange(tt: Timetable, now: Date, withinDays: number): 
     return { year: c.y, month: c.mo, day: c.da, daysUntil: c.daysUntil, changed };
   }
   return null;
+}
+
+/** The soonest change in the next `withinDays` days, or null. What the on-screen reminder
+ *  and the announcement poster both ask for first. */
+export function nextIqamahChange(tt: Timetable, now: Date, withinDays: number): NextIqamahChange | null {
+  return findIqamahChange(tt, now, { minDays: 1, maxDays: withinDays });
+}
+
+/**
+ * The most recent change that has ALREADY taken effect, or null.
+ *
+ * Only the poster uses this, and only as a fallback. A masjid that has just made its seasonal
+ * change still wants the notice — to send to people who missed it, or to print for the board —
+ * and "there is nothing upcoming" is a poor answer to "give me the times". `daysUntil` comes
+ * back ≤ 0 for these, which is how the poster knows to say "took effect on …" rather than
+ * "from …".
+ */
+export function lastIqamahChange(tt: Timetable, now: Date, withinDays: number): NextIqamahChange | null {
+  return findIqamahChange(tt, now, { minDays: -withinDays, maxDays: 0, preferLatest: true });
 }
 
 /** The upcoming change as a ready-to-show sentence, or null — the bottom-band reminder.

@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normTimetable } from '../validate';
 import { normalizeIqamahSchedule } from '../iqamahSchedule';
-import { nextIqamahChange, upcomingIqamahChange } from './svg';
+import { nextIqamahChange, lastIqamahChange, upcomingIqamahChange } from './svg';
 import { posterModel, renderAnnounceSvg, POSTER_W, POSTER_H } from './announce';
 import { encoderArgs, encoderPixFmt } from './encoder';
 import type { Timetable } from '../types';
@@ -99,18 +99,35 @@ test('when a CSV day and a scheduled change collide, the CSV wins — as it does
 
 // ── The poster model ──────────────────────────────────────────────────────────
 
-test('the poster carries the whole timetable, not only the prayers that moved', () => {
+test('the poster carries every jamāʿah, not only the prayers that moved', () => {
   const tt = ttWith([{ from: '2026-09-01', fajr: '05:45', asr: '17:15' }]);
   const m = posterModel(tt, nextIqamahChange(tt, NOW, 400)!);
   const names = m.rows.map((r) => r.name);
   for (const p of ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha']) {
     assert.ok(names.includes(p), `${p} must be on the poster — it is the whole timetable`);
   }
-  // Every row has an Iqamah except Sunrise, which is not a jamā'ah.
-  for (const r of m.rows) {
-    if (r.minor) assert.equal(r.iqamah, '', 'Sunrise has no Iqamah');
-    else assert.notEqual(r.iqamah, '', `${r.name} should show an Iqamah`);
-  }
+  for (const r of m.rows) assert.notEqual(r.iqamah, '', `${r.name} should show an Iqamah`);
+});
+
+// Sunrise has no jamā'ah, so it has no Iqāmah and cannot be part of an Iqāmah change. It is
+// on the SCREENS (where the whole day is context) and deliberately not here.
+test('Sunrise is not on the poster', () => {
+  const tt = ttWith([{ from: '2026-09-01', fajr: '05:45' }], { showSunrise: true });
+  const m = posterModel(tt, nextIqamahChange(tt, NOW, 400)!);
+  assert.ok(!m.rows.some((r) => /sunrise/i.test(r.name)), 'Sunrise is not an Iqamah');
+  assert.equal(m.rows.length, 5, 'exactly the five daily jamāʿah');
+});
+
+// The Adhan is not what is changing, and its column is what forced the changed rows to stack
+// "was" over "now" — which then overflowed the highlight band. One time column keeps every
+// row a single line, so the band always contains its contents.
+test('there is no Adhan column, and no row carries an Adhan time', () => {
+  const tt = ttWith([{ from: '2026-09-01', fajr: '05:45' }]);
+  const m = posterModel(tt, nextIqamahChange(tt, NOW, 400)!);
+  assert.ok(!('adhan' in m.rows[0]), 'the poster model must not carry an Adhan at all');
+  const svg = renderAnnounceSvg(tt, m, null);
+  assert.ok(!/>ADHAN</.test(svg), 'no Adhan column header');
+  assert.ok(/>IQĀMAH</.test(svg), 'the Iqamah column is the point');
 });
 
 test('only the changed rows are marked, and they carry the time they are replacing', () => {
@@ -164,6 +181,54 @@ test('the heading is plural when more than one prayer moves', () => {
   const tt = ttWith([{ from: '2026-09-01', fajr: '05:45', asr: '17:15' }]);
   const svg = renderAnnounceSvg(tt, posterModel(tt, nextIqamahChange(tt, NOW, 400)!), null);
   assert.ok(svg.includes('IQĀMAH TIMES ARE CHANGING'));
+});
+
+// The poster must still be downloadable once the change has landed — a masjid that changed
+// its times last week wants the notice for whoever missed it, and "nothing is scheduled" is
+// a useless answer to "give me the current times".
+test('with nothing scheduled ahead, the most recent past change is offered instead', () => {
+  const tt = ttWith([{ from: '2026-06-01', fajr: '05:15', asr: '18:00' }]);
+  assert.equal(nextIqamahChange(tt, NOW, 400), null, 'nothing ahead — this is the fallback case');
+  const c = lastIqamahChange(tt, NOW, 400);
+  assert.ok(c, 'the past change must be found');
+  assert.deepEqual([c!.year, c!.month, c!.day], [2026, 6, 1]);
+  assert.ok(c!.daysUntil <= 0, 'a past change reports a non-positive daysUntil');
+});
+
+test('the most RECENT past change wins when several have already happened', () => {
+  const tt = ttWith([
+    { from: '2026-03-01', fajr: '06:00' },
+    { from: '2026-06-01', fajr: '05:15' },
+  ]);
+  const c = lastIqamahChange(tt, NOW, 400)!;
+  assert.deepEqual([c.month, c.day], [6, 1], 'March must not win over June');
+});
+
+test('a past change is worded in the past tense, not announced as upcoming', () => {
+  const tt = ttWith([{ from: '2026-06-01', fajr: '05:15', asr: '18:00' }]);
+  const m = posterModel(tt, lastIqamahChange(tt, NOW, 400)!);
+  assert.equal(m.past, true);
+  const svg = renderAnnounceSvg(tt, m, null);
+  assert.ok(svg.includes('HAVE CHANGED'), 'past tense heading');
+  assert.ok(!svg.includes('ARE CHANGING'), 'must not claim it is still coming');
+  assert.ok(svg.includes('Since '), 'reads "Since <date>", not "From <date>"');
+});
+
+test('the "when" note reads naturally on both sides of today', () => {
+  const cases: [number, string][] = [
+    [1, 'tomorrow'],
+    [12, 'in 12 days'],
+    [0, 'from today'],
+    [-1, 'in effect since yesterday'],
+    [-75, 'in effect for 75 days'],
+  ];
+  const tt = ttWith([{ from: '2026-09-01', fajr: '05:45' }]);
+  const base = nextIqamahChange(tt, NOW, 400)!;
+  for (const [days, expected] of cases) {
+    const m = posterModel(tt, { ...base, daysUntil: days });
+    assert.equal(m.whenNote, expected, `daysUntil ${days}`);
+    assert.equal(m.past, days <= 0);
+  }
 });
 
 test('a masjid name with markup characters cannot break the SVG', () => {

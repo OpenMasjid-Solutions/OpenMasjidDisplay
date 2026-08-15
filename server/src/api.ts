@@ -858,8 +858,10 @@ export function createApi(deps: Deps) {
           // and not an error worth a 500 — the button is simply not applicable yet.
           const msg = err instanceof Error ? err.message : String(err);
           if (msg.includes('no upcoming Iqamah change')) {
+            // Reached only when there is no change in EITHER direction within a year — the
+            // renderer falls back to the most recent past one before giving up.
             return sendJson(res, 404, {
-              error: 'There is no upcoming Iqamah change to announce. Add one under “Scheduled Iqamah changes” first.',
+              error: 'There are no Iqamah changes to announce — nothing scheduled ahead, and none in the past year. Add one under “Scheduled Iqamah changes” (or import a CSV) first.',
             });
           }
           throw err;

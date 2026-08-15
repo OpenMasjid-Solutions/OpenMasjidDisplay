@@ -26,10 +26,15 @@ CLAUDE.md § *The changelog has two audiences*.
   with the normal encoder, so it can't leave you with dark screens. **Not available on an App Store
   install:** OpenMasjidOS blocks any app that asks for host devices, so this is for a standalone
   `docker compose up` only. Nothing changes for anyone who doesn't turn it on.
-
 - The announcement image works from **either** way of setting Iqamah times — a scheduled "from this
   date" change or an imported CSV year — and announces whichever change comes soonest. (This was
   already how it behaved; it is now covered by tests so it stays that way.)
+- **You can download the announcement image even when no change is coming up.** It then shows your most
+  recent change instead, worded for it — *"Iqamah times have changed — since Monday, 1 June"* — so you
+  can still send the current times to anyone who missed them.
+- The announcement image is tidier: **no Adhan column and no Sunrise row** (it is an Iqamah notice, and
+  Sunrise has no jama'ah), the highlight now sits behind the whole changed row instead of being
+  overflowed by the new time, and the background is a plain gradient without the grid pattern.
 
 ### Changed
 

@@ -19,7 +19,7 @@
  */
 import { parentPort } from 'node:worker_threads';
 import { Resvg } from '@resvg/resvg-js';
-import { renderDisplaySvg, activeAnnouncementImage, nextIqamahChange } from './svg';
+import { renderDisplaySvg, activeAnnouncementImage, nextIqamahChange, lastIqamahChange } from './svg';
 import { renderAnnounceSvg, posterModel, POSTER_W } from './announce';
 import { backgroundDataUri, logoDataUri, announcementDataUri } from './background';
 import { fontOptions } from './fonts';
@@ -33,6 +33,11 @@ import type { Timetable } from '../types';
  *  change months in advance and wants the notice NOW, to print and to send. A year covers
  *  any schedule a masjid actually keeps, and the detector stops at the first hit anyway. */
 const ANNOUNCE_LOOKAHEAD_DAYS = 400;
+
+/** How far BACK to look when nothing is scheduled ahead. A year, matching the lookahead: a
+ *  masjid that changes times seasonally always has something within one, and beyond that the
+ *  "current" times are simply the normal rules, which is not a change to announce. */
+const ANNOUNCE_LOOKBACK_DAYS = 400;
 
 if (!parentPort) throw new Error('renderWorker must be run as a worker thread');
 const port = parentPort;
@@ -170,7 +175,12 @@ port.on('message', (msg: Req) => {
       // every other render is: resvg is synchronous, and doing it on the main thread would
       // stall ffmpeg's stdin on every live screen for the length of the render — a visible
       // stutter on the wall because an admin pressed a download button.
-      const change = nextIqamahChange(tt, now, ANNOUNCE_LOOKAHEAD_DAYS);
+      // The next change if there is one; otherwise the most recent one that has already
+      // taken effect. A masjid that made its seasonal change last week still wants the
+      // notice — to send to whoever missed it, or to print for the board — and "nothing is
+      // scheduled" is a useless answer to "give me the current times".
+      const change =
+        nextIqamahChange(tt, now, ANNOUNCE_LOOKAHEAD_DAYS) ?? lastIqamahChange(tt, now, ANNOUNCE_LOOKBACK_DAYS);
       if (!change) {
         port.postMessage({ id, ok: false, error: 'no upcoming Iqamah change' });
         return;

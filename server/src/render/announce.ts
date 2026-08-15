@@ -67,17 +67,16 @@ function rect(x: number, y: number, w: number, h: number, r: number, fill: strin
   return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(0, w).toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="${r.toFixed(1)}" fill="${fill}"${extra ? ` ${extra}` : ''}/>`;
 }
 
-/** One prayer line on the poster. */
+/** One prayer line on the poster. Iqāmah only — this is an Iqāmah-change notice, and the
+ *  Adhan column was answering a question nobody reading it had asked. Sunrise is gone for
+ *  the same reason: it has no jamā'ah, so it cannot change. */
 interface PosterRow {
   name: string;
   arabic: string;
-  adhan: string;
   iqamah: string;
-  /** the Iqāmah as it is TODAY, when this row is one of the ones changing */
+  /** the Iqāmah being replaced, when this row is one of the ones changing */
   was: string | null;
   changed: boolean;
-  /** Sunrise: no Iqāmah, drawn dimmer — it is context, not a jamā'ah */
-  minor: boolean;
 }
 
 export interface PosterModel {
@@ -85,12 +84,26 @@ export interface PosterModel {
   location: string;
   /** "Friday, 20 March 2026" */
   dateLine: string;
-  /** how many days from today, for the small "in N days" note */
+  /** how many days from today; ≤ 0 when this change has already taken effect */
   daysUntil: number;
+  /** true when the poster is describing a change that has already happened */
+  past: boolean;
+  /** the parenthetical under the date — "tomorrow", "in 12 days", "in effect since last week" */
+  whenNote: string;
   rows: PosterRow[];
   jumuah: string[];
   rtl: boolean;
   changedCount: number;
+}
+
+/** The small note under the date. Reads naturally on both sides of today, because the poster
+ *  is now offered for the most recent past change when nothing is scheduled ahead. */
+function whenNoteFor(daysUntil: number): string {
+  if (daysUntil === 1) return 'tomorrow';
+  if (daysUntil > 1) return `in ${daysUntil} days`;
+  if (daysUntil === 0) return 'from today';
+  if (daysUntil === -1) return 'in effect since yesterday';
+  return `in effect for ${Math.abs(daysUntil)} days`;
 }
 
 /**
@@ -112,22 +125,24 @@ export function posterModel(tt: Timetable, change: NextIqamahChange): PosterMode
   for (const r of mBefore.rows) prevIqamah.set(r.key, r.iqamah);
   const changedKeys = new Set(change.changed.map((c) => c.key as string));
 
-  const rows: PosterRow[] = mOn.rows.map((r) => {
-    const wasH = prevIqamah.get(r.key) ?? null;
-    // A row is marked only if the detector called it a change AND the time really moved —
-    // the detector's own rules (vs the rule for the day, vs the day before) are what decide,
-    // and this second test just keeps a 0-minute difference from drawing a "was" line.
-    const moved = changedKeys.has(r.key) && wasH != null && r.iqamah != null && Math.round(wasH * 60) !== Math.round(r.iqamah * 60);
-    return {
-      name: rowName(r, L),
-      arabic: tt.language === 'ar' ? '' : PRAYER_LABELS.ar[r.label] ?? '',
-      adhan: r.adhan != null ? fmtShort(r.adhan, tt.timeFormat) : '',
-      iqamah: r.iqamah != null ? fmtShort(r.iqamah, tt.timeFormat) : '',
-      was: moved ? fmtShort(wasH, tt.timeFormat) : null,
-      changed: moved,
-      minor: r.key === 'sunrise',
-    };
-  });
+  const rows: PosterRow[] = mOn.rows
+    // Sunrise is not a jamā'ah — there is no Iqāmah to change, so it is noise on a notice
+    // that exists to say which Iqāmah moved.
+    .filter((r) => r.key !== 'sunrise')
+    .map((r) => {
+      const wasH = prevIqamah.get(r.key) ?? null;
+      // A row is marked only if the detector called it a change AND the time really moved —
+      // the detector's own rules (vs the rule for the day, vs the day before) are what decide,
+      // and this second test just keeps a 0-minute difference from drawing a "was" line.
+      const moved = changedKeys.has(r.key) && wasH != null && r.iqamah != null && Math.round(wasH * 60) !== Math.round(r.iqamah * 60);
+      return {
+        name: rowName(r, L),
+        arabic: tt.language === 'ar' ? '' : PRAYER_LABELS.ar[r.label] ?? '',
+        iqamah: r.iqamah != null ? fmtShort(r.iqamah, tt.timeFormat) : '',
+        was: moved ? fmtShort(wasH, tt.timeFormat) : null,
+        changed: moved,
+      };
+    });
 
   const dow = new Date(Date.UTC(change.year, change.month - 1, change.day, 12)).getUTCDay();
   return {
@@ -135,6 +150,8 @@ export function posterModel(tt: Timetable, change: NextIqamahChange): PosterMode
     location: tt.location || '',
     dateLine: `${WEEKDAYS[dow]}, ${change.day} ${MONTH_NAMES[change.month - 1]} ${change.year}`,
     daysUntil: change.daysUntil,
+    past: change.daysUntil <= 0,
+    whenNote: whenNoteFor(change.daysUntil),
     rows,
     jumuah: mOn.jumuah.map((j) => fmtShort(j, tt.timeFormat)),
     rtl: tt.language === 'ar' || tt.language === 'ur',
@@ -153,32 +170,38 @@ export function renderAnnounceSvg(tt: Timetable, m: PosterModel, logo: string | 
   out.push(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`,
     `<defs>`,
+    // Gradient only. The screens carry a faint geometric motif over this, but at poster
+    // scale — viewed on a phone, often re-compressed by a messaging app — it read as a grid
+    // ruled over the notice rather than as texture, and competed with the one thing the
+    // page is for.
     `<radialGradient id="scene" cx="50%" cy="18%" r="95%">` +
       `<stop offset="0%" stop-color="${p.bg2}"/><stop offset="100%" stop-color="${p.bg}"/></radialGradient>`,
-    // The same faint geometric motif the screens carry, so the poster reads as the
-    // masjid's own rather than as a stock template.
-    `<pattern id="khatam" width="120" height="120" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
-      `<path d="M60 0 L120 60 L60 120 L0 60 Z" fill="none" stroke="${hexToRgba(p.pattern, 0.10)}" stroke-width="2"/>` +
-      `</pattern>`,
     `</defs>`,
     rect(0, 0, W, H, 0, 'url(#scene)'),
-    rect(0, 0, W, H, 0, 'url(#khatam)'),
   );
 
-  // ── Header: logo, masjid name, location ───────────────────────────────────
-  let y = pad + 18;
-  const hasLogo = !!logo;
-  if (hasLogo) {
+  // ── Everything below is ONE measured group, centred in the page ───────────
+  //
+  // Header included. The header used to be pinned to the top with only the times centred
+  // beneath it, which was fine while the content was tall — but with the Adhan column, the
+  // Sunrise row and the footer all gone, the remainder floated: a gulf under the masjid name
+  // and a matching void at the bottom. Measuring the whole thing and centring it once keeps
+  // the top and bottom margins equal whatever the poster contains (logo or not, Jumu'ah or
+  // not, one changed prayer or four).
+  const block: string[] = [];
+  let y = 0;
+
+  if (logo) {
     const s = 104;
-    out.push(`<image href="${logo}" x="${(W - s) / 2}" y="${y}" width="${s}" height="${s}" preserveAspectRatio="xMidYMid meet"/>`);
+    block.push(`<image href="${logo}" x="${(W - s) / 2}" y="${y}" width="${s}" height="${s}" preserveAspectRatio="xMidYMid meet"/>`);
     y += s + 34;
   }
   // Autofit the masjid name: a long name must shrink rather than run off the card.
   const nameSize = clamp((W - 2 * pad) / Math.max(9, m.masjidName.length * 0.56), 30, 62);
-  out.push(text(W / 2, y + nameSize * 0.36, m.masjidName, { size: nameSize, fill: p.text, weight: 800, anchor: 'middle' }));
+  block.push(text(W / 2, y + nameSize * 0.36, m.masjidName, { size: nameSize, fill: p.text, weight: 800, anchor: 'middle' }));
   y += nameSize * 0.9;
   if (m.location) {
-    out.push(text(W / 2, y + 22, m.location.toUpperCase(), { size: 20, fill: p.textDim, weight: 600, anchor: 'middle', letter: 3 }));
+    block.push(text(W / 2, y + 22, m.location.toUpperCase(), { size: 20, fill: p.textDim, weight: 600, anchor: 'middle', letter: 3 }));
     y += 34;
   }
 
@@ -189,75 +212,83 @@ export function renderAnnounceSvg(tt: Timetable, m: PosterModel, logo: string | 
   // Jumu'ah can be absent, one to four prayers can change — and a fixed top offset left a
   // deep band of empty poster under it in the common cases. Measuring, then centring in the
   // space between the header and the footer, makes every combination look composed.
-  const headBottom = y;
-  const block: string[] = [];
-  y = 0;
-
-  y += 26;
-  block.push(text(W / 2, y, m.changedCount === 1 ? 'IQĀMAH TIME IS CHANGING' : 'IQĀMAH TIMES ARE CHANGING', { size: 26, fill: p.gold, weight: 800, anchor: 'middle', letter: 5 }));
+  y += 52;
+  // Past tense when the change has already landed — the poster is then a "these are the
+  // times now" notice, and announcing it as upcoming would be plainly wrong.
+  const eyebrow = m.past
+    ? m.changedCount === 1
+      ? 'IQĀMAH TIME HAS CHANGED'
+      : 'IQĀMAH TIMES HAVE CHANGED'
+    : m.changedCount === 1
+      ? 'IQĀMAH TIME IS CHANGING'
+      : 'IQĀMAH TIMES ARE CHANGING';
+  block.push(text(W / 2, y, eyebrow, { size: 26, fill: p.gold, weight: 800, anchor: 'middle', letter: 5 }));
   y += 30;
   block.push(rect(W / 2 - 46, y, 92, 3, 1.5, hexToRgba(p.gold, 0.55)));
   y += 58;
-  block.push(text(W / 2, y, `From ${m.dateLine}`, { size: 40, fill: p.text, weight: 700, anchor: 'middle' }));
+  block.push(text(W / 2, y, `${m.past ? 'Since' : 'From'} ${m.dateLine}`, { size: 40, fill: p.text, weight: 700, anchor: 'middle' }));
   y += 34;
-  const inDays = m.daysUntil === 1 ? 'tomorrow' : `in ${m.daysUntil} days`;
-  block.push(text(W / 2, y, `(${inDays})`, { size: 22, fill: p.textDim, weight: 500, anchor: 'middle' }));
+  block.push(text(W / 2, y, `(${m.whenNote})`, { size: 22, fill: p.textDim, weight: 500, anchor: 'middle' }));
 
-  // ── The timetable ─────────────────────────────────────────────────────────
+  // ── The times ─────────────────────────────────────────────────────────────
+  //
+  // One time column, not two. The Adhan is not changing and nobody reading an Iqāmah-change
+  // notice is looking for it; dropping it also fixed the highlight, which used to be sized
+  // for one line while a changed row stacked "was" over "now" and overflowed the band.
+  // A changed row now puts the old time in its own column, so every row is a single line of
+  // the same height and the band always contains it.
   y += 50;
   const cardX = pad;
   const cardW = W - 2 * pad;
   const headH = 52;
-  const rowH = 74;
+  const rowH = 82;
   const cardH = headH + m.rows.length * rowH + 18;
   block.push(rect(cardX, y, cardW, cardH, 28, p.light ? hexToRgba('#ffffff', 0.72) : hexToRgba('#ffffff', 0.06)));
   block.push(rect(cardX, y, cardW, cardH, 28, 'none', `stroke="${hexToRgba(p.text, 0.12)}" stroke-width="1.5"`));
 
   const inX = cardX + 34;
   const colIq = cardX + cardW - 34;
-  const colAd = cardX + cardW * 0.685;
+  const colWas = cardX + cardW * 0.68; // fixed column, so nothing depends on estimated widths
+  const anyChanged = m.rows.some((r) => r.changed);
   let ry = y + 36;
-  block.push(text(inX, ry, (labelOr(tt, 'prayer', 'Prayer')).toUpperCase(), { size: 18, fill: p.textFaint, weight: 700, letter: 2 }));
-  block.push(text(colAd, ry, (labelOr(tt, 'athan', 'Adhan')).toUpperCase(), { size: 18, fill: p.textFaint, weight: 700, anchor: 'end', letter: 2 }));
-  block.push(text(colIq, ry, (labelOr(tt, 'iqamah', 'Iqamah')).toUpperCase(), { size: 18, fill: p.textFaint, weight: 700, anchor: 'end', letter: 2 }));
+  block.push(text(inX, ry, labelOr(tt, 'prayer', 'Prayer').toUpperCase(), { size: 18, fill: p.textFaint, weight: 700, letter: 2 }));
+  if (anyChanged) block.push(text(colWas, ry, 'WAS', { size: 18, fill: p.textFaint, weight: 700, anchor: 'end', letter: 2 }));
+  block.push(text(colIq, ry, labelOr(tt, 'iqamah', 'Iqamah').toUpperCase(), { size: 18, fill: p.textFaint, weight: 700, anchor: 'end', letter: 2 }));
   ry = y + headH;
   block.push(rect(inX, ry, cardW - 68, 1.5, 0, hexToRgba(p.text, 0.12)));
 
   for (const r of m.rows) {
-    const mid = ry + rowH * 0.52;
+    // One baseline for the whole row. `mid` is the row's vertical centre and every glyph
+    // sits on it, which is what keeps the highlight band and its contents in step.
+    const mid = ry + rowH / 2;
     if (r.changed) {
       // The one thing this poster exists to communicate. A tinted band plus an accent
       // edge, so it survives being screenshotted, forwarded and viewed at thumbnail size.
-      block.push(rect(cardX + 12, ry + 6, cardW - 24, rowH - 12, 16, hexToRgba(p.primary, 0.16)));
-      block.push(rect(cardX + 12, ry + 6, 6, rowH - 12, 3, p.primary));
+      block.push(rect(cardX + 12, ry + 5, cardW - 24, rowH - 10, 18, hexToRgba(p.primary, 0.16)));
+      block.push(rect(cardX + 12, ry + 5, 6, rowH - 10, 3, p.primary));
     }
-    const nameColor = r.changed ? p.primarySoft : r.minor ? p.textDim : p.text;
-    const nameSz = 30;
-    block.push(text(inX, mid + 10, r.name, { size: nameSz, fill: nameColor, weight: r.changed ? 800 : 700 }));
+    const nameSz = 32;
+    block.push(text(inX, mid + nameSz * 0.35, r.name, { size: nameSz, fill: r.changed ? p.primarySoft : p.text, weight: r.changed ? 800 : 700 }));
     if (r.arabic) {
-      block.push(text(inX + r.name.length * nameSz * 0.58 + 16, mid + 10, r.arabic, { size: nameSz * 0.84, fill: hexToRgba(p.gold, 0.85), weight: 600, family: FONT_ARABIC }));
+      block.push(text(inX + r.name.length * nameSz * 0.58 + 16, mid + nameSz * 0.35, r.arabic, { size: nameSz * 0.84, fill: hexToRgba(p.gold, 0.85), weight: 600, family: FONT_ARABIC }));
     }
-    if (r.minor) {
-      // Sunrise has one time and no jamā'ah; centre it between the two columns.
-      block.push(text((colAd + colIq) / 2, mid + 10, r.adhan, { size: 28, fill: p.textDim, weight: 600, anchor: 'middle' }));
-    } else {
-      block.push(text(colAd, mid + 10, r.adhan, { size: 28, fill: p.textDim, weight: 600, anchor: 'end' }));
-      if (r.was) {
-        // old → new, stacked, so the reader sees the delta without holding two posters side
-        // by side. The old time is struck through with a drawn line rather than
-        // `text-decoration`, which resvg does not render.
-        const wasSz = 23;
-        block.push(text(colIq, mid - 4, r.was, { size: wasSz, fill: p.textFaint, weight: 600, anchor: 'end' }));
-        const wasW = approxW(r.was, wasSz);
-        block.push(
-          `<line x1="${(colIq - wasW).toFixed(1)}" y1="${(mid - 11).toFixed(1)}" x2="${colIq.toFixed(1)}" y2="${(mid - 11).toFixed(1)}" ` +
-            `stroke="${p.textFaint}" stroke-width="1.8" opacity="0.85"/>`,
-        );
-        block.push(text(colIq, mid + 30, r.iqamah, { size: 34, fill: p.primarySoft, weight: 800, anchor: 'end' }));
-      } else {
-        block.push(text(colIq, mid + 10, r.iqamah || '—', { size: 32, fill: r.iqamah ? (r.changed ? p.primarySoft : p.text) : p.textFaint, weight: r.changed ? 800 : 700, anchor: 'end' }));
-      }
+    if (r.was) {
+      // The time being replaced, struck through with a drawn line — resvg does not render
+      // `text-decoration`.
+      const wasSz = 24;
+      block.push(text(colWas, mid + wasSz * 0.35, r.was, { size: wasSz, fill: p.textFaint, weight: 600, anchor: 'end' }));
+      block.push(
+        `<line x1="${(colWas - approxW(r.was, wasSz)).toFixed(1)}" y1="${(mid).toFixed(1)}" x2="${colWas.toFixed(1)}" y2="${(mid).toFixed(1)}" ` +
+          `stroke="${p.textFaint}" stroke-width="1.8" opacity="0.85"/>`,
+      );
     }
+    const iqSz = r.changed ? 36 : 32;
+    block.push(text(colIq, mid + iqSz * 0.35, r.iqamah || '—', {
+      size: iqSz,
+      fill: r.iqamah ? (r.changed ? p.primarySoft : p.text) : p.textFaint,
+      weight: r.changed ? 800 : 700,
+      anchor: 'end',
+    }));
     ry += rowH;
   }
   y += cardH;
@@ -272,20 +303,9 @@ export function renderAnnounceSvg(tt: Timetable, m: PosterModel, logo: string | 
     y += jH;
   }
 
-  // ── Compose: centre the measured block between header and footer ──────────
-  const footerY = H - pad + 6;
-  const avail = footerY - 46 - headBottom;
-  const dy = headBottom + Math.max(0, (avail - y) / 2);
+  // ── Compose ───────────────────────────────────────────────────────────────
+  const dy = Math.max(pad, (H - y) / 2);
   out.push(`<g transform="translate(0,${dy.toFixed(1)})">${block.join('')}</g>`);
-
-  out.push(
-    text(W / 2, footerY, 'Please pass this on to the congregation', {
-      size: 21,
-      fill: p.textFaint,
-      weight: 500,
-      anchor: 'middle',
-    }),
-  );
 
   out.push('</svg>');
   return out.join('');
