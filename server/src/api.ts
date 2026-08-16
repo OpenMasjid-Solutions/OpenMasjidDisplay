@@ -20,6 +20,7 @@ import {
 } from './auth';
 import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, whatsappGroups } from './fabric';
 import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
+import type { FabricCommands } from './fabricCommands';
 import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
@@ -85,6 +86,10 @@ interface Deps {
   /** Posts the Iqāmah-change notice to the masjid's WhatsApp group. Optional so tests and the
    *  volunteer-only paths can build an API without a background job attached. */
   whatsapp?: WhatsAppAnnouncer;
+  /** Serves POST /fabric/commands/run — the platform running an admin's WhatsApp command.
+   *  Optional: without it the endpoint answers 503 "not ready" rather than 404, which is the
+   *  contract's word for "this app cannot do that yet". */
+  commands?: FabricCommands;
 }
 
 /** The instant to render a preview at: local noon on `dateStr` (YYYY-MM-DD) in the
@@ -197,7 +202,7 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 };
 
 export function createApi(deps: Deps) {
-  const { store, orchestrator, volunteer, whatsapp } = deps;
+  const { store, orchestrator, volunteer, whatsapp, commands } = deps;
   const loginLimiter = new LoginLimiter();
   // Public widget: 120 requests per minute per CLIENT. The embedded page polls every 30s,
   // so a real viewer uses ~2 (a few more with several tabs); this only bites on abuse.
@@ -205,7 +210,14 @@ export function createApi(deps: Deps) {
   // meant every visitor arriving through the remote-access tunnel shared ONE bucket, so a
   // masjid's own website visitors throttled each other. (DISPLAY-017)
   const widgetLimiter = new RequestLimiter(120, 60_000);
-  setInterval(() => widgetLimiter.prune(), 5 * 60_000).unref?.();
+  // Admin commands: the platform already rate-limits each sender (5 per 15s), so this only
+  // catches something reaching the port directly. Generous enough never to bite a real admin
+  // working through the wizard one question at a time.
+  const commandLimiter = new RequestLimiter(60, 60_000);
+  setInterval(() => {
+    widgetLimiter.prune();
+    commandLimiter.prune();
+  }, 5 * 60_000).unref?.();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
   // OpenMasjidOS SSO (see /api/session) — so every other endpoint stays a simple,
@@ -220,6 +232,25 @@ export function createApi(deps: Deps) {
     try {
       // ---- Unauthenticated endpoints --------------------------------------
       if (pathname === '/healthz') return sendJson(res, 200, { ok: true });
+
+      /**
+       * The platform asking us to run a command an admin picked from a WhatsApp menu.
+       *
+       * Unauthenticated by SESSION on purpose — OpenMasjidOS has no cookie of ours. It
+       * authenticates by presenting our OWN app secret plus a caller header, both checked
+       * inside the handler, which is why this sits above the session gate rather than below
+       * it. See fabricCommands.ts for why the exact path (never the tunnel's `/<basePath>/…`
+       * form) is what keeps this LAN-only.
+       */
+      if (pathname === '/fabric/commands/run' && method === 'POST') {
+        if (!commands) return sendJson(res, 503, { ok: false, code: 'not_ready' });
+        if (!commandLimiter.allow(req)) return sendJson(res, 429, { ok: false, error: 'Too many requests.' });
+        // The platform caps its own request at 4 KB; ours is the same order, and a body that
+        // large from here would already be a bug rather than an admin typing a prayer time.
+        const body = await readBody(req, 8_000).catch(() => null);
+        if (!body) return sendJson(res, 400, { ok: false, error: 'Could not read that request.' });
+        return commands.handle(req, res, body);
+      }
 
       // ---- Volunteer page (also served here, not just on its own port) ----
       // So it works behind the OS Cloudflare tunnel at /<appId>/volunteer with NO platform

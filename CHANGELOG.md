@@ -14,6 +14,16 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ### Added
 
+- **Add a scheduled Iqamah change by WhatsApp.** Message the masjid's WhatsApp number with
+  `!display` and pick **1**, and it walks you through it one question at a time: the date, then a
+  numbered list of prayers, then the time for each. Send **save** when you're done, or **exit** at any
+  point — nothing is written until you save, and the whole change is read back to you first. Useful
+  when a screen needs fixing and you aren't at a computer. It needs WhatsApp set up in OpenMasjidOS,
+  and only people an admin has authorised there can run it.
+- Times can be typed the natural way — **5:45** is morning for Fajr and evening for Asr, and it tells
+  you which it understood before saving. Dates like **1/9/2026** are refused on purpose: that is 9
+  January in some countries and 1 September in others, so it asks for the month in words instead of
+  guessing and putting the masjid at the wrong time.
 - **Send the Iqamah change to a WhatsApp group, automatically.** Settings → WhatsApp lets you pick a
   group and how far ahead to post — from a fortnight before down to the day itself — and the notice
   goes out on its own. Add a change at the last minute, even for the same day, and it is posted within

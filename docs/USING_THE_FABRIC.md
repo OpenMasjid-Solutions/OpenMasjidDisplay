@@ -21,6 +21,7 @@ notifications: true  # alert the masjid when a screen goes offline/online
 domain: true         # learn our PUBLIC url behind the admin's tunnel (widget + volunteer links)
 https: true          # serve the control panel through the platform's TLS proxy
 whatsapp: true       # post the Iqamah-change notice to a group the admin approved
+commands:            # things an admin can run by messaging the masjid's number (!display)
 ```
 
 ### 1. Single sign-on (implemented — keep it)
@@ -136,6 +137,47 @@ Nothing here reports a poster as published.
 Which event goes out, to whom, and how early is **our** setting, not the platform's: its alerts matrix
 has no WhatsApp column for apps, because those rows route to the admin's one number and our messages
 are for the congregation.
+
+### 7. Admin commands (implemented — keep it)
+
+`commands:` declares what an admin can run by messaging the masjid's WhatsApp number. The platform
+owns everything except the doing — it decides who may run them, renders the numbered menu from our
+manifest order, and formats the reply. We serve one route, `POST /fabric/commands/run`
+(`server/src/fabricCommands.ts`), and it is the **only inbound Fabric surface this app has**.
+
+The envelope, all of which is load-bearing:
+
+- **Both headers or nothing.** `X-OpenMasjid-App-Secret` must equal our OWN
+  `OPENMASJID_APP_SECRET` (constant-time compare) **and** `X-OpenMasjid-Caller-App` must be exactly
+  `omos:platform`. That value can never be an app id — the colon is outside the app-id charset — so
+  it identifies the platform by construction rather than by an allow-list. Checking only the secret
+  would let anything that ever learned it drive the wizard.
+- **Exact path only, which IS the LAN-only enforcement.** Behind the tunnel this app is served under
+  `/<basePath>/…` and the platform does not strip the prefix, so a tunnelled request arrives as
+  `/display/fabric/commands/run` and does not match. We never register the prefixed form. There is no
+  header to trust for this.
+- **10 s / 16 KB.** Someone is holding a phone. Reply text is plain, ≤1000 chars.
+- `404 {code:'unknown_command'}` for an id we don't serve, `503 {code:'not_ready'}` before we have a
+  secret, `200 {ok:false,error}` for a refusal we can explain — an HTTP error there would become a
+  generic "that did not work" instead of our own words.
+- **Never put `commands` in `fabric.provides`.** It is reserved and refused at install: it would
+  expose this same handler to other apps through the app-to-app broker, a different trust boundary
+  sharing a path prefix.
+
+**The wizard is ours, because the contract is one-shot.** The platform holds a menu snapshot and a
+pending confirmation per sender, but it has no "ask the next question and wait" — an argument must be
+typed inline (`!display 1 <answer>`) or it answers `missing-argument` itself. So `argument.required`
+is **false** (which is what makes a bare `!display 1` legal, and is how the flow starts), each later
+answer arrives as another call, and `server/src/iqamahWizard.ts` remembers where we were.
+
+Two consequences worth knowing before changing it:
+
+- **There is one session, not one per person.** The request body is
+  `{command, text, requestId, locale}` — no sender. So state cannot be keyed per admin. Every reply
+  restates the whole gathered change, and a session expires after 15 minutes.
+- **`confirm: true` is deliberately OFF.** The platform's confirmation fires per call, so it would
+  demand a code before *every* step. The wizard's own `save` is the confirmation, and nothing is
+  written before it — which is also what makes it safe to infer am/pm from the prayer.
 
 ## What Display does NOT need — but exists
 
