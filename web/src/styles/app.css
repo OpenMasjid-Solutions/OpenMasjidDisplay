@@ -538,10 +538,10 @@ h1, h2, h3, p { margin: 0; }
 @media (prefers-reduced-motion: reduce) { .pin-key:active { transform: none; } }
 
 /* ── Readability: text sitting directly on the wallpaper ──────────────────── */
-/* On-scene text (topbar brand + clock, page heading + subtitle) uses the scene ink:
-   light on the dark presets in BOTH themes, flipping for a light custom wallpaper
-   image (driven by [data-scene="light"]). Glass-card text keeps the theme's
-   --color-ink. Byte-for-byte the sibling apps' standard (Donations / Kiosk). */
+/* On-scene text (topbar brand + clock, page heading + subtitle) uses the scene ink, which
+   follows whatever is actually behind it: the theme's gradient — dark in dark mode, light in
+   light mode — or a custom wallpaper photo's measured tone, which overrides the theme in both
+   directions ([data-scene], see tokens.css). Glass-card text keeps the theme's --color-ink. */
 .page-title, .brand b, .topclock-time { color: var(--ink-scene); }
 .page-sub, .topclock-date { color: var(--ink-scene-muted); }
 .page-title, .page-sub, .brand, .topclock { text-shadow: var(--text-shadow-scene); }

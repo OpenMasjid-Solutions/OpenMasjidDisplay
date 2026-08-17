@@ -14,6 +14,17 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ### Added
 
+- **Light mode is properly light now.** The control panel's light theme lightened the cards but
+  left the page background dark, so panels sat as washed-out grey rectangles on a near-black
+  backdrop and the darker text on them was hard to read. The background, the coloured glow behind
+  it and the faint pattern are all light in light mode now, and each of the nine wallpapers has a
+  light version that keeps its colour — Ocean is still blue, Forest still green — so picking one
+  still means something.
+- Headings, the masjid name and the clock now follow the background they sit on rather than being
+  fixed light, so they stay readable in both themes. If you use your own wallpaper picture, that
+  still wins: a dark photo keeps light text and a light photo gets dark text, in either theme, and
+  the veil over the picture matches instead of fighting it.
+
 - **Add a scheduled Iqamah change by WhatsApp.** Message the masjid's WhatsApp number with
   `!display` and pick **1**, then just answer the questions — the date, a numbered list of prayers,
   the time for each. Send **save** when you're done, or **exit** at any point. Nothing is written

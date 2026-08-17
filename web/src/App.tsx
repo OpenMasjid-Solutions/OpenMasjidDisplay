@@ -78,17 +78,24 @@ function Root() {
   const [setupInstead, setSetupInstead] = useState(false);
   const editId = new URLSearchParams(window.location.search).get('edit');
 
-  // On-scene text colour follows the WALLPAPER (not the light/dark toggle): the built-in
-  // presets are dark → light on-scene text in both themes; a light custom wallpaper image
-  // flips data-scene to "light" so the on-scene text (brand, clock, page heading) goes
-  // dark. Glass-card text stays under the theme's control. Matches the sibling apps.
+  // On-scene text (brand, clock, page heading) follows whatever is actually behind it.
+  //
+  // With a preset wallpaper that is the theme's own gradient — dark in dark mode, light in
+  // light mode — and tokens.css handles it off [data-theme]. A custom wallpaper PHOTO
+  // replaces the gradient entirely, so its measured luminance decides instead, and it has to
+  // override the theme in BOTH directions: a dark photo in light mode needs light text.
+  //
+  // Hence three states, not two. `data-scene` is set only when a photo is in use — absent
+  // means "no photo", which is what lets the theme rules apply. Setting it to "dark"
+  // unconditionally would freeze on-scene text light in light mode.
   const prefs = usePrefs();
-  const sceneTone = useReadableTheme(prefs.wallpaperImage.trim() || undefined, 'dark');
+  const wallpaperImage = prefs.wallpaperImage.trim();
+  const sceneTone = useReadableTheme(wallpaperImage || undefined, 'dark');
   useEffect(() => {
     const html = document.documentElement;
-    if (sceneTone === 'light') html.setAttribute('data-scene', 'light');
+    if (wallpaperImage) html.setAttribute('data-scene', sceneTone);
     else html.removeAttribute('data-scene');
-  }, [sceneTone]);
+  }, [sceneTone, wallpaperImage]);
 
   if (authed) {
     if (!state) return <Splash />;
