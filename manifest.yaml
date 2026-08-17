@@ -4,7 +4,7 @@ id: display
 name: OpenMasjid Display
 tagline: Run prayer timetables, cameras and HDMI on every screen in your masjid — over your network
 category: displays
-version: 0.69.0-dev.7
+version: 0.69.0-dev.8
 author: OpenMasjid-Solutions
 license: AGPL-3.0-only
 icon: icon.png
@@ -76,11 +76,10 @@ whatsapp: true
 # through the app-to-app broker.
 commands:
   # `required: false` is what makes a bare "!display 1" legal, which is how the guided flow
-  # starts — the platform expects an argument inline on the same line and has no way to ask a
-  # follow-up question, so every later answer arrives as "!display 1 <answer>" and the app
-  # remembers where it was. `confirm` is deliberately OFF: the platform's confirmation fires
-  # per call, so it would demand a code before every single step. The wizard's own "save" is
-  # the confirmation, and nothing is written before it.
+  # starts. From there the app returns a followUp token each turn, so the admin just answers
+  # the questions rather than retyping the command on every line. `confirm` is deliberately
+  # OFF: the platform's confirmation fires per call, so it would demand a code before every
+  # single step. The wizard's own "save" is the confirmation, and nothing is written before it.
   - id: iqamah-change
     label: Add a scheduled Iqamah change
     description: Set new Iqamah times from a date. Send exit at any point to stop.

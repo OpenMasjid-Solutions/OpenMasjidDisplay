@@ -164,20 +164,30 @@ The envelope, all of which is load-bearing:
   expose this same handler to other apps through the app-to-app broker, a different trust boundary
   sharing a path prefix.
 
-**The wizard is ours, because the contract is one-shot.** The platform holds a menu snapshot and a
-pending confirmation per sender, but it has no "ask the next question and wait" — an argument must be
-typed inline (`!display 1 <answer>`) or it answers `missing-argument` itself. So `argument.required`
-is **false** (which is what makes a bare `!display 1` legal, and is how the flow starts), each later
-answer arrives as another call, and `server/src/iqamahWizard.ts` remembers where we were.
+**Follow-up exchanges (OpenMasjidOS 0.51.0-dev.11+).** Return `followUp: { token }` beside the text
+and the sender's next *plain* message comes straight back with `followUpToken` set — so an admin
+answers questions instead of retyping `!display 1` on every line. Omitting `followUp` ends the
+exchange. The token is ours; the platform stores it against that one sender and keeps no other state.
 
-Two consequences worth knowing before changing it:
+Four rules, all of which this app depends on:
 
-- **There is one session, not one per person.** The request body is
-  `{command, text, requestId, locale}` — no sender. So state cannot be keyed per admin. Every reply
-  restates the whole gathered change, and a session expires after 15 minutes.
-- **`confirm: true` is deliberately OFF.** The platform's confirmation fires per call, so it would
-  demand a code before *every* step. The wizard's own `save` is the confirmation, and nothing is
-  written before it — which is also what makes it safe to infer am/pm from the prayer.
+- **An `ok: false` ENDS the exchange.** So a misread date or a time with no am/pm answers `ok: true`
+  and asks again. Answering "that was wrong" with a failure would drop the admin out of the flow for
+  a typo. `ok: false` is reserved for the terminal cases (no timetable, no location).
+- **The exchange can end without us** — three minutes idle, fifteen total, twelve turns, an exit
+  word, or the sender starting any other `!` command — with no notification. Nothing is applied
+  until `save`, so an abandoned flow leaves a draft that expires, never a half-written change.
+- **The token is the sender.** The body still carries no phone number, but the platform binds a token
+  to one person, so keying sessions on it keys them per admin. A call with **no** token is always a
+  fresh start — an older platform's `!display 1 <answer>` is indistinguishable from a second admin
+  beginning their own change, and picking wrong puts one person's answers in another's draft.
+- **`done` is one of the platform's own exit words** (with exit/quit/cancel/stop/nevermind). It ends
+  the conversation above us and we are never called, so it must never be a "save" word here — the
+  change would vanish while the admin believed they had saved it. We ask for `save`.
+
+**`confirm: true` is deliberately OFF.** The platform's confirmation fires per call, so it would
+demand a code before *every* step. The wizard's own `save` is the confirmation, and nothing is
+written before it. `argument.required` is **false**, which is what makes a bare `!display 1` legal.
 
 ## What Display does NOT need — but exists
 

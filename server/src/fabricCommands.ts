@@ -97,6 +97,9 @@ export class FabricCommands {
 
     const command = typeof body.command === 'string' ? body.command : '';
     const text = typeof body.text === 'string' ? body.text : '';
+    // Set when this message is an ANSWER to a question we asked last turn. Absent on the
+    // first call of an exchange, and on every call from a platform older than 0.51.
+    const followUpToken = typeof body.followUpToken === 'string' ? body.followUpToken : undefined;
     if (!(COMMAND_IDS as readonly string[]).includes(command)) {
       return sendJson(res, 404, { ok: false, code: 'unknown_command' });
     }
@@ -105,10 +108,16 @@ export class FabricCommands {
     // command text is never logged is worth keeping unconditional.
     log.info(`running ${command}`);
     try {
-      const r = this.iqamah.run(text);
-      return sendJson(res, 200, r.ok ? { ok: true, text: r.text } : { ok: false, error: r.text });
+      const r = this.iqamah.run(text, followUpToken);
+      if (!r.ok) return sendJson(res, 200, { ok: false, error: r.text });
+      // `followUp` is what makes the sender's next PLAIN message come back to us — without it
+      // they would have to type `!display 1 <answer>` for every step. Omitting it is how a
+      // flow ends, so it is present exactly while the wizard still wants an answer.
+      return sendJson(res, 200, r.followUpToken ? { ok: true, text: r.text, followUp: { token: r.followUpToken } } : { ok: true, text: r.text });
     } catch (err) {
       log.error(`command ${command} failed`, err);
+      // No followUp: a thrown error ends the exchange rather than leaving the admin answering
+      // questions into something that is not working.
       return sendJson(res, 200, { ok: false, error: 'Something went wrong running that.' });
     }
   }

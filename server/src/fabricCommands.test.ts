@@ -119,15 +119,24 @@ test('an unknown command is 404 unknown_command, which the platform words for us
   assert.equal(r.body.code, 'unknown_command');
 });
 
+/** Drive a whole exchange the way the platform does: carry the token it gave us. */
+function exchange(c: InstanceType<typeof FabricCommands>) {
+  let token: string | undefined;
+  return async (text: string) => {
+    const r = await call(c, good, { command: 'iqamah-change', text, followUpToken: token, requestId: 'r', locale: 'en' });
+    token = (r.body.followUp as { token?: string })?.token;
+    return r;
+  };
+}
+
 test('a whole change can be made through the endpoint, and it lands in the store', async () => {
   const s = store();
-  const c = new FabricCommands({ store: s });
-  const say = (text: string) => call(c, good, { command: 'iqamah-change', text, requestId: 'r', locale: 'en' });
+  const say = exchange(new FabricCommands({ store: s }));
 
   await say('');
   await say('2026-09-01');
   await say('1');
-  await say('5:45');
+  await say('5:45 am');
   const done = await say('save');
 
   assert.equal(done.body.ok, true);
@@ -137,24 +146,107 @@ test('a whole change can be made through the endpoint, and it lands in the store
 
 test('nothing is written until save', async () => {
   const s = store();
-  const c = new FabricCommands({ store: s });
-  const say = (text: string) => call(c, good, { command: 'iqamah-change', text });
+  const say = exchange(new FabricCommands({ store: s }));
   await say('');
   await say('2026-09-01');
   await say('1');
-  await say('5:45');
+  await say('5:45 am');
   assert.equal(s.db.timetables[0].iqamahSchedule, undefined, 'not before save');
   await say('exit');
   assert.equal(s.db.timetables[0].iqamahSchedule, undefined, 'and not after exit');
 });
 
-test('a refusal is ok:false with a sentence, not an HTTP error', async () => {
+test('a terminal refusal is ok:false with a sentence, not an HTTP error', async () => {
   // The platform shows the app's own words for a refusal; an HTTP 4xx would become a generic
-  // "that did not work" instead.
-  const c = new FabricCommands({ store: store() });
-  await call(c, good, { command: 'iqamah-change', text: '' });
-  const r = await call(c, good, { command: 'iqamah-change', text: '1/9/2026' });
+  // "that did not work" instead. This one is terminal — there is nothing to answer.
+  const s = store();
+  s.update((db) => {
+    db.timetables[0].latitude = null;
+    db.timetables[0].longitude = null;
+  });
+  const c = new FabricCommands({ store: s });
+  const r = await call(c, good, { command: 'iqamah-change', text: '' });
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, false);
-  assert.match(String(r.body.error), /two different days/);
+  assert.match(String(r.body.error), /masjid location/);
+  assert.equal(r.body.followUp, undefined, 'and it does not invite an answer');
+});
+
+// ── follow-up exchanges ──────────────────────────────────────────────────────
+
+test('a followUp token is handed back while the wizard wants an answer', async () => {
+  const c = new FabricCommands({ store: store() });
+  const r = await call(c, good, { command: 'iqamah-change', text: '' });
+  const token = (r.body.followUp as { token?: string })?.token;
+  assert.ok(token, 'the sender should be able to just answer, not retype !display 1');
+  assert.match(token!, /^[A-Za-z0-9._:-]{1,128}$/, "the platform validates before echoing, so an invalid token would be dropped");
+});
+
+test('the whole flow runs on plain answers once the token is held', async () => {
+  const s = store();
+  const c = new FabricCommands({ store: s });
+  let token: string | undefined;
+  const say = async (text: string) => {
+    const r = await call(c, good, { command: 'iqamah-change', text, followUpToken: token });
+    token = (r.body.followUp as { token?: string })?.token;
+    return r;
+  };
+  await say('');
+  await say('9/1/2026');
+  await say('1');
+  await say('5:45 am');
+  const done = await say('save');
+
+  assert.equal(done.body.ok, true);
+  assert.equal(done.body.followUp, undefined, 'omitting followUp is how the exchange ends');
+  assert.deepEqual(s.db.timetables[0].iqamahSchedule, [{ from: '2026-09-01', fajr: '05:45' }]);
+});
+
+test('the token stays stable across the exchange', async () => {
+  const c = new FabricCommands({ store: store() });
+  const first = await call(c, good, { command: 'iqamah-change', text: '' });
+  const t1 = (first.body.followUp as { token: string }).token;
+  const second = await call(c, good, { command: 'iqamah-change', text: '9/1/2026', followUpToken: t1 });
+  assert.equal((second.body.followUp as { token: string }).token, t1);
+});
+
+test('two senders mid-flow do not collide — the token IS the sender', async () => {
+  // The body carries no phone number, so before follow-ups there was one shared session and
+  // two admins would overwrite each other's draft. The platform binds a token to one sender,
+  // so keying on it keys on the person.
+  const s = store();
+  const c = new FabricCommands({ store: s });
+  const start = async () => (await call(c, good, { command: 'iqamah-change', text: '' })).body;
+  const a = (await start()).followUp as { token: string };
+  const b = (await start()).followUp as { token: string };
+  assert.notEqual(a.token, b.token);
+
+  await call(c, good, { command: 'iqamah-change', text: '9/1/2026', followUpToken: a.token });
+  await call(c, good, { command: 'iqamah-change', text: '10/1/2026', followUpToken: b.token });
+  const aNext = await call(c, good, { command: 'iqamah-change', text: '1', followUpToken: a.token });
+  // A's exchange still knows A's date.
+  assert.match(String(aNext.body.text), /Fajr/);
+  await call(c, good, { command: 'iqamah-change', text: '5:45 am', followUpToken: a.token });
+  const aSave = await call(c, good, { command: 'iqamah-change', text: 'save', followUpToken: a.token });
+  assert.match(String(aSave.body.text), /September 1, 2026/, "A's date, not B's");
+});
+
+test('a retry keeps the exchange open — an ok:false would end it', async () => {
+  const c = new FabricCommands({ store: store() });
+  const first = await call(c, good, { command: 'iqamah-change', text: '' });
+  const token = (first.body.followUp as { token: string }).token;
+  const r = await call(c, good, { command: 'iqamah-change', text: 'not a date', followUpToken: token });
+  assert.equal(r.body.ok, true, 'a typo must not drop the admin out of the conversation');
+  assert.ok((r.body.followUp as { token?: string })?.token, 'and it still wants an answer');
+});
+
+test('an unknown token starts a fresh exchange rather than answering into nothing', async () => {
+  // The exchange it belonged to is gone — expired, or ended by the platform without telling
+  // us. "save" must not resolve against someone else's draft; it starts over asking for a date.
+  const s = store();
+  const c = new FabricCommands({ store: s });
+  const r = await call(c, good, { command: 'iqamah-change', text: 'save', followUpToken: 'iq.nope' });
+  assert.equal(r.body.ok, true);
+  assert.match(String(r.body.text), /date/i);
+  assert.equal(s.db.timetables[0].iqamahSchedule, undefined, 'and nothing was written');
 });

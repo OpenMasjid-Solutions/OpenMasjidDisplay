@@ -6,11 +6,12 @@
  * This is the first thing in the app that WRITES prayer times without a screen in front of
  * the person doing it. Three of these tests exist because of that, not for coverage:
  *
- *  - **An ambiguous date is refused, not guessed.** `1/9/2026` is 9 January to an American
- *    and 1 September to everyone else, and the cost of guessing is a masjid praying at the
- *    wrong time on a day nobody thought to check.
- *  - **A bare time is resolved against its prayer** — "5:45" is morning for Fajr and evening
- *    for Asr — and the resolved value is echoed before anything is written.
+ *  - **A slash date is month-first**, as the masjid asked, and the full date is echoed back in
+ *    words before anything is written — that echo is the whole safety margin, because `9/1`
+ *    and `1/9` are the same keystrokes for two different days.
+ *  - **A 12-hour time must say am or pm.** Inferring it from the prayer is right almost
+ *    always, and a prayer time is the one piece of data here that a whole congregation acts
+ *    on, so "almost always" is not the standard for it.
  *  - **Saving MERGES.** `normalizeIqamahSchedule` keeps one entry per date and the first
  *    wins, so appending a second entry for an existing date would be dropped on the floor
  *    while the admin was told it saved.
@@ -66,7 +67,7 @@ function run(inputs: string[], t = tt()) {
 // ── the whole flow ───────────────────────────────────────────────────────────
 
 test('the flow an admin actually types: start, date, prayer, time, save', () => {
-  const r = run(['', '2026-09-01', '1', '5:45', 'save']);
+  const r = run(['', '2026-09-01', '1', '5:45 am', 'save']);
 
   assert.match(r.replies[0], /What date does it start\?/);
   assert.match(r.replies[0], /exit/, 'the way out is offered at the first step');
@@ -77,7 +78,9 @@ test('the flow an admin actually types: start, date, prayer, time, save', () => 
   assert.ok(!/Maghrib/.test(r.replies[1]), 'Maghrib is never schedulable, so it is not offered');
 
   assert.match(r.replies[2], /\*Fajr\* — what time\?/);
-  // The resolved time is echoed BEFORE the save, which is what makes inferring am/pm safe.
+  assert.match(r.replies[2], /am/i, 'and it asks for am or pm');
+  // The time is echoed back in the masjid's own format before the save, so a mistyped
+  // suffix is visible while it is still only a draft.
   assert.match(r.replies[3], /Fajr set to \*5:45 AM\*/);
   assert.match(r.replies[3], /1 {2}Fajr — 5:45 AM/, 'the menu carries what has been set so far');
 
@@ -86,7 +89,7 @@ test('the flow an admin actually types: start, date, prayer, time, save', () => 
 });
 
 test('several prayers in one change', () => {
-  const r = run(['', '1 Sep 2026', '1', '5:45', '3', '5:15', '5', '1:30, 2:30', 'save']);
+  const r = run(['', '1 Sep 2026', '1', '5:45 am', '3', '5:15 pm', '5', '1:30 pm, 2:30 pm', 'save']);
   assert.deepEqual(r.commit, { from: '2026-09-01', fajr: '05:45', asr: '17:15', jumuah: ['13:30', '14:30'] });
 });
 
@@ -98,7 +101,7 @@ test('the date can be typed on the same line as the command', () => {
 
 test('exit stops at any point and writes nothing', () => {
   for (const at of [1, 2, 3, 4]) {
-    const inputs = ['', '2026-09-01', '1', '5:45'].slice(0, at).concat('exit');
+    const inputs = ['', '2026-09-01', '1', '5:45 am'].slice(0, at).concat('exit');
     const r = run(inputs);
     assert.equal(r.session, null);
     assert.equal(r.commit, undefined);
@@ -137,15 +140,24 @@ test('unambiguous date forms are accepted', () => {
   assert.equal(parseWizardDate('September 1, 2026'), '2026-09-01');
 });
 
-test('a slash date is REFUSED, because it means two different days', () => {
-  // The whole point: 1/9/2026 is 9 January in the US and 1 September elsewhere. Guessing puts
-  // a masjid at the wrong time on a day nobody checked.
-  for (const bad of ['1/9/2026', '01/09/2026', '9-1-2026', '1.9.2026']) {
-    assert.equal(parseWizardDate(bad), null, bad);
-  }
-  const r = run(['', '1/9/2026']);
-  assert.match(r.last, /two different days/);
-  assert.match(r.last, /month in words/);
+test('a slash date is read MONTH FIRST', () => {
+  assert.equal(parseWizardDate('9/1/2026'), '2026-09-01');
+  assert.equal(parseWizardDate('09/01/2026'), '2026-09-01');
+  assert.equal(parseWizardDate('9-1-2026'), '2026-09-01');
+  assert.equal(parseWizardDate('12/25/2026'), '2026-12-25');
+  // The day-first reading is gone, so 1/9 is 9 January — which is exactly why the reply
+  // spells the date out in words before anything is saved.
+  assert.equal(parseWizardDate('1/9/2026'), '2026-01-09');
+});
+
+test('a four-digit year first is still ISO, never a month', () => {
+  assert.equal(parseWizardDate('2026-09-01'), '2026-09-01');
+  assert.equal(parseWizardDate('2026/09/01'), '2026-09-01');
+});
+
+test('the date is echoed in full words, which is what makes month-first safe', () => {
+  const r = run(['', '9/1/2026']);
+  assert.match(r.last, /From Tuesday, September 1, 2026/);
 });
 
 test('impossible dates are refused', () => {
@@ -168,44 +180,64 @@ test('today is allowed — a change starting today is the whole last-minute case
 
 // ── times ────────────────────────────────────────────────────────────────────
 
-test('a bare time is resolved against the prayer it belongs to', () => {
-  assert.equal(parseWizardTime('fajr', '5:45'), '05:45');
-  assert.equal(parseWizardTime('asr', '5:15'), '17:15');
-  assert.equal(parseWizardTime('isha', '8:00'), '20:00');
-  assert.equal(parseWizardTime('dhuhr', '1:15'), '13:15');
-  assert.equal(parseWizardTime('jumuah', '1:30'), '13:30');
+test('a 12-hour time MUST say am or pm — it is never guessed', () => {
+  // Inferring "5:45 means morning for Fajr" is right almost always, and the exception is a
+  // congregation praying at the wrong time. So it asks.
+  for (const bare of ['5:45', '1:15', '12:00', '8:00']) {
+    assert.equal(parseWizardTime(bare), null, bare);
+  }
+  assert.equal(parseWizardTime('5:45 am'), '05:45');
+  assert.equal(parseWizardTime('5:15 pm'), '17:15');
+  assert.equal(parseWizardTime('5:45am'), '05:45', 'no space needed');
+  assert.equal(parseWizardTime('5:45 a'), '05:45');
 });
 
-test('an explicit am/pm always wins over the inference', () => {
-  assert.equal(parseWizardTime('asr', '5:15 am'), '05:15');
-  assert.equal(parseWizardTime('fajr', '5:45 pm'), '17:45');
-  assert.equal(parseWizardTime('isha', '12:15 am'), '00:15');
-  assert.equal(parseWizardTime('dhuhr', '12:15 pm'), '12:15');
+test('midnight and noon are handled the way the clock means them', () => {
+  assert.equal(parseWizardTime('12:15 am'), '00:15');
+  assert.equal(parseWizardTime('12:15 pm'), '12:15');
 });
 
-test('24-hour times are taken as written', () => {
-  assert.equal(parseWizardTime('asr', '17:15'), '17:15');
-  assert.equal(parseWizardTime('fajr', '05:45'), '05:45');
-  assert.equal(parseWizardTime('isha', '20:00'), '20:00');
+test('24-hour times need no suffix, because they cannot be misread', () => {
+  assert.equal(parseWizardTime('17:15'), '17:15');
+  assert.equal(parseWizardTime('20:00'), '20:00');
+  assert.equal(parseWizardTime('00:15'), '00:15');
 });
 
 test('nonsense times are refused', () => {
   for (const bad of ['545', 'half five', '5:75', '25:00', '13:00 pm', '', 'pm']) {
-    assert.equal(parseWizardTime('asr', bad), null, bad);
+    assert.equal(parseWizardTime(bad), null, bad);
   }
 });
 
+test('the prompt asks for am or pm, and so does the retry', () => {
+  const asked = run(['', '9/1/2026', '1']);
+  assert.match(asked.last, /am/i);
+  assert.match(asked.last, /pm/i);
+  const retried = run(['', '9/1/2026', '1', '5:45']);
+  assert.match(retried.last, /am or pm/i);
+  assert.equal(retried.session?.step, 'time', 'and it is still waiting for the time');
+});
+
 test("Jumu'ah takes several jamaahs, de-duped and ordered", () => {
-  assert.deepEqual(parseWizardTimes('jumuah', '1:30, 2:30'), ['13:30', '14:30']);
-  assert.deepEqual(parseWizardTimes('jumuah', '2:30 and 1:30'), ['13:30', '14:30']);
-  assert.deepEqual(parseWizardTimes('jumuah', '1:30; 1:30'), ['13:30']);
-  assert.equal(parseWizardTimes('jumuah', '1:30, nope'), null);
+  assert.deepEqual(parseWizardTimes('1:30 pm, 2:30 pm'), ['13:30', '14:30']);
+  assert.deepEqual(parseWizardTimes('2:30 pm and 1:30 pm'), ['13:30', '14:30']);
+  assert.deepEqual(parseWizardTimes('1:30 pm; 1:30 pm'), ['13:30']);
+  assert.equal(parseWizardTimes('1:30 pm, nope'), null);
+});
+
+test('a retry keeps the exchange alive — an ok:false would end it', () => {
+  // The platform tears the conversation down on any ok:false, so a typo must never be one.
+  for (const wrong of ['not a date', '5:45', 'banana']) {
+    const out = stepWizard({ step: 'date', touchedAt: NOW, times: {} }, wrong, tt(), NOW, TODAY);
+    assert.equal(out.reply.ok, true, wrong);
+    assert.ok(out.session, 'and the draft survives');
+  }
 });
 
 test('the echo uses the masjid’s own time format', () => {
-  const r24 = run(['', '2026-09-01', '3', '5:15'], tt({ timeFormat: '24h' }));
+  const r24 = run(['', '2026-09-01', '3', '5:15 pm'], tt({ timeFormat: '24h' }));
   assert.match(r24.last, /Asr set to \*17:15\*/);
-  const r12 = run(['', '2026-09-01', '3', '5:15']);
+  const r12 = run(['', '2026-09-01', '3', '5:15 pm']);
   assert.match(r12.last, /Asr set to \*5:15 PM\*/);
 });
 
