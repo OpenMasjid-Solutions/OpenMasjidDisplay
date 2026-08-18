@@ -18,6 +18,7 @@ import { config } from '../config';
 import { makeLog } from '../logger';
 import { dimsFor, activeTicker, tickerTextColor, tickerLayout, bottomBandSplit, TICKER_RED, type Dims } from './svg';
 import { primaryFontFile } from './fonts';
+import { selectEncoder, encoderArgs, encoderPixFmt } from './encoder';
 import { RenderWorker } from './renderPool';
 import type { Timetable } from '../types';
 
@@ -126,11 +127,11 @@ export function renderDimsFor(out: Dims): Dims {
  *  frames only update once per second. The SVG paints just the strip. `inDims` is the
  *  rasterised (piped) size; when smaller than `d` ffmpeg upscales first so the ticker
  *  drawtext still lands on the full-resolution canvas. */
-export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d): string {
+export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d, pixFmt = 'yuv420p'): string {
   const up = inDims.width !== d.width || inDims.height !== d.height
     ? `scale=${d.width}:${d.height}:flags=lanczos,`
     : '';
-  if (!ticker) return `${up}format=yuv420p,fps=15`;
+  if (!ticker) return `${up}format=${pixFmt},fps=15`;
   // NB: no `fps=` here. The pipeline now feeds genuine CFR frames at TICKER_FPS (the
   // last render, duplicated in real time between the 1 fps SVG renders), so drawtext
   // animates on real, evenly-paced frames. A hardware decoder gets a steady frame every
@@ -156,7 +157,7 @@ export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d
     const color = ticker.prohibited ? `0x${TICKER_RED.replace('#', '')}` : `0x${ticker.color.replace('#', '')}`;
     dt.push(`drawtext=fontfile='${ticker.fontfile}':textfile='${ticker.textfile}':expansion=none:fontsize=${size}:fontcolor=${color}:x=${x}:y=${yExpr}`);
   }
-  return `${up}fps=${TICKER_FPS},${dt.join(',')},format=yuv420p`;
+  return `${up}fps=${TICKER_FPS},${dt.join(',')},format=${pixFmt}`;
 }
 
 /**
@@ -174,7 +175,7 @@ export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d
  * -filter_complex. It is only used while a reminder is actually up — a few days a year — so
  * the ordinary ticker keeps the exact, hard-won simple chain above.
  */
-export function timetableVfReserved(d: Dims, ticker: TickerSpec, scroll: { x: number; w: number }, inDims: Dims = d): string {
+export function timetableVfReserved(d: Dims, ticker: TickerSpec, scroll: { x: number; w: number }, inDims: Dims = d, pixFmt = 'yuv420p'): string {
   const up = inDims.width !== d.width || inDims.height !== d.height
     ? `scale=${d.width}:${d.height}:flags=lanczos,`
     : '';
@@ -201,7 +202,7 @@ export function timetableVfReserved(d: Dims, ticker: TickerSpec, scroll: { x: nu
   return (
     `[0:v]${up}fps=${TICKER_FPS},split=2[bg][sc];` +
     `[sc]crop=${rw}:${bh}:${rx}:${by},${dt.join(',')}[tk];` +
-    `[bg][tk]overlay=${rx}:${by},format=yuv420p`
+    `[bg][tk]overlay=${rx}:${by},format=${pixFmt}`
   );
 }
 
@@ -230,18 +231,19 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
   // A red Iqāmah-change reminder owns the left of the band, so the scroll has to be clipped
   // to what is left of it — which needs a filtergraph (-filter_complex), not a chain (-vf).
   // Only when both are on screen at once; otherwise the plain chain is used unchanged.
+  // Which H.264 encoder — libx264 unless Quick Sync is both requested and actually usable.
+  // The x264 branch produces exactly the arguments this pipeline has always used.
+  const enc = selectEncoder(FFMPEG);
+  const pixFmt = encoderPixFmt(enc);
   const filter: string[] =
     ticker && scroll
-      ? ['-filter_complex', timetableVfReserved(d, ticker, scroll, inDims)]
-      : ['-vf', timetableVf(d, ticker, inDims)];
+      ? ['-filter_complex', timetableVfReserved(d, ticker, scroll, inDims, pixFmt)]
+      : ['-vf', timetableVf(d, ticker, inDims, pixFmt)];
   return [
     '-hide_banner', '-loglevel', 'warning',
     '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${inDims.width}x${inDims.height}`, '-framerate', `${inFps}`, '-i', 'pipe:0',
     ...filter, '-fps_mode', 'cfr',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
-    '-profile:v', 'baseline', '-level', levelFor(d.height),
-    '-g', `${ofps}`, '-keyint_min', `${ofps}`, '-sc_threshold', '0', '-bf', '0',
-    '-x264-params', 'repeat-headers=1:nal-hrd=cbr',
+    ...encoderArgs(enc, { level: levelFor(d.height), gop: ofps, profile: 'baseline', x264Params: 'repeat-headers=1:nal-hrd=cbr' }),
     '-b:v', `${br}k`, '-maxrate', `${br}k`, '-bufsize', `${buf}k`,
     '-an', '-f', 'rtsp', '-rtsp_transport', 'tcp', target,
   ];
@@ -249,17 +251,17 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
 
 function transcodeArgs(url: string, d: Dims, target: string): string[] {
   const br = d.height >= 1080 ? 4500 : 2500;
+  // Camera re-encoding is where the CPU actually runs out on a small box — every
+  // "most compatible" source is its own ffmpeg — so it honours the encoder choice too.
+  const enc = selectEncoder(FFMPEG);
   return [
     '-hide_banner', '-loglevel', 'warning',
     '-protocol_whitelist', FF_PROTOCOLS,
     '-rtsp_transport', 'tcp', '-i', url,
     '-map', '0:v:0',
-    '-vf', `scale=${d.width}:${d.height}:force_original_aspect_ratio=decrease,pad=${d.width}:${d.height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=15`,
+    '-vf', `scale=${d.width}:${d.height}:force_original_aspect_ratio=decrease,pad=${d.width}:${d.height}:(ow-iw)/2:(oh-ih)/2,format=${encoderPixFmt(enc)},fps=15`,
     '-fps_mode', 'cfr',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
-    '-profile:v', 'main', '-level', levelFor(d.height),
-    '-g', '30', '-keyint_min', '30', '-sc_threshold', '0', '-bf', '0',
-    '-x264-params', 'repeat-headers=1',
+    ...encoderArgs(enc, { level: levelFor(d.height), gop: 30, profile: 'main', x264Params: 'repeat-headers=1' }),
     '-b:v', `${br}k`, '-maxrate', `${br}k`, '-bufsize', `${br * 2}k`,
     '-an', '-f', 'rtsp', '-rtsp_transport', 'tcp', target,
   ];

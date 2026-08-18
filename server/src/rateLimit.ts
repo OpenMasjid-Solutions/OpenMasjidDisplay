@@ -120,14 +120,22 @@ function clientKey(req: IncomingMessage): string {
 export class RequestLimiter {
   private readonly hits = new Map<string, { count: number; windowStart: number }>();
 
+  /**
+   * @param bySocket key on the SOCKET address instead of X-Forwarded-For. Set it for anything
+   *   guarding a credential: there the incentives invert, exactly as the note on `clientKey`
+   *   says. A caller rotating a forged X-Forwarded-For would otherwise never be limited at
+   *   all, and would mint one Map entry per request while doing it. The widget keeps the
+   *   forwarded key, because there a shared bucket would throttle real worshippers.
+   */
   constructor(
     private readonly max: number,
     private readonly windowMs: number,
+    private readonly bySocket = false,
   ) {}
 
   /** True if this request is within budget (and counts it). */
   allow(req: IncomingMessage): boolean {
-    const k = clientKey(req);
+    const k = this.bySocket ? (req.socket?.remoteAddress ?? 'unknown') : clientKey(req);
     const now = Date.now();
     const e = this.hits.get(k);
     if (!e || now - e.windowStart >= this.windowMs) {

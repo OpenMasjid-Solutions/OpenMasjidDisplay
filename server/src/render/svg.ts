@@ -210,7 +210,7 @@ function fmtClock(hours: number, timeFormat: string, withSeconds = false): Clock
   return { time: `${h}:${pad2(m)}${sec}`, period };
 }
 
-function fmtShort(hours: number | null, timeFormat: string): string {
+export function fmtShort(hours: number | null, timeFormat: string): string {
   if (hours == null || !Number.isFinite(hours)) return '—';
   const c = fmtClock(hours, timeFormat);
   return c.period ? `${c.time} ${c.period}` : c.time; // AM/PM stays uppercase
@@ -482,7 +482,7 @@ function mark(x: number, y: number, size: number, color: string, logo?: string |
   </g>`;
 }
 
-interface Row {
+export interface Row {
   key: string;
   label: string;
   adhan: number | null;
@@ -496,7 +496,7 @@ interface Row {
 
 /** The on-screen name for a row: the (localized, overridable) label, plus a Jumu'ah
  *  number when there is more than one Jumu'ah (so two times don't read as Adhan/Iqamah). */
-function rowName(r: Row, L: Record<string, string>): string {
+export function rowName(r: Row, L: Record<string, string>): string {
   const base = L[r.label] ?? r.label;
   return r.jumuahNum ? `${base} ${r.jumuahNum}` : base;
 }
@@ -508,13 +508,13 @@ function ordinalEn(n: number): string {
   return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
 }
 
-const PRAYER_LABELS: Record<string, Record<string, string>> = {
+export const PRAYER_LABELS: Record<string, Record<string, string>> = {
   en: { fajr: 'Fajr', sunrise: 'Sunrise', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha', jumuah: "Jumu'ah", iqamah: 'Iqāmah', athan: 'Adhan', next: 'Next prayer', prayer: 'Prayer' },
   ar: { fajr: 'الفجر', sunrise: 'الشروق', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
   ur: { fajr: 'فجر', sunrise: 'طلوع', dhuhr: 'ظہر', asr: 'عصر', maghrib: 'مغرب', isha: 'عشاء', jumuah: 'جمعہ', iqamah: 'اقامہ', athan: 'اذان', next: 'اگلی نماز', prayer: 'نماز' },
 };
 
-function labels(lang: string, overrides?: Record<string, string>): Record<string, string> {
+export function labels(lang: string, overrides?: Record<string, string>): Record<string, string> {
   const base = PRAYER_LABELS[lang] ?? PRAYER_LABELS.en;
   if (!overrides) return base;
   // Only non-empty overrides win, so clearing a custom label restores the default.
@@ -1671,7 +1671,7 @@ function prohibitedMessage(tt: Timetable, m: Model): string {
   return `Prohibited time for prayer — please wait until the ${adhanName} adhan (${fmtShort(dhuhrAdhanHours(m), tt.timeFormat)})`;
 }
 
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+export const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 /** Grammatical list: "A" · "A and B" · "A, B, and C" (Oxford comma). */
 function joinList(items: string[]): string {
   if (items.length <= 1) return items[0] ?? '';
@@ -1681,7 +1681,7 @@ function joinList(items: string[]): string {
 
 // Maghrib is excluded — it's never a per-day override (always calculated sunset + its offset).
 const ICHANGE_KEYS = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+export const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 /** The soonest upcoming Iqāmah change that falls within `daysBefore` days, rendered as a
  *  ready-to-show sentence — or null if none. Considers BOTH a scheduled "from this date"
  *  change (tt.iqamahSchedule) and a per-day CSV override (tt.iqamahYear). A prayer only
@@ -1692,7 +1692,34 @@ const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'Ju
  *  change fires, not every day it's in effect. Only the four daily prayers are considered
  *  (Maghrib is never overridden; Jumu'ah changes aren't announced here). English sentence;
  *  full localization is a later i18n pass. */
-export function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: number): string | null {
+/** A scheduled Iqāmah change, as data rather than as a sentence. */
+export interface NextIqamahChange {
+  /** the calendar date the change takes effect, in the timetable's timezone */
+  year: number;
+  month: number;
+  day: number;
+  /** whole days from today to that date (≥ 1) */
+  daysUntil: number;
+  /** the prayers that actually change on it, with their NEW Iqāmah time (decimal hours) */
+  changed: { key: (typeof ICHANGE_KEYS)[number]; hours: number }[];
+}
+
+/**
+ * The soonest upcoming Iqāmah change within `withinDays`, as structured data — or null.
+ *
+ * This is the whole of the detection logic; `upcomingIqamahChange` below is only a sentence
+ * formatter over it, and the downloadable announcement poster reads the same result. Keeping
+ * one implementation is the point: the comparison rules here are subtle (see the doc comment
+ * on the formatter), and a second copy written for the poster would drift from what the
+ * screens announce — so the masjid would hand out a notice for a change the screens never
+ * mentioned, or vice versa.
+ */
+export function findIqamahChange(
+  tt: Timetable,
+  now: Date,
+  opts: { minDays: number; maxDays: number; preferLatest?: boolean },
+): NextIqamahChange | null {
+  const { minDays, maxDays, preferLatest = false } = opts;
   const year = tt.iqamahYear;
   const schedule = tt.iqamahSchedule;
   const hasYear = !!year && Object.keys(year).length > 0;
@@ -1739,7 +1766,7 @@ export function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: numbe
     const candUTC = Date.UTC(y, mo - 1, da, 12);
     if (new Date(candUTC).getUTCMonth() !== mo - 1) return false; // invalid (e.g. Feb-29 non-leap)
     const daysUntil = Math.round((candUTC - todayUTC) / 86400000);
-    if (daysUntil < 1 || daysUntil > daysBefore) return false;
+    if (daysUntil < minDays || daysUntil > maxDays) return false;
     const key = `${y}-${mo}-${da}`;
     if (seen.has(key)) return true;
     seen.add(key);
@@ -1753,15 +1780,19 @@ export function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: numbe
       const mo = Number(mm[1]);
       const da = Number(mm[2]);
       if (mo < 1 || mo > 12 || da < 1 || da > 31) continue;
-      // First occurrence (this year, else next) that lands within the window.
-      if (!addCand(today.year, mo, da)) addCand(today.year + 1, mo, da);
+      // A CSV key is MM-DD, so it recurs annually. Try this year, then the neighbouring one
+      // in whichever direction the window runs — looking forward for the NEXT change, back
+      // for the most recent one.
+      if (!addCand(today.year, mo, da)) addCand(today.year + (preferLatest ? -1 : 1), mo, da);
     }
   if (hasSched)
     for (const e of schedule!) {
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(e.from);
       if (m) addCand(Number(m[1]), Number(m[2]), Number(m[3]));
     }
-  cands.sort((a, b) => a.daysUntil - b.daysUntil);
+  // Nearest first, from whichever side of today we are looking at: ascending for the next
+  // change, descending so the MOST RECENT past change wins when looking back.
+  cands.sort((a, b) => (preferLatest ? b.daysUntil - a.daysUntil : a.daysUntil - b.daysUntil));
 
   for (const c of cands) {
     const prev = new Date(Date.UTC(c.y, c.mo - 1, c.da - 1, 12)); // the calendar day before
@@ -1781,15 +1812,42 @@ export function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: numbe
       if (dRule >= 2 && dBefore >= 2) changed.push({ key, hours: ovH });
     }
     if (!changed.length) continue;
-    // "tomorrow" / a weekday within the coming week (unambiguous) / weekday + date further out.
-    const dow = new Date(Date.UTC(c.y, c.mo - 1, c.da, 12)).getUTCDay();
-    const when = c.daysUntil === 1 ? 'tomorrow' : c.daysUntil <= 6 ? WEEKDAYS[dow] : `${WEEKDAYS[dow]}, ${MONTH_NAMES[c.mo - 1]} ${c.da}`;
-    // English prayer names (the whole sentence is English; a mixed English+Arabic run in one
-    // text element would tofu, since FONT_SANS carries no Arabic).
-    const clauses = changed.map((ch) => `${PRAYER_LABELS.en[ch.key] ?? ch.key} will be at ${fmtShort(ch.hours, tt.timeFormat)}`);
-    return `From ${when}, ${joinList(clauses)}`;
+    return { year: c.y, month: c.mo, day: c.da, daysUntil: c.daysUntil, changed };
   }
   return null;
+}
+
+/** The soonest change in the next `withinDays` days, or null. What the on-screen reminder
+ *  and the announcement poster both ask for first. */
+export function nextIqamahChange(tt: Timetable, now: Date, withinDays: number): NextIqamahChange | null {
+  return findIqamahChange(tt, now, { minDays: 1, maxDays: withinDays });
+}
+
+/**
+ * The most recent change that has ALREADY taken effect, or null.
+ *
+ * Only the poster uses this, and only as a fallback. A masjid that has just made its seasonal
+ * change still wants the notice — to send to people who missed it, or to print for the board —
+ * and "there is nothing upcoming" is a poor answer to "give me the times". `daysUntil` comes
+ * back ≤ 0 for these, which is how the poster knows to say "took effect on …" rather than
+ * "from …".
+ */
+export function lastIqamahChange(tt: Timetable, now: Date, withinDays: number): NextIqamahChange | null {
+  return findIqamahChange(tt, now, { minDays: -withinDays, maxDays: 0, preferLatest: true });
+}
+
+/** The upcoming change as a ready-to-show sentence, or null — the bottom-band reminder.
+ *  Pure formatting over `nextIqamahChange`; the detection rules live there. */
+export function upcomingIqamahChange(tt: Timetable, now: Date, daysBefore: number): string | null {
+  const c = nextIqamahChange(tt, now, daysBefore);
+  if (!c) return null;
+  // "tomorrow" / a weekday within the coming week (unambiguous) / weekday + date further out.
+  const dow = new Date(Date.UTC(c.year, c.month - 1, c.day, 12)).getUTCDay();
+  const when = c.daysUntil === 1 ? 'tomorrow' : c.daysUntil <= 6 ? WEEKDAYS[dow] : `${WEEKDAYS[dow]}, ${MONTH_NAMES[c.month - 1]} ${c.day}`;
+  // English prayer names (the whole sentence is English; a mixed English+Arabic run in one
+  // text element would tofu, since FONT_SANS carries no Arabic).
+  const clauses = c.changed.map((ch) => `${PRAYER_LABELS.en[ch.key] ?? ch.key} will be at ${fmtShort(ch.hours, tt.timeFormat)}`);
+  return `From ${when}, ${joinList(clauses)}`;
 }
 
 /** If an Adhan has just arrived (within adhanPopup.seconds of the DISPLAYED Adhan),

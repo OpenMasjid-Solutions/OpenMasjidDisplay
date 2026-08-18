@@ -12,6 +12,7 @@ import type {
   IqamahYear,
   IqamahScheduleEntry,
   Release,
+  WhatsAppStatus,
 } from './types';
 
 let onUnauth: () => void = () => {};
@@ -82,6 +83,11 @@ export const api = {
   iqamahCsvUrl: (id: string, mode?: 'template') =>
     `/api/timetables/${id}/iqamah-csv${mode ? `?mode=${mode}` : ''}`,
 
+  /** The announcement poster for the NEXT scheduled Iqamah change (PNG attachment).
+   *  404s with a JSON reason when nothing is scheduled ahead, so fetch it rather than
+   *  linking straight to it. */
+  iqamahChangeImageUrl: (id: string) => `/api/timetables/${id}/iqamah-change.png`,
+
   uploadAnnouncement: (id: string, dataUrl: string) =>
     req<Timetable>('POST', `/api/timetables/${id}/announcements`, { data: dataUrl }),
   removeAnnouncement: (id: string, file: string) =>
@@ -135,6 +141,14 @@ export const api = {
 
   testNotification: () =>
     req<{ baseUrlSet: boolean; hasSecret: boolean; baseUrlLoopback: boolean; baseUrl: string; appId: string; delivered: boolean; reason?: string }>('POST', '/api/notify-test'),
+
+  /** Can this masjid post to WhatsApp, which groups may we use, what would we send, and what
+   *  have we queued so far — one call, because the settings section needs all four at once. */
+  whatsappStatus: () => req<WhatsAppStatus>('GET', '/api/whatsapp'),
+
+  /** Post the Iqāmah-change notice now. Resolves on 202 — QUEUED, not sent: the platform
+   *  paces every message, so delivery is minutes away and hours inside quiet hours. */
+  whatsappSendNow: () => req<{ queued: boolean; asImage: boolean }>('POST', '/api/whatsapp/send-now'),
 
   /** Release notes shipped inside this build (account menu → "What's new"). Already split
    *  into sections server-side; `items` keep their inline **bold** / `code` markers. */

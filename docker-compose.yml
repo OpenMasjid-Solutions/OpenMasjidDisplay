@@ -13,16 +13,23 @@
 services:
   app:
     # ┌─────────────────────────────────────────────────────────────────────────┐
-    # │ MAIN BRANCH — this line is the ONE difference between main and dev.     │
+    # │ DEV BRANCH — this line is the ONE difference between dev and main.      │
     # └─────────────────────────────────────────────────────────────────────────┘
-    # Tag for humans + digest for integrity (the @sha256 is what actually pins). A moved
-    # tag can't repoint this to a different image, which matters because every push to
-    # main republishes the version tag (DISPLAY-010) — the digest is the only thing
-    # protecting existing installs. Bump both each release.
+    # It must name the EXACT version in manifest.yaml (X.Y.Z-dev.N), which CI publishes
+    # as an immutable tag. Bump both together, every dev build.
     #
-    # On the dev branch this same line is the MOVING :dev tag instead, unpinned on
-    # purpose. The `channel` job in .github/workflows/checks.yml fails the build if this
-    # line is ever wrong for the branch it is on, in either direction. See CLAUDE.md →
+    # It used to be the moving `:dev` tag, and that is precisely why development-channel
+    # updates never worked: the platform detects an update by comparing the catalog's
+    # version against the installed one, so republishing new content under an unchanged
+    # version and an unchanged image reference is invisible to it — nothing to notify,
+    # nothing to update to. `:dev` is still published as a convenience alias, but the
+    # catalog pins the versioned tag, so that is what belongs here.
+    #
+    # ON MERGE TO MAIN this MUST become a pinned release reference:
+    #     image: ghcr.io/…/openmasjiddisplay:<X.Y.Z>@sha256:<digest>
+    # because main is what every masjid installs. The `channel` job in
+    # .github/workflows/checks.yml fails the build if the version format or ANY image
+    # line is wrong for the branch it is on, in either direction. See CLAUDE.md →
     # "Branching policy".
     image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.68.0@sha256:c6b5566c4dfc25dafbc2f5cfefaaf47d38189fc94efb3475eeacb9e31d427b82
     restart: unless-stopped
@@ -38,6 +45,32 @@ services:
       OPENMASJID_BASE_URL: ${OPENMASJID_BASE_URL:-}
       OPENMASJID_APP_ID: ${OPENMASJID_APP_ID:-}
       OPENMASJID_APP_SECRET: ${OPENMASJID_APP_SECRET:-}
+      # Video encoder: unset/x264 (default, always works) | qsv | auto.
+      # See the block below before setting this to qsv — it needs a device the App Store
+      # install cannot be given. Unset here so it can be supplied via .env / the environment.
+      VIDEO_ENCODER: ${VIDEO_ENCODER:-}
+    # ── Intel Quick Sync (hardware H.264) — OFF, and it must stay off in THIS file ───────
+    #
+    # QSV needs the GPU inside the container, i.e.:
+    #
+    #     devices:
+    #       - /dev/dri:/dev/dri
+    #
+    # That line CANNOT be added here. OpenMasjidOS's compose risk-check treats any `devices:`
+    # entry as BLOCKING (packages/core/src/apps/compose-validate.ts — dangers are merged into
+    # the refusals that stop an install), so adding it would not degrade the app for masjids
+    # without an Intel GPU: it would make the app refuse to install for every masjid, with or
+    # without one.
+    #
+    # A STANDALONE `docker compose up` is a different situation — there is no risk-check, and
+    # the operator owns the box. To turn it on there: uncomment the devices block above, set
+    # VIDEO_ENCODER=qsv, and check the log says "using Intel Quick Sync". If the encoder or
+    # the render node is missing the app says so and stays on libx264 — screens keep working
+    # either way, which is the point of falling back rather than failing.
+    #
+    # For an App Store install this stays unavailable until the platform grows a device
+    # allowlist. libx264 is the default and is comfortably fast enough for the timetable
+    # stream; QSV is for a box re-encoding several cameras at once.
     ports:
       # host:container. OpenMasjidOS offers "Open" on the LOWEST published port,
       # so the control panel (7860) must stay below the RTSP port (8554). The

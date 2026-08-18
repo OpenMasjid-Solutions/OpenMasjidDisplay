@@ -8,7 +8,12 @@
 > "The Fabric" is the shorthand. It is **optional and backwards-compatible** — this app works fully
 > standalone (its own appearance + own login) when the Fabric is absent.
 >
-> **Status (2026-06-21): live on both sides, including identity-bound SSO.**
+> **Status (2026-08-17, app v0.69.0): live on both sides, including identity-bound SSO.**
+>
+> This page is about SSO and appearance specifically. The app's full set of declared capabilities is
+> `sso`, `notifications`, `domain`, `https`, `whatsapp` and `commands` — see
+> [`USING_THE_FABRIC.md`](USING_THE_FABRIC.md) for the ones beyond this page, including the app's only
+> **inbound** route, `POST /fabric/commands/run`.
 > - Platform: appearance (A1 `#omos=` fragment, A2 `GET /api/public/appearance`) since **v0.18.0**;
 >   **identity-bound SSO since v0.19.x** — `GET /api/auth/session` now **fails closed** and is bound to
 >   the calling app: a valid `omos_session` cookie alone is no longer enough, the app must present its

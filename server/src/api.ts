@@ -18,7 +18,9 @@ import {
   clearCookieHeader,
   isSecureRequest,
 } from './auth';
-import { probePlatform, ssoConfigured, notify, siteInfo } from './fabric';
+import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, whatsappGroups } from './fabric';
+import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
+import type { FabricCommands } from './fabricCommands';
 import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
@@ -41,7 +43,7 @@ import {
   copyAsset,
   logoDataUri,
 } from './render/background';
-import { renderPreviewPng, renderPreviewMeta } from './render/renderPool';
+import { renderPreviewPng, renderPreviewMeta, renderAnnouncePng } from './render/renderPool';
 import { probeSource } from './render/renderer';
 import { parseIqamahCsv, toCsv, templateCsv, normalizeIqamahYear } from './iqamahCsv';
 import { normalizeIqamahSchedule } from './iqamahSchedule';
@@ -81,6 +83,13 @@ interface Deps {
   /** The volunteer-page handler, also mounted here (under /volunteer) so the volunteer UI
    *  rides the OS tunnel on the main port without the platform routing its own port. */
   volunteer: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  /** Posts the Iqāmah-change notice to the masjid's WhatsApp group. Optional so tests and the
+   *  volunteer-only paths can build an API without a background job attached. */
+  whatsapp?: WhatsAppAnnouncer;
+  /** Serves POST /fabric/commands/run — the platform running an admin's WhatsApp command.
+   *  Optional: without it the endpoint answers 503 "not ready" rather than 404, which is the
+   *  contract's word for "this app cannot do that yet". */
+  commands?: FabricCommands;
 }
 
 /** The instant to render a preview at: local noon on `dateStr` (YYYY-MM-DD) in the
@@ -193,7 +202,7 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 };
 
 export function createApi(deps: Deps) {
-  const { store, orchestrator, volunteer } = deps;
+  const { store, orchestrator, volunteer, whatsapp, commands } = deps;
   const loginLimiter = new LoginLimiter();
   // Public widget: 120 requests per minute per CLIENT. The embedded page polls every 30s,
   // so a real viewer uses ~2 (a few more with several tabs); this only bites on abuse.
@@ -201,7 +210,16 @@ export function createApi(deps: Deps) {
   // meant every visitor arriving through the remote-access tunnel shared ONE bucket, so a
   // masjid's own website visitors throttled each other. (DISPLAY-017)
   const widgetLimiter = new RequestLimiter(120, 60_000);
-  setInterval(() => widgetLimiter.prune(), 5 * 60_000).unref?.();
+  // Admin commands: the platform already rate-limits each sender (5 per 15s), so this only
+  // catches something reaching the port directly. Generous enough never to bite a real admin
+  // working through the wizard one question at a time. Keyed on the SOCKET (the `true`), not
+  // X-Forwarded-For: this one sits in front of a secret check, and a forged header would both
+  // dodge the cap entirely and add a Map entry per request.
+  const commandLimiter = new RequestLimiter(60, 60_000, true);
+  setInterval(() => {
+    widgetLimiter.prune();
+    commandLimiter.prune();
+  }, 5 * 60_000).unref?.();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
   // OpenMasjidOS SSO (see /api/session) — so every other endpoint stays a simple,
@@ -216,6 +234,25 @@ export function createApi(deps: Deps) {
     try {
       // ---- Unauthenticated endpoints --------------------------------------
       if (pathname === '/healthz') return sendJson(res, 200, { ok: true });
+
+      /**
+       * The platform asking us to run a command an admin picked from a WhatsApp menu.
+       *
+       * Unauthenticated by SESSION on purpose — OpenMasjidOS has no cookie of ours. It
+       * authenticates by presenting our OWN app secret plus a caller header, both checked
+       * inside the handler, which is why this sits above the session gate rather than below
+       * it. See fabricCommands.ts for why the exact path (never the tunnel's `/<basePath>/…`
+       * form) is what keeps this LAN-only.
+       */
+      if (pathname === '/fabric/commands/run' && method === 'POST') {
+        if (!commands) return sendJson(res, 503, { ok: false, code: 'not_ready' });
+        if (!commandLimiter.allow(req)) return sendJson(res, 429, { ok: false, error: 'Too many requests.' });
+        // The platform caps its own request at 4 KB; ours is the same order, and a body that
+        // large from here would already be a bug rather than an admin typing a prayer time.
+        const body = await readBody(req, 8_000).catch(() => null);
+        if (!body) return sendJson(res, 400, { ok: false, error: 'Could not read that request.' });
+        return commands.handle(req, res, body);
+      }
 
       // ---- Volunteer page (also served here, not just on its own port) ----
       // So it works behind the OS Cloudflare tunnel at /<appId>/volunteer with NO platform
@@ -840,6 +877,101 @@ export function createApi(deps: Deps) {
         const hotspots = await renderPreviewMeta(tt, Date.now());
         return sendJson(res, 200, { hotspots });
       }
+      // The downloadable "Iqāmah times are changing" poster for the NEXT scheduled change —
+      // the thing a masjid sends to its WhatsApp group and pins to the noticeboard. Served
+      // as an attachment so the browser saves it rather than showing it.
+      const annPosterMatch = /^\/api\/timetables\/([\w-]+)\/iqamah-change\.png$/.exec(pathname);
+      if (annPosterMatch && method === 'GET') {
+        const tt = store.db.timetables.find((t) => t.id === annPosterMatch[1]);
+        if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
+        if (tt.latitude == null || tt.longitude == null) {
+          return sendJson(res, 400, { error: 'Add the masjid location before making an announcement image.' });
+        }
+        let png: Buffer;
+        try {
+          png = await renderAnnouncePng(tt, Date.now());
+        } catch (err) {
+          // The only expected failure is "nothing scheduled ahead", which is a normal state
+          // and not an error worth a 500 — the button is simply not applicable yet.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('no upcoming Iqamah change')) {
+            // Reached only when there is no change in EITHER direction within a year — the
+            // renderer falls back to the most recent past one before giving up.
+            return sendJson(res, 404, {
+              error: 'There are no Iqamah changes to announce — nothing scheduled ahead, and none in the past year. Add one under “Scheduled Iqamah changes” (or import a CSV) first.',
+            });
+          }
+          throw err;
+        }
+        const stamp = new Date().toISOString().slice(0, 10);
+        const safeName = (tt.masjidName || 'masjid').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'masjid';
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'content-type': 'image/png',
+          'content-disposition': `attachment; filename="${safeName}-iqamah-change-${stamp}.png"`,
+          'cache-control': 'no-store',
+        });
+        res.end(png);
+        return;
+      }
+
+      /**
+       * Everything the WhatsApp settings section needs, in one call.
+       *
+       * `reason` decides which sentence the panel shows, and it is the platform's word, not
+       * ours — "not set up", "no phone linked" and "the gateway is down" have completely
+       * different fixes and none of them are this app's to guess at. `groups` holds only the
+       * groups the ADMIN approved for us; an empty list means the feature stays hidden rather
+       * than offering a switch that cannot work.
+       *
+       * `preview` is the exact message that would be posted. An admin is about to send
+       * something to a few hundred people through a channel with no undo, so showing the real
+       * text — not a description of it — is the least this can do.
+       */
+      if (pathname === '/api/whatsapp' && method === 'GET') {
+        const status = await whatsappAvailability();
+        // Only ask for groups when the platform says it can actually send; a 403/unreachable
+        // answer here would just be a second failed round trip saying the same thing.
+        const groups = status.available ? await whatsappGroups() : [];
+        let preview: string | null = null;
+        let previewNote: string | null = null;
+        try {
+          const d = decideAnnounce(store.db, Date.now(), true);
+          // With media the poster carries the timetable and the message is a short caption;
+          // without it the full notice IS the message. Preview whichever will actually go,
+          // or the preview is of something that never gets sent.
+          if (d.act === 'post') preview = status.media ? announceCaptionFor(d.target) : announceMessage(d.target);
+          else previewNote = d.why;
+        } catch (err) {
+          log.debug(`whatsapp preview failed: ${err instanceof Error ? err.message : err}`);
+          previewNote = 'Could not build a preview.';
+        }
+        return sendJson(res, 200, {
+          ...status,
+          groups,
+          preview,
+          previewNote,
+          log: [...(store.db.whatsappLog ?? [])].reverse().slice(0, 40),
+        });
+      }
+
+      /**
+       * Post the notice now, at an admin's explicit request.
+       *
+       * This is the only way to send a correction: an automatic post happens exactly once per
+       * change, so an admin who edits a time after the group was told needs a deliberate act
+       * to tell them again. It bypasses the window and the dedupe for that reason, and is
+       * logged with `manual: true` so the log distinguishes the two.
+       */
+      if (pathname === '/api/whatsapp/send-now' && method === 'POST') {
+        if (!whatsapp) return sendJson(res, 503, { error: 'WhatsApp posting is not running.' });
+        const r = await whatsapp.sendNow();
+        // 202, matching the platform: accepted for later delivery is all anyone knows. The
+        // pacing puts real delivery minutes away, and hours inside the masjid's quiet hours.
+        if (!r.queued) return sendJson(res, 400, { error: r.reason ?? 'Could not queue the message.' });
+        return sendJson(res, 202, { queued: true, asImage: !!r.asImage });
+      }
+
       // Printable month of prayer times (browser "Save as PDF").
       const printMatch = /^\/api\/timetables\/([\w-]+)\/print$/.exec(pathname);
       if (printMatch && method === 'GET') {

@@ -136,11 +136,25 @@
   --color-btn-hover: #075985;
   --color-on-primary: #FFFFFF;
 
-  /* NOTE: the ambient SCENE (page backdrop) is deliberately NOT lightened in light mode —
-     matching the sibling apps. Light mode only lightens the glass content cards; the backdrop
-     stays the dark gradient (like every preset wallpaper) so the light on-scene ink below is
-     always readable. Lightening the scene here was the "white tint" that made on-scene text
-     vanish in light mode. Scene tokens therefore inherit the dark values from :root. */
+  /* The ambient SCENE is light in light mode. It used to stay dark here — light mode
+     lightened only the glass cards and left the backdrop near-black — because an earlier
+     attempt at a light scene made the on-scene text vanish. The actual cause was ordering,
+     not the light scene: every [data-wallpaper] block below is a dark gradient at the same
+     specificity as this one, so they overwrote it and light theme ended up painting white
+     glass over a near-black backdrop. The fix is the paired
+     [data-theme="light"][data-wallpaper="…"] blocks further down, which win on specificity
+     wherever they sit, plus on-scene ink that follows the scene. */
+  --scene-base: #EAF6FF;
+  --scene-gradient: linear-gradient(150deg, #dbeafe 0%, #eef6ff 50%, #f0f9ff 100%);
+  --aurora-cyan: rgba(2, 132, 199, 0.14);
+  --aurora-navy: rgba(186, 230, 253, 0.42);
+  --aurora-gold: rgba(217, 119, 6, 0.07);
+  --aurora-blur: 56px;
+  --scene-vignette: rgba(2, 40, 70, 0.06);
+  --pattern-opacity: 0.4;
+  /* The same figure as the dark pattern, drawn in the light theme's primary and fainter —
+     the cyan stroke was invisible on a pale backdrop. */
+  --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%230284C7' stroke-width='0.5' opacity='0.1'%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3C/g%3E%3C/svg%3E");
 }
 
 :root,
@@ -154,23 +168,44 @@
   --font-display: "Segoe UI", system-ui, ui-sans-serif, var(--font-sans);
 }
 
-/* On-scene ("on the wallpaper") text — INDEPENDENT of the light/dark content theme.
-   All preset wallpapers are dark, so on-scene text defaults to light (readable in BOTH
-   themes; glass-card text still uses the theme's --color-ink). A light custom wallpaper
-   image flips this to dark via data-scene="light" (set from JS luminance). */
+/* On-scene ("on the wallpaper") text — the brand, the clock, page headings, empty states.
+   It follows the SCENE, which is not the same thing as the theme: a custom wallpaper photo
+   replaces the gradient entirely, so its own tone decides. Order matters below — all three
+   blocks have the same specificity, so the later one wins, and the photo must beat the theme. */
 :root,
-[data-theme="dark"],
-[data-theme="light"] {
+[data-theme="dark"] {
   --ink-scene: #F4F7FB;
   --ink-scene-muted: #AEBACD;
   --ink-scene-faint: #8593AD;
   --text-shadow-scene: 0 1px 12px rgba(0, 0, 0, 0.55);
+}
+/* Light theme now has a light scene, so near-white on-scene text would disappear on it.
+   These are the same inks the glass cards use, so chrome on the backdrop and text on a panel
+   read alike. */
+[data-theme="light"] {
+  --ink-scene: #0C4A6E;
+  --ink-scene-muted: #44515F;
+  --ink-scene-faint: #647281;
+  --text-shadow-scene: 0 1px 10px rgba(255, 255, 255, 0.65);
+}
+/* A custom wallpaper PHOTO overrides both, because it is what is actually behind the text.
+   `data-scene` is set from the image's measured luminance (App.tsx) and is absent whenever
+   there is no photo — which is what lets the theme rules above apply to the gradient. */
+[data-scene="dark"] {
+  --ink-scene: #F4F7FB;
+  --ink-scene-muted: #AEBACD;
+  --ink-scene-faint: #8593AD;
+  --text-shadow-scene: 0 1px 12px rgba(0, 0, 0, 0.55);
+  --scrim: linear-gradient(180deg, rgba(2, 9, 18, 0.30), rgba(2, 9, 18, 0.58));
 }
 [data-scene="light"] {
   --ink-scene: #0C4A6E;
   --ink-scene-muted: #44515F;
   --ink-scene-faint: #647281;
   --text-shadow-scene: 0 1px 10px rgba(255, 255, 255, 0.65);
+  /* A pale veil, not the dark one: over a light photo the dark scrim was fighting the dark
+     ink it is supposed to be making readable. */
+  --scrim: linear-gradient(180deg, rgba(255, 255, 255, 0.30), rgba(255, 255, 255, 0.62));
 }
 
 /* Wallpapers (applied via data-wallpaper on <html>) — mirror OpenMasjidOS so the
@@ -219,10 +254,79 @@
   --aurora-cyan: rgba(148, 163, 184, 0.20); --aurora-navy: rgba(51, 65, 85, 0.50); --aurora-gold: rgba(203, 213, 225, 0.10);
 }
 
-*,
-*::before,
-*::after {
-  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+/* ── Light-theme wallpapers ───────────────────────────────────────────────────
+ * Every [data-wallpaper] block above is a dark gradient, and they sit AFTER
+ * [data-theme="light"] at the same specificity — so without these they would overwrite the
+ * light scene and put white glass and dark ink back on a near-black backdrop. That is the
+ * bug that made light mode look wrong, and it is why these use two-attribute selectors: they
+ * win no matter where in the file they land.
+ *
+ * Each keeps its wallpaper's HUE and inverts the lightness, so Ocean is still blue and
+ * Forest still green — a light mode that collapsed all nine to the same pale blue would lose
+ * the point of choosing one.
+ * ─────────────────────────────────────────────────────────────────────────── */
+[data-theme="light"][data-wallpaper="aurora"] {
+  --scene-base: #EAF6FF;
+  --scene-gradient: linear-gradient(150deg, #cfeaf7 0%, #e3f2fb 50%, #f4fbff 100%);
+  --aurora-cyan: rgba(2, 132, 199, 0.16); --aurora-navy: rgba(186, 230, 253, 0.50); --aurora-gold: rgba(217, 119, 6, 0.08);
+}
+[data-theme="light"][data-wallpaper="ocean"] {
+  --scene-base: #E8F2FD;
+  --scene-gradient: linear-gradient(150deg, #c7dcf7 0%, #dceafc 50%, #f0f7ff 100%);
+  --aurora-cyan: rgba(56, 189, 248, 0.22); --aurora-navy: rgba(37, 99, 235, 0.16); --aurora-gold: rgba(45, 212, 191, 0.12);
+}
+[data-theme="light"][data-wallpaper="twilight"] {
+  --scene-base: #F2EDFC;
+  --scene-gradient: linear-gradient(150deg, #ded0f7 0%, #ebe2fb 50%, #f7f3ff 100%);
+  --aurora-cyan: rgba(147, 51, 234, 0.16); --aurora-navy: rgba(124, 58, 237, 0.14); --aurora-gold: rgba(236, 72, 153, 0.10);
+}
+[data-theme="light"][data-wallpaper="berry"] {
+  --scene-base: #FCEDF6;
+  --scene-gradient: linear-gradient(150deg, #f7d3e8 0%, #fae3f1 50%, #fff2f9 100%);
+  --aurora-cyan: rgba(219, 39, 119, 0.16); --aurora-navy: rgba(162, 28, 175, 0.14); --aurora-gold: rgba(251, 113, 133, 0.12);
+}
+[data-theme="light"][data-wallpaper="sunset"] {
+  --scene-base: #FFF1E8;
+  --scene-gradient: linear-gradient(150deg, #fbd9c0 0%, #fde8d8 50%, #fff6ef 100%);
+  --aurora-cyan: rgba(245, 158, 11, 0.20); --aurora-navy: rgba(244, 63, 94, 0.14); --aurora-gold: rgba(251, 146, 60, 0.18);
+}
+[data-theme="light"][data-wallpaper="ember"] {
+  --scene-base: #FFEDE8;
+  --scene-gradient: linear-gradient(150deg, #fbd2c4 0%, #fde3d8 50%, #fff4f0 100%);
+  --aurora-cyan: rgba(234, 88, 12, 0.20); --aurora-navy: rgba(220, 38, 38, 0.14); --aurora-gold: rgba(250, 204, 21, 0.16);
+}
+[data-theme="light"][data-wallpaper="forest"] {
+  --scene-base: #E9F7EE;
+  --scene-gradient: linear-gradient(150deg, #c8ecd5 0%, #ddf3e5 50%, #f1fbf5 100%);
+  --aurora-cyan: rgba(22, 163, 74, 0.18); --aurora-navy: rgba(21, 128, 61, 0.14); --aurora-gold: rgba(132, 204, 22, 0.14);
+}
+[data-theme="light"][data-wallpaper="night"] {
+  --scene-base: #EBF0FC;
+  --scene-gradient: linear-gradient(150deg, #cdd9f7 0%, #e0e8fb 50%, #f2f6ff 100%);
+  --aurora-cyan: rgba(59, 130, 246, 0.18); --aurora-navy: rgba(30, 58, 138, 0.14); --aurora-gold: rgba(99, 102, 241, 0.10);
+}
+[data-theme="light"][data-wallpaper="graphite"] {
+  --scene-base: #F1F3F6;
+  --scene-gradient: linear-gradient(150deg, #d8dee7 0%, #e6eaf0 50%, #f5f7fa 100%);
+  --aurora-cyan: rgba(100, 116, 139, 0.14); --aurora-navy: rgba(51, 65, 85, 0.12); --aurora-gold: rgba(148, 163, 184, 0.10);
+}
+
+/* Theme-flip fade, scoped to what actually re-colours.
+   It used to be `*` — which left a four-property transition, box-shadow included, on every
+   node in the tree: SVG internals, spacers, the aurora layer, motion wrappers. Naming the
+   surfaces costs a longer selector once and takes the paint work off everything else. */
+body,
+h1, h2, h3, p, a, span, small, label, button, input, select, textarea, pre,
+.glass, .glass-raised, .glass-inset,
+.panel, .btn, .input, .select, .textarea, .chip, .chips, .tag, .pill,
+.icon-btn, .menu-item, .toast, .card-head, .list-row, .screen-card, .nav-item,
+.profile-btn, .modal, .dock, .field, .label, .hint, .muted, .faint,
+.page-title, .page-sub, .section-title, .editor-title, .brand, .topclock {
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -15,6 +15,8 @@ import { hasValidSession } from './auth';
 import { ping } from './mediamtx';
 import { MediaMtxServer } from './mediamtxServer';
 import { notify } from './fabric';
+import { WhatsAppAnnouncer } from './whatsappAnnounce';
+import { FabricCommands } from './fabricCommands';
 
 const log = makeLog('main');
 
@@ -50,11 +52,20 @@ async function main(): Promise<void> {
     }, 100);
   });
 
+  // Posts the Iqāmah-change notice to the masjid's WhatsApp group when the change comes into
+  // range. Inert until an admin switches it on and picks a group; the check is local, so a
+  // masjid not using it never talks to the platform.
+  const whatsapp = new WhatsAppAnnouncer({ store });
+
+  // Admin commands arriving from OpenMasjidOS (an admin messaging the masjid's WhatsApp
+  // number). Holds the Iqamah wizard's session across calls, so it is built once here.
+  const commands = new FabricCommands({ store });
+
   // The volunteer page handler is shared: it runs on its own port (below) AND is mounted on
   // the main control-panel port (under /volunteer) so it rides the OS tunnel with no platform
   // change. One instance → one shared PIN rate-limiter across both entry points.
   const volunteerHandler = createVolunteerApi({ store, orchestrator });
-  const handler = createApi({ store, orchestrator, volunteer: volunteerHandler });
+  const handler = createApi({ store, orchestrator, volunteer: volunteerHandler, whatsapp, commands });
   const server = http.createServer((req, res) => {
     handler(req, res).catch((err) => {
       log.error('request handler crashed', err);
@@ -102,8 +113,11 @@ async function main(): Promise<void> {
   // Re-evaluate schedules and stream health on a steady cadence.
   setInterval(() => void orchestrator.reconcile(), 15000);
 
+  whatsapp.start();
+
   const shutdown = () => {
     log.info('shutting down');
+    whatsapp.stop();
     render.stopAll();
     mediamtx.stop();
     server.close();

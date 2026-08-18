@@ -15,23 +15,42 @@
  * Messages out: { id, ok: true, ... } | { id, ok: false, error }
  *   • raw → { width, height, buf }  (RGBA pixels, ArrayBuffer transferred) for ffmpeg
  *   • png → { buf }                 (PNG bytes, ArrayBuffer transferred) for previews
+ *   • announce → { buf }            (PNG bytes) — the downloadable Iqamah-change poster
  */
 import { parentPort } from 'node:worker_threads';
 import { Resvg } from '@resvg/resvg-js';
-import { renderDisplaySvg, activeAnnouncementImage } from './svg';
+import { renderDisplaySvg, activeAnnouncementImage, nextIqamahChange, lastIqamahChange } from './svg';
+import { renderAnnounceSvg, posterModel, POSTER_W, type PosterModel } from './announce';
 import { backgroundDataUri, logoDataUri, announcementDataUri } from './background';
 import { fontOptions } from './fonts';
 import { getPalette } from './theme';
 import type { Timetable } from '../types';
+
+/** How far ahead the poster will look for the next change.
+ *
+ *  The on-screen reminder uses the masjid's own `daysBefore` (a handful of days — it is a
+ *  heads-up, not an archive). The poster is the opposite case: the admin sets the seasonal
+ *  change months in advance and wants the notice NOW, to print and to send. A year covers
+ *  any schedule a masjid actually keeps, and the detector stops at the first hit anyway. */
+const ANNOUNCE_LOOKAHEAD_DAYS = 400;
+
+/** How far BACK to look when nothing is scheduled ahead. A year, matching the lookahead: a
+ *  masjid that changes times seasonally always has something within one, and beyond that the
+ *  "current" times are simply the normal rules, which is not a change to announce. */
+const ANNOUNCE_LOOKBACK_DAYS = 400;
 
 if (!parentPort) throw new Error('renderWorker must be run as a worker thread');
 const port = parentPort;
 
 interface Req {
   id: number;
-  kind: 'raw' | 'png' | 'meta';
+  kind: 'raw' | 'png' | 'meta' | 'announce';
   tt: Timetable;
   nowMs: number;
+  /** (announce) draw THIS change rather than re-detecting one. The WhatsApp announcer has
+   *  already chosen which change it is announcing, and its window rule differs from the
+   *  download button's — see renderPool.announce(). */
+  model?: PosterModel;
   width?: number;
   /** rasterise the (raw) video frame at this width instead of the SVG's native size */
   renderWidth?: number;
@@ -153,6 +172,39 @@ port.on('message', (msg: Req) => {
       const sink = { hotspots: [] as unknown[] };
       renderDisplaySvg(tt, now, { sink: sink as never });
       port.postMessage({ id, ok: true, hotspots: sink.hotspots });
+      return;
+    }
+    if (kind === 'announce') {
+      // The downloadable Iqāmah-change poster. Rasterised on the worker for the same reason
+      // every other render is: resvg is synchronous, and doing it on the main thread would
+      // stall ffmpeg's stdin on every live screen for the length of the render — a visible
+      // stutter on the wall because an admin pressed a download button.
+      // The next change if there is one; otherwise the most recent one that has already
+      // taken effect. A masjid that made its seasonal change last week still wants the
+      // notice — to send to whoever missed it, or to print for the board — and "nothing is
+      // scheduled" is a useless answer to "give me the current times".
+      // A caller that already knows which change it means hands the model over. Re-detecting
+      // here would apply the DOWNLOAD button's rule, which skips a change taking effect
+      // today — so the WhatsApp announcer would have posted an image of a different change
+      // than the one it decided to announce.
+      let model = msg.model;
+      if (!model) {
+        const change =
+          nextIqamahChange(tt, now, ANNOUNCE_LOOKAHEAD_DAYS) ?? lastIqamahChange(tt, now, ANNOUNCE_LOOKBACK_DAYS);
+        if (!change) {
+          port.postMessage({ id, ok: false, error: 'no upcoming Iqamah change' });
+          return;
+        }
+        model = posterModel(tt, change);
+      }
+      const { logo } = assets(tt);
+      const svg = renderAnnounceSvg(tt, model, logo);
+      const png = new Resvg(svg, { font: fontOptions(), fitTo: { mode: 'width', value: POSTER_W } })
+        .render()
+        .asPng();
+      const ab = new ArrayBuffer(png.byteLength);
+      new Uint8Array(ab).set(png);
+      port.postMessage({ id, ok: true, buf: ab }, [ab]);
       return;
     }
     if (kind === 'png') {

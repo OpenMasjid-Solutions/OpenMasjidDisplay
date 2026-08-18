@@ -4,7 +4,7 @@ id: display
 name: OpenMasjid Display
 tagline: Run prayer timetables, cameras and HDMI on every screen in your masjid — over your network
 category: displays
-version: 0.68.0
+version: 0.69.0
 author: OpenMasjid-Solutions
 license: AGPL-3.0-only
 icon: icon.png
@@ -62,6 +62,30 @@ notifications: true
 # can point at a public address. No secrets; fails soft to a LAN link when remote
 # access is off.
 domain: true
+# Opt into Fabric WhatsApp so the app may post the "Iqāmah times are changing" notice to a
+# group the admin approved (GET /api/fabric/whatsapp to ask whether this masjid can send at
+# all, GET .../groups for the approved list, POST to queue). The app never sees the gateway,
+# its key or the linked number — OpenMasjidOS owns the connection and runs the one paced queue
+# that protects the masjid's number. QUEUES only; nothing here is ever auth-critical, and it
+# stays off until an admin switches it on in this app's Settings.
+whatsapp: true
+# Things an admin can run by messaging the masjid's WhatsApp number (!display). The platform
+# renders the numbered menu from THIS order and decides who may run them; we only execute, at
+# POST /fabric/commands/run. Note `commands` must never appear in fabric.provides — it is a
+# reserved capability, and putting it there would expose the same handler to other apps
+# through the app-to-app broker.
+commands:
+  # `required: false` is what makes a bare "!display 1" legal, which is how the guided flow
+  # starts. From there the app returns a followUp token each turn, so the admin just answers
+  # the questions rather than retyping the command on every line. `confirm` is deliberately
+  # OFF: the platform's confirmation fires per call, so it would demand a code before every
+  # single step. The wizard's own "save" is the confirmation, and nothing is written before it.
+  - id: iqamah-change
+    label: Add a scheduled Iqamah change
+    description: Set new Iqamah times from a date. Send exit at any point to stop.
+    argument:
+      label: answer
+      required: false
 # Serve the CONTROL PANEL over HTTPS. The platform runs a TLS proxy on a dedicated
 # port (terminating with the dashboard's cert) in front of the first published port
 # (the control panel) and makes "Open" use it. This gives the panel a secure context

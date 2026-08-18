@@ -130,6 +130,9 @@ function freshDB(): DB {
       scheduleTimezone: config.seed.timezone,
       volunteerEnabled: false,
       volunteerRemote: true,
+      // Off, with no group and no timetable chosen. Configuring a WhatsApp gateway for
+      // something else is not a request to start messaging the congregation from here.
+      whatsapp: { iqamahChange: false, groupId: '', groupLabel: '', timetableId: '', daysBefore: 1 },
     },
     timetables: [seededTimetable()],
     sources: [],
@@ -163,16 +166,55 @@ export class Store {
           parsed.timetables = parsed.timetables.map(migrateTimetable);
           const fresh = freshDB();
           // Merge settings so fields added in later versions (e.g. volunteerEnabled) default in.
-          return { ...fresh, ...parsed, settings: { ...fresh.settings, ...parsed.settings }, version: DB_VERSION };
+          // `whatsapp` needs its own merge: the spread above replaces a nested object wholesale,
+          // so a db written before a field was added would come back with it undefined — and this
+          // one gates sending, where an undefined is not a harmless blank.
+          return {
+            ...fresh,
+            ...parsed,
+            settings: {
+              ...fresh.settings,
+              ...parsed.settings,
+              whatsapp: { ...fresh.settings.whatsapp, ...(parsed.settings?.whatsapp ?? {}) },
+            },
+            version: DB_VERSION,
+          };
         }
+        // Parsed, but not a database — the same data loss by a different route, so it is
+        // kept aside too rather than quietly replaced.
+        log.error('db.json is not a recognisable database');
+        this.quarantine();
       }
     } catch (err) {
-      log.error('could not read db.json, starting fresh', err);
+      log.error('could not read db.json', err);
+      this.quarantine();
     }
     const db = freshDB();
     this.persist(db);
     log.info('initialised a fresh data store');
     return db;
+  }
+
+  /**
+   * Move an unreadable db.json aside instead of letting a fresh one be written over it.
+   *
+   * Everything the masjid ever configured lives in that one file — every timetable, screen,
+   * camera and schedule. A truncated write, a half-restored backup or a full disk used to be
+   * answered by silently renaming a brand-new empty database over the only copy, so the first
+   * boot after the problem destroyed the evidence AND the data. Keeping it costs one rename
+   * and leaves something to recover from by hand.
+   */
+  private quarantine(): void {
+    try {
+      if (!fs.existsSync(this.file)) return;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const kept = `${this.file}.unreadable-${stamp}`;
+      fs.renameSync(this.file, kept);
+      log.error(`kept the unreadable database as ${path.basename(kept)} — the app started with an empty one`);
+    } catch (err) {
+      // If even the rename fails there is nothing else to try; say so rather than pretend.
+      log.error('could not preserve the unreadable db.json', err);
+    }
   }
 
   private loadSecret(): Buffer {

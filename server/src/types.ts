@@ -320,6 +320,56 @@ export interface ScheduleRule {
   createdAt: string;
 }
 
+/**
+ * Posting the Iqāmah-change notice to a WhatsApp group, through OpenMasjidOS.
+ *
+ * Off until an admin turns it on, deliberately: a masjid that has configured a gateway
+ * for something else has not thereby asked us to start messaging its congregation. The
+ * platform owns the sending (and the anti-ban pacing); all we own is which event goes
+ * out, to which group, and how early.
+ */
+export interface WhatsAppSettings {
+  /** post the notice when a scheduled Iqāmah change comes into range */
+  iqamahChange: boolean;
+  /** the approved group's JID, as given to us by the platform. '' = none chosen yet. */
+  groupId: string;
+  /** the group's label at the time it was chosen — so the UI can still name it if the
+   *  admin later withdraws approval and it drops out of the platform's list */
+  groupLabel: string;
+  /** whose changes to announce. '' = the first timetable. One timetable only: posting the
+   *  same change once per screen would be three messages saying the same thing. */
+  timetableId: string;
+  /** how many days ahead of the change to post. 0 = on the day it takes effect. A change
+   *  added when it is ALREADY inside this window goes out on the next check, which is what
+   *  makes a last-minute change work without a separate rule for it. */
+  daysBefore: number;
+}
+
+/**
+ * One line of "what we handed to the platform's queue".
+ *
+ * Deliberately event + recipient + timestamp and NOTHING ELSE — no message body. A notice
+ * body is low-sensitivity here, but the rule that app logs never carry WhatsApp message
+ * text is worth keeping unconditional rather than re-argued per message. `effectiveFrom`
+ * is the change's own date, which is what makes this the dedupe record too.
+ */
+export interface WhatsAppLogEntry {
+  /** when we queued it, ISO */
+  at: string;
+  event: 'iqamah-change';
+  /** the group JID — an opaque id, never a name or a number */
+  recipient: string;
+  /** the date the announced change takes effect, "YYYY-MM-DD" */
+  effectiveFrom: string;
+  outcome: 'queued' | 'failed';
+  /** true when the poster image went with it, false/absent when only the text did */
+  asImage?: boolean;
+  /** why the platform refused; never contains the message */
+  error?: string;
+  /** true when an admin pressed "Send now" rather than the schedule firing */
+  manual?: boolean;
+}
+
 export interface Settings {
   defaultQuality: Quality;
   /** IANA timezone used to evaluate schedules ('' = server zone) */
@@ -330,6 +380,8 @@ export interface Settings {
    *  reachable over the OpenMasjidOS remote-access tunnel — not just the local network. When
    *  off, the volunteer page stays on its own LAN port only. Default on. */
   volunteerRemote: boolean;
+  /** posting the Iqāmah-change notice to a WhatsApp group (all off by default) */
+  whatsapp: WhatsAppSettings;
 }
 
 /** A hashed credential (scrypt). Used for the admin password and the volunteer PIN. */
@@ -357,6 +409,10 @@ export interface DB {
   sources: Source[];
   tvs: Tv[];
   schedules: ScheduleRule[];
+  /** what we handed to the platform's WhatsApp queue, newest last. Doubles as the
+   *  "already announced" record, which is why it is persisted rather than in-memory:
+   *  a restart must not re-post a change the group has already been told about. */
+  whatsappLog?: WhatsAppLogEntry[];
 }
 
 /** Live status for one screen, pushed to the UI over WebSocket. */

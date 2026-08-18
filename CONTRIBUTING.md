@@ -70,6 +70,12 @@ commercial/dual licenses; you keep your copyright. If you cannot accept the reli
 - Don't weaken the security invariants noted in the code (stream-scheme allowlist, ffmpeg's
   `-protocol_whitelist` and array-form `spawn`, audience-bound tokens, scrypt + constant-time compare,
   server-to-server SSO verification, the `/api/setup` guard under a reachable platform).
+- `POST /fabric/commands/run` is the app's **only inbound** Fabric route — the platform calling us, with no
+  session cookie. It requires **both** our own app secret (constant-time compare) **and**
+  `X-OpenMasjid-Caller-App: omos:platform`, and it is registered at that **exact path only**, which is what
+  keeps it off the tunnel. Never add a base-path-prefixed variant, and never accept one header alone.
+- WhatsApp messages are **queued, never sent** — nothing may report delivery — and message bodies, captions
+  and image data are never logged.
 
 ## Run it locally
 

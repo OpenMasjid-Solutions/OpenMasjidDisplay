@@ -32,6 +32,7 @@ import type {
   AdhanOffsets,
   AdhanPopup,
   TimetableWidget,
+  WhatsAppSettings,
 } from './types';
 
 type Obj = Record<string, unknown>;
@@ -402,6 +403,33 @@ export function normSchedule(input: unknown, base?: ScheduleRule): ScheduleRule 
   };
 }
 
+/** How far ahead the notice may be scheduled. Two weeks is already generous for "give the
+ *  congregation warning"; beyond that people forget, and the on-screen reminder covers it. */
+const WA_MAX_DAYS_BEFORE = 14;
+
+/**
+ * The WhatsApp announcement settings.
+ *
+ * `groupId` is a group JID minted by WhatsApp and handed to us by the platform. We check the
+ * SHAPE only — the platform re-checks the id against the admin's approved list on every send
+ * and 403s an id we were not given, so authorisation is not ours to assert here. Rejecting a
+ * malformed one early just keeps junk out of the store.
+ */
+function normWhatsApp(v: unknown, base: WhatsAppSettings): WhatsAppSettings {
+  const o = asObj(v);
+  const rawId = str(o.groupId, base.groupId, 128).trim();
+  const groupId = /^[A-Za-z0-9._-]+@g\.us$/.test(rawId) ? rawId : '';
+  return {
+    iqamahChange: o.iqamahChange === undefined ? base.iqamahChange ?? false : bool(o.iqamahChange, false),
+    groupId,
+    // A label is only ever shown back to the admin; if the group is cleared, clear its name
+    // too rather than leaving a caption pointing at nothing.
+    groupLabel: groupId ? str(o.groupLabel, base.groupLabel, 200).trim() : '',
+    timetableId: str(o.timetableId, base.timetableId, 64).trim(),
+    daysBefore: intIn(o.daysBefore, base.daysBefore ?? 1, 0, WA_MAX_DAYS_BEFORE),
+  };
+}
+
 export function normSettings(input: unknown, base: Settings): Settings {
   const o = asObj(input);
   return {
@@ -409,5 +437,6 @@ export function normSettings(input: unknown, base: Settings): Settings {
     scheduleTimezone: str(o.scheduleTimezone, base.scheduleTimezone, 64).trim(),
     volunteerEnabled: o.volunteerEnabled === undefined ? base.volunteerEnabled ?? false : bool(o.volunteerEnabled, false),
     volunteerRemote: o.volunteerRemote === undefined ? base.volunteerRemote ?? true : bool(o.volunteerRemote, true),
+    whatsapp: normWhatsApp(o.whatsapp, base.whatsapp),
   };
 }

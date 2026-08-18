@@ -104,9 +104,14 @@ export async function notify(payload: NotifyPayload): Promise<{ delivered: boole
   if (!config.omosBaseUrl || !config.omosAppSecret) return { delivered: false, reason: 'no-fabric' };
   if (!payload.text?.trim()) return { delivered: false, reason: 'empty' };
   warnIfCleartextSecret(); // about to send the per-app secret — flag it if cleartext to a public host
+  // The timer is cleared in `finally`, not straight after the fetch. `fetch` resolves as soon
+  // as the response HEADERS arrive, so disarming it there left the BODY read with no deadline
+  // at all — and a platform that sends headers and then stalls would hang this call forever.
+  // That is not hypothetical: the announcer holds an in-flight flag across the await, so one
+  // stalled body would stop every future Iqamah announcement until the app restarted.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 5000);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 5000);
     const res = await fetch(`${config.omosBaseUrl}/api/fabric/notify`, {
       method: 'POST',
       headers: {
@@ -117,7 +122,6 @@ export async function notify(payload: NotifyPayload): Promise<{ delivered: boole
       signal: ctrl.signal,
       redirect: 'error',
     });
-    clearTimeout(t);
     if (!res.ok) {
       log.warn(`Fabric notify not delivered: platform returned HTTP ${res.status} (is this app allowed to send notifications, and updated in OpenMasjidOS?)`);
       return { delivered: false, reason: `http_${res.status}` };
@@ -130,6 +134,8 @@ export async function notify(payload: NotifyPayload): Promise<{ delivered: boole
   } catch (err) {
     log.warn(`Fabric notify could not reach the platform at ${config.omosBaseUrl || '(unset)'}: ${err instanceof Error ? err.message : err}`);
     return { delivered: false, reason: 'unreachable' };
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -152,15 +158,19 @@ export interface SiteInfo {
 export async function siteInfo(): Promise<SiteInfo | null> {
   if (!config.omosBaseUrl || !config.omosAppSecret) return null;
   warnIfCleartextSecret();
+  // The timer is cleared in `finally`, not straight after the fetch. `fetch` resolves as soon
+  // as the response HEADERS arrive, so disarming it there left the BODY read with no deadline
+  // at all — and a platform that sends headers and then stalls would hang this call forever.
+  // That is not hypothetical: the announcer holds an in-flight flag across the await, so one
+  // stalled body would stop every future Iqamah announcement until the app restarted.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 4000);
     const res = await fetch(`${config.omosBaseUrl}/api/fabric/site`, {
       headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
       signal: ctrl.signal,
       redirect: 'error',
     });
-    clearTimeout(t);
     if (!res.ok) return null;
     const j = (await res.json()) as { enabled?: boolean; publicUrl?: unknown; basePath?: unknown };
     return {
@@ -171,6 +181,212 @@ export async function siteInfo(): Promise<SiteInfo | null> {
   } catch (err) {
     log.debug(`fabric site lookup failed: ${err instanceof Error ? err.message : err}`);
     return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * Can this masjid send WhatsApp at all, and if not, why?
+ *
+ * The platform answers with a deliberately tiny vocabulary (docs/WHATSAPP.md) so an app
+ * renders one of a few sentences rather than tracking the gateway's lifecycle. We ask
+ * before offering the feature: without this, "post to WhatsApp" is a switch that looks
+ * available on every install and fails only when a real announcement was due.
+ *
+ * Two reasons are ours, not the platform's: `no-fabric` (running standalone — there is no
+ * platform to ask) and `not-allowed` (the platform's 403, i.e. this build's manifest is
+ * missing `whatsapp: true` or OpenMasjidOS hasn't picked the new manifest up yet). Both
+ * need different words on screen from "the gateway is down", so they stay distinct.
+ * FAILS SOFT — never throws.
+ */
+export type WhatsAppReason =
+  | 'ready'
+  | 'not-configured'
+  | 'not-linked'
+  | 'unreachable'
+  | 'not-allowed'
+  | 'no-fabric';
+
+export interface WhatsAppAvailability {
+  available: boolean;
+  reason: WhatsAppReason;
+  /** can the platform carry an image? Absent on older platforms, and MUST read as false —
+   *  ask before rendering, because building a 1080×1350 poster is real work on a Pi and the
+   *  capability read costs nothing. */
+  media: boolean;
+  /** the platform's own decoded-bytes cap. Read it rather than hardcoding: it is theirs to
+   *  change, and a number baked in here would silently become wrong. 0 when unknown. */
+  maxMediaBytes: number;
+}
+
+const WA_REASONS: readonly WhatsAppReason[] = [
+  'ready',
+  'not-configured',
+  'not-linked',
+  'unreachable',
+  'not-allowed',
+  'no-fabric',
+];
+
+const NO_MEDIA = { media: false, maxMediaBytes: 0 };
+
+export async function whatsappAvailability(): Promise<WhatsAppAvailability> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return { available: false, reason: 'no-fabric', ...NO_MEDIA };
+  warnIfCleartextSecret();
+  // The timer is cleared in `finally`, not straight after the fetch. `fetch` resolves as soon
+  // as the response HEADERS arrive, so disarming it there left the BODY read with no deadline
+  // at all — and a platform that sends headers and then stalls would hang this call forever.
+  // That is not hypothetical: the announcer holds an in-flight flag across the await, so one
+  // stalled body would stop every future Iqamah announcement until the app restarted.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp`, {
+      headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    // 403 is the platform saying this app may not send — a different sentence from a
+    // gateway that is merely down, so don't collapse it into 'unreachable'.
+    if (res.status === 403) return { available: false, reason: 'not-allowed', ...NO_MEDIA };
+    if (!res.ok) return { available: false, reason: 'unreachable', ...NO_MEDIA };
+    const j = (await res.json().catch(() => ({}))) as {
+      available?: unknown;
+      reason?: unknown;
+      media?: unknown;
+      maxMediaBytes?: unknown;
+    };
+    // Nothing from the platform is trusted as typed: an unknown reason word becomes
+    // 'unreachable' rather than reaching the UI as a raw string with no sentence for it.
+    const reason = WA_REASONS.includes(j.reason as WhatsAppReason) ? (j.reason as WhatsAppReason) : 'unreachable';
+    // `media` absent = an older platform that cannot carry an image. It must read as false,
+    // or we would render a poster and post nothing.
+    const media = j.media === true;
+    const maxMediaBytes =
+      media && typeof j.maxMediaBytes === 'number' && Number.isFinite(j.maxMediaBytes) && j.maxMediaBytes > 0
+        ? Math.floor(j.maxMediaBytes)
+        : 0;
+    return { available: j.available === true && reason === 'ready', reason, media, maxMediaBytes };
+  } catch (err) {
+    log.debug(`fabric whatsapp status failed: ${err instanceof Error ? err.message : err}`);
+    return { available: false, reason: 'unreachable', ...NO_MEDIA };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+export interface WhatsAppGroup {
+  /** the group's JID, e.g. "1203630…@g.us" — opaque to us */
+  id: string;
+  label: string;
+}
+
+/**
+ * The WhatsApp groups this app may post into — only the ones the ADMIN approved in
+ * OpenMasjidOS. We never see the masjid's other groups, and an id we did not get from
+ * this list is refused by the platform with a 403.
+ *
+ * Approval can be withdrawn at any time, so an empty list means "no groups available"
+ * and the UI hides the feature rather than erroring. FAILS SOFT → [].
+ */
+export async function whatsappGroups(): Promise<WhatsAppGroup[]> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return [];
+  warnIfCleartextSecret();
+  // The timer is cleared in `finally`, not straight after the fetch. `fetch` resolves as soon
+  // as the response HEADERS arrive, so disarming it there left the BODY read with no deadline
+  // at all — and a platform that sends headers and then stalls would hang this call forever.
+  // That is not hypothetical: the announcer holds an in-flight flag across the await, so one
+  // stalled body would stop every future Iqamah announcement until the app restarted.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp/groups`, {
+      headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    if (!res.ok) return [];
+    const j = (await res.json().catch(() => ({}))) as { groups?: unknown };
+    if (!Array.isArray(j.groups)) return [];
+    return j.groups
+      .map((g) => g as { id?: unknown; label?: unknown })
+      .filter((g) => typeof g.id === 'string' && g.id)
+      .map((g) => ({ id: String(g.id), label: typeof g.label === 'string' ? g.label : String(g.id) }))
+      .slice(0, 100);
+  } catch (err) {
+    log.debug(`fabric whatsapp groups failed: ${err instanceof Error ? err.message : err}`);
+    return [];
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * Post a message to an approved WhatsApp group through the platform's queue.
+ *
+ * QUEUED IS NOT SENT. The platform paces every sender through one serialised queue —
+ * randomised gaps, per-recipient cooldowns, rolling caps, quiet hours — because ban risk
+ * attaches to the masjid's NUMBER, not to whichever app had something to say. Delivery is
+ * seconds to minutes away and hours if it lands in quiet hours, so nothing here may block
+ * on it or report "sent" to anyone. A 202 means accepted for later delivery, full stop.
+ *
+ * We never touch the gateway, its key, or the linked number — that is what makes the
+ * pacing enforceable for every installed app at once. FAILS SOFT — never throws.
+ */
+export interface WhatsAppMedia {
+  /** the image itself. Base64 is the platform's wire format (OpenWA takes base64, not a URL). */
+  data: string;
+  mimeType: 'image/png';
+  filename: string;
+}
+
+/** The platform caps a caption at 1024 characters and refuses a longer one at enqueue —
+ *  while our request is still open, so it surfaces here rather than as a silent gateway
+ *  failure after the 202. We stay under it ourselves so that never has to happen. */
+export const WA_CAPTION_MAX = 1024;
+
+export async function whatsappSendToGroup(
+  group: string,
+  text: string,
+  media?: WhatsAppMedia,
+): Promise<{ queued: boolean; error?: string }> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return { queued: false, error: 'OpenMasjidOS is not connected.' };
+  if (!group.trim()) return { queued: false, error: 'No WhatsApp group chosen.' };
+  // Text is optional when an image carries the message — a poster can speak for itself — but
+  // a post with neither is nothing at all.
+  if (!text.trim() && !media) return { queued: false, error: 'Nothing to send.' };
+  warnIfCleartextSecret();
+  const ctrl = new AbortController();
+  // Longer than a text post: this uploads a few hundred KB, and the platform validates the
+  // image while our request is open so a refusal is answered rather than logged remotely.
+  const t = setTimeout(() => ctrl.abort(), media ? 20000 : 6000);
+  try {
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-openmasjid-app-secret': config.omosAppSecret,
+      },
+      body: JSON.stringify(media ? { group, text, media } : { group, text }),
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    const j = (await res.json().catch(() => ({}))) as { queued?: unknown; error?: unknown };
+    if (!res.ok || j.queued !== true) {
+      // The platform's own wording is the useful one here (an unapproved group, a full
+      // queue, a cap reached) — pass it through, and never log the message body.
+      const error = typeof j.error === 'string' && j.error ? j.error : `The platform refused the message (HTTP ${res.status}).`;
+      log.warn(`WhatsApp post not queued: ${error}`);
+      return { queued: false, error };
+    }
+    return { queued: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`WhatsApp post could not reach the platform at ${config.omosBaseUrl || '(unset)'}: ${msg}`);
+    return { queued: false, error: 'Could not reach OpenMasjidOS.' };
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -277,9 +493,14 @@ export async function probePlatform(req: IncomingMessage): Promise<PlatformProbe
   if (!takeProbeBudget()) return { username: null, reachable: true };
 
   warnIfCleartextSecret(); // about to send the per-app secret — flag it if cleartext to a public host
+  // The timer is cleared in `finally`, not straight after the fetch. `fetch` resolves as soon
+  // as the response HEADERS arrive, so disarming it there left the BODY read with no deadline
+  // at all — and a platform that sends headers and then stalls would hang this call forever.
+  // That is not hypothetical: the announcer holds an in-flight flag across the await, so one
+  // stalled body would stop every future Iqamah announcement until the app restarted.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 4000);
     const res = await fetch(`${config.omosBaseUrl}/api/auth/session`, {
       headers: {
         cookie: `omos_session=${token}`,
@@ -290,10 +511,15 @@ export async function probePlatform(req: IncomingMessage): Promise<PlatformProbe
       signal: ctrl.signal,
       redirect: 'error', // don't follow a redirect to some other (internal) host
     });
-    clearTimeout(t);
     // Any HTTP response (even non-200 / "not signed in") means the platform is reachable.
     if (res.ok) {
-      const j = (await res.json()) as { authenticated?: boolean; username?: unknown };
+      // `.catch` is not decoration here. This is the ONLY place a parse failure would fall
+      // through to the catch below and return reachable:FALSE — and `/api/setup` opens to an
+      // anonymous admin claim precisely when the platform is unreachable (CLAUDE.md §4). A
+      // platform answering 200 with a non-JSON body (a proxy's HTML error page, a truncated
+      // response) would therefore hand out an unauthenticated admin takeover. The comment
+      // above says any HTTP response means reachable; this makes the code agree.
+      const j = (await res.json().catch(() => ({}))) as { authenticated?: boolean; username?: unknown };
       if (j.authenticated === true) {
         const username = (typeof j.username === 'string' ? j.username : '').trim().slice(0, 64) || 'OpenMasjidOS';
         positiveCache.set(token, { username, expires: nowMs() + CACHE_MS });
@@ -308,6 +534,8 @@ export async function probePlatform(req: IncomingMessage): Promise<PlatformProbe
   } catch (err) {
     log.debug(`platform session check failed: ${err instanceof Error ? err.message : err}`);
     return { username: null, reachable: false };
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -325,6 +553,7 @@ async function platformReachable(): Promise<boolean> {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 3000);
+      // No body is read here, so clearing straight after the fetch is correct.
       await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'error' });
       clearTimeout(t);
       reachCache = { at: Date.now(), ok: true };

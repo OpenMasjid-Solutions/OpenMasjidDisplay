@@ -10,6 +10,51 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
+## 0.69.0
+
+### Added
+
+- **Announce an Iqamah change to your congregation.** Any scheduled change can now be turned into a
+  portrait **announcement image** — your masjid name and logo, the date it takes effect, and the whole
+  timetable for that day with the changing prayers highlighted and the time each one replaces struck
+  through. It follows the timetable's own theme, language and clock format, so it looks like your screens.
+  Download it for the noticeboard, or have it **posted to a WhatsApp group automatically**, as far ahead as
+  you like — down to the day itself. Add a change at the last minute and it goes out within a minute. Each
+  change is announced once, with a preview of the exact message and a log of what was queued.
+- **Add a scheduled Iqamah change from WhatsApp.** Message the masjid's number with `!display` and answer
+  the questions — the date, a numbered list of prayers, the time for each — then send **save**. Nothing is
+  written until you do, and the whole change is read back first. For when a screen needs fixing and you're
+  nowhere near a computer. Times must say am or pm, and dates read month first (*9/1/2026*), always
+  repeated back in words before anything is saved.
+- **Intel Quick Sync** hardware encoding for self-hosted installs (`VIDEO_ENCODER=qsv`), which moves video
+  encoding off the CPU on a box re-encoding several cameras at once. It falls back to the normal encoder
+  and says why if the GPU isn't there, so it can't leave you with dark screens.
+
+> WhatsApp needs to be set up in OpenMasjidOS, and only people an admin has authorised there can use it.
+> Messages are **queued, not sent**: OpenMasjidOS spaces them out to protect the masjid's number from being
+> blocked by WhatsApp, so delivery takes a few minutes and longer inside quiet hours. Nothing important
+> depends on it — alerts still go by email and webhook.
+
+### Changed
+
+- **Light mode is properly light.** The theme lightened the cards but left the page background dark, so
+  panels sat as grey rectangles on a near-black backdrop and the text on them was hard to read. The
+  background, its glow and its pattern are all light now, and each of the nine wallpapers has a light
+  version that keeps its colour. Headings, the masjid name and the clock follow whatever is behind them.
+- Scheduled Iqamah changes that have already happened drop off the list a few days later, so it shows what
+  is still to come. The change itself stays in effect.
+
+### Fixed
+
+- **A scheduled Iqamah change could not be added** — the entry vanished while you typed the date.
+- **Security:** OpenMasjidOS replying with something that wasn't valid data was read as "the platform is
+  down", which is the state that allows claiming the admin account without signing in — the recovery route
+  for a genuinely dead platform. A reply is now treated as a reply.
+- The app no longer waits forever on a platform or video server that accepts a connection and then goes
+  quiet, so a stalled reply can't stop announcements or screen updates.
+- A damaged `db.json` is kept aside instead of being replaced by an empty one, so a bad write can no longer
+  take your whole configuration with it.
+
 ## 0.68.0
 
 - **The prayer times on the timetable are a little larger.** The Adhan and Iqamah times are set

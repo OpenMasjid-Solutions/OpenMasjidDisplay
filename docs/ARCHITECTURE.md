@@ -26,7 +26,8 @@ All state is a single JSON document in the data volume (`/data/db.json`, written
 - **Source** — a camera or HDMI encoder: stream URL, and a mode (`direct` relay or `normalize` re-encode).
 - **Screen (TV)** — a physical display with a stable id, a default content, and an optional manual override.
 - **Schedule rule** — a weekly time window that points target screens at some content, with a priority.
-- **Settings** — default picture quality, the schedule timezone, and the volunteer-page switches. There is
+- **Settings** — default picture quality, the schedule timezone, the volunteer-page switches, and the
+  WhatsApp announcement settings (which group, which timetable, how many days ahead — all off by default). There is
   no server IP to set: the control panel builds each screen's RTSP link from the address it was opened
   with. Theme and wallpaper are per-browser preferences (localStorage), not stored here.
 - **Credentials** — the admin's scrypt hash and the volunteer PIN hash. The session-cookie HMAC key lives
@@ -96,6 +97,15 @@ respawns ffmpeg when it changes; everything else is just new SVG content.
 Because the frame is mostly static, encoding is cheap (duplicated frames cost almost nothing), which is what
 keeps it viable on a Raspberry Pi. Pipelines self-heal: if ffmpeg exits, it is respawned with backoff.
 
+**Encoder choice** (`render/encoder.ts`) is decided once per process. libx264 is the default and the only
+option an App Store install has. `VIDEO_ENCODER=qsv|auto` selects Intel Quick Sync (`h264_qsv`) *if* the
+ffmpeg build carries the encoder **and** a DRM render node exists — otherwise it logs the reason and falls
+back, so a wrong setting is never a dark screen. QSV needs `/dev/dri` in the container, and the platform's
+compose risk-check treats any `devices:` entry as blocking, so it is reachable only from a standalone
+`docker compose up`. The x264 argument list is asserted byte-for-byte in the tests: it was tuned against
+real decoder behaviour (baseline profile, in-band SPS/PPS, no B-frames, CBR HRD) and drift shows up as a TV
+that won't play the stream.
+
 Per-timetable touches the renderer honours: an optional uploaded **masjid logo** (`render/background.ts`,
 inlined like the background), an optional **seconds** clock, a live **sun/moon with rays** that lights the
 glass panels, **custom label overrides** (rename a prayer/masjid/footer), and per-day Iqamah times from
@@ -136,6 +146,19 @@ costs the video pipeline nothing (it never passes a sink).
 
 Reconciles are coalesced so overlapping triggers collapse into one trailing run.
 
+## The Iqāmah-change announcement poster
+
+A masjid announces a change twice: on the screens, and in the WhatsApp group. The screens are the red
+bottom band; `render/announce.ts` is the second one — a 4:5 PNG the admin downloads from the Salah-times
+tab (`GET /api/timetables/:id/iqamah-change.png`) carrying the masjid name, logo, the whole timetable for
+the change date, and the changed rows marked with the time each is replacing.
+
+Two things keep it honest. The detection is `nextIqamahChange` in `svg.ts` — the *same* function the
+on-screen band formats its sentence from, so the poster and the wall cannot announce different things. The
+times come from `buildModel`, evaluated on the change date and the day before it, so "what will Asr be" has
+exactly one implementation. It renders on the preview worker like every other raster, because a synchronous
+resvg call on the main thread would stutter every live screen the moment someone pressed the button.
+
 ## Public web widget
 
 Any timetable can opt in (`widget.enabled`) to an embeddable prayer-times card served **unauthenticated** at
@@ -144,7 +167,7 @@ narrow: off by default, 404 (not 403) when off so an id isn't probeable, rate-li
 (`RequestLimiter`, keyed on the forwarded client address so tunnel visitors don't share one bucket), and it
 sets its own `frame-ancestors *` because being framed by a masjid's website is the entire point. The page is
 self-contained (inline CSS/JS, logo embedded as a data URI) and re-fetches its own JSON so the countdown
-stays live. `render/print.ts` builds the printable month calendar from the same model.
+stays live. `print.ts` builds the printable month calendar from the same model.
 
 ## Volunteer page
 
@@ -190,6 +213,24 @@ behaves exactly as a standalone install. Full contract in [`FABRIC.md`](FABRIC.m
   admin's Cloudflare tunnel, so the widget embed code and the volunteer link can point at it instead of a
   LAN address. Authoritative (the platform only answers when it is actually routing this app's path) and
   fails soft to the LAN link.
+- **Admin commands** (`commands:`) — the ONLY inbound Fabric route. OpenMasjidOS calls
+  `POST /fabric/commands/run` (`fabricCommands.ts`) when an admin picks one of this app's commands from a
+  WhatsApp menu, presenting *our own* app secret plus `X-OpenMasjid-Caller-App: omos:platform`; both are
+  required, and a request carrying any `x-forwarded-*` is refused, because a genuine platform call is
+  direct and LAN-only. `iqamahWizard.ts` holds the conversation behind it — a follow-up token per sender,
+  drafts that expire, and nothing written to the timetable until the admin sends `save`.
+- **WhatsApp** (`whatsapp: true`) — the app posts the Iqāmah-change notice to a group the admin approved,
+  via `GET/POST <base>/api/fabric/whatsapp` and `GET .../groups` (`fabric.ts`). The **platform owns the
+  sending**: one paced queue shared by every installed app, because ban risk attaches to the masjid's
+  number rather than to any one app. The app never learns the gateway address, its key, or which number
+  is linked, and a post returns `202 {queued:true}` — accepted for later delivery, never a delivery
+  receipt. `whatsappAnnounce.ts` decides *whether* and *what*: it re-checks the lead-time window every
+  minute (so a change added on the day still goes out), announces each change exactly once by reading
+  the dedupe key back out of the persisted `whatsappLog`, and gives up after 5 failures. It posts the
+  **poster PNG** when the platform advertises `media` (checked *before* rendering, which is not free on
+  a Pi) with a short caption naming what moved; every media failure falls back to the **full** text
+  notice, never the caption alone. Both are built from the poster's own `PosterModel`, and the renderer
+  is handed that model rather than re-detecting — its own rule skips a change taking effect today.
 
 ## Screen offline/online alerts
 
@@ -205,8 +246,11 @@ from the same signal. Alerts never affect streaming.
 ## Release channels
 
 `main` and `dev` publish different images, and the branch decides which: `dev` publishes
-`:X.Y.Z-dev.N` + `:dev`, `main`/`v*` publish `:X.Y.Z` + `:latest`, and `docker-compose.yml` on `main` is
-additionally pinned by `@sha256`. The version string is load-bearing — OpenMasjidOS detects an update by
+`:X.Y.Z-dev.N` + `:dev`, `main` publishes `:X.Y.Z` + `:latest`, and `docker-compose.yml` on `main` is
+additionally pinned by `@sha256`. A **`v*` tag publishes nothing** — deliberately: these builds are not
+reproducible (BuildKit stamps `created` into the image config), so a tag build would republish `:X.Y.Z`
+under a *new* digest and invalidate the very pin the release just made. `verify-release-tag.yml` runs on
+the tag instead, and only compares what is pinned against what the registry serves. The version string is load-bearing — OpenMasjidOS detects an update by
 comparing the catalog's version with the installed one — so CI refuses to publish a dev build without a
 `-dev.N` suffix or a stable build with one. See [`../CLAUDE.md`](../CLAUDE.md) § *Branching policy*.
 

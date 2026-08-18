@@ -71,6 +71,7 @@ export const IconRefresh = (p: IP) => <Svg {...p}><path d="M3 12a9 9 0 0 1 15-6.
 export const IconSparkle = (p: IP) => <Svg {...p}><path d="M12 3l1.8 4.9L18.7 9.7l-4.9 1.8L12 16.4l-1.8-4.9L5.3 9.7l4.9-1.8Z" /><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7Z" /></Svg>;
 export const IconUser = (p: IP) => <Svg {...p}><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></Svg>;
 export const IconExpand = (p: IP) => <Svg {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></Svg>;
+export const IconDownload = (p: IP) => <Svg {...p}><path d="M12 3v12M7 11l5 5 5-5M4 20h16" /></Svg>;
 
 /** OpenMasjid crescent + dome brand mark. Rendered as a CSS mask painted in
  *  `currentColor`, so it adapts to light/dark themes and stays crisp at any size. */

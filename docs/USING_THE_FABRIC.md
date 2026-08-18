@@ -20,6 +20,8 @@ sso: true            # sign in with the dashboard login
 notifications: true  # alert the masjid when a screen goes offline/online
 domain: true         # learn our PUBLIC url behind the admin's tunnel (widget + volunteer links)
 https: true          # serve the control panel through the platform's TLS proxy
+whatsapp: true       # post the Iqamah-change notice to a group the admin approved
+commands:            # things an admin can run by messaging the masjid's number (!display)
 ```
 
 ### 1. Single sign-on (implemented — keep it)
@@ -76,6 +78,117 @@ the panel a secure context (clipboard for the embed code, `Secure` cookies). The
 published as a legacy fallback, and the volunteer port is deliberately not proxied. That dual-scheme
 setup is exactly why the session cookies use **separate names** for their `Secure` variants — see the
 comment in `server/src/auth.ts` before changing anything there.
+
+### 6. WhatsApp (implemented — keep it)
+
+`whatsapp: true` lets the app post the **Iqāmah-change notice** to a group the OpenMasjidOS admin
+approved. Three calls, all server→server with the app secret, all failing soft
+(`server/src/fabric.ts`):
+
+```
+GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → { available, reason, media, maxMediaBytes }
+GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp/groups  → { groups: [{ id, label }] }
+POST ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → 202 { queued: true }
+     { "group": "…@g.us", "text": "…",
+       "media": { "data": "<base64>", "mimeType": "image/png", "filename": "…" } }
+```
+
+The rules that are not ours to bend:
+
+- **We never touch the gateway.** No URL, no API key, no session, no idea which number is linked.
+  The platform runs **one paced queue** shared by every installed app — randomised gaps, typing
+  indicators, per-recipient cooldowns, rolling caps, quiet hours — because ban risk attaches to the
+  masjid's *number*, not to whichever app had something to say. It only works because no app can go
+  around it.
+- **`queued` is not `sent`.** Delivery is seconds to minutes away and hours inside quiet hours. There
+  is no delivery receipt. Nothing here blocks on it and nothing tells an admin a message arrived.
+- **Nothing auth-critical, ever.** No login codes, no password resets, no OTPs — WhatsApp is an
+  unofficial client and the number can be restricted overnight. Those go by email.
+- **Ask before offering the feature.** `reason` is one of `ready` / `not-configured` / `not-linked` /
+  `unreachable`, each needing a different sentence; we add `not-allowed` (the platform's 403) and
+  `no-fabric` (running standalone). Without this, the switch looks available on every install and
+  fails only when a real announcement was due.
+- **Only approved groups.** The list holds nothing but what the admin put in front of us, approval
+  can be withdrawn at any time, and an empty list means hide the feature rather than error. An id we
+  were not given is refused with a 403.
+- **Never log a message body.** The log we keep is event + group id + timestamp + the change's date.
+
+**The poster goes as an image, when the platform can carry one** (OpenMasjidOS 0.50.5+). Three rules
+here, each of which was a bug waiting to happen:
+
+- **Read `media` before rendering.** Rasterising a 1080×1350 poster is real work on a Pi, and on an
+  older platform every byte of it is thrown away. An absent `media` field MUST read as `false`.
+- **Read `maxMediaBytes`; never hardcode it.** It is the platform's number to change (2 MB today; a
+  poster is 150–400 KB). Over it, we fall back to text rather than eat a refusal after the upload.
+- **Never degrade to the caption alone.** The caption is written to sit *under* an image — it names
+  what moved and nothing else — so posting it by itself would be an announcement with no timetable in
+  it. Every media failure (no capability, render threw, over the cap) falls back to the **full**
+  `announceText`, and a test pins that.
+
+Both forms are built from the poster's own `PosterModel`, so image and text cannot disagree about
+times or tense. `renderPool.announce()` takes that model rather than re-detecting: its own rule is the
+download button's ("next change, else the most recent past one"), which **skips a change taking effect
+today** — exactly the case the announcer exists to catch.
+
+A 202 still is not delivery, and now less so: the platform validates mime, size, caption length and its
+queue depth while our request is open, but a gateway-side failure lands in *its* log, not our response.
+Nothing here reports a poster as published.
+
+Which event goes out, to whom, and how early is **our** setting, not the platform's: its alerts matrix
+has no WhatsApp column for apps, because those rows route to the admin's one number and our messages
+are for the congregation.
+
+### 7. Admin commands (implemented — keep it)
+
+`commands:` declares what an admin can run by messaging the masjid's WhatsApp number. The platform
+owns everything except the doing — it decides who may run them, renders the numbered menu from our
+manifest order, and formats the reply. We serve one route, `POST /fabric/commands/run`
+(`server/src/fabricCommands.ts`), and it is the **only inbound Fabric surface this app has**.
+
+The envelope, all of which is load-bearing:
+
+- **Both headers or nothing.** `X-OpenMasjid-App-Secret` must equal our OWN
+  `OPENMASJID_APP_SECRET` (constant-time compare) **and** `X-OpenMasjid-Caller-App` must be exactly
+  `omos:platform`. That value can never be an app id — the colon is outside the app-id charset — so
+  it identifies the platform by construction rather than by an allow-list. Checking only the secret
+  would let anything that ever learned it drive the wizard.
+- **Exact path only, which IS the LAN-only enforcement.** Behind the tunnel this app is served under
+  `/<basePath>/…` and the platform does not strip the prefix, so a tunnelled request arrives as
+  `/display/fabric/commands/run` and does not match. We never register the prefixed form. There is no
+  header to trust for this.
+- **10 s to answer, and we cap the request body at 8 KB** (the platform caps its own at 4 KB, and its
+  reply cap is 16 KB). Someone is holding a phone. Reply text is plain, ≤1000 chars.
+- `404 {code:'unknown_command'}` for an id we don't serve, `503 {code:'not_ready'}` before we have a
+  secret, `200 {ok:false,error}` for a refusal we can explain — an HTTP error there would become a
+  generic "that did not work" instead of our own words.
+- **Never put `commands` in `fabric.provides`.** It is reserved and refused at install: it would
+  expose this same handler to other apps through the app-to-app broker, a different trust boundary
+  sharing a path prefix.
+
+**Follow-up exchanges (OpenMasjidOS 0.51.0-dev.11+).** Return `followUp: { token }` beside the text
+and the sender's next *plain* message comes straight back with `followUpToken` set — so an admin
+answers questions instead of retyping `!display 1` on every line. Omitting `followUp` ends the
+exchange. The token is ours; the platform stores it against that one sender and keeps no other state.
+
+Four rules, all of which this app depends on:
+
+- **An `ok: false` ENDS the exchange.** So a misread date or a time with no am/pm answers `ok: true`
+  and asks again. Answering "that was wrong" with a failure would drop the admin out of the flow for
+  a typo. `ok: false` is reserved for the terminal cases (no timetable, no location).
+- **The exchange can end without us** — three minutes idle, fifteen total, twelve turns, an exit
+  word, or the sender starting any other `!` command — with no notification. Nothing is applied
+  until `save`, so an abandoned flow leaves a draft that expires, never a half-written change.
+- **The token is the sender.** The body still carries no phone number, but the platform binds a token
+  to one person, so keying sessions on it keys them per admin. A call with **no** token is always a
+  fresh start — an older platform's `!display 1 <answer>` is indistinguishable from a second admin
+  beginning their own change, and picking wrong puts one person's answers in another's draft.
+- **`done` is one of the platform's own exit words** (with exit/quit/cancel/stop/nevermind). It ends
+  the conversation above us and we are never called, so it must never be a "save" word here — the
+  change would vanish while the admin believed they had saved it. We ask for `save`.
+
+**`confirm: true` is deliberately OFF.** The platform's confirmation fires per call, so it would
+demand a code before *every* step. The wizard's own `save` is the confirmation, and nothing is
+written before it. `argument.required` is **false**, which is what makes a bare `!display 1` legal.
 
 ## What Display does NOT need — but exists
 
