@@ -26,17 +26,31 @@ export interface PathState {
   tracks: string[];
 }
 
+/** MediaMTX runs in this same container on loopback, so it answers in single-digit
+ *  milliseconds or it is wedged. The orchestrator awaits these calls inside `reconcile()`,
+ *  which is the loop that keeps every screen correct — a socket that connects and then never
+ *  replies (a sidecar mid-crash, a full disk) would otherwise hang that loop for good, and
+ *  every screen would silently stop being reconciled with no error anywhere. */
+const MEDIAMTX_TIMEOUT_MS = 5000;
+
 async function call(method: string, path: string, body?: unknown): Promise<Response | null> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), MEDIAMTX_TIMEOUT_MS);
   try {
     const res = await fetch(config.mediamtxApiUrl + path, {
       method,
       headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+      // Loopback to our own sidecar: it has no business redirecting us anywhere.
+      redirect: 'error',
     });
     return res;
   } catch (err) {
     log.debug(`${method} ${path} failed: ${err instanceof Error ? err.message : err}`);
     return null;
+  } finally {
+    clearTimeout(t);
   }
 }
 

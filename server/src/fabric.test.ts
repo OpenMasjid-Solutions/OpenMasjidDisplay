@@ -286,3 +286,27 @@ test('a post with an image but no caption is allowed; one with neither is not', 
     assert.equal(count() - before, 0, 'a post with nothing in it must not reach the platform');
   });
 });
+
+// ── The /api/setup invariant depends on this one ─────────────────────────────
+
+test('a 200 with a non-JSON body still reports the platform REACHABLE', async () => {
+  // `reachable` is what /api/setup keys on: when it is false, an anonymous local-admin claim
+  // is allowed, because that is the recovery path for a platform that is down. A parse failure
+  // used to fall through to the catch and report reachable:false — so a platform answering 200
+  // with a proxy's HTML error page handed out an unauthenticated admin takeover.
+  const html = () => new Response('<!doctype html><h1>502 Bad Gateway</h1>', { status: 200, headers: { 'content-type': 'text/html' } });
+  await withFetch(html, async () => {
+    const r = await fabric.probePlatform(reqWithCookie('tok-nonjson'));
+    assert.equal(r.reachable, true, 'a reply is a reply — the platform answered');
+    assert.equal(r.username, null, 'but nobody is signed in by an unparseable body');
+  });
+});
+
+test('a truncated JSON body is treated the same way', async () => {
+  const cut = () => new Response('{"authenticated":tr', { status: 200, headers: { 'content-type': 'application/json' } });
+  await withFetch(cut, async () => {
+    const r = await fabric.probePlatform(reqWithCookie('tok-trunc'));
+    assert.equal(r.reachable, true);
+    assert.equal(r.username, null);
+  });
+});

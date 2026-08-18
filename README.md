@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="#what-it-does">Features</a> |
+  <a href="#-whatsapp">WhatsApp</a> |
   <a href="#how-it-works">How it works</a> |
   <a href="#put-your-prayer-times-on-your-website">Website widget</a> |
   <a href="#install-through-openmasjidos">Install Guide</a> |
@@ -49,7 +50,7 @@ Everything below is in the app today.
 ### 🕌 Prayer timetables
 
 Beautiful, full-screen prayer clocks **calculated on the device** — no internet needed, no subscription, and no
-third-party service that can go down or start charging. Make **as many as you like**, each with its own colours
+third-party service that can go down or start charging. Make **as many as you need** (up to 40), each with its own colours
 to match the room it hangs in, and design them in a **live editor** with a preview that updates as you type.
 
 **Layout and look**
@@ -59,7 +60,7 @@ to match the room it hangs in, and design them in a **live editor** with a previ
 - **Portrait or landscape**, 720p or 1080p, with an optional **bitrate cap per size** if your network is tight.
 - **Theme presets**, plus your own **accent colour**, **gold accent** (Arabic names, Jumu'ah, the next-prayer
   highlight) and **text colour** — or leave text on **auto-contrast**, which adapts to a light photo behind it.
-- **Your own background image** and **masjid logo** (PNG, JPEG, WebP, GIF or SVG), or the built-in themed scene
+- **Your own background image** and **masjid logo** (PNG, JPEG, GIF or SVG), or the built-in themed scene
   and mark.
 - **A live sun and moon** arcing across the sky by your local time, casting rays and glow onto the glass.
 - **Rename anything by clicking it in the preview** — any prayer name, the masjid title, or the footer.
@@ -70,7 +71,7 @@ to match the room it hangs in, and design them in a **live editor** with a previ
 
 **Times and calculation**
 
-- **Every prayer's Adhan and Iqamah**, plus **Sunrise** and **Jumu'ah** — as many khutbah times as you need, and
+- **Every prayer's Adhan and Iqamah**, plus **Sunrise** and **Jumu'ah** — up to six khutbah times, and
   they can start from a date you choose.
 - **Calculation methods**: MWL, ISNA, Egypt, Makkah, Karachi, or **Custom** with your own Fajr and Isha
   sun-depression angles. Asr by the **Standard** (Shafi'i/Maliki/Hanbali) or **Hanafi** opinion.
@@ -91,6 +92,12 @@ to match the room it hangs in, and design them in a **live editor** with a previ
 - **Or set scheduled changes** — "from this date the times are these, until the next change."
 - **Tell the congregation before it happens**: an upcoming change appears as a plain-language heads-up —
   *"From Friday, Asr will be at 5:30 PM"* — starting however many days ahead you choose.
+- **Download an announcement image** for the change — a portrait card with your masjid name and logo, the date
+  it takes effect, and the whole timetable for that day with the changing prayers highlighted and the time each
+  one replaces struck through beside it. It follows the timetable's own theme, language and 12/24-hour setting,
+  so it looks like your screens. Print it for the noticeboard or send it to the congregation. If nothing is
+  scheduled ahead it gives you the most recent change instead, worded for it.
+- **Post it to a WhatsApp group automatically** — see [below](#-whatsapp).
 - **Check any future day now** with the *Preview date* box, without waiting for it to arrive.
 
 **Around salah**
@@ -116,10 +123,40 @@ to match the room it hangs in, and design them in a **live editor** with a previ
 - **Duplicate** a timetable to make a variant for another room, **delete** one, and open the editor in its own
   tab. Settings are grouped into tabs so a long form stays navigable.
 
+### 💬 WhatsApp
+
+If your masjid has WhatsApp set up in OpenMasjidOS, Display can announce an Iqamah change to a group and let you
+add one from your phone. Both are **off until you turn them on** in Settings → WhatsApp.
+
+**Posting the change to a group**
+
+- Pick an approved group and how far ahead to post — from a fortnight before down to **on the day itself**.
+- Add a change later than that, even for today, and it goes out **within a minute** of you saving it. There's no
+  separate "urgent" setting; the window simply catches it.
+- It posts the **announcement image** above, with a short caption naming what moved. On an older OpenMasjidOS
+  that can't send pictures it sends the same notice as text instead, and the page tells you which you'll get.
+- Each change is announced **once**. If you edit a time afterwards, **Send now** posts the correction.
+- There's a **preview of the exact message** before anything is sent, and a log of what's been queued.
+
+**Adding a change from WhatsApp**
+
+Message the masjid's number with `!display`, pick **Add a scheduled Iqamah change**, and answer the questions —
+the date, then a numbered list of prayers, then the time for each. Send **save** to apply it or **exit** to stop.
+Nothing is written until you save, and the whole change is read back to you first. Useful when a screen needs
+fixing and you're nowhere near a computer.
+
+> **Messages are queued, not sent.** OpenMasjidOS spaces every message out to protect the masjid's number from
+> being blocked by WhatsApp, so delivery is a few minutes away — longer inside the quiet hours set there. The app
+> will never tell you a message arrived, because it cannot know. WhatsApp is also an unofficial channel: nothing
+> here is ever used for anything that has to work, and alerts still go by email and webhook.
+
+Which events go out and to whom is **this app's setting**, not the platform's — OpenMasjidOS's alerts screen only
+covers its own alerts, because those go to the admin while these go to the congregation.
+
 ### 📷 Cameras and 🖥️ HDMI sources
 
 - Bring in any IP/security camera or an imam camera and put it on a screen with one tap — great for overflow
-  rooms and the women's section. Works with **RTSP** and secure **RTSPS**, including **UniFi** cameras (turn on
+  rooms and the women's section. Works with **RTSP**, secure **RTSPS**, and **RTMP/RTMPS**, including **UniFi** cameras (turn on
   RTSP in UniFi Protect and paste the link it shows).
 - Plug a laptop or a recording into an HDMI-to-network encoder and send it to the screens you choose.
 - **Test a link before you save it**, so a typo tells you immediately instead of at the screen.
@@ -145,7 +182,7 @@ to match the room it hangs in, and design them in a **live editor** with a previ
 
 ### 📱 Volunteer page
 
-- A bone-simple phone page on **its own address**, unlocked with a **4-digit PIN**, so a volunteer can see every
+- A bone-simple phone page on **its own address**, unlocked with a **4–8 digit PIN**, so a volunteer can see every
   screen and switch what each shows with a tap — **no admin login**, and you only share that one address.
 - Optionally make it **reachable over remote access**, so a volunteer can use it from outside the masjid.
 
@@ -192,6 +229,9 @@ didn't arrive (notifications not turned on, permission not granted, platform add
 - **Notifications** relayed to the masjid's configured destination (above).
 - **Remote access** — when it's on, the widget embed code and the volunteer page can use your public address
   automatically instead of a LAN one.
+- **WhatsApp** — post an Iqamah change to a group, and run the "add a scheduled Iqamah change" command by
+  messaging the masjid's number ([above](#-whatsapp)). The app never sees the gateway, its key or the linked
+  number: the platform owns the connection and paces every message.
 
 ## How it works
 
@@ -253,8 +293,8 @@ To add or update it in the catalog, open a PR to
 ```yaml
   - id: display
     repo: OpenMasjid-Solutions/OpenMasjidDisplay
-    ref: v0.66.0                                   # the release tag, for humans
-    commit: 715139b589f3376315bc74af919a46565e443920   # immutable pin — a tag can be moved, a SHA can't
+    ref: v0.69.0                                   # the release tag, for humans
+    commit: <40-char SHA of the tagged commit>      # immutable pin — a tag can be moved, a SHA can't
 ```
 
 On `main`, the image itself is pinned by **digest** in [`docker-compose.yml`](docker-compose.yml)

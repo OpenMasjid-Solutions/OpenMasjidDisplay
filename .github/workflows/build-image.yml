@@ -14,7 +14,9 @@ name: Build image
 #   -----------------  -----------------------------------------  --------------------------
 #   refs/heads/dev     :<version> (X.Y.Z-dev.N)  +  :dev          the OpenMasjidOS dev channel
 #   refs/heads/main    :<version> (X.Y.Z)        +  :latest       every masjid (stable)
-#   refs/tags/v*       :<version> (X.Y.Z)        +  :latest       every masjid (stable)
+#
+# A `v*` TAG PUBLISHES NOTHING, and must not: see the `on:` block below. This table used to
+# list it as a third publisher, which contradicted the trigger 25 lines under it.
 #
 # Both channels publish an IMMUTABLE VERSIONED tag from manifest.yaml, and a moving alias
 # beside it. The catalog pins the versioned tag; the alias is a convenience for humans.
@@ -215,8 +217,12 @@ jobs:
       # picks whichever exists. That works today against the misspelt secret and keeps working
       # after it is renamed, with no follow-up commit needed. Once every repo is on a correctly
       # spelt secret the fallback can be dropped.
+      # DEV ONLY. The stable catalog does not track a branch — it moves when a catalog
+      # maintainer merges a registry.yaml PR (CLAUDE.md §0c) — so a rebuild dispatched on a
+      # stable release would regenerate the same catalog from the same pinned commit. The
+      # condition used to also test `refs/tags/v*`, which this workflow never runs on at all.
       - name: Notify catalog to rebuild
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+        if: github.ref == 'refs/heads/dev'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.CATALOG_PUSH_TOKEN || secrets.CATLOG_PUSH_TOKEN }}

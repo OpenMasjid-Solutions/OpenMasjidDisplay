@@ -41,7 +41,7 @@ In **Sources**, add the device's RTSP or secure RTSPS URL, for example:
 - Camera (secure RTSPS): `rtsps://192.168.1.1:7441/abcd1234?enableSrtp`
 - HDMI encoder: `rtsp://192.168.1.81:554/hdmi`
 
-Both `rtsp://` and the secure `rtsps://` are supported. Use **Test link** before saving — it actually
+Both `rtsp://` and the secure `rtsps://` are supported (as are `rtmp://` and `rtmps://`). Use **Test link** before saving — it actually
 connects and reads a frame, and tells you *why* it failed (wrong port, auth, transport, TLS) instead of
 leaving you to find out at the screen.
 
@@ -70,11 +70,12 @@ Credentials in the URL are stored but never displayed in the panel.
 | **Camera shows on a computer but not on the cheap box** | Switch that source to **Most compatible (re-encode)**. |
 | **Brief freeze when switching** | Expected — the decoder re-reads the new stream. It recovers within a second or two. |
 | **Stream never starts** | Use **Test link** on the source. Avoid `@ : / %` in passwords, or URL-encode them. |
-| **Wrong RTSP port** | If `8554` was already in use, OpenMasjidOS may have published it on a different host port. Use the port shown in the copied link; it follows the published port. |
+| **Wrong RTSP port** | The copied link always says `:8554` (the port inside the container). If OpenMasjidOS published RTSP on a different host port, edit the port in the link to match the one the dashboard shows for this app. |
 | **Screen dimmed with a red bar along the bottom** | Not a decoder fault — the app is telling you the picture is **not current** (the renderer stopped, or this machine's clock is wrong). Check the Screens page, which says which. |
 
 ## Networking notes
 
 - Cameras, the server, and the TV decoders should be on the same LAN (or routable to each other).
 - Sources are pulled **on demand** — a camera is only contacted while a screen is actually showing it.
-- Audio is stripped from relayed video to avoid confusing decoders.
+- Audio is stripped only on the **Most compatible (re-encode)** path. A **Direct** source is relayed
+  untouched, so whatever audio the camera publishes reaches the decoder as-is.

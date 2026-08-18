@@ -13,10 +13,14 @@
  *    exactly `omos:platform`. That value can never be an app id — the colon is outside the
  *    app-id charset — so it identifies the platform by construction rather than by a list we
  *    would have to maintain.
- *  - **Exact path only.** Behind the OS tunnel this app is served under `/<basePath>/…` and the
- *    platform does not strip the prefix, so a tunnelled request arrives as
- *    `/display/fabric/commands/run` and simply does not match. Not registering the prefixed
- *    form IS the LAN-only enforcement; there is no header to trust for it.
+ *  - **Exact path, AND no forwarding headers.** Behind the OS tunnel this app is served under
+ *    `/<basePath>/…` and the platform does not strip the prefix, so `/display/fabric/commands/run`
+ *    matches no route. That alone is not quite enough: the router derives the path with
+ *    `new URL()`, which NORMALISES dot segments, so `/display/../fabric/commands/run` collapses
+ *    to a match. Hence the second test — the platform builds its request headers from scratch
+ *    (`x-openmasjid-app-secret` + `x-openmasjid-caller-app` and nothing else), so a genuine call
+ *    never carries `x-forwarded-*`, while anything arriving through the tunnel does. Refusing on
+ *    their presence is what makes "LAN-only" a rule rather than an accident of routing.
  *  - **Answer fast.** The platform gives us 10 s and someone is standing there holding a
  *    phone. Everything this does is in-memory plus one debounced store write.
  *  - **Never echo the request back.** The platform strips control characters and clamps our
@@ -38,6 +42,11 @@ const log = makeLog('commands');
 
 /** The one value the platform identifies itself with. No app id can contain a colon. */
 const PLATFORM_CALLER = 'omos:platform';
+
+/** Headers that only an intermediary adds. The platform calls us directly over the LAN and
+ *  builds its header set from scratch, so ANY of these means the request was proxied — which
+ *  this route must never accept. */
+const FORWARDED_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded'] as const;
 
 /** The command ids we declare in manifest.yaml. Anything else is a 404 `unknown_command`,
  *  which the platform turns into "that isn't one of the options". */
@@ -88,6 +97,12 @@ export class FabricCommands {
       // 503 is the contract's "still starting up" — accurate here too: this app has no secret,
       // so it cannot yet serve commands, and the platform should not treat it as broken.
       return sendJson(res, 503, { ok: false, code: 'not_ready', error: 'This app is not connected to OpenMasjidOS yet.' });
+    }
+    // Anything proxied has been through an ingress; the platform's own call has not. Checked
+    // before the secret so a tunnelled probe never even reaches the comparison.
+    if (FORWARDED_HEADERS.some((h) => req.headers[h] !== undefined)) {
+      log.warn('refused a commands call that arrived through a proxy — this route is LAN-only');
+      return sendJson(res, 403, { ok: false, error: 'Not allowed.' });
     }
     if (!secretMatches(header(req, 'x-openmasjid-app-secret'), config.omosAppSecret) ||
         header(req, 'x-openmasjid-caller-app') !== PLATFORM_CALLER) {

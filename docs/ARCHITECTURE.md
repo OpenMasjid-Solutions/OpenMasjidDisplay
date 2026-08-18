@@ -26,7 +26,8 @@ All state is a single JSON document in the data volume (`/data/db.json`, written
 - **Source** — a camera or HDMI encoder: stream URL, and a mode (`direct` relay or `normalize` re-encode).
 - **Screen (TV)** — a physical display with a stable id, a default content, and an optional manual override.
 - **Schedule rule** — a weekly time window that points target screens at some content, with a priority.
-- **Settings** — default picture quality, the schedule timezone, and the volunteer-page switches. There is
+- **Settings** — default picture quality, the schedule timezone, the volunteer-page switches, and the
+  WhatsApp announcement settings (which group, which timetable, how many days ahead — all off by default). There is
   no server IP to set: the control panel builds each screen's RTSP link from the address it was opened
   with. Theme and wallpaper are per-browser preferences (localStorage), not stored here.
 - **Credentials** — the admin's scrypt hash and the volunteer PIN hash. The session-cookie HMAC key lives
@@ -166,7 +167,7 @@ narrow: off by default, 404 (not 403) when off so an id isn't probeable, rate-li
 (`RequestLimiter`, keyed on the forwarded client address so tunnel visitors don't share one bucket), and it
 sets its own `frame-ancestors *` because being framed by a masjid's website is the entire point. The page is
 self-contained (inline CSS/JS, logo embedded as a data URI) and re-fetches its own JSON so the countdown
-stays live. `render/print.ts` builds the printable month calendar from the same model.
+stays live. `print.ts` builds the printable month calendar from the same model.
 
 ## Volunteer page
 
@@ -212,6 +213,12 @@ behaves exactly as a standalone install. Full contract in [`FABRIC.md`](FABRIC.m
   admin's Cloudflare tunnel, so the widget embed code and the volunteer link can point at it instead of a
   LAN address. Authoritative (the platform only answers when it is actually routing this app's path) and
   fails soft to the LAN link.
+- **Admin commands** (`commands:`) — the ONLY inbound Fabric route. OpenMasjidOS calls
+  `POST /fabric/commands/run` (`fabricCommands.ts`) when an admin picks one of this app's commands from a
+  WhatsApp menu, presenting *our own* app secret plus `X-OpenMasjid-Caller-App: omos:platform`; both are
+  required, and a request carrying any `x-forwarded-*` is refused, because a genuine platform call is
+  direct and LAN-only. `iqamahWizard.ts` holds the conversation behind it — a follow-up token per sender,
+  drafts that expire, and nothing written to the timetable until the admin sends `save`.
 - **WhatsApp** (`whatsapp: true`) — the app posts the Iqāmah-change notice to a group the admin approved,
   via `GET/POST <base>/api/fabric/whatsapp` and `GET .../groups` (`fabric.ts`). The **platform owns the
   sending**: one paced queue shared by every installed app, because ban risk attaches to the masjid's
@@ -239,8 +246,11 @@ from the same signal. Alerts never affect streaming.
 ## Release channels
 
 `main` and `dev` publish different images, and the branch decides which: `dev` publishes
-`:X.Y.Z-dev.N` + `:dev`, `main`/`v*` publish `:X.Y.Z` + `:latest`, and `docker-compose.yml` on `main` is
-additionally pinned by `@sha256`. The version string is load-bearing — OpenMasjidOS detects an update by
+`:X.Y.Z-dev.N` + `:dev`, `main` publishes `:X.Y.Z` + `:latest`, and `docker-compose.yml` on `main` is
+additionally pinned by `@sha256`. A **`v*` tag publishes nothing** — deliberately: these builds are not
+reproducible (BuildKit stamps `created` into the image config), so a tag build would republish `:X.Y.Z`
+under a *new* digest and invalidate the very pin the release just made. `verify-release-tag.yml` runs on
+the tag instead, and only compares what is pinned against what the registry serves. The version string is load-bearing — OpenMasjidOS detects an update by
 comparing the catalog's version with the installed one — so CI refuses to publish a dev build without a
 `-dev.N` suffix or a stable build with one. See [`../CLAUDE.md`](../CLAUDE.md) § *Branching policy*.
 

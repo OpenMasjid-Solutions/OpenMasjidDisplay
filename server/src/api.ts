@@ -212,8 +212,10 @@ export function createApi(deps: Deps) {
   const widgetLimiter = new RequestLimiter(120, 60_000);
   // Admin commands: the platform already rate-limits each sender (5 per 15s), so this only
   // catches something reaching the port directly. Generous enough never to bite a real admin
-  // working through the wizard one question at a time.
-  const commandLimiter = new RequestLimiter(60, 60_000);
+  // working through the wizard one question at a time. Keyed on the SOCKET (the `true`), not
+  // X-Forwarded-For: this one sits in front of a secret check, and a forged header would both
+  // dodge the cap entirely and add a Map entry per request.
+  const commandLimiter = new RequestLimiter(60, 60_000, true);
   setInterval(() => {
     widgetLimiter.prune();
     commandLimiter.prune();

@@ -14,6 +14,10 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ### Added
 
+- The panel keeps a **copy of an unreadable database** instead of replacing it. If `db.json` is ever
+  damaged — a power cut mid-write, a half-restored backup, a full disk — the app used to start fresh and
+  write an empty one straight over it. It now sets the damaged file aside so nothing is lost for good.
+
 - **Light mode is properly light now.** The control panel's light theme lightened the cards but
   left the page background dark, so panels sat as washed-out grey rectangles on a near-black
   backdrop and the darker text on them was hard to read. The background, the coloured glow behind
@@ -77,6 +81,24 @@ CLAUDE.md § *The changelog has two audiences*.
   overflowed by the new time, and the background is a plain gradient without the grid pattern.
 
 ### Changed
+
+- **Security:** if OpenMasjidOS answered with something that wasn't valid data (a proxy error page, a cut-off
+  reply), the app read that as "the platform is down" — which is the state that lets someone claim the admin
+  account without signing in, because it's the recovery route for a genuinely dead platform. A reply is now
+  treated as a reply.
+- **Security:** the WhatsApp command endpoint refuses anything that arrived through a proxy, so it is
+  reachable only from your own network no matter how a request is dressed up, and its rate limit can no
+  longer be sidestepped with a forged header.
+- Pressing **Send now** while an automatic post was already going out could send the same notice twice. It
+  now waits its turn.
+- A failed **Send now** no longer counts against the automatic retries for that change, so trying by hand
+  can't switch the scheduled post off.
+- Saving an Iqamah change from WhatsApp now reads back the **whole** change for that date, not only the
+  times just typed — and if the timetable is already full it says so instead of reporting success.
+- A change added from WhatsApp stays with the timetable it was started on, even if the setting that picks
+  the timetable is edited mid-conversation.
+- The app no longer waits forever on a platform or video server that accepts a connection and then goes
+  quiet — every such call now has a deadline, so a stalled reply can't stop announcements or screen updates.
 
 - **Scheduled Iqamah changes that already happened no longer clutter the list.** Once a change is more
   than three days old it is tucked behind a *Show N past changes* button, so the list shows what is

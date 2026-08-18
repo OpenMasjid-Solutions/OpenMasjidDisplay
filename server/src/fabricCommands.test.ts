@@ -250,3 +250,23 @@ test('an unknown token starts a fresh exchange rather than answering into nothin
   assert.match(String(r.body.text), /date/i);
   assert.equal(s.db.timetables[0].iqamahSchedule, undefined, 'and nothing was written');
 });
+
+// ── LAN-only ─────────────────────────────────────────────────────────────────
+
+test('a request carrying forwarding headers is refused, even with perfect credentials', async () => {
+  // "Exact path only" is not enough on its own: the router derives the path with `new URL()`,
+  // which NORMALISES dot segments, so `/display/../fabric/commands/run` collapses onto this
+  // route. The platform builds its header set from scratch and never sends x-forwarded-*, so
+  // their presence means the request came through an ingress — which this route never accepts.
+  const c = new FabricCommands({ store: store() });
+  for (const h of ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded']) {
+    const r = await call(c, { ...good, [h]: 'anything' }, { command: 'iqamah-change', text: '' });
+    assert.equal(r.status, 403, `${h} must not get through`);
+  }
+});
+
+test('the dot-segment path that motivates it really does normalise onto this route', () => {
+  // Pinning the premise, not the fix: if this ever stops being true the header check is still
+  // correct, but the comment explaining why it exists would be wrong.
+  assert.equal(new URL('/display/../fabric/commands/run', 'http://localhost').pathname, '/fabric/commands/run');
+});

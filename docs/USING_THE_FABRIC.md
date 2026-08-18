@@ -156,7 +156,8 @@ The envelope, all of which is load-bearing:
   `/<basePath>/…` and the platform does not strip the prefix, so a tunnelled request arrives as
   `/display/fabric/commands/run` and does not match. We never register the prefixed form. There is no
   header to trust for this.
-- **10 s / 16 KB.** Someone is holding a phone. Reply text is plain, ≤1000 chars.
+- **10 s to answer, and we cap the request body at 8 KB** (the platform caps its own at 4 KB, and its
+  reply cap is 16 KB). Someone is holding a phone. Reply text is plain, ≤1000 chars.
 - `404 {code:'unknown_command'}` for an id we don't serve, `503 {code:'not_ready'}` before we have a
   secret, `200 {ok:false,error}` for a refusal we can explain — an HTTP error there would become a
   generic "that did not work" instead of our own words.

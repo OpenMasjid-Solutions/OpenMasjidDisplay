@@ -59,6 +59,10 @@ export type WizardPrayer = (typeof WIZARD_PRAYERS)[number]['key'];
 export interface WizardSession {
   step: 'date' | 'prayer' | 'time';
   touchedAt: number;
+  /** The timetable this draft was started against. The setting that picks it can be edited
+   *  mid-conversation, and the change must land on the timetable the admin was actually shown
+   *  in the first reply — not on whichever one the setting names by the time they send `save`. */
+  timetableId?: string;
   /** "YYYY-MM-DD" once the date is agreed */
   date?: string;
   /** 24-hour "HH:MM" per prayer; jumuah may hold several */
@@ -457,13 +461,6 @@ export class IqamahCommand {
   ) {}
 
   run(text: string, followUpToken?: string): CommandResult {
-    const tt = commandTimetable(this.store.db);
-    // A terminal failure, and it must be ok:false — there is nothing to answer.
-    if (!tt) return { ok: false, text: 'There is no timetable to add a change to yet.' };
-    if (tt.latitude == null || tt.longitude == null) {
-      return { ok: false, text: 'Add the masjid location to the timetable in the panel first.' };
-    }
-
     const nowMs = this.now();
     this.sweep(nowMs);
     const presented = followUpToken && TOKEN_RE.test(followUpToken) ? followUpToken : '';
@@ -471,24 +468,52 @@ export class IqamahCommand {
     // or ended by the platform without telling us), so the sender starts again rather than
     // answering into nothing.
     const draft = presented ? (this.sessions.get(presented) ?? null) : null;
+
+    // A draft stays with the timetable it was started against. `commandTimetable` reads a
+    // SETTING, and an admin editing that setting mid-conversation would otherwise redirect an
+    // in-flight change onto a different timetable than the one named in the first reply.
+    const tt = draft?.timetableId
+      ? (this.store.db.timetables.find((t) => t.id === draft.timetableId) ?? null)
+      : commandTimetable(this.store.db);
+    // Terminal failures, and they must be ok:false — there is nothing to answer.
+    if (!tt) return { ok: false, text: 'There is no timetable to add a change to yet.' };
+    if (tt.latitude == null || tt.longitude == null) {
+      return { ok: false, text: 'Add the masjid location to the timetable in the panel first.' };
+    }
+
     const out = stepWizard(draft, text ?? '', tt, nowMs, timetableToday(tt, nowMs));
 
     if (!out.session && presented) this.sessions.delete(presented);
 
     if (out.commit) {
       const entry = out.commit;
+      let saved: IqamahScheduleEntry | undefined;
       this.store.update((db) => {
         const idx = db.timetables.findIndex((t) => t.id === tt.id);
-        if (idx >= 0) db.timetables[idx].iqamahSchedule = mergeScheduleEntry(db.timetables[idx].iqamahSchedule, entry);
+        if (idx < 0) return;
+        const rows = mergeScheduleEntry(db.timetables[idx].iqamahSchedule, entry);
+        db.timetables[idx].iqamahSchedule = rows;
+        saved = rows.find((r) => r.from === entry.from);
       });
-      return { ok: true, text: savedText(tt, entry) };
+      // normalizeIqamahSchedule caps the list, so on a timetable already at the maximum the
+      // appended entry is dropped. Telling someone their prayer times are saved when they are
+      // not is the worst answer available.
+      if (!saved) {
+        return {
+          ok: false,
+          text: 'That timetable already holds the maximum number of scheduled changes, so this one was not added. Remove an old one in the control panel first.',
+        };
+      }
+      // Report the MERGED row, not just the fields typed now: adding a time to a date that
+      // already had one would otherwise read back as though the earlier times had gone.
+      return { ok: true, text: savedText(tt, saved) };
     }
 
     if (!out.session) return out.reply;
 
     // Still going: reuse the sender's own token, or mint one to bind this exchange to them.
     const token = presented || this.mint();
-    this.sessions.set(token, out.session);
+    this.sessions.set(token, { ...out.session, timetableId: tt.id });
     return { ...out.reply, followUpToken: token };
   }
 

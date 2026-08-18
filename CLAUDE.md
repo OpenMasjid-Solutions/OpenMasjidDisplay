@@ -408,3 +408,25 @@ this file.
   whether to warn that the secret is crossing a public network in cleartext.)
 - Behind the OS proxy you may trust `X-Forwarded-*` **only because the platform's ingress now
   sanitises them** — never trust them when the app is reached directly.
+- **`POST /fabric/commands/run` is the only INBOUND Fabric route** (v0.69.0): the platform calling
+  *us* to run an admin's WhatsApp command, with no session cookie, and it can write prayer times.
+  Three things hold it shut and all three are load-bearing:
+  - **Both headers, never one.** `X-OpenMasjid-App-Secret` must equal our own `OPENMASJID_APP_SECRET`
+    (constant-time, length-checked first) **and** `X-OpenMasjid-Caller-App` must be exactly
+    `omos:platform` — a value no app id can be, since the colon is outside the app-id charset. The
+    secret alone is not enough: anything that ever learned it could otherwise drive the wizard.
+  - **The exact path only.** Behind the tunnel this app is served under `/<basePath>/…` and the
+    platform does not strip the prefix, so a tunnelled request arrives as
+    `/display/fabric/commands/run` and matches nothing. *Not registering the prefixed form IS the
+    LAN-only enforcement* — there is no header to trust for it. Never add one.
+  - **Nothing is written before `save`.** The exchange can end without us (idle, turn cap, an exit
+    word, a new `!` command) and we are never told, so a half-answered flow must leave a draft that
+    expires, never a partial change.
+- **WhatsApp is queued, never sent.** `202 {queued:true}` means accepted for later delivery; there is
+  no delivery receipt and nothing may claim one. The platform owns the pacing (one queue shared by
+  every app) because ban risk attaches to the masjid's *number* — never build a second path around
+  it. Nothing auth-critical may ever go this way. Message bodies, captions and image bytes are never
+  logged; the app's own log keeps event + group id + timestamp + the change's date.
+- **Read `media`/`maxMediaBytes` from the platform before rendering a poster**, and never fall back to
+  the caption alone: the caption is written to sit under an image and, delivered by itself, is an
+  announcement with no timetable in it. Every media failure falls back to the full text notice.

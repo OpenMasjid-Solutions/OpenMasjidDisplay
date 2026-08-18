@@ -19,12 +19,14 @@
  * the masjid's quiet hours. Nothing here blocks on it, and nothing anywhere tells an admin a
  * message "was sent" — the log says queued, because that is what we actually know.
  *
- * ## Text, not the poster
+ * ## The poster, with text as the fallback
  *
- * The platform's Fabric WhatsApp API carries text only — there is no media field on
- * `POST /api/fabric/whatsapp`. The poster PNG therefore cannot go through the masjid's queue,
- * so we send the same notice as text (`announceText`, built from the poster's own model). If
- * the platform grows a media field this becomes a small change here, not a redesign.
+ * When the platform advertises `media` (OpenMasjidOS 0.50.5+) the poster PNG goes as an image
+ * with a short caption. The capability is read BEFORE rendering, because rasterising a
+ * 1080×1350 poster is real work on a Pi and is wasted on a platform that cannot take one.
+ * Every media failure — no capability, a render that threw, over the platform's size cap —
+ * falls back to the FULL text notice, never the caption alone: the caption is written to sit
+ * under an image, so on its own it is an announcement with no timetable in it.
  *
  * ## The window, and why a last-minute change needs no special rule
  *
@@ -142,7 +144,10 @@ export function decideAnnounce(db: DB, nowMs: number, manual = false): AnnounceD
   if (mine.some((e) => e.outcome === 'queued')) {
     return { act: 'skip', why: 'This change has already been sent to the group.' };
   }
-  const failures = mine.filter((e) => e.outcome === 'failed');
+  // Only the SCHEDULED attempts count against the budget. A "Send now" that failed is an
+  // admin retrying by hand, and five of those would otherwise permanently disable the
+  // automatic post for that change — punishing the person for trying.
+  const failures = mine.filter((e) => e.outcome === 'failed' && !e.manual);
   if (failures.length >= WA_MAX_ATTEMPTS) {
     return { act: 'skip', why: `Gave up after ${WA_MAX_ATTEMPTS} failed attempts.` };
   }
@@ -251,11 +256,23 @@ export class WhatsAppAnnouncer {
   }
 
   /** An admin pressing "Send now" — sends whatever the poster would currently show, whether or
-   *  not it is in the window and whether or not it has gone out before. */
+   *  not it is in the window and whether or not it has gone out before.
+   *
+   *  Takes the SAME in-flight guard as tick(). It did not, and that was the one way the group
+   *  could be told twice: post() writes its dedupe entry only after the send returns, and the
+   *  send is a capability fetch, a poster raster and an upload — seconds on a Pi. A tick
+   *  starting inside that window read a log with no entry yet, decided the change was
+   *  unannounced, and posted it again. */
   async sendNow(): Promise<AnnounceResult> {
-    const d = decideAnnounce(this.store.db, this.now(), true);
-    if (d.act === 'skip') return { queued: false, reason: d.why };
-    return this.post(d.target, true);
+    if (this.busy) return { queued: false, reason: 'A post is already in flight — try again in a moment.' };
+    this.busy = true;
+    try {
+      const d = decideAnnounce(this.store.db, this.now(), true);
+      if (d.act === 'skip') return { queued: false, reason: d.why };
+      return await this.post(d.target, true);
+    } finally {
+      this.busy = false;
+    }
   }
 
   /**

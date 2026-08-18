@@ -103,12 +103,6 @@ export function selectEncoder(ffmpeg: string): EncoderKind {
   return resolved;
 }
 
-/** Test seam: forget the cached decision (and the encoder list) so a test can vary the env. */
-export function resetEncoderCache(): void {
-  resolved = null;
-  encodersCache = null;
-}
-
 /**
  * The codec-specific half of the ffmpeg arguments — everything from `-c:v` up to (but not
  * including) the rate-control and output flags the two encoders share.

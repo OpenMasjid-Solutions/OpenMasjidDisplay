@@ -180,14 +180,41 @@ export class Store {
             version: DB_VERSION,
           };
         }
+        // Parsed, but not a database — the same data loss by a different route, so it is
+        // kept aside too rather than quietly replaced.
+        log.error('db.json is not a recognisable database');
+        this.quarantine();
       }
     } catch (err) {
-      log.error('could not read db.json, starting fresh', err);
+      log.error('could not read db.json', err);
+      this.quarantine();
     }
     const db = freshDB();
     this.persist(db);
     log.info('initialised a fresh data store');
     return db;
+  }
+
+  /**
+   * Move an unreadable db.json aside instead of letting a fresh one be written over it.
+   *
+   * Everything the masjid ever configured lives in that one file — every timetable, screen,
+   * camera and schedule. A truncated write, a half-restored backup or a full disk used to be
+   * answered by silently renaming a brand-new empty database over the only copy, so the first
+   * boot after the problem destroyed the evidence AND the data. Keeping it costs one rename
+   * and leaves something to recover from by hand.
+   */
+  private quarantine(): void {
+    try {
+      if (!fs.existsSync(this.file)) return;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const kept = `${this.file}.unreadable-${stamp}`;
+      fs.renameSync(this.file, kept);
+      log.error(`kept the unreadable database as ${path.basename(kept)} — the app started with an empty one`);
+    } catch (err) {
+      // If even the rename fails there is nothing else to try; say so rather than pretend.
+      log.error('could not preserve the unreadable db.json', err);
+    }
   }
 
   private loadSecret(): Buffer {
