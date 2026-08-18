@@ -10,109 +10,50 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
-## Unreleased
+## 0.69.0
 
 ### Added
 
-- The panel keeps a **copy of an unreadable database** instead of replacing it. If `db.json` is ever
-  damaged — a power cut mid-write, a half-restored backup, a full disk — the app used to start fresh and
-  write an empty one straight over it. It now sets the damaged file aside so nothing is lost for good.
+- **Announce an Iqamah change to your congregation.** Any scheduled change can now be turned into a
+  portrait **announcement image** — your masjid name and logo, the date it takes effect, and the whole
+  timetable for that day with the changing prayers highlighted and the time each one replaces struck
+  through. It follows the timetable's own theme, language and clock format, so it looks like your screens.
+  Download it for the noticeboard, or have it **posted to a WhatsApp group automatically**, as far ahead as
+  you like — down to the day itself. Add a change at the last minute and it goes out within a minute. Each
+  change is announced once, with a preview of the exact message and a log of what was queued.
+- **Add a scheduled Iqamah change from WhatsApp.** Message the masjid's number with `!display` and answer
+  the questions — the date, a numbered list of prayers, the time for each — then send **save**. Nothing is
+  written until you do, and the whole change is read back first. For when a screen needs fixing and you're
+  nowhere near a computer. Times must say am or pm, and dates read month first (*9/1/2026*), always
+  repeated back in words before anything is saved.
+- **Intel Quick Sync** hardware encoding for self-hosted installs (`VIDEO_ENCODER=qsv`), which moves video
+  encoding off the CPU on a box re-encoding several cameras at once. It falls back to the normal encoder
+  and says why if the GPU isn't there, so it can't leave you with dark screens.
 
-- **Light mode is properly light now.** The control panel's light theme lightened the cards but
-  left the page background dark, so panels sat as washed-out grey rectangles on a near-black
-  backdrop and the darker text on them was hard to read. The background, the coloured glow behind
-  it and the faint pattern are all light in light mode now, and each of the nine wallpapers has a
-  light version that keeps its colour — Ocean is still blue, Forest still green — so picking one
-  still means something.
-- Headings, the masjid name and the clock now follow the background they sit on rather than being
-  fixed light, so they stay readable in both themes. If you use your own wallpaper picture, that
-  still wins: a dark photo keeps light text and a light photo gets dark text, in either theme, and
-  the veil over the picture matches instead of fighting it.
-
-- **Add a scheduled Iqamah change by WhatsApp.** Message the masjid's WhatsApp number with
-  `!display` and pick **1**, then just answer the questions — the date, a numbered list of prayers,
-  the time for each. Send **save** when you're done, or **exit** at any point. Nothing is written
-  until you save, and the whole change is read back to you first. Useful when a screen needs fixing
-  and you aren't at a computer. It needs WhatsApp set up in OpenMasjidOS, and only people an admin
-  has authorised there can run it.
-- Dates are read **month first** — *9/1/2026* is 1 September 2026 — and the date is always repeated
-  back to you in full ("From Tuesday, September 1, 2026") before anything is saved.
-- **Times must say am or pm** (*5:45 am*), or use 24-hour time (*17:15*). It will not guess: a prayer
-  time is the one thing here a whole congregation acts on, and being right *almost* always is not
-  good enough for it.
-- **Send the Iqamah change to a WhatsApp group, automatically.** Settings → WhatsApp lets you pick a
-  group and how far ahead to post — from a fortnight before down to the day itself — and the notice
-  goes out on its own. Add a change at the last minute, even for the same day, and it is posted within
-  a minute of you saving it. Each change is announced **once**; if you edit a time afterwards, *Send
-  now* posts the correction. There is a preview of the exact message before you send anything, and a
-  list of what has been queued. It is **off until you turn it on**, and it needs WhatsApp set up in
-  OpenMasjidOS → Settings → WhatsApp, with the group approved for apps to post into. If it isn't set
-  up, the page says which part is missing rather than offering a switch that would do nothing.
-- **The announcement image itself is what gets posted** — the same picture as the *Download announcement
-  image* button, with a short caption naming which prayers moved and what they moved from. If your
-  OpenMasjidOS is older than this and can't send pictures, the notice goes as text instead — the same
-  times, written out — and the page tells you which one you'll get.
-- WhatsApp messages are **queued, not sent**. OpenMasjidOS spaces them out to protect the masjid's
-  number from being blocked by WhatsApp, so arrival takes a few minutes — longer inside the quiet hours
-  set there. The app will never tell you a message was delivered, because it cannot know.
-- **Download an announcement image for the next Iqamah change.** In Salah times → Scheduled Iqamah
-  changes there is now a *Download announcement image* button. It gives you a picture to send to the
-  WhatsApp group or print for the noticeboard: your masjid name and logo, the date the change takes
-  effect, and the **whole timetable for that day** with the prayers that are changing highlighted and
-  the time each one is replacing shown struck through beside the new one. It follows the timetable's
-  own theme and colours, its language and its 12/24-hour setting, so it looks like your screens.
-- **Intel Quick Sync (hardware video encoding), for self-hosted installs.** Set `VIDEO_ENCODER=qsv`
-  and pass the GPU into the container and encoding moves off the CPU — worth it on a box re-encoding
-  several cameras at once. If the GPU or the encoder isn't there it says so in the log and carries on
-  with the normal encoder, so it can't leave you with dark screens. **Not available on an App Store
-  install:** OpenMasjidOS blocks any app that asks for host devices, so this is for a standalone
-  `docker compose up` only. Nothing changes for anyone who doesn't turn it on.
-- The announcement image works from **either** way of setting Iqamah times — a scheduled "from this
-  date" change or an imported CSV year — and announces whichever change comes soonest. (This was
-  already how it behaved; it is now covered by tests so it stays that way.)
-- **You can download the announcement image even when no change is coming up.** It then shows your most
-  recent change instead, worded for it — *"Iqamah times have changed — since Monday, 1 June"* — so you
-  can still send the current times to anyone who missed them.
-- **The date on the announcement image now reads month first** — *"Monday, August 17, 2026"* rather than
-  *"Monday, 17 August 2026"*. The reminder on the screens already read it that way, so the wall and the
-  notice you send out no longer disagree.
-- The announcement image is tidier: **no Adhan column and no Sunrise row** (it is an Iqamah notice, and
-  Sunrise has no jama'ah), the highlight now sits behind the whole changed row instead of being
-  overflowed by the new time, and the background is a plain gradient without the grid pattern.
+> WhatsApp needs to be set up in OpenMasjidOS, and only people an admin has authorised there can use it.
+> Messages are **queued, not sent**: OpenMasjidOS spaces them out to protect the masjid's number from being
+> blocked by WhatsApp, so delivery takes a few minutes and longer inside quiet hours. Nothing important
+> depends on it — alerts still go by email and webhook.
 
 ### Changed
 
-- **Security:** if OpenMasjidOS answered with something that wasn't valid data (a proxy error page, a cut-off
-  reply), the app read that as "the platform is down" — which is the state that lets someone claim the admin
-  account without signing in, because it's the recovery route for a genuinely dead platform. A reply is now
-  treated as a reply.
-- **Security:** the WhatsApp command endpoint refuses anything that arrived through a proxy, so it is
-  reachable only from your own network no matter how a request is dressed up, and its rate limit can no
-  longer be sidestepped with a forged header.
-- Pressing **Send now** while an automatic post was already going out could send the same notice twice. It
-  now waits its turn.
-- A failed **Send now** no longer counts against the automatic retries for that change, so trying by hand
-  can't switch the scheduled post off.
-- Saving an Iqamah change from WhatsApp now reads back the **whole** change for that date, not only the
-  times just typed — and if the timetable is already full it says so instead of reporting success.
-- A change added from WhatsApp stays with the timetable it was started on, even if the setting that picks
-  the timetable is edited mid-conversation.
-- The app no longer waits forever on a platform or video server that accepts a connection and then goes
-  quiet — every such call now has a deadline, so a stalled reply can't stop announcements or screen updates.
-
-- **Scheduled Iqamah changes that already happened no longer clutter the list.** Once a change is more
-  than three days old it is tucked behind a *Show N past changes* button, so the list shows what is
-  coming rather than everything you have ever set. **They are still in effect and still saved** — each
-  change carries forward until a later one replaces it, so they are hidden, never deleted.
+- **Light mode is properly light.** The theme lightened the cards but left the page background dark, so
+  panels sat as grey rectangles on a near-black backdrop and the text on them was hard to read. The
+  background, its glow and its pattern are all light now, and each of the nine wallpapers has a light
+  version that keeps its colour. Headings, the masjid name and the clock follow whatever is behind them.
+- Scheduled Iqamah changes that have already happened drop off the list a few days later, so it shows what
+  is still to come. The change itself stays in effect.
 
 ### Fixed
 
-- **You couldn't add a scheduled Iqamah change — the entry vanished as you typed the date.** Typing a
-  year goes through part-formed values (`0002`, `0020`, `0202` on the way to `2026`), and each of those
-  reads as a date in the distant past, so the new "hide old changes" rule folded the entry away
-  mid-keystroke and took the box you were typing in with it. Whether a change counts as old is now
-  settled when the list loads instead of being re-judged on every keypress. Introduced in
-  `0.69.0-dev.2` and never in a stable release.
+- **A scheduled Iqamah change could not be added** — the entry vanished while you typed the date.
+- **Security:** OpenMasjidOS replying with something that wasn't valid data was read as "the platform is
+  down", which is the state that allows claiming the admin account without signing in — the recovery route
+  for a genuinely dead platform. A reply is now treated as a reply.
+- The app no longer waits forever on a platform or video server that accepts a connection and then goes
+  quiet, so a stalled reply can't stop announcements or screen updates.
+- A damaged `db.json` is kept aside instead of being replaced by an empty one, so a bad write can no longer
+  take your whole configuration with it.
 
 ## 0.68.0
 
