@@ -143,6 +143,8 @@ export interface Tv {
   kind?: TvKind;
   /** the unguessable token in a browser screen's public URL */
   webToken?: string;
+  /** the Raspberry Pi driving this screen, for kind: 'pi'. Set when the device is adopted. */
+  piDeviceId?: string;
   createdAt: string;
 }
 

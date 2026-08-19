@@ -13,6 +13,16 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **The cursor no longer jumps out of the box while you type a Raspberry Pi setup code.** The form
+  was being rebuilt whenever the list of waiting screens refreshed, which threw away what you had
+  typed. You can also now type a code straight off the television before the list has caught up.
+
+- **A Raspberry Pi screen no longer shows a video link that does not work.** It never had one: the
+  Pi draws the timetable itself and opens cameras itself, so the server publishes no stream for it.
+  The card now shows what is actually useful — whether the Pi is checking in, its address on your
+  network, and the version it is running.
+
+### Fixed
 - **A Raspberry Pi screen now follows the television if it changes resolution.** Some sets settle
   on a different mode a few seconds after switching on, and the picture would go from correct to a
   magnified corner and stay there. It now notices and redraws at the new size.

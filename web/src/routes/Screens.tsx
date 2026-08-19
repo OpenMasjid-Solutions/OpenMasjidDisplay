@@ -31,6 +31,7 @@ export function Screens({ state, refetch }: Props) {
   const toast = useToast();
   const [edit, setEdit] = useState<Tv | 'new' | null>(null);
   const [confirm, setConfirm] = useState<Tv | null>(null);
+  const [piById, setPiById] = useState<Map<string, PiDeviceInfo>>(new Map());
   const options = contentOptions(state);
   const statusById = new Map<string, TvStatus>(state.statuses.map((s) => [s.tvId, s]));
 
@@ -63,6 +64,10 @@ export function Screens({ state, refetch }: Props) {
 
   return (
     <div>
+      {/* Pi screens are devices as well as screens, and the card is where somebody looks to see
+          whether the thing on the shelf is alive. Fetched once here rather than per card. */}
+      <PiDeviceFacts tvs={state.tvs} onLoaded={setPiById} />
+
       <div className="page-head row-between">
         <div>
           <h1 className="page-title">Screens</h1>
@@ -88,6 +93,7 @@ export function Screens({ state, refetch }: Props) {
             <ScreenCard
               key={tv.id}
               tv={tv}
+              device={piById.get(tv.piDeviceId ?? '')}
               status={statusById.get(tv.id)}
               state={state}
               options={options}
@@ -134,6 +140,7 @@ export function Screens({ state, refetch }: Props) {
 
 function ScreenCard({
   tv,
+  device,
   status,
   state,
   options,
@@ -144,6 +151,8 @@ function ScreenCard({
   onCopy,
 }: {
   tv: Tv;
+  /** the Raspberry Pi driving this screen, when it is one. Absent for every other kind. */
+  device?: PiDeviceInfo;
   status?: TvStatus;
   state: AppState;
   options: ReturnType<typeof contentOptions>;
@@ -166,6 +175,14 @@ function ScreenCard({
   // opened with — so on the LAN it is the LAN address, and opened through the platform's
   // tunnel it is already the public HTTPS one, which is what a remote television needs.
   const isWeb = tv.kind === 'web';
+  // A Pi screen has NO address anybody connects to, and that is the entire point of it. It draws
+  // the timetable itself and opens cameras itself, so the server never publishes a stream for it —
+  // orchestrator.ts skips creating a MediaMTX path for kind:'pi' at three separate sites.
+  //
+  // The card used to print one anyway, because it fell through to the RTSP branch: a
+  // rtsp://…/tv_xxxx that nothing serves and no player can open. Worse than useless — it invites
+  // somebody to test it, fail, and conclude the screen is broken when it is working perfectly.
+  const isPi = tv.kind === 'pi';
   // A browser screen's link is a page, not a stream. The LAN form is built from the address
   // this panel was opened with; the PUBLIC one (for a television that is not on this network)
   // comes from the server, which asks the platform whether it is actually routing this app —
@@ -239,19 +256,30 @@ function ScreenCard({
         </button>
       )}
 
-      <div className="rtsp-box">
-        <span className="rtsp-url" title={url}>{url}</span>
-        <button
-          className="btn btn--ghost btn--sm"
-          onClick={() => {
-            onCopy(url);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          }}
-        >
-          {copied ? <IconCheck size={14} /> : <IconCopy size={14} />} {copied ? 'Copied' : 'Copy link'}
-        </button>
-      </div>
+      {isPi ? (
+        // What a person actually needs from a device on a shelf: is it alive, where is it, and what
+        // is it running. No link, because there is nothing to connect to.
+        <div className="rtsp-box" style={{ justifyContent: 'flex-start', gap: '0.7rem', flexWrap: 'wrap' }}>
+          <span className={`status-dot${device?.online ? '' : ' status-dot--idle'}`} title={device?.online ? 'Checking in' : 'Not checking in'} />
+          <span className="hint">Raspberry Pi</span>
+          <span className="hint" style={{ fontFamily: 'monospace' }}>{device?.ip || 'address unknown'}</span>
+          <span className="hint muted">agent {device?.agentVersion || '?'}</span>
+        </div>
+      ) : (
+        <div className="rtsp-box">
+          <span className="rtsp-url" title={url}>{url}</span>
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => {
+              onCopy(url);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? <IconCheck size={14} /> : <IconCopy size={14} />} {copied ? 'Copied' : 'Copy link'}
+          </button>
+        </div>
+      )}
       {isWeb && (
         <div className="rtsp-box">
           <span className="rtsp-url" title={publicScreenUrl || 'Remote access is off'}>
@@ -313,6 +341,36 @@ function ScreenCard({
  * masjid's network on an address that can change, and the display server may not even be in the
  * building. Typing what is on the screen also proves you can see that screen.
  */
+/**
+ * Keeps the Pi screens on this page supplied with what their devices are reporting.
+ *
+ * One request for the page rather than one per card, and it does not run at all unless a Pi
+ * screen exists — a masjid with only decoder boxes should not be polling an endpoint about
+ * hardware it does not have.
+ */
+function PiDeviceFacts({ tvs, onLoaded }: { tvs: Tv[]; onLoaded: (m: Map<string, PiDeviceInfo>) => void }) {
+  const anyPi = tvs.some((t) => t.kind === 'pi');
+  useEffect(() => {
+    if (!anyPi) return;
+    let live = true;
+    const load = () =>
+      api
+        .piDevices()
+        .then((r) => {
+          if (live) onLoaded(new Map(r.devices.map((d) => [d.id, d])));
+        })
+        .catch(() => {});
+    void load();
+    // Same cadence the device checks in at, so online on the card means what it says.
+    const t = setInterval(() => void load(), 10_000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [anyPi]);
+  return null;
+}
+
 function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopted: () => void }) {
   const toast = useToast();
   const [devices, setDevices] = useState<PiDeviceInfo[]>([]);
@@ -333,7 +391,11 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
   // into `sudo sh` is not something anybody should do without being told.
   const { command: installCmd, insecureFirstHop } = installCommand(window.location.origin);
 
-  const load = () => api.piDevices().then((r) => setDevices(r.devices)).catch(() => setDevices([]));
+  // A failed poll must NOT clear the list. It used to, and the consequence was maddening rather
+  // than subtle: the code and name inputs below were rendered only while a device was pending, so
+  // one transient failure emptied the list, unmounted the input mid-keystroke, and the next poll
+  // put a fresh empty one back. It read as the cursor jumping out of the box while you typed.
+  const load = () => api.piDevices().then((r) => setDevices(r.devices)).catch(() => {});
   useEffect(() => {
     void load();
     // A Pi that is plugged in while this page is open should appear without a refresh — that
@@ -426,31 +488,38 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
               </li>
             ))}
           </ul>
-          <div className="grid2">
-            <Field label="Code from the screen">
-              <input
-                className="input"
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="K7M2QX"
-                style={{ fontFamily: 'monospace', letterSpacing: '0.12em' }}
-              />
-            </Field>
-            <Field label="Name this screen" hint="What you'll call it in the panel — e.g. Main hall.">
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Main hall" />
-            </Field>
-          </div>
-          <button className="btn btn--primary btn--sm" onClick={adopt} disabled={busy || code.trim().length < 4} style={{ marginBlockStart: '0.8rem' }}>
-            {busy ? <><Spinner /> Setting up…</> : 'Set up this screen'}
-          </button>
         </>
       ) : (
-        <p className="muted" style={{ marginBottom: 0 }}>
+        <p className="muted" style={{ marginBottom: '0.8rem' }}>
           {adopted.length
             ? 'No new screens are waiting. Run the command above on another Pi to add one.'
             : 'No screens are waiting yet. Once the command above finishes, the Pi appears here with a code.'}
         </p>
       )}
+
+      {/* OUTSIDE the conditional above, deliberately.
+          The list of waiting devices changes with every poll; what somebody is halfway through
+          typing must not. Rendering these inside that branch meant a single empty poll unmounted
+          the input mid-keystroke and remounted a fresh one — which reads as the cursor jumping out
+          of the box while you type, and loses what you had typed.
+          You can also now type a code that is on the television before the list has caught up. */}
+      <div className="grid2">
+        <Field label="Code from the screen">
+          <input
+            className="input"
+            value={code}
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
+            placeholder="K7M2QX"
+            style={{ fontFamily: 'monospace', letterSpacing: '0.12em' }}
+          />
+        </Field>
+        <Field label="Name this screen" hint="What you'll call it in the panel — e.g. Main hall.">
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Main hall" />
+        </Field>
+      </div>
+      <button className="btn btn--primary btn--sm" onClick={adopt} disabled={busy || code.trim().length < 4} style={{ marginBlockStart: '0.8rem' }}>
+        {busy ? <><Spinner /> Setting up…</> : 'Set up this screen'}
+      </button>
 
       {adopted.length > 0 && (
         <div style={{ marginBlockStart: pending.length ? '1.2rem' : '0.8rem' }}>
