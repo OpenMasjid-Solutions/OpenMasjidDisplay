@@ -341,6 +341,27 @@ and lets you change anything later without reinstalling.
 
 Full decoder guidance and troubleshooting: [docs/RTSP_SETUP.md](docs/RTSP_SETUP.md).
 
+## Raspberry Pi screens (beta)
+
+A Raspberry Pi plugged into a television, showing the timetable and playing cameras **by itself**.
+Turn on *Screens that are a web page* in **Settings → Beta features**, then run one command on a
+Pi running Raspberry Pi OS Lite:
+
+```sh
+curl -fsSL http://<your-display-server>:7860/pi.sh | sudo sh
+```
+
+The television shows a setup code; type it into **Screens → Raspberry Pi screens**. The command is
+shown there too, already carrying this server's address.
+
+The reason it exists: a Pi opens the camera **directly**, on your own network, so the video never
+passes through the display server. That is what lets the server run somewhere else entirely — in
+another building or in the cloud — while cameras stay smooth. It draws to the screen without a
+desktop or a browser, so a Raspberry Pi 3 B+ with 1 GB of RAM is enough, and it keeps itself up to
+date afterwards.
+
+See **[docs/PI_SCREENS.md](docs/PI_SCREENS.md)**.
+
 ## Hardware notes (it's meant to be light)
 
 - The timetable stream is mostly static and runs at a low frame rate, so a **Raspberry Pi 4/5** comfortably

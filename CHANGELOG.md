@@ -135,6 +135,9 @@ CLAUDE.md § *The changelog has two audiences*.
 > they have not been through a season in a real masjid yet.
 
 
+- Documentation for setting a Raspberry Pi screen up, what it needs, how it behaves when something
+  is wrong, and what to check when it does not work.
+
 ## 0.69.0
 
 ### Added
