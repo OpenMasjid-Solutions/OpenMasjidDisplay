@@ -1,7 +1,7 @@
 {
   "name": "openmasjid-display-web",
   "private": true,
-  "version": "0.70.0-dev.16",
+  "version": "0.70.0-dev.17",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {

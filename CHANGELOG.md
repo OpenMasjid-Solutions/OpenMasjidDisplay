@@ -13,6 +13,10 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **Raspberry Pi setup now finishes.** The last step failed with a shell error, which left the
+  screen software installed but its settings half-applied.
+
+### Fixed
 - **A Raspberry Pi screen now starts.** It was restarting every five seconds without ever drawing
   anything, because of a security setting on the screen software that stopped it looking up its
   own network address.

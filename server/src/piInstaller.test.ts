@@ -341,3 +341,30 @@ test('the console is taken off the screen only once something can replace it', (
   assert.ok(/^After=openmasjid-screen\.service$/m.test(unit), 'the console unit must run AFTER the agent');
   assert.ok(!/^Before=openmasjid-screen\.service$/m.test(unit), 'never before — that is the frozen-screen bug');
 });
+
+test('nothing in the expanded heredocs can be executed by accident', () => {
+  // The unit files are written with an UNQUOTED heredoc so the installer can substitute settings
+  // into them. That makes backticks and $( ) inside command substitution rather than punctuation,
+  // and `sh -n` cannot catch it because heredocs expand at run time, not parse time.
+  //
+  // A code reference written in backticks inside a COMMENT there was executed by dash, which read
+  // it as a function definition with an invalid name and killed the installer at its final step
+  // on a real Pi. Only the intended variables may expand.
+  const tpl = installerTemplate() as string;
+  const lines = tpl.split('\n');
+  const allowed = new Set(['$NODE_TLS_ENV', '$SERVICE_USER', '$PREFIX', '$CONFDIR', '$STATEDIR']);
+  let inside = false;
+  const offenders: string[] = [];
+  for (const [i, line] of lines.entries()) {
+    if (/<<UNIT$/.test(line)) inside = true;
+    else if (/^UNIT$/.test(line)) inside = false;
+    else if (inside) {
+      if (line.includes('`')) offenders.push(`${i + 1}: backtick -> ${line.trim()}`);
+      if (line.includes('$(')) offenders.push(`${i + 1}: $( ) -> ${line.trim()}`);
+      for (const m of line.match(/\$[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+        if (!allowed.has(m)) offenders.push(`${i + 1}: unexpected ${m} -> ${line.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `command substitution or an unknown variable in an expanded heredoc:\n${offenders.join('\n')}`);
+});

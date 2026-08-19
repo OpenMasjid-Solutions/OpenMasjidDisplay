@@ -480,9 +480,13 @@ ProtectControlGroups=yes
 # AF_NETLINK is NOT optional, however much it looks like tightening to drop it.
 #
 # Enumerating this machine's own network interfaces goes through a netlink socket, so without it
-# `os.networkInterfaces()` fails with EAFNOSUPPORT — which crashed the agent on startup, every
-# five seconds, forever. glibc's DNS resolution uses netlink too (AI_ADDRCONFIG asks which
-# families are configured), so ffmpeg would not have resolved a camera by name either.
+# the agent fails with EAFNOSUPPORT on startup -- every five seconds, forever. glibc resolves
+# names over netlink too, so ffmpeg would not have found a camera by hostname either.
+#
+# NOTE: this heredoc is UNQUOTED, because it has to expand the settings above. That means
+# backticks and dollar-parens in here are COMMAND SUBSTITUTION, not punctuation -- a code
+# reference in backticks in this very comment was executed by the shell and killed the installer
+# at the last step. Keep this block free of both.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
