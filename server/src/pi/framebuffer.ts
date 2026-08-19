@@ -200,29 +200,92 @@ export function packFrame(src: Uint8Array, geo: FbGeometry): Buffer {
 }
 
 /**
- * An open framebuffer, held for the life of the agent.
+ * A cheap fingerprint of the current layout, for noticing that it changed.
  *
- * Reopening per frame would be simpler, but the agent draws once a second forever and the file
- * descriptor is the one piece of state worth keeping. Writes go to offset 0 with `pwrite` so a
- * short write cannot leave the position half-advanced into the next frame.
+ * Three small sysfs reads, so it costs nothing to check before every frame. Deliberately not
+ * `fbset`, which spawns a process — that would be far too expensive once a second, and the point
+ * here is only to detect a change, after which the authoritative read happens once.
+ */
+export function geometrySignature(): string {
+  return [readSys('virtual_size'), readSys('mode'), readSys('bits_per_pixel'), readSys('stride')].join('|');
+}
+
+/**
+ * An open framebuffer, and the layout it currently has.
+ *
+ * The layout is NOT fixed for the life of the process, however much it looks like it should be.
+ * An earlier version of this comment claimed it "only changes when somebody swaps the television,
+ * and that comes with a reboot" — that is simply untrue on a modern set. A 4K television
+ * renegotiates after the Pi has already booted, and the driver reallocates the framebuffer at the
+ * new size and stride.
+ *
+ * The symptom is very specific and was reported exactly: the screen is right for about ten
+ * seconds and then reverts to a magnified corner. Nothing about the frames being written changed
+ * — the buffer they were being written into did, and we carried on addressing it with the size it
+ * had at startup.
  */
 export class Framebuffer {
   private fd: number;
-  readonly geo: FbGeometry;
+  private geometry: FbGeometry;
+  private signature: string;
 
-  private constructor(fd: number, geo: FbGeometry) {
+  private constructor(
+    fd: number,
+    geo: FbGeometry,
+    private readonly device: string,
+  ) {
     this.fd = fd;
-    this.geo = geo;
+    this.geometry = geo;
+    this.signature = geometrySignature();
+  }
+
+  get geo(): FbGeometry {
+    return this.geometry;
   }
 
   static open(device = FB_DEVICE, geo?: FbGeometry): Framebuffer | null {
     const g = geo ?? readGeometry();
     if (!g) return null;
     try {
-      return new Framebuffer(fs.openSync(device, 'w'), g);
+      return new Framebuffer(fs.openSync(device, 'w'), g, device);
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Notice a mode change and follow it. Returns the new layout when it moved, else null.
+   *
+   * The descriptor is reopened as well as the numbers re-read, because the driver may have
+   * reallocated the mapping rather than resized it in place — writing to the old one would either
+   * fail or land somewhere that is no longer on screen.
+   */
+  refresh(): FbGeometry | null {
+    const sig = geometrySignature();
+    if (sig === this.signature) return null;
+    this.signature = sig;
+
+    const next = readGeometry();
+    if (!next) return null;
+    const same =
+      next.width === this.geometry.width &&
+      next.height === this.geometry.height &&
+      next.bpp === this.geometry.bpp &&
+      next.stride === this.geometry.stride;
+    if (same) return null;
+
+    this.geometry = next;
+    try {
+      fs.closeSync(this.fd);
+    } catch {
+      /* already gone */
+    }
+    try {
+      this.fd = fs.openSync(this.device, 'w');
+    } catch {
+      /* the next draw returns false, and the one after that tries again */
+    }
+    return next;
   }
 
   /** Draw an RGBA frame. Returns false rather than throwing: a failed frame is a dropped frame,

@@ -13,6 +13,11 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **A Raspberry Pi screen now follows the television if it changes resolution.** Some sets settle
+  on a different mode a few seconds after switching on, and the picture would go from correct to a
+  magnified corner and stay there. It now notices and redraws at the new size.
+
+### Fixed
 - **A Raspberry Pi screen now asks the system what size the television actually is**, rather than
   working it out from settings that can describe a larger area than is really shown. On some sets
   the picture was drawn too big and only its corner appeared.

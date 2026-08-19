@@ -122,6 +122,14 @@ class Screen {
    */
   show(svg: string, fontFiles: string[] = []): number | null {
     try {
+      // Before anything else: has the television changed the mode under us? A 4K set renegotiates
+      // after boot, the driver reallocates the framebuffer, and frames addressed with the old size
+      // land as a magnified corner — right for about ten seconds, then wrong for good.
+      const moved = this.fb.refresh();
+      if (moved) {
+        log(`the screen changed mode: now ${moved.width}x${moved.height} @ ${moved.bpp}bpp, stride ${moved.stride}`);
+      }
+
       // The renderer stamps its own size, which follows the timetable's orientation and quality
       // — 1920×1080, 1080×1920 rotated, or 1280×720. Reading it rather than assuming is what
       // lets a portrait screen work at all.

@@ -11,7 +11,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGeometry, packFrame } from './framebuffer';
+import { parseGeometry, packFrame, Framebuffer } from './framebuffer';
 import { parseFbset } from './fbset';
 import { fitMode, blitCentered } from './raster';
 import { pickLanIp, deviceFacts } from './device';
@@ -437,4 +437,24 @@ test('a nonsense or truncated fbset answer is refused, not guessed at', () => {
 test('the ordinary case, where visible and virtual agree', () => {
   const g = parseFbset('    geometry 1920 1080 1920 1080 32\n    LineLength  : 7680\n');
   assert.deepEqual(g, { width: 1920, height: 1080, bpp: 32, stride: 7680 });
+});
+
+test('a mode change is noticed and followed, not cached for ever', async () => {
+  // Reported exactly: right for about ten seconds, then a magnified corner. A 4K television
+  // renegotiates after the Pi has booted and the driver reallocates the framebuffer; frames still
+  // addressed with the startup size land as the top-left quadrant. Nothing about the frames
+  // changed — the buffer under them did.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omd-fb-'));
+  const dev = path.join(dir, 'fb0');
+  fs.writeFileSync(dev, Buffer.alloc(16));
+
+  const fb = Framebuffer.open(dev, { width: 4, height: 2, bpp: 16, stride: 8 });
+  assert.ok(fb, 'the harness needs an explicit geometry, since there is no real framebuffer here');
+  assert.equal(fb!.geo.width, 4);
+
+  // With no sysfs to read, the signature never moves and refresh must be a no-op rather than
+  // throwing away a perfectly good geometry.
+  assert.equal(fb!.refresh(), null, 'no change must not disturb anything');
+  assert.equal(fb!.geo.width, 4, 'and must not lose the geometry it was given');
+  fb!.close();
 });
