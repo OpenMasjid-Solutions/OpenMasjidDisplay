@@ -29,12 +29,17 @@ export const TARGET_INTERVAL_MS = 1000;
 /**
  * The most of one core drawing may take.
  *
- * Not a tuning knob so much as a statement of what the device is for. At 45% the Pi stays
- * responsive, has headroom for ffmpeg to decode a camera alongside, and does not sit at a
- * temperature that throttles it — a throttled Pi draws *slower*, which would otherwise feed back
- * on itself.
+ * This was 45%, holding the rest back for ffmpeg to decode a camera alongside. That reservation
+ * was simply wrong: the timetable and a camera are the SAME PIXELS, so exactly one of them ever
+ * runs — the draw loop yields completely while ffmpeg owns the framebuffer. Keeping half the board
+ * free for a process that is not running turned a 1.5-second render on a Pi 3 into a frame every
+ * three and a half seconds, which is what "the framerate looks horrible" was.
+ *
+ * 85% leaves room for the poll loop, the check-in and the operating system, and no more. A device
+ * that still cannot manage one frame a second on that budget is genuinely too slow for 1080p, and
+ * the advice below says so rather than the rate quietly absorbing it.
  */
-export const MAX_DUTY = 0.45;
+export const MAX_DUTY = 0.85;
 
 /** Beyond this, redrawing less often stops helping and the screen just looks frozen. A clock
  *  that updates every ten seconds is wrong-looking but still tells the time. */

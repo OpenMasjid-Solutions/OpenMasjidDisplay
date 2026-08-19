@@ -13,6 +13,15 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **The cursor really does stay in the text box now.** Any dialog in the panel could steal focus
+  back to itself whenever the page behind it refreshed, which took the cursor out of whatever you
+  were typing. It affected every dialog, not just the Raspberry Pi one.
+
+- **A Raspberry Pi screen updates far more smoothly.** It was holding most of the processor in
+  reserve for playing a camera — but a screen shows the timetable or a camera, never both, so the
+  reserve was never used and the clock updated every few seconds instead of every second.
+
+### Fixed
 - **The timetable no longer looks washed out on a Raspberry Pi screen.** Some Pis come up with a
   screen mode that has far fewer colours available, which turned every gradient into flat bands.
   The Pi now blends those shades instead, and setup asks the Pi for full colour so the problem

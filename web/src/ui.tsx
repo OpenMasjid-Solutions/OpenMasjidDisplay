@@ -194,13 +194,38 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
     if (open) setMaximized(false);
   }, [open]);
 
+  // `onClose` is almost always an inline arrow at the call site, so it has a new identity on every
+  // render of the parent. Held in a ref so the key handler below can be re-registered without that
+  // identity being a dependency of the effect that MOVES FOCUS — see the comment there.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  /**
+   * Put focus in the dialog when it opens, and give it back when it closes.
+   *
+   * Keyed on `open` ALONE, and that is the whole point. This used to depend on `[open, onClose]`
+   * too — and because `onClose` is a fresh arrow on every parent render, any re-render while the
+   * dialog was open re-ran this effect and called `focus()` on the container, taking the cursor
+   * out of whatever input somebody was typing in.
+   *
+   * It was reported as the cursor jumping out of a text box after a split second, and it affected
+   * every dialog in the panel, not one — anything that re-rendered its parent did it. A five-second
+   * poll behind one of them simply turned an occasional annoyance into a constant one.
+   */
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
     ref.current?.focus();
+    return () => {
+      prev?.focus?.();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key === 'Tab' && ref.current) {
@@ -220,11 +245,9 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      prev?.focus?.();
-    };
-  }, [open, onClose]);
+    return () => window.removeEventListener('keydown', onKey);
+    // No focus handling in here, and no onClose in the deps: this effect may re-run freely.
+  }, [open]);
 
   if (!open) return null;
 
