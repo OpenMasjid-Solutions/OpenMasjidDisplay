@@ -65,6 +65,14 @@ apt-get install -y -qq --no-install-recommends \
 
 command -v node >/dev/null 2>&1 || die 'node did not install; check `apt-get install nodejs`'
 
+# Cameras are drawn by ffmpeg writing straight to the framebuffer, so this build has to have the
+# fbdev output device. Debian ships it, but a hand-built or minimal ffmpeg may not — and the
+# symptom would be a camera that silently never appears, which is a miserable thing to diagnose
+# from a phone call. Warn now, while somebody is still looking at a terminal.
+if ! ffmpeg -hide_banner -devices 2>/dev/null | grep -q fbdev; then
+  say "warning: this ffmpeg has no fbdev output device. The timetable will work; cameras will not."
+fi
+
 NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
 [ "$NODE_MAJOR" -ge 18 ] || die "node 18 or newer is required (found $(node -v 2>/dev/null || echo none)). Update Raspberry Pi OS."
 

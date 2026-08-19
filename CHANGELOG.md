@@ -13,6 +13,20 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **A Raspberry Pi screen now plays cameras, and opens them itself.** This is the point of the
+  whole thing: the Pi connects straight to the camera on your own network, so the video never
+  passes through the display server. A camera stays smooth even when the server is in another
+  building or in the cloud — the arrangement that previously reduced a remote screen to about one
+  frame every couple of minutes.
+
+- **It uses the Raspberry Pi’s video hardware where it can**, falling back automatically if that
+  is unavailable, so a Pi 3 can manage a 1080p camera without running out of processor.
+
+- **A camera that goes away comes back on its own.** If the camera is rebooted, unplugged or
+  switched off overnight, the screen keeps retrying — quickly at first, then less often — and
+  picks the picture up again within seconds of it returning. While it is down the screen says
+  which camera it is waiting for rather than going black.
+
 - **A Raspberry Pi screen now shows the timetable.** It draws the same picture your other
   screens draw, from the same code, so the two cannot disagree — the layout, the countdown, the
   Adhan and Iqāmah overlays, hadith during salah, the prohibited-time notice, the announcement

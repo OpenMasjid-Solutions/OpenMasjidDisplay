@@ -27,7 +27,8 @@
  * touches the dashboard, and the picture changes every second because a clock is on it.
  */
 import { Resvg } from '@resvg/resvg-js';
-import { Framebuffer, quietConsole, type FbGeometry } from './framebuffer';
+import { Framebuffer, quietConsole, FB_DEVICE, type FbGeometry } from './framebuffer';
+import { VideoPlayer } from './video';
 import { pairingSvg, messageSvg } from './pairing';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
@@ -343,14 +344,6 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
   const st = live.state;
   if (!screen || !st) return null;
 
-  if (st.content.kind === 'source') {
-    // Slice 4 hands the camera's own address to ffmpeg here. Until then, say what is meant to be
-    // on this screen rather than showing a black rectangle that looks like a fault.
-    return screen.show(
-      messageSvg(st.screenName || 'Screen', 'This screen is set to a camera. Camera playback is not in this build yet.'),
-    );
-  }
-
   const tt = st.timetable;
   if (!tt) {
     // Deliberately not a black rectangle. A screen that has simply been switched off should look
@@ -397,6 +390,7 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
 async function runAdopted(screen: Screen | null, cfg: AgentConfig, cache: AssetCache): Promise<'forgotten'> {
   const live = new Live(cfg.server);
   const cadence = new RenderCadence();
+  const player = new VideoPlayer(FB_DEVICE, log);
   let advised = '';
 
   // ── the polling loop ──
@@ -447,7 +441,7 @@ async function runAdopted(screen: Screen | null, cfg: AgentConfig, cache: AssetC
         await sleep(2000);
         continue;
       }
-      if (live.stale()) {
+      if (live.stale() && !player.status().playing) {
         // Times on screen stay correct — they are computed here — but a change made in the
         // dashboard may not have reached us, and saying so beats looking healthy.
         screen?.show(
@@ -456,6 +450,29 @@ async function runAdopted(screen: Screen | null, cfg: AgentConfig, cache: AssetC
         await sleep(5000);
         continue;
       }
+
+      // A camera and the timetable are the same pixels, so exactly one of them may be running.
+      // ffmpeg draws straight to the framebuffer; anything we painted would be a flicker over it.
+      const stream = live.state.stream;
+      if (stream && screen) {
+        player.play(stream.url, screen.geo);
+        const st = player.status();
+        if (st.playing) {
+          await sleep(2000);
+          continue;
+        }
+        // Between attempts. Saying which camera and what went wrong turns "the screen is black"
+        // into something whoever is standing there can act on.
+        screen.show(
+          messageSvg(
+            'Camera unavailable',
+            st.lastError ? st.lastError.slice(0, 120) : `Trying to reach the camera for "${live.state.screenName}"`,
+          ),
+        );
+        await sleep(3000);
+        continue;
+      }
+      player.stop();
 
       const ms = drawFrame(screen, live);
       if (ms !== null) cadence.record(ms);
@@ -479,6 +496,7 @@ async function runAdopted(screen: Screen | null, cfg: AgentConfig, cache: AssetC
 
   await Promise.race([poll(), draw()]);
   live.forgotten = true;
+  player.stop();
   return 'forgotten';
 }
 
