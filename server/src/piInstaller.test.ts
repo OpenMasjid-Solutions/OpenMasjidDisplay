@@ -159,3 +159,37 @@ test('the installer carries its licence header, like every other file here', () 
   const onDisk = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : (installerTemplate() as string);
   assert.ok(onDisk.startsWith('# SPDX-License-Identifier: AGPL-3.0-only'));
 });
+
+// ── keeping a masjid's screens current ───────────────────────────────────────
+
+test('the agent cannot rewrite its own code — the updater is a separate root unit', () => {
+  const tpl = installerTemplate() as string;
+  // The whole point of splitting it out. A long-running, network-facing process that can rewrite
+  // its own binary is a much larger thing to trust than one that cannot.
+  const rwp = /^ReadWritePaths=(.*)$/m.exec(tpl)?.[1] ?? '';
+  assert.ok(!rwp.includes('$PREFIX'), 'the agent must not have write access to /opt');
+  assert.ok(rwp.includes('$CONFDIR') && rwp.includes('$STATEDIR'));
+  assert.ok(tpl.includes('openmasjid-screen-update.timer'), 'updates run on their own timer');
+  assert.ok(tpl.includes('ExecStart=/opt/openmasjid-screen/update.sh'));
+});
+
+test('an update that will not start is rolled back', () => {
+  const tpl = installerTemplate() as string;
+  // Without this a bad build takes every screen in the masjid dark until somebody notices and
+  // knows what to do — and nobody is watching these.
+  assert.ok(tpl.includes('agent.js.prev'), 'the previous agent must be kept');
+  assert.ok(/is-active --quiet openmasjid-screen\.service/.test(tpl), 'and its replacement checked');
+  assert.ok(/rolling back/.test(tpl));
+});
+
+test('a truncated download never becomes the running agent', () => {
+  const tpl = installerTemplate() as string;
+  // Both the installer and the updater check, because either can be interrupted.
+  assert.equal((tpl.match(/node --check/g) ?? []).length, 2);
+});
+
+test('a masjid with a screen in every hall does not stampede the server', () => {
+  const tpl = installerTemplate() as string;
+  assert.ok(/RandomizedDelaySec=/.test(tpl), 'every Pi asking at the same second is a thundering herd');
+  assert.ok(/OnUnitActiveSec=/.test(tpl));
+});

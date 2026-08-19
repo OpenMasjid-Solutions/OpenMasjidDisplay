@@ -332,6 +332,31 @@ export function deviceOnline(deviceId: string, nowMs: number): boolean {
   return at != null && nowMs - at <= PI_SEEN_TIMEOUT_MS;
 }
 
+/**
+ * Update the facts an adopted device reports about itself.
+ *
+ * These arrive at enrolment, and enrolment stops once a device is adopted — so without this the
+ * panel would show whatever was true the day the screen was set up, forever. That matters most
+ * for the agent version: a Pi that has updated itself overnight would otherwise still be listed
+ * as running the build it was installed with, which is exactly the thing an admin looks at this
+ * list to find out.
+ *
+ * Every field is self-reported by an authenticated but unprivileged device, so all of it is
+ * sanitised and none of it is trusted for anything but display.
+ */
+export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput): void {
+  const device = db.piDevices?.find((d) => d.id === deviceId);
+  if (!device) return;
+  const hostname = str(input.hostname, 64);
+  const ip = str(input.ip, 64);
+  const model = str(input.model, 80);
+  const agentVersion = str(input.agentVersion, 40);
+  if (hostname) device.hostname = hostname;
+  if (ip) device.ip = ip;
+  if (model) device.model = model;
+  if (agentVersion) device.agentVersion = agentVersion;
+}
+
 /** Test seam. */
 export function __resetDevicesForTests(): void {
   seen.clear();

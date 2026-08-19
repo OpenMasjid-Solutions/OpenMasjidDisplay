@@ -31,6 +31,7 @@ import {
 } from './piInstaller';
 import {
   enrolDevice,
+  updateDeviceFacts,
   findDeviceByToken,
   findPendingByCode,
   markDeviceSeen,
@@ -491,7 +492,15 @@ export function createApi(deps: Deps) {
         markDeviceSeen(device.id, Date.now());
         const what = piMatch[3] ?? '';
 
-        if (what === 'seen' && method === 'POST') return sendJson(res, 200, { ok: true, pollMs: PI_POLL_MS });
+        if (what === 'seen' && method === 'POST') {
+          // A periodic check-in. Its real job is refreshing what the panel shows — most of all
+          // the agent version, which changes underneath us when a Pi updates itself.
+          const body = await readBody(req, 2_000).catch(() => null);
+          if (body && typeof body === 'object') {
+            store.update((db) => updateDeviceFacts(db, device.id, body as Record<string, unknown>));
+          }
+          return sendJson(res, 200, { ok: true, pollMs: PI_POLL_MS, agentVersion: appVersion() });
+        }
 
         if (what === 'state' && method === 'GET') {
           const tv = device.tvId ? store.db.tvs.find((t) => t.id === device.tvId) ?? null : null;

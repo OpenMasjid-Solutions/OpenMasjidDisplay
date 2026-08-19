@@ -13,6 +13,14 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Raspberry Pi screens keep themselves up to date.** Each one checks with the display server a
+  few times a day and switches to the current version on its own, so a masjid with a Pi behind
+  every television does not need anybody walking round with a keyboard. If an update will not
+  start, the screen puts the previous version back by itself.
+
+- **The Screens page shows what each Pi is actually running.** The version, name and address are
+  refreshed while the screen is running rather than fixed at the moment it was set up, so a Pi
+  that has updated overnight — or moved to a new address — is listed correctly.
 - **A Raspberry Pi screen now plays cameras, and opens them itself.** This is the point of the
   whole thing: the Pi connects straight to the camera on your own network, so the video never
   passes through the display server. A camera stays smooth even when the server is in another

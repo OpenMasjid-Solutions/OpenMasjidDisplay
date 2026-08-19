@@ -241,9 +241,90 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 UNIT
 
+# ── keeping itself current ───────────────────────────────────────────────────
+#
+# A masjid may have a Pi behind every television, and a release that needed somebody to walk round
+# with a keyboard would simply not get installed. So the agent follows the display server.
+#
+# The update runs as ROOT, on a timer, in its own unit — NOT inside the agent. The agent is the
+# long-running, network-facing process, and it deliberately cannot write to /opt: a process that
+# can rewrite its own code is a much larger thing to trust than one that cannot. Splitting it out
+# is the same reasoning as the console unit above.
+
+cat > "$PREFIX/update.sh" <<'UPD'
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+# Fetch the screen agent this display server is shipping, and switch to it if it differs.
+set -eu
+PREFIX=/opt/openmasjid-screen
+CONF=/etc/openmasjid-screen/config.json
+
+SERVER=$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).server||""))}catch{}' "$CONF" 2>/dev/null || true)
+[ -n "$SERVER" ] || { echo "no server configured; nothing to update from"; exit 0; }
+
+TMP="$PREFIX/agent.js.new"
+curl -fsSL --max-time 120 "$SERVER/pi/agent.js" -o "$TMP" || { echo "could not download the agent"; exit 0; }
+[ -s "$TMP" ] || { rm -f "$TMP"; echo "downloaded agent was empty"; exit 0; }
+# A truncated or half-written download must never become the thing systemd restarts forever.
+node --check "$TMP" || { rm -f "$TMP"; echo "downloaded agent is not valid JavaScript"; exit 0; }
+
+if cmp -s "$TMP" "$PREFIX/agent.js"; then
+  rm -f "$TMP"
+  exit 0
+fi
+
+echo "updating the screen agent"
+cp -f "$PREFIX/agent.js" "$PREFIX/agent.js.prev" 2>/dev/null || true
+mv "$TMP" "$PREFIX/agent.js"
+systemctl restart openmasjid-screen.service
+
+# Roll back if the new one will not stay up. Without this, a bad build takes every screen in the
+# masjid dark until somebody notices and knows what to do — and nobody is watching these.
+sleep 20
+if ! systemctl is-active --quiet openmasjid-screen.service; then
+  echo "the new agent did not stay running; rolling back"
+  if [ -f "$PREFIX/agent.js.prev" ]; then
+    mv "$PREFIX/agent.js.prev" "$PREFIX/agent.js"
+    systemctl restart openmasjid-screen.service
+  fi
+fi
+UPD
+chmod 700 "$PREFIX/update.sh"
+
+cat > /etc/systemd/system/openmasjid-screen-update.service <<'UNIT'
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=OpenMasjidDisplay: update the screen agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/openmasjid-screen/update.sh
+UNIT
+
+cat > /etc/systemd/system/openmasjid-screen-update.timer <<'UNIT'
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=OpenMasjidDisplay: check for a new screen agent
+
+[Timer]
+# Shortly after boot, then a few times a day. RandomizedDelaySec so a masjid with a screen in
+# every hall does not have all of them ask at the same second.
+OnBootSec=3min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
 systemctl daemon-reload
 systemctl enable --now openmasjid-screen-console.service >/dev/null 2>&1 || true
 systemctl enable openmasjid-screen.service >/dev/null 2>&1
+systemctl enable --now openmasjid-screen-update.timer >/dev/null 2>&1 || true
 systemctl restart openmasjid-screen.service
 
 say "Installed agent $AGENT_VERSION."
@@ -251,4 +332,5 @@ if [ "${NEEDS_REBOOT:-0}" = 1 ]; then
   say 'Display settings changed — reboot to apply them:  sudo reboot'
 fi
 say 'This screen should now show a setup code. Enter it in the dashboard under Screens.'
+say 'This screen will keep itself up to date with the display server from now on.'
 say 'If it does not:  sudo journalctl -u openmasjid-screen -n 50 --no-pager'

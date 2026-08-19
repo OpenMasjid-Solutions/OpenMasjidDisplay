@@ -61,6 +61,11 @@ const POLL_MS = 5_000;
  *  might be sitting unapplied. */
 const STALE_AFTER_MS = 90_000;
 
+/** How often to tell the server what this device is running. Not often — nothing here changes
+ *  minute to minute, and the point is only that the panel stops showing what was true on the
+ *  day the screen was set up. */
+const CHECKIN_MS = 5 * 60_000;
+
 const log = (...args: unknown[]): void => {
   // journalctl timestamps every line already, so this stays bare. No call site anywhere in this
   // file passes the token or the device secret to it, and none should: the journal on a masjid
@@ -387,7 +392,12 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
  * response to that is to go back to showing a pairing code, not to error out — the device is
  * being handed to somebody, or moved to another hall.
  */
-async function runAdopted(screen: Screen | null, cfg: AgentConfig, cache: AssetCache): Promise<'forgotten'> {
+async function runAdopted(
+  screen: Screen | null,
+  cfg: AgentConfig,
+  cache: AssetCache,
+  facts: DeviceFacts,
+): Promise<'forgotten'> {
   const live = new Live(cfg.server);
   const cadence = new RenderCadence();
   const player = new VideoPlayer(FB_DEVICE, log);
@@ -430,6 +440,23 @@ async function runAdopted(screen: Screen | null, cfg: AgentConfig, cache: AssetC
         /* a missing image draws the themed scene instead; the next poll tries again */
       });
       await sleep(pollMs);
+    }
+  };
+
+  // ── the check-in ──
+  //
+  // Separate from polling because it answers a different question. Polling asks what to show;
+  // this says what we are, so an admin looking at a list of a dozen screens can see which have
+  // picked up an update and which have not.
+  const checkin = async (): Promise<void> => {
+    while (!live.forgotten) {
+      await postJson(`${cfg.server}/pi/${cfg.token}/seen`, {
+        hostname: facts.hostname,
+        ip: facts.ip,
+        model: facts.model,
+        agentVersion: AGENT_VERSION,
+      }).catch(() => ({ httpStatus: 0 }));
+      await sleep(CHECKIN_MS);
     }
   };
 
@@ -494,6 +521,7 @@ async function runAdopted(screen: Screen | null, cfg: AgentConfig, cache: AssetC
     }
   };
 
+  void checkin();
   await Promise.race([poll(), draw()]);
   live.forgotten = true;
   player.stop();
@@ -555,7 +583,7 @@ async function main(): Promise<void> {
       live = { ...live, token };
       saveConfig(live);
     }
-    await runAdopted(screen, live, cache);
+    await runAdopted(screen, live, cache, facts);
     // Forgotten. Drop the token and go back to showing a code; keep the identity, so the panel
     // recognises the same device rather than growing a second row for it.
     live = { server: live.server, deviceId: live.deviceId, deviceSecret: live.deviceSecret };
