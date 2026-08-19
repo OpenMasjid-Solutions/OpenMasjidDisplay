@@ -14,7 +14,10 @@ import assert from 'node:assert/strict';
 import { parseGeometry, packFrame } from './framebuffer';
 import { fitMode, blitCentered } from './raster';
 import { pickLanIp } from './device';
-import { parseConfig, makeDeviceId, makeDeviceSecret } from './agentConfig';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, type AgentConfig } from './agentConfig';
 import { pairingSvg, messageSvg } from './pairing';
 
 // ── framebuffer geometry ─────────────────────────────────────────────────────
@@ -292,4 +295,51 @@ test('a message screen always produces something to draw', () => {
   const svg = messageSvg('Waiting for the display server', 'Cannot reach http://h');
   assert.ok(svg.startsWith('<svg') && svg.endsWith('</svg>'));
   assert.ok(svg.includes('Waiting for the display server'));
+});
+
+// ── the config must survive being written ────────────────────────────────────
+
+test('saving keeps fields this version does not know about', () => {
+  // Found by review: `parseConfig` returns only the four fields it understands, so writing that
+  // object back deleted everything else — and an install-time setting stored here was destroyed
+  // by the first adoption, minutes after setup, silently stopping the device updating itself.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omd-cfg-'));
+  const file = path.join(dir, 'config.json');
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ server: 'http://h', deviceId: 'pi_a', deviceSecret: 's', somethingElse: 'keep me' }),
+  );
+
+  const cfg = loadConfig(file);
+  assert.ok(cfg);
+  saveConfig({ ...(cfg as AgentConfig), token: 'tok' }, file);
+
+  const after = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+  assert.equal(after.somethingElse, 'keep me', 'an unknown field must not be destroyed');
+  assert.equal(after.token, 'tok');
+  assert.equal(after.deviceId, 'pi_a');
+});
+
+test('forgetting removes the token rather than leaving a stale one', () => {
+  // The one field where merging would be wrong: a device that has been forgotten must not keep
+  // presenting the credential it was forgotten with.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omd-cfg-'));
+  const file = path.join(dir, 'config.json');
+  saveConfig({ server: 'http://h', deviceId: 'pi_a', deviceSecret: 's', token: 'tok' }, file);
+  saveConfig({ server: 'http://h', deviceId: 'pi_a', deviceSecret: 's' }, file);
+  const after = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+  assert.equal('token' in after, false);
+  assert.equal(after.deviceId, 'pi_a', 'but the identity stays, so it keeps the same row in the panel');
+});
+
+test('an unreadable config cannot blank the device identity', () => {
+  // A save that started from a failed read used to write a token with no device id, which is
+  // unrecoverable without walking to the television.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omd-cfg-'));
+  const file = path.join(dir, 'config.json');
+  fs.writeFileSync(file, '{ this is not json');
+  saveConfig({ server: 'http://h', deviceId: 'pi_a', deviceSecret: 's' }, file);
+  const after = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+  assert.equal(after.deviceId, 'pi_a');
+  assert.equal(after.deviceSecret, 's');
 });

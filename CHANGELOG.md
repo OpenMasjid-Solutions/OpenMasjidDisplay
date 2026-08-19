@@ -13,6 +13,29 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **The Raspberry Pi installer no longer fails part-way through.** It reported the screen
+  software it had just downloaded as invalid and stopped, on every Pi, because of the temporary
+  filename it used while checking it.
+
+- **A Pi set up against a server with its own certificate now keeps updating itself.** It would
+  have stopped silently a few minutes after setup and then run the same version forever, with
+  nothing on the screen or in the dashboard to say so.
+
+- **Setup now checks that the screen software itself can reach your server**, not only that the
+  download worked. The two check certificates differently, so an install could report success and
+  still leave a screen that never connected.
+
+- **If the Pi cannot reach your display server at all, setup now stops and says so**, instead of
+  quietly continuing with weaker security because of what is usually a typo or a network problem.
+
+### Changed
+
+- **Setting up a Raspberry Pi has moved into Add screen.** Adding a screen now asks how it
+  receives the picture — a decoder box, a web page, or a Raspberry Pi — and choosing Raspberry Pi
+  gives you the command and the box to type the code into, rather than a separate panel further
+  down the page.
+
+### Fixed
 - **Setting up a Raspberry Pi screen now works when the display server uses its own certificate.**
   Most masjids reach the server at a local address like `https://192.168.1.18:8444`, where the
   certificate has to be self-signed — and the setup command was simply refused. The dashboard now

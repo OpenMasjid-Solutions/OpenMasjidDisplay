@@ -28,6 +28,17 @@ PREFIX=/opt/openmasjid-screen
 # Where the server's own certificate is pinned, when it turns out to be self-signed. Kept beside
 # the config because it is part of how this device trusts its server, not disposable state.
 CA=/etc/openmasjid-screen/server-ca.crt
+# How this device talks to its server, written once at install and read by the updater.
+#
+# It lives in $PREFIX and NOT in config.json, deliberately. The agent rewrites config.json whenever
+# it is adopted or forgotten, and it writes back only the keys it knows about — so anything the
+# installer left there is destroyed within minutes of setup. The updater reading its trust settings
+# from that file would therefore lose them almost immediately and fall back to a handshake already
+# known to fail, leaving a screen that never updates again and says nothing about it.
+#
+# $PREFIX is read-only to the agent, so this file is also not something a compromised agent could
+# rewrite to weaken the root updater that reads it.
+TRUSTENV="$PREFIX/trust.env"
 CONFDIR=/etc/openmasjid-screen
 CONF="$CONFDIR/config.json"
 # Downloaded wallpapers, logos and fonts. Separate from the config because it is disposable —
@@ -153,7 +164,20 @@ case "$SERVER" in
            | openssl x509 -outform PEM > "$CA.new" 2>/dev/null && [ -s "$CA.new" ]; then
         mv "$CA.new" "$CA"
         chmod 644 "$CA"
-        if curl -fsS --max-time 20 --cacert "$CA" -o /dev/null "$SERVER/pi/agent.js" 2>/dev/null; then
+        # BOTH clients have to be asked, not just curl.
+        #
+        # curl and Node are different TLS stacks with different rules — most sharply about
+        # certificates that carry a name only in the legacy Subject CN and no SAN, where the two
+        # can disagree about whether the connection is acceptable. curl is what validates the pin
+        # here; Node is what has to live with it for the next several months. Checking only curl
+        # can therefore print "pinned — verified against it" and then hand over a screen whose
+        # agent cannot make a single request, with nothing afterwards to catch it.
+        if curl -fsS --max-time 20 --cacert "$CA" -o /dev/null "$SERVER/pi/agent.js" 2>/dev/null &&
+           NODE_EXTRA_CA_CERTS="$CA" node -e '
+             fetch(process.argv[1] + "/pi/agent.js", { redirect: "error" })
+               .then((r) => process.exit(r.ok ? 0 : 1))
+               .catch(() => process.exit(1));
+           ' "$SERVER" 2>/dev/null; then
           say "pinned the server's certificate: $CA"
           say 'requests from now on are verified against it — not left unverified'
           CURL_OPTS="--cacert $CA"
@@ -190,10 +214,18 @@ case "$SERVER" in
           NODE_TLS_ENV='Environment=NODE_TLS_REJECT_UNAUTHORIZED=0'
         fi
       else
+        # We could not read a certificate at all. The overwhelmingly likely reason is that the
+        # server is not reachable from this Pi — a typo, the wrong network, a firewall — and NOT
+        # that it presented something strange.
+        #
+        # Refuse. Falling through to "no verification" here would permanently weaken a device
+        # because of a temporary network problem, and it would do it at the one moment nobody
+        # would notice: the install carries on, the screen pairs, and the downgrade is never
+        # mentioned again. Re-running this after fixing the network costs nothing.
         rm -f "$CA.new"
-        warn "could not read the server's certificate; continuing WITHOUT verification"
-        CURL_OPTS='-k'
-        NODE_TLS_ENV='Environment=NODE_TLS_REJECT_UNAUTHORIZED=0'
+        die "could not reach $HOSTPORT to read its certificate.
+   Check this Pi can reach the display server, then run this installer again.
+   Try:  curl -vk $SERVER/pi/agent.js"
       fi
     fi
     ;;
@@ -201,6 +233,17 @@ case "$SERVER" in
     say 'plain HTTP — no certificate to check'
     ;;
 esac
+
+mkdir -p "$PREFIX"
+# Single-quoted values, and the only things that can appear in them are curl flags and a path we
+# chose — nothing here comes from the network.
+{
+  printf '# SPDX-License-Identifier: AGPL-3.0-only\n'
+  printf '# Written by the OpenMasjidDisplay installer. Read by update.sh. Do not edit by hand.\n'
+  printf "SERVER='%s'\n" "$SERVER"
+  printf "CURL_OPTS='%s'\n" "$CURL_OPTS"
+} > "$TRUSTENV"
+chmod 644 "$TRUSTENV"
 
 # ── packages ─────────────────────────────────────────────────────────────────
 #
@@ -279,10 +322,10 @@ fi
 # truncated agent that systemd then restarts forever.
 say "downloading $SERVER/pi/agent.js"
 # shellcheck disable=SC2086
-curl -fsSL $CURL_OPTS "$SERVER/pi/agent.js" -o "$PREFIX/agent.js.new" || die "could not download the agent from $SERVER"
-[ -s "$PREFIX/agent.js.new" ] || die 'the downloaded agent was empty'
-node --check "$PREFIX/agent.js.new" || die 'the downloaded agent is not valid JavaScript'
-mv "$PREFIX/agent.js.new" "$PREFIX/agent.js"
+curl -fsSL $CURL_OPTS "$SERVER/pi/agent.js" -o "$PREFIX/agent.new.js" || die "could not download the agent from $SERVER"
+[ -s "$PREFIX/agent.new.js" ] || die 'the downloaded agent was empty'
+node --check "$PREFIX/agent.new.js" || die 'the downloaded agent is not valid JavaScript'
+mv "$PREFIX/agent.new.js" "$PREFIX/agent.js"
 say "agent $AGENT_VERSION installed ($(wc -c < "$PREFIX/agent.js") bytes)"
 
 # ── the service account ──────────────────────────────────────────────────────
@@ -309,19 +352,17 @@ say "groups: $(id -nG "$SERVICE_USER" 2>/dev/null || echo '?')"
 
 step 'Writing the configuration'
 mkdir -p "$CONFDIR"
-SERVER="$SERVER" CONF="$CONF" INSECURE_TLS="$(case "$CURL_OPTS" in -k*) echo 1 ;; *) echo 0 ;; esac)" node -e '
+SERVER="$SERVER" CONF="$CONF" node -e '
 const fs = require("fs"), crypto = require("crypto");
 const file = process.env.CONF;
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch { cfg = {}; }
 if (typeof cfg !== "object" || cfg === null) cfg = {};
 cfg.server = process.env.SERVER;
-// Recorded so the updater — a separate script, with no access to the variables in here — makes
-// the same trust decision. A pinned certificate is self-describing: the file is either present or
-// it is not. "No verification at all" is not, so it has to be written down.
+// NOTE: nothing about TLS is recorded here. The agent rewrites this file on adoption and keeps
+// only the keys it knows about, so anything else written here does not survive the first few
+// minutes. The trust decision lives in trust.env, which the agent cannot write.
 // (No apostrophes in this block: it sits inside a single-quoted shell string.)
-if (process.env.INSECURE_TLS === "1") cfg.insecureTls = true;
-else delete cfg.insecureTls;
 if (typeof cfg.deviceId !== "string" || !cfg.deviceId) cfg.deviceId = "pi_" + crypto.randomBytes(6).toString("hex");
 if (typeof cfg.deviceSecret !== "string" || !cfg.deviceSecret) cfg.deviceSecret = crypto.randomBytes(16).toString("base64url");
 const tmp = file + ".tmp";
@@ -343,6 +384,7 @@ chmod 750 "$STATEDIR"
 say "device id: $(cat /tmp/omd-device-id)"
 rm -f /tmp/omd-device-id
 say "config:   $CONF"
+say "trust:    $TRUSTENV"
 [ -f "$CA" ] && say "pinned CA: $CA"
 
 # ── display settings that only take effect on reboot ─────────────────────────
@@ -460,27 +502,26 @@ cat > "$PREFIX/update.sh" <<'UPD'
 set -eu
 PREFIX=/opt/openmasjid-screen
 CONF=/etc/openmasjid-screen/config.json
-CA=/etc/openmasjid-screen/server-ca.crt
 
-# The same trust decision the installer made. Without this an update over a self-signed server
-# fails every time, silently, forever — the screen keeps working on an old build and nothing ever
-# says why.
-if grep -q '"insecureTls" *: *true' "$CONF" 2>/dev/null; then
-  # Name check off, but still pin the key if we kept the certificate — same bargain the installer
-  # struck, re-derived here rather than trusted from a stored string.
-  PIN=$(openssl x509 -in "$CA" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null \
-        | openssl dgst -sha256 -binary 2>/dev/null | openssl enc -base64 2>/dev/null || true)
-  if [ -n "${PIN:-}" ]; then CURL_OPTS="-k --pinnedpubkey sha256//$PIN"; else CURL_OPTS="-k"; fi
-elif [ -f "$CA" ]; then
-  CURL_OPTS="--cacert $CA"
-else
-  CURL_OPTS=""
+# The server address and the trust decision, exactly as the installer worked them out.
+#
+# Read from a root-owned file next to the agent, NOT from config.json. The agent rewrites its
+# config whenever it is adopted or forgotten and keeps only the keys it knows about, so anything
+# the installer put there is gone within minutes — and an updater that then guessed would fall
+# back to a handshake already known to fail on this device and stop updating forever, silently.
+CURL_OPTS=""
+SERVER=""
+if [ -f "$PREFIX/trust.env" ]; then
+  . "$PREFIX/trust.env"
+fi
+if [ -z "$SERVER" ]; then
+  # Only for a device installed before trust.env existed. Re-running the installer writes one.
+  SERVER=$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).server||""))}catch{}' "$CONF" 2>/dev/null || true)
 fi
 
-SERVER=$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).server||""))}catch{}' "$CONF" 2>/dev/null || true)
 [ -n "$SERVER" ] || { echo "no server configured; nothing to update from"; exit 0; }
 
-TMP="$PREFIX/agent.js.new"
+TMP="$PREFIX/agent.new.js"
 # shellcheck disable=SC2086
 curl -fsSL --max-time 120 $CURL_OPTS "$SERVER/pi/agent.js" -o "$TMP" || { echo "could not download the agent"; exit 0; }
 [ -s "$TMP" ] || { rm -f "$TMP"; echo "downloaded agent was empty"; exit 0; }
@@ -493,7 +534,7 @@ if cmp -s "$TMP" "$PREFIX/agent.js"; then
 fi
 
 echo "updating the screen agent"
-cp -f "$PREFIX/agent.js" "$PREFIX/agent.js.prev" 2>/dev/null || true
+cp -f "$PREFIX/agent.js" "$PREFIX/agent.prev.js" 2>/dev/null || true
 mv "$TMP" "$PREFIX/agent.js"
 systemctl restart openmasjid-screen.service
 
@@ -502,8 +543,8 @@ systemctl restart openmasjid-screen.service
 sleep 20
 if ! systemctl is-active --quiet openmasjid-screen.service; then
   echo "the new agent did not stay running; rolling back"
-  if [ -f "$PREFIX/agent.js.prev" ]; then
-    mv "$PREFIX/agent.js.prev" "$PREFIX/agent.js"
+  if [ -f "$PREFIX/agent.prev.js" ]; then
+    mv "$PREFIX/agent.prev.js" "$PREFIX/agent.js"
     systemctl restart openmasjid-screen.service
   fi
 fi

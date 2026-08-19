@@ -73,10 +73,6 @@ export function Screens({ state, refetch }: Props) {
         </button>
       </div>
 
-      {/* Above the grid on purpose: a Pi that has just been plugged in is the thing someone is
-          looking for when they open this page, and it is useless until it has been set up. */}
-      {state.settings.webScreensBeta && <PiDevices refetch={refetch} />}
-
       {state.tvs.length === 0 ? (
         <div className="empty-state glass" style={{ borderRadius: 'var(--radius-card)' }}>
           <div className="empty-art"><MasjidMark size={64} /></div>
@@ -110,6 +106,7 @@ export function Screens({ state, refetch }: Props) {
           tv={edit === 'new' ? null : edit}
           options={options}
           beta={state.settings.webScreensBeta}
+          refetch={refetch}
           onClose={() => setEdit(null)}
           onSaved={async () => {
             setEdit(null);
@@ -305,14 +302,18 @@ function ScreenCard({
 
 
 /**
- * Raspberry Pi screens waiting to be set up, and the ones already adopted.
+ * Adding a Raspberry Pi screen: the command to run, and the code it puts on the television.
  *
- * The flow this serves: plug a Pi in, it shows a code on the television, you type that code
- * here. The code — rather than the Pi's IP address — is what gets typed, because the Pi is
- * behind the masjid's network on an address that can change, and the display server may not
- * even be in the building. Typing what is on the screen also proves you can see it.
+ * This lives inside "Add a screen" rather than beside the grid, because that is what it is —
+ * one of the three ways a screen can be added, not a separate feature. Adopting a Pi CREATES the
+ * screen, which is why this panel owns the name field and the confirm button instead of the
+ * modal's normal ones.
+ *
+ * The code — rather than the Pi's IP address — is what gets typed, because the Pi is behind the
+ * masjid's network on an address that can change, and the display server may not even be in the
+ * building. Typing what is on the screen also proves you can see that screen.
  */
-function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
+function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopted: () => void }) {
   const toast = useToast();
   const [devices, setDevices] = useState<PiDeviceInfo[]>([]);
   const [code, setCode] = useState('');
@@ -353,6 +354,7 @@ function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
       await load();
       await refetch();
       toast('Screen added. It will start showing in a few seconds.');
+      onAdopted();
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not set that screen up.', 'error');
     } finally {
@@ -371,9 +373,7 @@ function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
   };
 
   return (
-    <div className="panel glass" style={{ marginBlockEnd: '1rem' }}>
-      <h3 className="section-title" style={{ marginTop: 0 }}>Raspberry Pi screens</h3>
-
+    <div>
       <p className="muted" style={{ marginBlockEnd: '0.6rem' }}>
         A Raspberry Pi plugged into a television, showing the timetable and playing cameras by
         itself. Because the Pi opens the camera directly, the video never passes through this
@@ -482,12 +482,14 @@ function TvModal({
   beta,
   onClose,
   onSaved,
+  refetch,
 }: {
   tv: Tv | null;
   options: ReturnType<typeof contentOptions>;
   beta: boolean;
   onClose: () => void;
   onSaved: () => void;
+  refetch: () => Promise<void>;
 }) {
   const toast = useToast();
   const [name, setName] = useState(tv?.name ?? '');
@@ -495,6 +497,12 @@ function TvModal({
   const [content, setContent] = useState<ContentRef>(tv?.defaultContent ?? { kind: 'off' });
   const [kind, setKind] = useState<TvKind>(tv?.kind ?? 'rtsp');
   const [busy, setBusy] = useState(false);
+
+  // Adding a Pi is a different act from adding the other two: the screen does not exist until a
+  // device has been adopted, and adoption is what creates it. So this branch owns the whole modal
+  // body and its own confirm button, and the normal name/content fields are not shown — they
+  // would be filled in and then thrown away.
+  const addingPi = !tv && kind === 'pi';
 
   const save = async () => {
     setBusy(true);
@@ -515,29 +523,47 @@ function TvModal({
       open
       windowed
       onClose={onClose}
-      title={tv ? 'Edit screen' : 'Add a screen'}
+      title={tv ? 'Edit screen' : addingPi ? 'Add a Raspberry Pi screen' : 'Add a screen'}
       footer={
         <>
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn--primary" onClick={save} disabled={busy}>{tv ? 'Save' : 'Add screen'}</button>
+          <button className="btn" onClick={onClose}>{addingPi ? 'Close' : 'Cancel'}</button>
+          {!addingPi && (
+            <button className="btn btn--primary" onClick={save} disabled={busy}>{tv ? 'Save' : 'Add screen'}</button>
+          )}
         </>
       }
     >
+      {/* The kind comes first when adding, because it changes what the rest of this dialog even
+          asks for. It is fixed when editing: a screen's kind is bound to how it was set up, and a
+          Pi screen in particular is bound to a specific device. */}
+      {beta && !tv && (
+        <Field
+          label="How this screen receives the picture"
+          hint="Pick this first — it changes what the rest of this asks for."
+        >
+          <select className="select" value={kind} onChange={(e) => setKind(e.target.value as TvKind)}>
+            <option value="rtsp">Video stream — a decoder box pulls RTSP from this server</option>
+            <option value="web">Web page — a browser draws the timetable itself (beta)</option>
+            <option value="pi">Raspberry Pi — draws the timetable AND plays cameras itself (beta)</option>
+          </select>
+        </Field>
+      )}
+      {beta && !tv && kind !== 'pi' && (
+        <p className="hint" style={{ marginBlockStart: '-0.4rem', marginBlockEnd: '0.9rem' }}>
+          {kind === 'rtsp'
+            ? 'This server renders the picture and sends it as video — about 1.5 Mbit/s per screen, continuously.'
+            : 'Almost no network: the page is sent the timetable and draws it locally. It cannot show a camera, because a web page here has no video player.'}
+        </p>
+      )}
+
+      {addingPi ? (
+        <PiSetup refetch={refetch} onAdopted={onSaved} />
+      ) : (
+      <>
       <div className="grid2">
         <Field label="Screen name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Main hall TV" /></Field>
         <Field label="Room (optional)"><input className="input" value={room} onChange={(e) => setRoom(e.target.value)} placeholder="Main hall" /></Field>
       </div>
-      {beta && (
-        <Field
-          label="How this screen receives the picture"
-          hint="A decoder box pulls a video stream. A browser opens a web page and draws the timetable itself, which uses almost no network — but it can only show a timetable, not a camera."
-        >
-          <select className="select" value={kind} onChange={(e) => setKind(e.target.value as TvKind)}>
-            <option value="rtsp">Video stream (RTSP decoder box)</option>
-            <option value="web">Web page (browser / Raspberry Pi) — beta</option>
-          </select>
-        </Field>
-      )}
       {kind === 'web' && content.kind === 'source' && (
         <div className="form-error">
           A browser screen can only show a timetable. Cameras and HDMI sources are video, and this
@@ -547,6 +573,8 @@ function TvModal({
       <Field label="Normally shows" hint="What this screen returns to when no schedule or manual choice applies.">
         <ContentPicker options={options} value={content} onChange={setContent} />
       </Field>
+      </>
+      )}
     </Modal>
   );
 }

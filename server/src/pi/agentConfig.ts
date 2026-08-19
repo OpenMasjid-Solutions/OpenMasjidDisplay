@@ -83,8 +83,33 @@ export function loadConfig(file = CONFIG_PATH): AgentConfig | null {
  */
 export function saveConfig(cfg: AgentConfig, file = CONFIG_PATH): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
+
+  // MERGED, not overwritten. Two reasons, and the second one has already cost a real screen.
+  //
+  // `parseConfig` deliberately returns only the fields it understands, so writing that object
+  // straight back deletes everything else in the file — including anything a future version of
+  // the installer leaves for something other than the agent to read. That is not hypothetical:
+  // an install-time trust setting stored here was destroyed by the first adoption, minutes after
+  // setup, which silently stopped the device updating itself for good.
+  //
+  // It also means a transient read failure cannot blank the device's identity. Writing
+  // `{...loadConfig(), token}` when the load returned nothing would leave a config with a token
+  // and no device id, which is unrecoverable without walking to the television.
+  let existing: Record<string, unknown> = {};
+  try {
+    const raw: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) existing = raw as Record<string, unknown>;
+  } catch {
+    /* no file yet, or unreadable — start from nothing rather than refusing to save */
+  }
+
+  const merged: Record<string, unknown> = { ...existing, ...cfg };
+  // An absent token means "forgotten", which has to be able to REMOVE the key rather than leave
+  // the old one behind — the one field where merging would be wrong.
+  if (cfg.token === undefined) delete merged.token;
+
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
+  fs.writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 

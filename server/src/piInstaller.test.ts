@@ -144,7 +144,17 @@ test('the installer is POSIX sh, refuses to half-run, and never resets an adopte
   // Written through a temporary file: a power cut mid-write must not truncate the credentials.
   assert.ok(tpl.includes('fs.renameSync(tmp, file)'), 'the config write must be atomic');
   // Downloaded to .new and checked before being moved into place.
-  assert.ok(tpl.includes('node --check "$PREFIX/agent.js.new"'), 'a truncated download must not become the agent');
+  // The temp name MUST end in .js. `node --check` infers the module format from the extension and
+  // refuses anything it does not recognise — `agent.js.new` died with ERR_UNKNOWN_FILE_EXTENSION on
+  // a real Pi, which turned the safety check into the thing that broke the install. The previous
+  // version of this test asserted the broken name, so it enforced the bug rather than catching it.
+  assert.ok(tpl.includes('node --check "$PREFIX/agent.new.js"'), 'a truncated download must not become the agent');
+  // The updater checks a variable rather than a literal, so assert what the variable holds.
+  assert.ok(tpl.includes('TMP="$PREFIX/agent.new.js"'), 'the updater temp file must end in .js too');
+  assert.ok(
+    !/agent\.js\.(new|prev)/.test(tpl),
+    'no temp name may end in an extension node cannot parse — that is the bug this test exists for',
+  );
 });
 
 test('the agent does not run as root', () => {
@@ -177,7 +187,7 @@ test('an update that will not start is rolled back', () => {
   const tpl = installerTemplate() as string;
   // Without this a bad build takes every screen in the masjid dark until somebody notices and
   // knows what to do — and nobody is watching these.
-  assert.ok(tpl.includes('agent.js.prev'), 'the previous agent must be kept');
+  assert.ok(tpl.includes('agent.prev.js'), 'the previous agent must be kept');
   assert.ok(/is-active --quiet openmasjid-screen\.service/.test(tpl), 'and its replacement checked');
   assert.ok(/rolling back/.test(tpl));
 });
@@ -228,13 +238,16 @@ test('even the fallback pins the public key, so an impostor is still refused', (
 
 test('the updater makes the same trust decision, or self-update stops forever', () => {
   const tpl = installerTemplate() as string;
-  // The updater is a separate script with no access to the installer's variables, so it has to
-  // re-derive this. Getting it wrong means updates fail silently on every self-signed server.
+  // The updater is a separate script with no access to the installer's variables, so the decision
+  // is handed to it in a file. It must not try to re-derive it — an earlier version read the flag
+  // out of config.json, which the agent overwrites on adoption, so within minutes of every install
+  // the updater was guessing, guessing wrong, and failing silently every six hours forever.
   const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'));
-  assert.ok(upd.includes('insecureTls'), 'it must read the recorded decision');
-  assert.ok(upd.includes('--pinnedpubkey sha256//'), 'and pin the key the same way');
-  assert.ok(upd.includes('--cacert $CA'), 'or use the pinned certificate');
+  assert.ok(upd.includes('. "$PREFIX/trust.env"'), 'it must read the decision the installer wrote');
   assert.ok(/curl -fsSL --max-time 120 \$CURL_OPTS/.test(upd), 'and actually pass it to curl');
+  // And the installer must have written that file for every branch, including plain HTTP.
+  assert.ok(tpl.includes(`printf "CURL_OPTS='%s'`), 'trust.env must carry the curl options');
+  assert.ok(tpl.includes(`printf "SERVER='%s'`), 'and the server address');
 });
 
 // ── an install that looks hung is an install people reboot half-done ─────────
@@ -266,4 +279,43 @@ test('ffmpeg failing does not cost you the timetable', () => {
   const block = tpl.slice(i, i + 900);
   assert.ok(/if apt-get .*ffmpeg; then/.test(block), 'its failure must be handled, not fatal');
   assert.ok(/warn /.test(block));
+});
+
+// ── found by an adversarial review of the trust model ────────────────────────
+
+test('the trust decision does not live in the file the agent overwrites', () => {
+  // The bug this prevents: the agent rewrites config.json on adoption, keeping only the keys it
+  // knows about — so an install-time setting stored there was destroyed minutes after setup. The
+  // updater then fell back to a handshake already known to fail on that device and stopped
+  // updating forever, silently, while its timer kept looking healthy.
+  const tpl = installerTemplate() as string;
+  const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'));
+  assert.ok(!upd.includes('insecureTls'), 'the updater must not read trust state out of config.json');
+  assert.ok(upd.includes('. "$PREFIX/trust.env"'), 'it must source the installer-written file instead');
+  assert.ok(tpl.includes('TRUSTENV="$PREFIX/trust.env"'));
+  // And that file must live where the agent cannot write it.
+  const rwp = /^ReadWritePaths=(.*)$/m.exec(tpl)?.[1] ?? '';
+  assert.ok(!rwp.includes('$PREFIX'), 'trust.env would be agent-writable if /opt were writable');
+});
+
+test('the pin is validated with the client that has to live with it', () => {
+  // curl and Node are different TLS stacks. Checking only curl can print "pinned — verified" and
+  // then hand over a screen whose agent cannot make a single request, with nothing to catch it.
+  const tpl = installerTemplate() as string;
+  const i = tpl.indexOf('--cacert "$CA"');
+  assert.ok(i > 0);
+  const block = tpl.slice(i, i + 700);
+  assert.ok(/NODE_EXTRA_CA_CERTS="\$CA" node -e/.test(block), 'Node must be asked too, not just curl');
+  assert.ok(block.includes('fetch('), 'and asked the same way the agent asks');
+});
+
+test('an unreachable server is a refusal, not a silent downgrade', () => {
+  // Otherwise a temporary network problem permanently weakens the device, at the one moment
+  // nobody would notice: the install carries on and the downgrade is never mentioned again.
+  const tpl = installerTemplate() as string;
+  const i = tpl.indexOf("could not reach");
+  assert.ok(i > 0, 'the unreachable case must be handled explicitly');
+  const block = tpl.slice(Math.max(0, i - 300), i + 300);
+  assert.ok(/die "could not reach/.test(block), 'it must abort rather than continue');
+  assert.ok(!/CURL_OPTS='-k'/.test(block), 'and must not fall through to no verification');
 });
