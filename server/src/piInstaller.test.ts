@@ -193,3 +193,77 @@ test('a masjid with a screen in every hall does not stampede the server', () => 
   assert.ok(/RandomizedDelaySec=/.test(tpl), 'every Pi asking at the same second is a thundering herd');
   assert.ok(/OnUnitActiveSec=/.test(tpl));
 });
+
+// ── trusting a masjid's own display server ───────────────────────────────────
+//
+// Found on real hardware: the server was at https://192.168.1.18:8444 behind a self-signed
+// certificate with no SAN for that address. curl refused the script; and Node's fetch would have
+// refused everything afterwards too, since Node does not read /etc/ssl/certs — so the agent would
+// have installed cleanly and then never connected.
+
+test('a self-signed server is pinned, not waved through', () => {
+  const tpl = installerTemplate() as string;
+  assert.ok(/openssl s_client -connect/.test(tpl), 'it must take a copy of the certificate');
+  assert.ok(tpl.includes('--cacert "$CA"'), 'and verify against that copy');
+  assert.ok(/NODE_EXTRA_CA_CERTS=\$CA/.test(tpl), 'the agent must be given it too — Node ignores /etc/ssl/certs');
+});
+
+test('verification is only abandoned when the name cannot match, and never quietly', () => {
+  const tpl = installerTemplate() as string;
+  const idx = tpl.indexOf('NODE_TLS_REJECT_UNAUTHORIZED=0');
+  assert.ok(idx > 0, 'the fallback exists');
+  // Every path that reaches it prints a warning first.
+  const before = tpl.slice(Math.max(0, idx - 1500), idx);
+  assert.ok(/warn /.test(before), 'falling back to no verification must be said out loud');
+});
+
+test('even the fallback pins the public key, so an impostor is still refused', () => {
+  // Plain -k accepts ANY certificate, including an attacker's. Pinning the key means they need
+  // the private key rather than merely a position on the network. Verified against a real
+  // impostor server: accepted the genuine one, rejected the impostor.
+  const tpl = installerTemplate() as string;
+  assert.ok(tpl.includes('--pinnedpubkey sha256//'), 'the mismatch path must pin the key');
+  assert.ok(/openssl x509 -in "\$CA" -pubkey -noout/.test(tpl));
+});
+
+test('the updater makes the same trust decision, or self-update stops forever', () => {
+  const tpl = installerTemplate() as string;
+  // The updater is a separate script with no access to the installer's variables, so it has to
+  // re-derive this. Getting it wrong means updates fail silently on every self-signed server.
+  const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'));
+  assert.ok(upd.includes('insecureTls'), 'it must read the recorded decision');
+  assert.ok(upd.includes('--pinnedpubkey sha256//'), 'and pin the key the same way');
+  assert.ok(upd.includes('--cacert $CA'), 'or use the pinned certificate');
+  assert.ok(/curl -fsSL --max-time 120 \$CURL_OPTS/.test(upd), 'and actually pass it to curl');
+});
+
+// ── an install that looks hung is an install people reboot half-done ─────────
+
+test('apt is not silenced, and cannot wait forever', () => {
+  const tpl = installerTemplate() as string;
+  // A freshly booted Pi runs unattended-upgrades, which holds the dpkg lock. With -qq and
+  // >/dev/null the installer sat there printing nothing for over fifteen minutes.
+  assert.ok(!/apt-get[^\n]*-qq[^\n]*install/.test(tpl), 'apt install must not be quiet');
+  assert.ok(!/apt-get[^\n]*install[^\n]*>\s*\/dev\/null/.test(tpl), 'nor have its output discarded');
+  assert.ok(tpl.includes('DPkg::Lock::Timeout'), 'apt must not block on the lock indefinitely');
+  assert.ok(tpl.includes('wait_for_apt'), 'and should say who is holding it');
+});
+
+test('the slow steps announce themselves before they run', () => {
+  const tpl = installerTemplate() as string;
+  assert.ok(/^STEPS=(\d+)$/m.test(tpl));
+  const declared = Number(/^STEPS=(\d+)$/m.exec(tpl)?.[1]);
+  const calls = (tpl.match(/^step /gm) ?? []).length;
+  assert.equal(calls, declared, 'the step counter must match the number of steps');
+  assert.ok(!/npm install[^\n]*>\s*\/dev\/null/.test(tpl), 'the npm install must not be silent either');
+});
+
+test('ffmpeg failing does not cost you the timetable', () => {
+  const tpl = installerTemplate() as string;
+  // It is the largest download by far and the only part not needed to show prayer times.
+  const i = tpl.indexOf('Installing ffmpeg');
+  assert.ok(i > 0, 'ffmpeg should be its own step');
+  const block = tpl.slice(i, i + 900);
+  assert.ok(/if apt-get .*ffmpeg; then/.test(block), 'its failure must be handled, not fatal');
+  assert.ok(/warn /.test(block));
+});

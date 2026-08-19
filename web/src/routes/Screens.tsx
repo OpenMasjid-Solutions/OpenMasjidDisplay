@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
 import type { AppState, Tv, TvKind, ContentRef, TvStatus, PiDeviceInfo } from '../types';
+// The same helper the server tests, rather than a second copy of the rule living in the panel.
+import { installCommand } from '../../../server/src/pi/lanHost';
 import { contentOptions, ContentPicker, contentLabel } from '../content';
 import {
   Modal,
@@ -323,7 +325,12 @@ function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
   // what the server bakes into the script it serves, because the script is fetched from exactly
   // this URL: point the panel at the tunnel and the Pi is set up through the tunnel, point it at
   // the LAN and the Pi stays on the LAN. Nothing to choose, and nothing to type wrong.
-  const installCmd = `curl -fsSL ${window.location.origin}/pi.sh | sudo sh`;
+  //
+  // On a LAN address over HTTPS the certificate is necessarily self-signed — no public authority
+  // will issue for 192.168.x.x — so `curl` refuses it and the command needs -k for that first
+  // fetch. That is called out below rather than slipped in, because pasting an unverified script
+  // into `sudo sh` is not something anybody should do without being told.
+  const { command: installCmd, insecureFirstHop } = installCommand(window.location.origin);
 
   const load = () => api.piDevices().then((r) => setDevices(r.devices)).catch(() => setDevices([]));
   useEffect(() => {
@@ -389,6 +396,15 @@ function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
           {copiedCmd ? <IconCheck size={14} /> : <IconCopy size={14} />} {copiedCmd ? 'Copied' : 'Copy command'}
         </button>
       </div>
+      {insecureFirstHop && (
+        <p className="hint" style={{ marginBlockEnd: '0.5rem' }}>
+          <b>Why <code>-k</code>?</b> You are on a local address, so this server&rsquo;s certificate is
+          its own — no public authority can vouch for a name like this one, and <code>curl</code>
+          refuses it without <code>-k</code>. Only this first download is unverified: the installer
+          then takes a copy of the certificate and checks every later request against it, including
+          its own updates.
+        </p>
+      )}
       <p className="hint" style={{ marginBlockEnd: '1rem' }}>
         The Pi will then show a code on the television. Enter it below.
       </p>

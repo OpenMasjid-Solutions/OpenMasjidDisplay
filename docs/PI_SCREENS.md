@@ -59,6 +59,38 @@ schedule and the settings — kilobytes — and the pictures never leave the mas
 4. Type that code into **Screens → Raspberry Pi screens**, give the screen a name, and it starts
    showing within a few seconds.
 
+### If your server is on HTTPS with its own certificate
+
+Most masjids reach the display server at something like `https://192.168.1.18:8444`. No public
+certificate authority will ever issue a certificate for a private address, so the one your server
+presents is **self-signed** — and `curl` refuses it:
+
+```
+curl: (60) SSL certificate problem: self-signed certificate
+```
+
+The dashboard already accounts for this: on a local address it shows the command with `-k`, and
+explains why. **Only that first download is unverified.** The installer then takes a copy of your
+server's certificate and checks everything afterwards against it — the agent's own requests and its
+updates included. Verification is not switched off; what changes is which certificate is trusted,
+the same bargain SSH makes the first time you connect to a machine.
+
+There is a second case, and it is common. If the certificate does not *name* the address you used —
+
+```
+curl: (60) SSL: no alternative certificate subject name matches target ipv4 address '192.168.1.18'
+```
+
+— then no amount of pinning fixes it, because the name simply is not in the certificate. Rather
+than fall back to accepting anything, the installer pins your server's **public key**: the name is
+not checked, but no other machine is accepted, so somebody on your network would need the server's
+private key rather than merely a position between the Pi and it. The installer says clearly when
+it has done this, and both the certificate and the key pin are re-derived by the updater so
+automatic updates keep working.
+
+The proper fix, if you want full verification, is a certificate that names the address the Pi uses
+— then re-run the installer and it will pin normally.
+
 The code is what gets typed rather than the Pi's IP address, deliberately. The address is on a
 network the display server may not share, DHCP can move it between reboots, and typing something
 read off the screen also proves whoever is setting it up can actually see that screen.
@@ -156,6 +188,14 @@ automatically.
   asserts the Pi's list is character-for-character the server's.
 - **Credentials never reach the journal.** Camera addresses very often carry a password, and it is
   stripped from every log line.
+- **The server is authenticated after the first hop.** A self-signed certificate is pinned at
+  install time and verified on every request afterwards. Where the certificate does not name the
+  address, the public key is pinned instead — tested against an impostor on the same address, which
+  is refused. The one unavoidable gap is the very first `curl`, which has nothing to check against;
+  that is the same trust-on-first-use SSH makes, and the dashboard says so rather than hiding it.
+- **Node does not read `/etc/ssl/certs`.** Adding a certificate with `update-ca-certificates` fixes
+  `curl` and not the agent, which is why the pinned certificate is handed to it explicitly. Worth
+  knowing before debugging this by hand.
 - `/pi.sh` and `/pi/agent.js` are public by necessity — a Pi being set up holds no credentials
   yet — and neither contains a secret. Over a LAN this is plain HTTP; through the platform's
   remote access it is HTTPS.
@@ -186,6 +226,17 @@ output device (the installer warns about this at install time):
 ```sh
 ffmpeg -hide_banner -devices | grep fbdev
 ```
+
+**The install seems to hang with nothing printed.** It should not any more — every step is
+numbered and announces itself first. If it does stall, the usual cause is that the Pi has just
+booted and is still running its own `unattended-upgrades`, which holds the package lock; the
+installer now names the process holding it and waits, rather than blocking silently. Installing
+ffmpeg is genuinely the slow part on a Pi 3 — several hundred megabytes — and is now its own step
+so you can see it happening. If it fails, the timetable still works and you can re-run the
+installer later to add cameras.
+
+**`could not download the agent`, with an SSL error.** See *If your server is on HTTPS with its own
+certificate* above. Re-running the installer is the fix — older versions gave up here.
 
 **Arabic shows as empty boxes.** The fonts are fetched from the display server on first run; the
 log says `fonts ready: N face(s)` when that has happened. If it has not, the Pi could not reach

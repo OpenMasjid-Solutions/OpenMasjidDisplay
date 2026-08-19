@@ -12,6 +12,21 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- **Setting up a Raspberry Pi screen now works when the display server uses its own certificate.**
+  Most masjids reach the server at a local address like `https://192.168.1.18:8444`, where the
+  certificate has to be self-signed — and the setup command was simply refused. The dashboard now
+  shows a command that works, and explains the one part of it that is unverified.
+
+- **A Pi set up that way stays connected.** Previously it could install successfully and then never
+  reach the server again, because the screen software checks certificates separately from the rest
+  of the system. It is now given the server’s own certificate at setup and checks against it.
+
+- **The install no longer looks like it has frozen.** Every step is numbered and says what it is
+  doing before it does it, the slow parts warn you they are slow, and if the Pi is busy with its
+  own updates the installer says so and waits instead of sitting silent. Installing video support
+  is now a separate step, and if it fails the screen still shows prayer times.
+
 ### Added
 - **Raspberry Pi screens keep themselves up to date.** Each one checks with the display server a
   few times a day and switches to the current version on its own, so a masjid with a Pi behind

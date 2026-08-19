@@ -25,6 +25,9 @@ RESVG_VERSION='@@RESVG@@'
 AGENT_VERSION='@@AGENT_VERSION@@'
 
 PREFIX=/opt/openmasjid-screen
+# Where the server's own certificate is pinned, when it turns out to be self-signed. Kept beside
+# the config because it is part of how this device trusts its server, not disposable state.
+CA=/etc/openmasjid-screen/server-ca.crt
 CONFDIR=/etc/openmasjid-screen
 CONF="$CONFDIR/config.json"
 # Downloaded wallpapers, logos and fonts. Separate from the config because it is disposable —
@@ -32,24 +35,172 @@ CONF="$CONFDIR/config.json"
 STATEDIR=/var/lib/openmasjid-screen
 SERVICE_USER=omdscreen
 
-say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
-die() { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+STEPS=9
+STEP=0
+# Steps are numbered and every one says what it is doing BEFORE it does it. Installing node, npm
+# and ffmpeg on a Pi 3 takes minutes, and a terminal that has printed nothing for four minutes is
+# indistinguishable from one that has hung — which is when people reboot the Pi half-installed.
+step() { STEP=$((STEP + 1)); printf '\n\033[36m==> [%s/%s] %s\033[0m\n' "$STEP" "$STEPS" "$*"; }
+say()  { printf '\033[36m   ·\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m   ! %s\033[0m\n' "$*"; }
+die()  { printf '\n\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# A freshly imaged Raspberry Pi runs unattended-upgrades and apt-daily in the background for the
+# first several minutes after it boots. Those hold the dpkg lock, and apt then waits for it —
+# by default, forever. Combined with quiet output that is indistinguishable from a hang, and it
+# is the single most likely reason an install appears to do nothing for twenty minutes.
+#
+# So: say who has the lock, and give apt a bounded, visible wait instead of an unbounded silent
+# one. DPkg::Lock::Timeout makes apt fail with a real message rather than block indefinitely.
+APT_OPTS='-o DPkg::Lock::Timeout=900'
+
+apt_lock_holder() {
+  # fuser is not always installed; fall back to whatever the process table shows.
+  for f in /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock; do
+    if command -v fuser >/dev/null 2>&1 && fuser "$f" >/dev/null 2>&1; then
+      fuser "$f" 2>/dev/null | tr -s ' ' '\n' | while read -r pid; do
+        [ -n "$pid" ] && ps -o comm= -p "$pid" 2>/dev/null
+      done | sort -u | tr '\n' ' '
+      return 0
+    fi
+  done
+  # NOTE: no grep -v here. A previous version filtered on a bare dollar sign, which matches the
+  # end of every line and silently discarded all output — making this fallback do nothing.
+  pgrep -a -f 'unattended-upgrade|apt-get|aptitude|dpkg' 2>/dev/null | head -3 || true
+}
+
+wait_for_apt() {
+  holder=$(apt_lock_holder)
+  [ -n "${holder:-}" ] || return 0
+  warn "another package operation is running: ${holder}"
+  say 'this is normal on a Pi that has just booted — waiting for it to finish (up to 15 minutes)'
+  i=0
+  while [ "$i" -lt 90 ]; do
+    sleep 10
+    i=$((i + 1))
+    holder=$(apt_lock_holder)
+    if [ -z "${holder:-}" ]; then
+      say 'the other operation has finished; carrying on'
+      return 0
+    fi
+    [ $((i % 6)) -eq 0 ] && say "still waiting ($((i / 6)) min) — ${holder}"
+  done
+  warn 'it is still running. Carrying on anyway; apt will wait its turn or report an error.'
+}
 
 # ── checks ───────────────────────────────────────────────────────────────────
 #
 # Each of these is a failure that would otherwise show up much later as "the screen is black",
 # which is the hardest thing to debug from a phone call.
 
+step 'Checking this device'
 [ "$(id -u)" = 0 ] || die "run this with sudo:  curl -fsSL $SERVER/pi.sh | sudo sh"
 command -v apt-get >/dev/null 2>&1 || die 'this installer expects Raspberry Pi OS or another Debian-based system'
+say "model:  $(tr -d '\0' < /proc/device-tree/model 2>/dev/null || uname -m)"
+say "os:     $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -sr)"
+say "server: $SERVER"
 
 if [ ! -e /dev/fb0 ]; then
   # Not fatal. A Pi with no television attached at boot has no framebuffer, and the fix is a
   # config.txt line this script adds — so warn, carry on, and let the reboot sort it out.
-  say 'warning: no /dev/fb0 yet. Nothing can be drawn until a display is attached and the Pi is rebooted.'
+  warn 'no /dev/fb0 yet — nothing can be drawn until a display is attached and the Pi is rebooted'
+else
+  say "display: $(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null | tr ',' 'x') @ $(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null)bpp"
 fi
 
-say "Installing the OpenMasjidDisplay screen agent (server: $SERVER)"
+# ── how this Pi will trust the display server ────────────────────────────────
+#
+# A masjid's display server is very often reached over HTTPS with a self-signed certificate — that
+# is what OpenMasjidOS puts in front of it on a LAN. Nothing public can vouch for such a
+# certificate, so plain verification fails, and the two obvious responses are both wrong: refusing
+# to install leaves the feature unusable for most masjids, and passing -k forever means this device
+# never authenticates its server again.
+#
+# So: trust on first use, then pin. If the certificate does not verify normally we take a copy of
+# it now, and from this point on EVERY request — the agent's, the updater's — is verified against
+# that exact certificate. Verification stays ON; what changes is which certificate is trusted. It
+# is the same bargain SSH makes the first time you connect to a host.
+#
+# The one thing that must not happen quietly is falling back to no verification at all. If pinning
+# does not work either (usually a certificate with no name matching the address you used), that is
+# said loudly, here and in the log, rather than being smoothed over.
+step 'Working out how to trust the display server'
+CURL_OPTS=''
+NODE_TLS_ENV=''
+
+case "$SERVER" in
+  https://*)
+    if curl -fsS --max-time 20 -o /dev/null "$SERVER/pi/agent.js" 2>/dev/null; then
+      say 'the certificate verifies normally — nothing to pin'
+    else
+      say 'the certificate does not verify (self-signed, most likely). Taking a copy of it.'
+      HOSTPORT=$(printf '%s' "$SERVER" | sed -e 's#^https://##' -e 's#/.*##')
+      case "$HOSTPORT" in *:*) : ;; *) HOSTPORT="$HOSTPORT:443" ;; esac
+
+      command -v openssl >/dev/null 2>&1 || {
+        say 'openssl is needed to read that certificate, and is not installed — fetching it first'
+        # Lock-aware and visible, exactly like the main package step. This runs BEFORE that step,
+        # so without the wait it is the first thing that can silently block on a Pi that has just
+        # booted and is still running its own updates.
+        wait_for_apt
+        # shellcheck disable=SC2086
+        apt-get $APT_OPTS update && apt-get $APT_OPTS install -y --no-install-recommends openssl \
+          || die 'could not install openssl, which is needed to read this server certificate'
+      }
+
+      mkdir -p "$(dirname "$CA")"
+      if openssl s_client -connect "$HOSTPORT" -servername "${HOSTPORT%%:*}" -showcerts </dev/null 2>/dev/null \
+           | openssl x509 -outform PEM > "$CA.new" 2>/dev/null && [ -s "$CA.new" ]; then
+        mv "$CA.new" "$CA"
+        chmod 644 "$CA"
+        if curl -fsS --max-time 20 --cacert "$CA" -o /dev/null "$SERVER/pi/agent.js" 2>/dev/null; then
+          say "pinned the server's certificate: $CA"
+          say 'requests from now on are verified against it — not left unverified'
+          CURL_OPTS="--cacert $CA"
+          NODE_TLS_ENV="Environment=NODE_EXTRA_CA_CERTS=$CA"
+          openssl x509 -in "$CA" -noout -subject -enddate 2>/dev/null | sed 's/^/   · /'
+        else
+          # The common real case: a self-signed certificate that does not NAME the address you
+          # reached it by — an IP with no matching SAN. Chain verification would pass now that the
+          # certificate is pinned; it is the hostname check that fails, and no amount of pinning
+          # fixes a name that is not in the certificate.
+          #
+          # The lazy answer is -k, which accepts literally any certificate and so accepts an
+          # attacker's. Instead we pin the server's PUBLIC KEY: curl still skips the name check,
+          # but the connection is refused unless the peer holds this exact key. An attacker on the
+          # network now needs the private key rather than merely a position on the path — which is
+          # most of what the certificate was buying us anyway.
+          PIN=$(openssl x509 -in "$CA" -pubkey -noout 2>/dev/null \
+                | openssl pkey -pubin -outform DER 2>/dev/null \
+                | openssl dgst -sha256 -binary 2>/dev/null \
+                | openssl enc -base64 2>/dev/null || true)
+          warn "the certificate does not name the address $HOSTPORT"
+          if [ -n "${PIN:-}" ]; then
+            warn 'pinning its public key instead: the name is not checked, but no other server is accepted'
+            say  "key: sha256//$PIN"
+            CURL_OPTS="-k --pinnedpubkey sha256//$PIN"
+          else
+            warn 'and its public key could not be read — continuing WITHOUT any verification'
+            CURL_OPTS='-k'
+          fi
+          warn 'to fix this properly, give the server a certificate naming that address, then re-run this installer'
+          # The agent cannot express "pinned key, no name check" through the environment, so it
+          # takes the blunt setting. It only ever talks to this one server, and the warning above
+          # is the honest description of what that means.
+          NODE_TLS_ENV='Environment=NODE_TLS_REJECT_UNAUTHORIZED=0'
+        fi
+      else
+        rm -f "$CA.new"
+        warn "could not read the server's certificate; continuing WITHOUT verification"
+        CURL_OPTS='-k'
+        NODE_TLS_ENV='Environment=NODE_TLS_REJECT_UNAUTHORIZED=0'
+      fi
+    fi
+    ;;
+  *)
+    say 'plain HTTP — no certificate to check'
+    ;;
+esac
 
 # ── packages ─────────────────────────────────────────────────────────────────
 #
@@ -57,13 +208,39 @@ say "Installing the OpenMasjidDisplay screen agent (server: $SERVER)"
 # drawn with. ffmpeg is installed now even though nothing uses it until the camera support lands,
 # because the alternative is asking every masjid to re-run this later.
 
-say 'Installing packages (this takes a few minutes on a Pi 3)'
+step 'Installing packages'
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends \
-  nodejs npm ca-certificates curl fonts-dejavu-core ffmpeg >/dev/null
+wait_for_apt
+
+# Staged rather than one big install, for two reasons. It shows progress on a board where the
+# whole thing takes a quarter of an hour, and it means a failure part-way leaves a Pi that can
+# still do something rather than one that can do nothing.
+say 'refreshing the package lists'
+# shellcheck disable=SC2086
+apt-get $APT_OPTS update || die 'apt-get update failed — check this Pi has a working network'
+
+say 'installing node and the tools the agent needs'
+# shellcheck disable=SC2086
+apt-get $APT_OPTS install -y --no-install-recommends \
+  nodejs npm ca-certificates curl openssl fonts-dejavu-core \
+  || die 'could not install the base packages'
 
 command -v node >/dev/null 2>&1 || die 'node did not install; check `apt-get install nodejs`'
+say "node $(node -v), npm $(npm -v 2>/dev/null || echo '?')"
+
+step 'Installing ffmpeg (the big one)'
+# By far the largest download here — several hundred megabytes of dependencies on a Pi 3, and the
+# step people watch in silence and assume has died. It is also the ONLY part that is not needed to
+# show a timetable, so a failure here is a warning rather than the end: the screen still pairs and
+# still shows prayer times, and re-running the installer later adds cameras.
+say 'this is the slow part — expect several minutes, and a lot of output'
+# shellcheck disable=SC2086
+if apt-get $APT_OPTS install -y --no-install-recommends ffmpeg; then
+  say "ffmpeg $(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f3 || echo installed)"
+else
+  warn 'ffmpeg did not install. The timetable will work; cameras will not.'
+  warn 'run this installer again later to add them.'
+fi
 
 # Cameras are drawn by ffmpeg writing straight to the framebuffer, so this build has to have the
 # fbdev output device. Debian ships it, but a hand-built or minimal ffmpeg may not — and the
@@ -78,7 +255,7 @@ NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
 
 # ── the agent ────────────────────────────────────────────────────────────────
 
-say 'Fetching the agent'
+step 'Fetching the screen agent'
 mkdir -p "$PREFIX"
 cd "$PREFIX"
 
@@ -87,18 +264,26 @@ cd "$PREFIX"
 # the server does rather than almost the same ones.
 if [ ! -d "$PREFIX/node_modules/@resvg/resvg-js" ] || \
    [ "$(node -p "require('$PREFIX/node_modules/@resvg/resvg-js/package.json').version" 2>/dev/null || echo none)" != "$RESVG_VERSION" ]; then
-  say "Installing the renderer (@resvg/resvg-js $RESVG_VERSION)"
+  say "installing the renderer (@resvg/resvg-js $RESVG_VERSION)"
+  say 'a prebuilt binary for this board, fetched from the npm registry — a minute or two on a Pi 3'
   printf '%s\n' '{ "name": "openmasjid-screen-agent", "private": true }' > "$PREFIX/package.json"
-  npm install --no-audit --no-fund --omit=dev "@resvg/resvg-js@$RESVG_VERSION" >/dev/null 2>&1 \
-    || die 'could not install the renderer. Is this Pi online?'
+  # NOTE: this comes from the npm registry, not from the masjid's display server, so the pinned
+  # certificate has nothing to do with it — it is verified against the public roots as normal.
+  npm install --no-audit --no-fund --omit=dev --loglevel=http "@resvg/resvg-js@$RESVG_VERSION" \
+    || die 'could not install the renderer. Is this Pi online, and can it reach registry.npmjs.org?'
+else
+  say "renderer already present (@resvg/resvg-js $RESVG_VERSION)"
 fi
 
 # Downloaded to a temporary name and moved into place, so an interrupted download cannot leave a
 # truncated agent that systemd then restarts forever.
-curl -fsSL "$SERVER/pi/agent.js" -o "$PREFIX/agent.js.new" || die "could not download the agent from $SERVER"
+say "downloading $SERVER/pi/agent.js"
+# shellcheck disable=SC2086
+curl -fsSL $CURL_OPTS "$SERVER/pi/agent.js" -o "$PREFIX/agent.js.new" || die "could not download the agent from $SERVER"
 [ -s "$PREFIX/agent.js.new" ] || die 'the downloaded agent was empty'
 node --check "$PREFIX/agent.js.new" || die 'the downloaded agent is not valid JavaScript'
 mv "$PREFIX/agent.js.new" "$PREFIX/agent.js"
+say "agent $AGENT_VERSION installed ($(wc -c < "$PREFIX/agent.js") bytes)"
 
 # ── the service account ──────────────────────────────────────────────────────
 #
@@ -107,11 +292,13 @@ mv "$PREFIX/agent.js.new" "$PREFIX/agent.js"
 # the text console off the screen) is a separate one-shot unit below, so the long-running process
 # holds no privileges it does not use.
 
+step 'Creating the service account'
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
-  say "Creating the $SERVICE_USER service account"
+  say "adding the unprivileged user $SERVICE_USER"
   useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
 usermod -aG video,tty,render "$SERVICE_USER" 2>/dev/null || usermod -aG video,tty "$SERVICE_USER"
+say "groups: $(id -nG "$SERVICE_USER" 2>/dev/null || echo '?')"
 
 # ── config ───────────────────────────────────────────────────────────────────
 #
@@ -120,14 +307,21 @@ usermod -aG video,tty,render "$SERVICE_USER" 2>/dev/null || usermod -aG video,tt
 # token would send somebody back to the television to read a new code, which is exactly the
 # support call this whole design exists to avoid.
 
+step 'Writing the configuration'
 mkdir -p "$CONFDIR"
-SERVER="$SERVER" CONF="$CONF" node -e '
+SERVER="$SERVER" CONF="$CONF" INSECURE_TLS="$(case "$CURL_OPTS" in -k*) echo 1 ;; *) echo 0 ;; esac)" node -e '
 const fs = require("fs"), crypto = require("crypto");
 const file = process.env.CONF;
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch { cfg = {}; }
 if (typeof cfg !== "object" || cfg === null) cfg = {};
 cfg.server = process.env.SERVER;
+// Recorded so the updater — a separate script, with no access to the variables in here — makes
+// the same trust decision. A pinned certificate is self-describing: the file is either present or
+// it is not. "No verification at all" is not, so it has to be written down.
+// (No apostrophes in this block: it sits inside a single-quoted shell string.)
+if (process.env.INSECURE_TLS === "1") cfg.insecureTls = true;
+else delete cfg.insecureTls;
 if (typeof cfg.deviceId !== "string" || !cfg.deviceId) cfg.deviceId = "pi_" + crypto.randomBytes(6).toString("hex");
 if (typeof cfg.deviceSecret !== "string" || !cfg.deviceSecret) cfg.deviceSecret = crypto.randomBytes(16).toString("base64url");
 const tmp = file + ".tmp";
@@ -146,21 +340,24 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFDIR"
 mkdir -p "$STATEDIR/cache"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$STATEDIR"
 chmod 750 "$STATEDIR"
-say "Device id: $(cat /tmp/omd-device-id)"
+say "device id: $(cat /tmp/omd-device-id)"
 rm -f /tmp/omd-device-id
+say "config:   $CONF"
+[ -f "$CA" ] && say "pinned CA: $CA"
 
 # ── display settings that only take effect on reboot ─────────────────────────
 #
 # Two Pi-specific defaults that make a screen appliance behave. Both are appended only if absent,
 # so re-running does not grow the file.
 
+step 'Checking the display settings'
 BOOTCFG=/boot/firmware/config.txt
 [ -f "$BOOTCFG" ] || BOOTCFG=/boot/config.txt
 if [ -f "$BOOTCFG" ]; then
   # Without this, a Pi that boots before the television is switched on sees no display at all and
   # never produces a framebuffer — the single most common "it just doesn't work" on a Pi.
   if ! grep -q '^hdmi_force_hotplug=1' "$BOOTCFG" 2>/dev/null; then
-    say 'Enabling HDMI output even when the television is off at boot'
+    say 'enabling HDMI output even when the television is off at boot'
     printf '\n# Added by OpenMasjidDisplay: keep HDMI alive when the TV is off at boot\nhdmi_force_hotplug=1\n' >> "$BOOTCFG"
     NEEDS_REBOOT=1
   fi
@@ -171,14 +368,14 @@ BOOTCMD=/boot/firmware/cmdline.txt
 if [ -f "$BOOTCMD" ] && ! grep -q 'consoleblank=0' "$BOOTCMD" 2>/dev/null; then
   # The console blanks after ten minutes with no keyboard input. On a screen nobody types at,
   # that means the display goes black and stays black.
-  say 'Disabling console blanking'
+  say 'disabling console blanking'
   sed -i 's/$/ consoleblank=0/' "$BOOTCMD"
   NEEDS_REBOOT=1
 fi
 
 # ── systemd ──────────────────────────────────────────────────────────────────
 
-say 'Installing the service'
+step 'Installing the service'
 
 cat > /etc/systemd/system/openmasjid-screen-console.service <<'UNIT'
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -236,6 +433,10 @@ MemoryDenyWriteExecute=no
 DeviceAllow=/dev/fb0 rw
 DeviceAllow=/dev/tty0 rw
 Environment=NODE_ENV=production
+# How this device trusts its display server, decided at install time. Either a pinned certificate
+# (verification ON, against that one certificate) or — said loudly at the time — no verification,
+# when the certificate could not be made to match the address. Empty for plain HTTP.
+$NODE_TLS_ENV
 
 [Install]
 WantedBy=multi-user.target
@@ -259,12 +460,29 @@ cat > "$PREFIX/update.sh" <<'UPD'
 set -eu
 PREFIX=/opt/openmasjid-screen
 CONF=/etc/openmasjid-screen/config.json
+CA=/etc/openmasjid-screen/server-ca.crt
+
+# The same trust decision the installer made. Without this an update over a self-signed server
+# fails every time, silently, forever — the screen keeps working on an old build and nothing ever
+# says why.
+if grep -q '"insecureTls" *: *true' "$CONF" 2>/dev/null; then
+  # Name check off, but still pin the key if we kept the certificate — same bargain the installer
+  # struck, re-derived here rather than trusted from a stored string.
+  PIN=$(openssl x509 -in "$CA" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null \
+        | openssl dgst -sha256 -binary 2>/dev/null | openssl enc -base64 2>/dev/null || true)
+  if [ -n "${PIN:-}" ]; then CURL_OPTS="-k --pinnedpubkey sha256//$PIN"; else CURL_OPTS="-k"; fi
+elif [ -f "$CA" ]; then
+  CURL_OPTS="--cacert $CA"
+else
+  CURL_OPTS=""
+fi
 
 SERVER=$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).server||""))}catch{}' "$CONF" 2>/dev/null || true)
 [ -n "$SERVER" ] || { echo "no server configured; nothing to update from"; exit 0; }
 
 TMP="$PREFIX/agent.js.new"
-curl -fsSL --max-time 120 "$SERVER/pi/agent.js" -o "$TMP" || { echo "could not download the agent"; exit 0; }
+# shellcheck disable=SC2086
+curl -fsSL --max-time 120 $CURL_OPTS "$SERVER/pi/agent.js" -o "$TMP" || { echo "could not download the agent"; exit 0; }
 [ -s "$TMP" ] || { rm -f "$TMP"; echo "downloaded agent was empty"; exit 0; }
 # A truncated or half-written download must never become the thing systemd restarts forever.
 node --check "$TMP" || { rm -f "$TMP"; echo "downloaded agent is not valid JavaScript"; exit 0; }
@@ -327,7 +545,10 @@ systemctl enable openmasjid-screen.service >/dev/null 2>&1
 systemctl enable --now openmasjid-screen-update.timer >/dev/null 2>&1 || true
 systemctl restart openmasjid-screen.service
 
-say "Installed agent $AGENT_VERSION."
+printf '\n\033[32m==> Done.\033[0m Installed agent %s.\n' "$AGENT_VERSION"
+if [ "$CURL_OPTS" = '-k' ]; then
+  warn 'this screen does NOT verify the display server certificate — see the warning above'
+fi
 if [ "${NEEDS_REBOOT:-0}" = 1 ]; then
   say 'Display settings changed — reboot to apply them:  sudo reboot'
 fi
