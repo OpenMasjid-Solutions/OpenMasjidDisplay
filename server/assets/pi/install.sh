@@ -424,9 +424,17 @@ cat > /etc/systemd/system/openmasjid-screen-console.service <<'UNIT'
 # Takes the Linux text console off the HDMI output, so kernel messages and a blinking cursor stop
 # being drawn over the timetable. This is the only part that needs root, so it is its own one-shot
 # unit rather than a privilege the agent carries for its whole life.
+#
+# It runs AFTER the agent, and that ordering is the whole point. An earlier version ran it BEFORE,
+# early in boot — which took the console away while the rest of the system was still starting and
+# nothing had drawn anything yet. The result was a television frozen on whatever boot message
+# happened to be printing at that instant, for good. Boot messages that stop advancing look
+# exactly like a machine stuck in a loop, which is precisely how it was reported.
+#
+# Never take the screen away from whatever is using it until something else is ready to draw.
 [Unit]
 Description=OpenMasjidDisplay: hand the framebuffer over to the screen agent
-Before=openmasjid-screen.service
+After=openmasjid-screen.service
 
 [Service]
 Type=oneshot
@@ -443,7 +451,9 @@ cat > /etc/systemd/system/openmasjid-screen.service <<UNIT
 [Unit]
 Description=OpenMasjidDisplay screen agent
 Documentation=https://github.com/OpenMasjid-Solutions/OpenMasjidDisplay
-After=network-online.target openmasjid-screen-console.service
+After=network-online.target
+# Wants, but deliberately NOT After: the console unit is ordered after THIS one, so that the
+# screen is never taken away from the boot messages before the agent can put something there.
 Wants=network-online.target openmasjid-screen-console.service
 # No start-limit at all: a screen that systemd has given up on is a screen nobody notices is
 # off until Jumuah.
@@ -467,7 +477,13 @@ PrivateTmp=yes
 ReadWritePaths=$CONFDIR $STATEDIR
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is NOT optional, however much it looks like tightening to drop it.
+#
+# Enumerating this machine's own network interfaces goes through a netlink socket, so without it
+# `os.networkInterfaces()` fails with EAFNOSUPPORT — which crashed the agent on startup, every
+# five seconds, forever. glibc's DNS resolution uses netlink too (AI_ADDRCONFIG asks which
+# families are configured), so ffmpeg would not have resolved a camera by name either.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 # Left OFF deliberately: node JITs, so it needs pages that are both writable and executable.

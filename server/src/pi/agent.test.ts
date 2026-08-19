@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGeometry, packFrame } from './framebuffer';
 import { fitMode, blitCentered } from './raster';
-import { pickLanIp } from './device';
+import { pickLanIp, deviceFacts } from './device';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -342,4 +342,22 @@ test('an unreadable config cannot blank the device identity', () => {
   const after = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
   assert.equal(after.deviceId, 'pi_a');
   assert.equal(after.deviceSecret, 's');
+});
+
+test('the screen survives not being able to work out its own address', () => {
+  // A real crash loop: os.networkInterfaces() threw EAFNOSUPPORT because the service unit
+  // restricted socket families and enumerating interfaces goes through netlink. The throw reached
+  // the top of main(), systemd restarted every five seconds, and the television sat frozen through
+  // sixteen restarts — over an IP address that is only ever printed in small text.
+  const real = os.networkInterfaces;
+  try {
+    (os as { networkInterfaces: unknown }).networkInterfaces = () => {
+      throw new Error('EAFNOSUPPORT');
+    };
+    const facts = deviceFacts();
+    assert.equal(facts.ip, '', 'no address is a thing to display, not a reason to exit');
+    assert.ok(typeof facts.hostname === 'string');
+  } finally {
+    (os as { networkInterfaces: unknown }).networkInterfaces = real;
+  }
 });

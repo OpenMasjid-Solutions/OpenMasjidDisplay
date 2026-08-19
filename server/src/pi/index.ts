@@ -560,6 +560,12 @@ async function main(): Promise<void> {
     log('no framebuffer at /dev/fb0 — nothing will be drawn. Is a display attached, and is this user in the `video` group?');
   } else {
     log(`framebuffer ${screen.geo.width}x${screen.geo.height} @ ${screen.geo.bpp}bpp, stride ${screen.geo.stride}`);
+    // Draw something IMMEDIATELY — before the config is read and long before the network is
+    // touched. The text console is taken off this screen shortly after we start, and until we
+    // have painted, whatever the boot happened to be printing at that instant stays on the
+    // television. Frozen boot messages read as a machine stuck in a loop, which is exactly how
+    // this got reported the first time. One frame here closes that window for good.
+    screen.show(messageSvg('OpenMasjidDisplay', 'Starting…'));
   }
 
   const cfg = await waitForConfig(screen);

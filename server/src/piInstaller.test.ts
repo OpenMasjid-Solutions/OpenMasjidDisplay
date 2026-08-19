@@ -319,3 +319,25 @@ test('an unreachable server is a refusal, not a silent downgrade', () => {
   assert.ok(/die "could not reach/.test(block), 'it must abort rather than continue');
   assert.ok(!/CURL_OPTS='-k'/.test(block), 'and must not fall through to no verification');
 });
+
+test('the hardening does not break the things the agent actually needs', () => {
+  const tpl = installerTemplate() as string;
+  // Dropping AF_NETLINK looks like tightening and is not: enumerating this machine's own network
+  // interfaces goes through netlink, so the agent crashed on startup every five seconds, and
+  // glibc's DNS resolution uses it too — ffmpeg would not have resolved a camera by name.
+  const fams = /^RestrictAddressFamilies=(.*)$/m.exec(tpl)?.[1] ?? '';
+  for (const f of ['AF_INET', 'AF_INET6', 'AF_UNIX', 'AF_NETLINK']) {
+    assert.ok(fams.includes(f), `${f} is required — see the comment above this directive`);
+  }
+});
+
+test('the console is taken off the screen only once something can replace it', () => {
+  const tpl = installerTemplate() as string;
+  // Unbinding early left the television frozen on whatever boot message was printing at that
+  // instant, which reads exactly like a machine stuck in a loop.
+  const i = tpl.indexOf('openmasjid-screen-console.service <<');
+  assert.ok(i > 0);
+  const unit = tpl.slice(i, i + 1400);
+  assert.ok(/^After=openmasjid-screen\.service$/m.test(unit), 'the console unit must run AFTER the agent');
+  assert.ok(!/^Before=openmasjid-screen\.service$/m.test(unit), 'never before — that is the frozen-screen bug');
+});

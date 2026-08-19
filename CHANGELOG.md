@@ -13,6 +13,19 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **A Raspberry Pi screen now starts.** It was restarting every five seconds without ever drawing
+  anything, because of a security setting on the screen software that stopped it looking up its
+  own network address.
+
+- **The television no longer freezes on boot messages.** The screen software took the display over
+  before it had anything to put there, so whatever the Pi was printing at that moment stayed on
+  the television — which looks exactly like a Pi stuck restarting. It now draws immediately, and
+  the display is only taken over once there is something to show.
+
+- Not being able to work out its own address no longer stops a screen working at all. It is shown
+  on the setup screen to help with network problems, and nothing more.
+
+### Fixed
 - **The Raspberry Pi installer no longer fails part-way through.** It reported the screen
   software it had just downloaded as invalid and stopped, on every Pi, because of the temporary
   filename it used while checking it.

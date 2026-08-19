@@ -69,10 +69,30 @@ export interface DeviceFacts {
   model: string;
 }
 
+/**
+ * Everything here is decoration, and it must be impossible for decoration to take a screen down.
+ *
+ * That is not a precaution written in advance — it is written after the fact. `os.networkInterfaces()`
+ * threw `EAFNOSUPPORT` on a real Pi because the service unit restricted socket families and
+ * enumerating interfaces goes through netlink. The throw reached the top of `main`, the process
+ * exited, systemd restarted it five seconds later, and the television sat frozen through sixteen
+ * restarts — all because the agent could not work out an IP address it only wanted in order to
+ * print it in small text at the bottom of a setup screen.
+ *
+ * The unit is fixed. This is the second lock: no fact gathered for display may ever be fatal.
+ */
 export function deviceFacts(): DeviceFacts {
-  return {
-    hostname: os.hostname().slice(0, 64),
-    ip: pickLanIp(os.networkInterfaces() as Record<string, Addr[] | undefined>),
-    model: readModel(),
-  };
+  let hostname = '';
+  let ip = '';
+  try {
+    hostname = os.hostname().slice(0, 64);
+  } catch {
+    /* nothing to show; the screen still works */
+  }
+  try {
+    ip = pickLanIp(os.networkInterfaces() as Record<string, Addr[] | undefined>);
+  } catch {
+    /* the pairing screen will say "no network" — which is a better answer than not booting */
+  }
+  return { hostname, ip, model: readModel() };
 }
