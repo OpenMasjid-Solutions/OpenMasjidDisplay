@@ -14,7 +14,7 @@
 FROM bluenviron/mediamtx:1.19.1@sha256:61ebddaa43a6da78d4c6e98b9f9c12066856ffd85893656f5c000d870b88bbe4 AS mediamtx
 
 # ---- Build the web control panel (Vite → static files) --------------------
-FROM --platform=$BUILDPLATFORM node:22-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS web
+FROM --platform=$BUILDPLATFORM node:26-slim@sha256:4ebb5ace66f15a24c14c492e01a8beeed4fddf970a856109f5126e703e5fe503 AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -30,7 +30,7 @@ COPY server/tsconfig.json /server/tsconfig.json
 RUN npm run build
 
 # ---- Compile the server (TypeScript → dist) -------------------------------
-FROM --platform=$BUILDPLATFORM node:22-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS server
+FROM --platform=$BUILDPLATFORM node:26-slim@sha256:4ebb5ace66f15a24c14c492e01a8beeed4fddf970a856109f5126e703e5fe503 AS server
 WORKDIR /server
 COPY server/package.json server/package-lock.json ./
 RUN npm ci
@@ -41,7 +41,7 @@ COPY server/ ./
 RUN npm run build && npm run build:agent
 
 # ---- Runtime (target architecture) ----------------------------------------
-FROM node:22-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS runtime
+FROM node:26-slim@sha256:4ebb5ace66f15a24c14c492e01a8beeed4fddf970a856109f5126e703e5fe503 AS runtime
 ENV NODE_ENV=production
 
 LABEL org.opencontainers.image.title="OpenMasjid Display" \
