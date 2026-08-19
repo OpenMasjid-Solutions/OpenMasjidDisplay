@@ -13,6 +13,11 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **A Raspberry Pi screen on some televisions was drawn too large and cut off at the right.** It
+  now uses the size the television is actually showing rather than the size of the memory the Pi
+  set aside for it, which on some sets is larger.
+
+### Fixed
 - **Raspberry Pi setup now finishes.** The last step failed with a shell error, which left the
   screen software installed but its settings half-applied.
 

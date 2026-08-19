@@ -77,19 +77,43 @@ export function parseGeometry(
   virtualSize: string | null,
   bitsPerPixel: string | null,
   stride: string | null,
+  mode: string | null = null,
 ): FbGeometry | null {
   const m = /^(\d{1,5}),(\d{1,5})$/.exec((virtualSize ?? '').trim());
   if (!m) return null;
-  const width = Number(m[1]);
-  const height = Number(m[2]);
+  let width = Number(m[1]);
+  let height = Number(m[2]);
   if (!width || !height || width > 8192 || height > 8192) return null;
+
+  // `virtual_size` is xres_VIRTUAL — the buffer the kernel allocated, which is allowed to be
+  // bigger than the part of it the television actually shows. Drivers make it wider or taller for
+  // panning and page-flipping, and on a Pi driving a 4K panel it came back at roughly double the
+  // visible width.
+  //
+  // Drawing into the virtual size looks almost right, which is what makes it nasty: the picture
+  // is composed correctly and then only its left portion is on screen, so every centred line is
+  // cut off exactly at its middle. `mode` carries the size that is really being scanned out
+  // (e.g. "U:1920x1080p-60"), so it wins whenever the kernel offers it.
+  const vm = /(\d{2,5})x(\d{2,5})/.exec((mode ?? '').trim());
+  if (vm) {
+    const mw = Number(vm[1]);
+    const mh = Number(vm[2]);
+    // Only ever narrows. A mode larger than the buffer would mean writing past the end of it.
+    if (mw > 0 && mh > 0 && mw <= width && mh <= height) {
+      width = mw;
+      height = mh;
+    }
+  }
 
   const bpp = Number((bitsPerPixel ?? '').trim());
   // Only the two depths this file knows how to pack. Anything else would be drawn as garbage,
   // and a blank screen with a log line is a far better failure than a scrambled one.
   if (bpp !== 32 && bpp !== 16) return null;
 
-  const packed = width * (bpp / 8);
+  // NOTE: measured against the VIRTUAL width, not the visible one. The stride is the distance
+  // from one row to the next in the buffer, which does not shrink just because less of it is
+  // on screen — using the visible width here would shear the picture.
+  const packed = Number(m[1]) * (bpp / 8);
   const declared = Number((stride ?? '').trim());
   // A stride below the packed width cannot be real; treat it as missing rather than trusting it.
   const rowBytes = Number.isFinite(declared) && declared >= packed ? declared : packed;
@@ -98,10 +122,22 @@ export function parseGeometry(
 }
 
 /** Read the attached screen's actual layout, or null if there is no framebuffer here. */
+/** Everything the kernel says about the framebuffer, verbatim — for the log. A picture that is
+ *  the right shape but in the wrong place is decided entirely by these four values, and none of
+ *  them can be guessed at from a development machine. */
+export function describeFramebuffer(): string {
+  return ['virtual_size', 'mode', 'bits_per_pixel', 'stride']
+    .map((k) => `${k}=${readSys(k) ?? '?'}`)
+    .join(' ');
+}
+
 export function readGeometry(): FbGeometry | null {
   // The kernel wins wherever it has an opinion. An override left set on a real Pi would
   // otherwise draw a perfectly correct picture at the wrong size for the attached television.
-  return parseGeometry(readSys('virtual_size'), readSys('bits_per_pixel'), readSys('stride')) ?? geometryOverride();
+  return (
+    parseGeometry(readSys('virtual_size'), readSys('bits_per_pixel'), readSys('stride'), readSys('mode')) ??
+    geometryOverride()
+  );
 }
 
 /**

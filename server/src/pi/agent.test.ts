@@ -361,3 +361,37 @@ test('the screen survives not being able to work out its own address', () => {
     (os as { networkInterfaces: unknown }).networkInterfaces = real;
   }
 });
+
+test('the visible mode wins over the virtual buffer size', () => {
+  // Found on a real 4K television. `virtual_size` is xres_VIRTUAL — the buffer the kernel
+  // allocated, which may be bigger than what is scanned out. Drawing into it composes the picture
+  // correctly and then shows only its left portion, so every centred line is cut off at exactly
+  // its middle: "OpenMasjidD", "Dashboard → Screens → Ra".
+  const g = parseGeometry('3840,1080', '16', '7680', 'U:1920x1080p-60');
+  assert.equal(g?.width, 1920, 'draw at what the television shows');
+  assert.equal(g?.height, 1080);
+  assert.equal(g?.stride, 7680, 'but step rows by the VIRTUAL row length, or the picture shears');
+});
+
+test('a mode larger than the buffer is ignored', () => {
+  // Trusting it would mean writing past the end of the allocation.
+  const g = parseGeometry('1920,1080', '32', '7680', 'U:3840x2160p-60');
+  assert.equal(g?.width, 1920);
+  assert.equal(g?.height, 1080);
+});
+
+test('no mode at all still works', () => {
+  // Not every kernel publishes it, and it was absent everywhere this was developed.
+  assert.deepEqual(parseGeometry('1920,1080', '32', '7680', null), {
+    width: 1920,
+    height: 1080,
+    bpp: 32,
+    stride: 7680,
+  });
+  assert.deepEqual(parseGeometry('1920,1080', '32', '7680', 'garbage'), {
+    width: 1920,
+    height: 1080,
+    bpp: 32,
+    stride: 7680,
+  });
+});
