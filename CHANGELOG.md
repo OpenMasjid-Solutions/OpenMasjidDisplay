@@ -13,6 +13,14 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **A camera on a web screen no longer dies after about ten seconds** with "Too many requests".
+  The limit that protects the page was also being applied to the video itself, and video asks for
+  a lot more than a page does. Verified with 90 seconds of continuous playback: no failures.
+- **A camera on a web screen is much lighter now.** Video is sent in ordinary chunks rather than
+  the low-latency mode, which was doing a great deal of work for a second of delay nobody is
+  watching for. If a camera is set to *Most compatible*, the screen now tells you that *Direct*
+  is far cheaper — measured at roughly a third of the processor use.
+
 - **Cameras really do work on a web screen now.** The previous build still showed "Camera
   unavailable": the camera was never being pulled in for browser screens, and two further
   problems sat behind that. Verified end to end this time — a real H.264 stream, played through

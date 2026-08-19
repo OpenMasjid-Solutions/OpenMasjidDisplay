@@ -282,13 +282,22 @@ export function createApi(deps: Deps) {
   // X-Forwarded-For: this one sits in front of a secret check, and a forged header would both
   // dodge the cap entirely and add a Map entry per request.
   const commandLimiter = new RequestLimiter(60, 60_000, true);
-  // Browser screens: a screen polls its state twice a minute and heartbeats once a minute, so
-  // a real one uses ~4/min. Generous enough for a masjid rebooting every television at once.
+  // Browser screens, PAGE and STATE only: a real screen asks for its state every 5 s, so ~12
+  // a minute plus the odd page load. Generous enough for a masjid rebooting every television
+  // at once.
   const screenLimiter = new RequestLimiter(120, 60_000);
+  // Video segments need their OWN budget, and this is why: an HLS player fetches a playlist
+  // and a segment roughly every second — and in low-latency mode a "part" every 0.27 s. Those
+  // went through the limiter above, sized for a screen that asks twice a minute, so a camera
+  // played for about ten seconds and then the whole page got "Too many requests." A wall is
+  // not abuse; it is one client pulling a video stream, and the cap here exists only to bound
+  // a runaway, not to shape normal playback.
+  const screenMediaLimiter = new RequestLimiter(1200, 60_000);
   setInterval(() => {
     widgetLimiter.prune();
     commandLimiter.prune();
     screenLimiter.prune();
+    screenMediaLimiter.prune();
   }, 5 * 60_000).unref?.();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
@@ -349,7 +358,8 @@ export function createApi(deps: Deps) {
       // itself, so the same markup works on the LAN and remotely with no configuration.
       const screenMatch = /^(?:\/[a-z0-9-]+)?\/s\/([A-Za-z0-9_-]{16,64})(\/state|\/seen|\/hls\/[\w.\-]{1,80}|\/asset\/([\w.\-]{1,120}))?$/.exec(pathname);
       if (screenMatch) {
-        if (!screenLimiter.allow(req)) {
+        const isMedia = (screenMatch[2] ?? '').startsWith('/hls/');
+        if (!(isMedia ? screenMediaLimiter : screenLimiter).allow(req)) {
           res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
           res.end('Too many requests.');
           return;

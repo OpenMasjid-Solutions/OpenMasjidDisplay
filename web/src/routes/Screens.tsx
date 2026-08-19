@@ -267,6 +267,13 @@ function ScreenCard({
           )}
         </div>
       )}
+      {isWeb && effective.kind === 'source' && state.sources.find((x) => x.id === effective.id)?.mode === 'normalize' && (
+        <div className="hint" style={{ color: 'var(--color-warning)' }}>
+          This camera is set to <b>Most compatible</b>, which re-encodes it — that is the expensive
+          part of running this screen. A browser plays <b>Direct</b> straight through with almost no
+          CPU, as long as the camera is H.264. Worth trying Direct on the Sources page first.
+        </div>
+      )}
       {isWeb ? (
         <div className="hint">
           Open one of these in a browser on the screen (a Raspberry Pi in kiosk mode, a smart TV, or any

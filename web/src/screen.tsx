@@ -259,7 +259,12 @@ async function showVideo(sourceId: string): Promise<void> {
       return;
     }
     const h = new Hls({
-      lowLatencyMode: true,
+      // Low latency is deliberately OFF. It asks for a "part" every fraction of a second,
+      // which on a Raspberry Pi is a lot of CPU and a lot of requests to watch a camera that
+      // nobody is frame-racing. A second or two behind is fine on a wall.
+      lowLatencyMode: false,
+      // Keep almost nothing behind the live edge: a wall screen is never scrubbed backwards,
+      // and buffered video is memory a small box does not have to spare.
       backBufferLength: 10,
       // The first playlist request is EXPECTED to 404 for a few seconds. MediaMTX pulls a
       // camera on demand, so nothing exists until our request wakes it — being patient here

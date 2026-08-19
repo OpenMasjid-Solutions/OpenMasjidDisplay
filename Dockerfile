@@ -103,7 +103,11 @@ ENV PORT=8080 \
     # the masjid's cameras.
     MTX_HLS=yes \
     MTX_HLSADDRESS=127.0.0.1:8888 \
-    MTX_HLSVARIANT=lowLatency \
+    # fmp4, NOT lowLatency. Low-latency HLS emits a "part" every ~0.27 s, which is a great
+    # deal of muxing and a great many HTTP requests for a wall clock that nobody is
+    # frame-racing. Ordinary segments cut both, and a second or two of extra delay on a
+    # camera in a prayer hall is not worth the CPU on a Raspberry Pi.
+    MTX_HLSVARIANT=fmp4 \
     MTX_WEBRTC=no \
     MTX_SRT=no
 EXPOSE 8080 8081 8554
