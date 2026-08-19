@@ -293,6 +293,16 @@ export interface ContentRef {
 }
 
 /** A physical screen, addressed by a stable RTSP path its decoder connects to. */
+/**
+ * How a screen receives its picture.
+ *
+ * `rtsp` (the default, and everything before v0.70) is a decoder box pulling an H.264 stream
+ * we encode continuously — about 1.5 Mbit/s per screen, forever, whether anything changed or
+ * not. `web` is a browser opening an HTTPS page that renders the SAME SVG locally from a
+ * ~0.5 KB payload, so the network carries data instead of video.
+ */
+export type TvKind = 'rtsp' | 'web';
+
 export interface Tv {
   id: string;
   name: string;
@@ -300,6 +310,17 @@ export interface Tv {
   defaultContent: ContentRef;
   /** Manual override set by a volunteer; until = epoch ms (null = until changed). */
   override?: { content: ContentRef; until: number | null } | null;
+  /** absent = 'rtsp', so every screen that existed before web screens keeps working */
+  kind?: TvKind;
+  /**
+   * Unguessable id for a `web` screen's public URL (/s/<token>).
+   *
+   * A TV browser cannot sign in, so the page is unauthenticated and the token IS the
+   * capability — the same trade the website widget makes. It is separate from `tv.id`
+   * because `id` appears in the admin API and in logs, and a screen URL that leaks should be
+   * revocable by reissuing the token without renumbering the screen.
+   */
+  webToken?: string;
   createdAt: string;
 }
 
@@ -382,6 +403,15 @@ export interface Settings {
   volunteerRemote: boolean;
   /** posting the Iqāmah-change notice to a WhatsApp group (all off by default) */
   whatsapp: WhatsAppSettings;
+  /**
+   * BETA: offer browser screens (`Tv.kind = 'web'`) as an alternative to an RTSP decoder.
+   *
+   * Off by default and gated deliberately. It is a genuinely different way to drive a wall —
+   * an HTTPS page a Raspberry Pi or a smart TV opens in a browser — and a masjid whose
+   * screens work should not be shown a second option until they choose to try it. Turning it
+   * off again does not delete web screens; they simply stop being offered for new ones.
+   */
+  webScreensBeta: boolean;
 }
 
 /** A hashed credential (scrypt). Used for the admin password and the volunteer PIN. */
@@ -422,7 +452,12 @@ export interface TvStatus {
   source: 'override' | 'schedule' | 'default';
   /** the schedule rule currently driving it, if any */
   ruleId?: string;
-  /** is a screen currently pulling this RTSP stream (online); false = offline/no decoder */
+  /** Is a screen currently receiving this content (online)?
+   *
+   *  For an `rtsp` screen this is "MediaMTX reports ≥1 reader on the path". A `web` screen has
+   *  no RTSP path at all, so the equivalent is "a browser has checked in recently" — see
+   *  `webSeenAt`. Same field, so every consumer (the panel badge, the offline alert) is
+   *  unchanged. */
   streamReady: boolean;
   /** The timetable on this screen is publishing an OUT-OF-DATE picture — the renderer
    *  stopped producing frames, so the times shown are not current. `streamReady` can

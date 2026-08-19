@@ -21,6 +21,13 @@ import {
 import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, whatsappGroups } from './fabric';
 import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
 import type { FabricCommands } from './fabricCommands';
+import {
+  findByToken,
+  webScreenState,
+  markWebScreenSeen,
+  WEB_POLL_MS,
+} from './webScreen';
+import { clockSuspect } from './render/renderer';
 import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
@@ -45,10 +52,12 @@ import {
 } from './render/background';
 import { renderPreviewPng, renderPreviewMeta, renderAnnouncePng } from './render/renderPool';
 import { probeSource } from './render/renderer';
+import { backgroundTone as renderBackgroundTone } from './render/renderPool';
 import { parseIqamahCsv, toCsv, templateCsv, normalizeIqamahYear } from './iqamahCsv';
 import { normalizeIqamahSchedule } from './iqamahSchedule';
 import { renderMonthPrintHtml } from './print';
 import { localParts, zonedNoon } from './prayer/engine';
+import { resolveTv } from './scheduler';
 import {
   normTimetable,
   normSource,
@@ -57,7 +66,7 @@ import {
   normSettings,
   normContent,
 } from './validate';
-import type { DB } from './types';
+import type { DB, Timetable } from './types';
 
 const log = makeLog('api');
 
@@ -142,6 +151,62 @@ function serveStatic(res: ServerResponse, pathname: string): boolean {
   return true;
 }
 
+/**
+ * The `/<appId>` prefix this request arrived under, or '' on the LAN.
+ *
+ * Behind the tunnel the platform serves us at /<appId>/… and does NOT strip the prefix, so a
+ * page must build its own URLs with it or every fetch lands on the platform root. Derived from
+ * the request rather than configured, so it is right whichever way the screen was opened.
+ */
+function basePathPrefix(pathname: string): string {
+  const m = /^(\/[a-z0-9-]+)\/s\//.exec(pathname);
+  return m ? m[1] : '';
+}
+
+/**
+ * Serve the browser-screen page.
+ *
+ * A second Vite entry (`screen.html`), not the control panel: it must boot straight into the
+ * display with no auth, no React router and none of the panel's bundle. Its asset URLs are
+ * rewritten under the tunnel prefix exactly as the volunteer page does — an absolute
+ * /assets/… from a page at /display/s/<token> would be fetched from the platform root.
+ */
+function serveScreenPage(res: ServerResponse, basePrefix: string): void {
+  const file = path.join(config.publicDir, 'screen.html');
+  if (!fs.existsSync(file)) {
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+    res.end('OpenMasjid Display is running, but the screen page was not built.');
+    return;
+  }
+  let html = fs.readFileSync(file, 'utf8');
+  if (basePrefix) html = html.replace(/="\/assets\//g, `="${basePrefix}/assets/`);
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'content-type': MIME['.html'],
+    // Never cache the shell: it carries the asset hashes, so a stale one pins a screen to an
+    // old bundle until someone physically reboots the television.
+    'cache-control': 'no-store',
+  });
+  res.end(html);
+}
+
+/**
+ * Auto text contrast and auto accent for a wallpaper photo.
+ *
+ * Both need the DECODED image, which is why they live on the server for a browser screen too:
+ * the render worker already samples the photo for the video pipeline, and having the browser
+ * do its own sampling would be a second implementation of a value that must match exactly.
+ */
+async function backgroundTone(tt: Timetable): Promise<{ bgLight: boolean; autoAccent: string | null }> {
+  try {
+    return await renderBackgroundTone(tt);
+  } catch {
+    // A tone we cannot compute is not worth failing a screen over; the theme's own colours
+    // are a perfectly good answer.
+    return { bgLight: false, autoAccent: null };
+  }
+}
+
 function serveIndex(res: ServerResponse): void {
   const idx = path.join(config.publicDir, 'index.html');
   if (fs.existsSync(idx)) {
@@ -216,9 +281,13 @@ export function createApi(deps: Deps) {
   // X-Forwarded-For: this one sits in front of a secret check, and a forged header would both
   // dodge the cap entirely and add a Map entry per request.
   const commandLimiter = new RequestLimiter(60, 60_000, true);
+  // Browser screens: a screen polls its state twice a minute and heartbeats once a minute, so
+  // a real one uses ~4/min. Generous enough for a masjid rebooting every television at once.
+  const screenLimiter = new RequestLimiter(120, 60_000);
   setInterval(() => {
     widgetLimiter.prune();
     commandLimiter.prune();
+    screenLimiter.prune();
   }, 5 * 60_000).unref?.();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
@@ -265,6 +334,87 @@ export function createApi(deps: Deps) {
       if (/^(?:\/[a-z0-9-]+)?\/(volunteer(?:\/.*)?|api\/volunteer\/.+)$/.test(pathname)) {
         if (!store.db.settings.volunteerRemote) return sendJson(res, 404, { error: 'Not found.' });
         return volunteer(req, res);
+      }
+
+      // ---- Browser screens (beta): the page a TV/Raspberry Pi opens ---------------
+      //
+      // Unauthenticated, like the widget above and for the same reason: a television cannot
+      // sign in. The 128-bit token in the URL IS the capability. An unknown token is a 404,
+      // never a 403, so tokens cannot be probed.
+      //
+      // The optional `/<basePath>` prefix is what makes this work through the admin's
+      // Cloudflare tunnel and therefore over HTTPS from anywhere — the platform serves this
+      // app under /<appId>/ and does not strip the prefix. The page fetches relative to
+      // itself, so the same markup works on the LAN and remotely with no configuration.
+      const screenMatch = /^(?:\/[a-z0-9-]+)?\/s\/([A-Za-z0-9_-]{16,64})(\/state|\/seen|\/asset\/([\w.\-]{1,120}))?$/.exec(pathname);
+      if (screenMatch) {
+        if (!screenLimiter.allow(req)) {
+          res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
+          res.end('Too many requests.');
+          return;
+        }
+        const tv = findByToken(store.db, screenMatch[1]);
+        // 404 for an unknown token AND for a screen whose kind was changed back to rtsp —
+        // an old URL must stop working, not start leaking.
+        if (!tv || tv.kind !== 'web') {
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('Not found.');
+          return;
+        }
+        const sub = screenMatch[2] ?? '';
+
+        // The heartbeat. A browser screen has no RTSP path, so this is what "online" means
+        // for it — see webScreen.ts.
+        if (sub === '/seen' && method === 'POST') {
+          markWebScreenSeen(tv.id, Date.now());
+          return sendJson(res, 200, { ok: true, pollMs: WEB_POLL_MS });
+        }
+
+        if (sub === '/state' && method === 'GET') {
+          markWebScreenSeen(tv.id, Date.now());
+          const basePrefix = basePathPrefix(pathname);
+          const tt = store.db.timetables.find(
+            (t) => t.id === resolveTv(tv, store.db.schedules, new Date(), store.db.settings.scheduleTimezone).content.id,
+          );
+          // Computed here rather than in the browser: both need the DECODED wallpaper, and a
+          // second implementation would be a second answer.
+          const tone = tt?.backgroundImage ? await backgroundTone(tt) : { bgLight: false, autoAccent: null };
+          const state = webScreenState(store.db, tv, Date.now(), {
+            basePrefix,
+            clockSuspect: clockSuspect(),
+            bgLight: tone.bgLight,
+            autoAccent: tone.autoAccent,
+          });
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(state));
+          return;
+        }
+
+        // An uploaded background / logo / announcement image, scoped to this screen's token.
+        const assetFile = screenMatch[3];
+        if (assetFile && method === 'GET') {
+          const found = uploadFilePath(assetFile);
+          if (!found) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+            res.end('Not found.');
+            return;
+          }
+          res.writeHead(200, {
+            ...SECURITY_HEADERS,
+            'content-type': found.mime,
+            // Uploads are content-addressed by filename and replaced under a new name, so a
+            // long cache is safe and keeps a Pi off the network.
+            'cache-control': 'public, max-age=86400',
+          });
+          fs.createReadStream(found.path).pipe(res);
+          return;
+        }
+
+        // The page itself.
+        if (!sub && method === 'GET') return serveScreenPage(res, basePathPrefix(pathname));
+        res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+        res.end('Not found.');
+        return;
       }
 
       // ---- Public embeddable widget (no auth; only for opted-in timetables) ------
@@ -1017,6 +1167,25 @@ export function createApi(deps: Deps) {
         const publicConfigured = !!site?.enabled && !!site.publicUrl;
         const publicUrl = publicConfigured && tt.widget?.enabled ? `${site!.publicUrl}/w/${tt.id}` : '';
         return sendJson(res, 200, { enabled: !!tt.widget?.enabled, publicUrl, publicConfigured });
+      }
+
+      // A browser screen's address, for the panel to hand to whoever is setting the TV up.
+      // Same authoritative /api/fabric/site source as the widget and the volunteer page: the
+      // platform only returns a publicUrl when it is actually routing this app's path, so a
+      // remote television gets an HTTPS URL that works and a LAN-only install is told plainly
+      // that there isn't one.
+      const screenInfoMatch = /^\/api\/tvs\/([\w-]+)\/screen-info$/.exec(pathname);
+      if (screenInfoMatch && method === 'GET') {
+        const tv = store.db.tvs.find((t) => t.id === screenInfoMatch[1]);
+        if (!tv) return sendJson(res, 404, { error: 'Screen not found.' });
+        if (tv.kind !== 'web' || !tv.webToken) return sendJson(res, 200, { publicUrl: '', publicConfigured: false, path: '' });
+        const site = await siteInfo();
+        const publicConfigured = !!site?.enabled && !!site.publicUrl;
+        return sendJson(res, 200, {
+          path: `/s/${tv.webToken}`,
+          publicUrl: publicConfigured ? `${site!.publicUrl}/s/${tv.webToken}` : '',
+          publicConfigured,
+        });
       }
 
       // The volunteer page's PUBLIC address behind the tunnel: the app's public base + /volunteer

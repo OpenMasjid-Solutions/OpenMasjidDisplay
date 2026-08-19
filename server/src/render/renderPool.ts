@@ -68,6 +68,7 @@ interface WorkerMsg {
   height?: number;
   buf?: ArrayBuffer;
   hotspots?: Hotspot[];
+  tone?: { bgLight: boolean; autoAccent: string | null };
 }
 
 export class RenderWorker {
@@ -203,6 +204,12 @@ export class RenderWorker {
     return Buffer.from(m.buf as ArrayBuffer);
   }
 
+    /** Auto text contrast + accent sampled from the wallpaper photo. */
+  async tone(tt: Timetable): Promise<{ bgLight: boolean; autoAccent: string | null }> {
+    const m = await this.request({ kind: 'tone', tt, nowMs: 0 });
+    return m.tone ?? { bgLight: false, autoAccent: null };
+  }
+
   /** Click-to-edit text regions for the live editor (fractional coordinates). */
   async meta(tt: Timetable, nowMs: number): Promise<Hotspot[]> {
     const m = await this.request({ kind: 'meta', tt, nowMs });
@@ -237,4 +244,24 @@ export function renderPreviewMeta(tt: Timetable, nowMs: number): Promise<Hotspot
 export function renderAnnouncePng(tt: Timetable, nowMs: number, model?: PosterModel): Promise<Buffer> {
   if (!previewWorker) previewWorker = new RenderWorker();
   return previewWorker.announce(tt, nowMs, model);
+}
+
+/**
+ * Auto text contrast + accent for a timetable's wallpaper, for a browser screen.
+ *
+ * Cached by (file, theme, accent): decoding a multi-megabyte photo per state poll would
+ * undo the point of a screen that is meant to cost almost nothing, and the answer only moves
+ * when the photo or the palette does.
+ */
+const toneCache = new Map<string, { bgLight: boolean; autoAccent: string | null }>();
+
+export async function backgroundTone(tt: Timetable): Promise<{ bgLight: boolean; autoAccent: string | null }> {
+  const key = `${tt.backgroundImage}|${tt.themeId}|${tt.accent ?? ''}|${tt.textColor ?? ''}`;
+  const hit = toneCache.get(key);
+  if (hit) return hit;
+  if (!previewWorker) previewWorker = new RenderWorker();
+  const tone = await previewWorker.tone(tt);
+  if (toneCache.size > 64) toneCache.clear();
+  toneCache.set(key, tone);
+  return tone;
 }

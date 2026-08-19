@@ -46,6 +46,7 @@ const WA_BASE: Settings = {
   volunteerEnabled: false,
   volunteerRemote: true,
   whatsapp: { iqamahChange: false, groupId: '', groupLabel: '', timetableId: '', daysBefore: 1 },
+  webScreensBeta: false,
 };
 
 test('WhatsApp posting is off, with no group, until an admin says otherwise', () => {

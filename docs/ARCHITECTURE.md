@@ -243,6 +243,35 @@ screen that is *lit up but stale* raises the same alert, worded for that fault �
 worse than a blank screen. Screens intentionally set to **Off** are not monitored. The panel shows the badge
 from the same signal. Alerts never affect streaming.
 
+## Browser screens (beta)
+
+A screen may be `kind: 'web'` instead of `'rtsp'` — a browser opening `/s/<token>` rather than a
+decoder pulling `rtsp://…/tv_xxxx`. The saving is the whole point: an RTSP screen costs a resvg raster
+and an ffmpeg encode every second forever (~1.5 Mbit/s), while a browser screen is sent ~1 KB of JSON
+and renders locally.
+
+- **One renderer.** `render/svg.ts` is a pure string builder — no `fs`, no `Buffer`, and it never reads
+  the clock (`now` is always a parameter) — so the *same file* bundles into `web/src/screen.tsx` and
+  returns byte-identical SVG. `webScreen.test.ts` asserts that purity, because an `fs` import added
+  there would blank every browser screen and no server test would notice.
+- **The token is the access control.** A television cannot sign in, so `/s/<token>` is unauthenticated
+  and `Tv.webToken` is 16 random bytes (`store.screenToken`, not `rid()`). An unknown token is a 404,
+  never a 403. Assets are served under the same token.
+- **Tunnel-aware.** The route accepts the platform's `/<basePath>/s/<token>` form and `serveScreenPage`
+  rewrites the bundle's asset URLs under that prefix, exactly as the volunteer page does — which is
+  what makes a remote TV work over HTTPS with nothing configured.
+- **Not in the video path.** `orchestrator.ts` skips MediaMTX paths for web screens, and a timetable
+  shown *only* on web screens is not counted as active — so no ffmpeg pipeline and no render loop start
+  for it at all.
+- **Liveness is a heartbeat**, since there is no RTSP reader count: the page POSTs `/s/<token>/seen` and
+  `webScreenOnline()` fills the same `streamReady` field, so the panel badge and the offline alert are
+  unchanged.
+- **Four things live outside the SVG** and are handled in `screen.tsx`: the announcement slideshow phase
+  (`activeAnnouncementImage`, reused), the ticker's *motion* (ffmpeg's `drawtext` in the video path, CSS
+  here, with the lane geometry from the shared `bottomBandSplit`), the stale mark (pixel arithmetic in
+  the video path, DOM here), and *deciding* it is stale — which for a browser means losing contact with
+  the server or disagreeing with its clock.
+
 ## Release channels
 
 `main` and `dev` publish different images, and the branch decides which: `dev` publishes

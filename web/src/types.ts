@@ -139,6 +139,10 @@ export interface Tv {
   room?: string;
   defaultContent: ContentRef;
   override?: { content: ContentRef; until: number | null } | null;
+  /** absent = 'rtsp' — every screen made before browser screens existed */
+  kind?: TvKind;
+  /** the unguessable token in a browser screen's public URL */
+  webToken?: string;
   createdAt: string;
 }
 
@@ -168,6 +172,8 @@ export interface WhatsAppSettings {
   daysBefore: number;
 }
 
+export type TvKind = 'rtsp' | 'web';
+
 export interface Settings {
   defaultQuality: Quality;
   scheduleTimezone: string;
@@ -175,6 +181,8 @@ export interface Settings {
   /** also serve the volunteer page on the main address / over remote access (default on) */
   volunteerRemote: boolean;
   whatsapp: WhatsAppSettings;
+  /** BETA: offer browser screens as an alternative to an RTSP decoder */
+  webScreensBeta: boolean;
 }
 
 /** Why this masjid can or cannot send — the platform's vocabulary, each needing its own

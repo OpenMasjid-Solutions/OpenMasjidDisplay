@@ -3,7 +3,7 @@
 /** Normalizers that turn untrusted request bodies into safe, fully-formed
  *  domain objects. Every field is clamped/defaulted; ids and createdAt are
  *  preserved on update or generated on create. */
-import { rid, defaultIqamah } from './store';
+import { rid, screenToken, defaultIqamah } from './store';
 import { THEMES } from './render/theme';
 import { parseHHMM } from './prayer/engine';
 import type {
@@ -373,12 +373,19 @@ export function normSource(input: unknown, base?: Source): Source {
 
 export function normTv(input: unknown, base?: Tv): Tv {
   const o = asObj(input);
+  const kind = oneOf(o.kind, ['rtsp', 'web'] as const, base?.kind ?? 'rtsp');
   return {
     id: base?.id ?? rid('tv'),
     name: str(o.name, base?.name ?? 'Screen', 80) || 'Screen',
     room: str(o.room, base?.room ?? '', 80),
     defaultContent: o.defaultContent ? normContent(o.defaultContent) : base?.defaultContent ?? { kind: 'off' },
     override: base?.override ?? null,
+    kind,
+    // A web screen's token is minted here and never accepted from the client: it is the whole
+    // access control on an unauthenticated page, so it must come from the CSPRNG rather than
+    // from whoever is posting the form. An existing token is kept so a screen's URL survives
+    // every rename and re-point — a decoder box or a Pi has that URL saved.
+    ...(kind === 'web' ? { webToken: base?.webToken || screenToken() } : {}),
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };
 }
@@ -438,5 +445,6 @@ export function normSettings(input: unknown, base: Settings): Settings {
     volunteerEnabled: o.volunteerEnabled === undefined ? base.volunteerEnabled ?? false : bool(o.volunteerEnabled, false),
     volunteerRemote: o.volunteerRemote === undefined ? base.volunteerRemote ?? true : bool(o.volunteerRemote, true),
     whatsapp: normWhatsApp(o.whatsapp, base.whatsapp),
+    webScreensBeta: o.webScreensBeta === undefined ? base.webScreensBeta ?? false : bool(o.webScreensBeta, false),
   };
 }

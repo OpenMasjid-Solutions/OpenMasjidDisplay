@@ -56,6 +56,7 @@ function settings(): Settings {
     volunteerEnabled: false,
     volunteerRemote: true,
     whatsapp: { iqamahChange: false, groupId: '', groupLabel: '', timetableId: '', daysBefore: 1 },
+  webScreensBeta: false,
   };
   return normSettings({ whatsapp: { iqamahChange: true, groupId: GROUP, daysBefore: 3 } }, empty);
 }

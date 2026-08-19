@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '../api';
-import type { AppState, Tv, ContentRef, TvStatus } from '../types';
+import type { AppState, Tv, TvKind, ContentRef, TvStatus } from '../types';
 import { contentOptions, ContentPicker, contentLabel } from '../content';
 import {
   Modal,
@@ -102,6 +102,7 @@ export function Screens({ state, refetch }: Props) {
         <TvModal
           tv={edit === 'new' ? null : edit}
           options={options}
+          beta={state.settings.webScreensBeta}
           onClose={() => setEdit(null)}
           onSaved={async () => {
             setEdit(null);
@@ -156,7 +157,24 @@ function ScreenCard({
   const stale = !!status?.contentStale;
   // The link uses whatever address this panel was opened with — the same address
   // a decoder on the network reaches this server at. Nothing to configure.
-  const url = `rtsp://${location.hostname}:${state.rtsp.port}/${tv.id}`;
+  // A browser screen's link is a page, not a stream. Built from the address this panel was
+  // opened with — so on the LAN it is the LAN address, and opened through the platform's
+  // tunnel it is already the public HTTPS one, which is what a remote television needs.
+  const isWeb = tv.kind === 'web';
+  // A browser screen's link is a page, not a stream. The LAN form is built from the address
+  // this panel was opened with; the PUBLIC one (for a television that is not on this network)
+  // comes from the server, which asks the platform whether it is actually routing this app —
+  // guessing it here would hand someone a URL that silently does not resolve.
+  const [publicScreenUrl, setPublicScreenUrl] = useState('');
+  useEffect(() => {
+    if (!isWeb) return;
+    let live = true;
+    void api.screenInfo(tv.id).then((r) => { if (live) setPublicScreenUrl(r.publicUrl); }).catch(() => {});
+    return () => { live = false; };
+  }, [isWeb, tv.id]);
+  const url = isWeb
+    ? publicScreenUrl || `${location.origin}/s/${tv.webToken ?? ''}`
+    : `rtsp://${location.hostname}:${state.rtsp.port}/${tv.id}`;
   const localHost = /^(localhost|127\.|0\.0\.0\.0|::1|\[)/.test(location.hostname);
   const sourceTag =
     status?.source === 'override' ? 'Manual' : status?.source === 'schedule' ? 'Scheduled' : 'Default';
@@ -188,7 +206,7 @@ function ScreenCard({
               </span>
             ) : (
               effective.kind !== 'off' && !ready && (
-                <span className="tag" style={{ marginInlineStart: '0.5rem', background: 'rgba(229,115,107,0.16)', color: '#e5736b' }} title="This screen isn’t pulling its stream — the screen or its decoder may be off or disconnected.">Offline</span>
+                <span className="tag" style={{ marginInlineStart: '0.5rem', background: 'rgba(229,115,107,0.16)', color: '#e5736b' }} title={tv.kind === 'web' ? "This screen’s browser hasn’t checked in — the screen may be off, or the page was closed." : "This screen isn’t pulling its stream — the screen or its decoder may be off or disconnected."}>Offline</span>
               )
             )}
           </div>
@@ -225,11 +243,21 @@ function ScreenCard({
           {copied ? <IconCheck size={14} /> : <IconCopy size={14} />} {copied ? 'Copied' : 'Copy link'}
         </button>
       </div>
-      {localHost && (
+      {isWeb ? (
         <div className="hint">
-          You're viewing this on the server itself — open this panel from another device using this
-          server's network address, and the link will use that address for your screens.
+          Open this link in a browser on the screen (a Raspberry Pi in kiosk mode, a smart TV, or any
+          computer). It draws the timetable itself, so it uses almost no network after it loads.
+          {publicScreenUrl
+            ? ' This is your public address, so it works from anywhere.'
+            : ' This is a local address — turn on remote access in OpenMasjidOS to get one that works off-site.'}
         </div>
+      ) : (
+        localHost && (
+          <div className="hint">
+            You're viewing this on the server itself — open this panel from another device using this
+            server's network address, and the link will use that address for your screens.
+          </div>
+        )
       )}
     </div>
   );
@@ -238,11 +266,13 @@ function ScreenCard({
 function TvModal({
   tv,
   options,
+  beta,
   onClose,
   onSaved,
 }: {
   tv: Tv | null;
   options: ReturnType<typeof contentOptions>;
+  beta: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -250,12 +280,13 @@ function TvModal({
   const [name, setName] = useState(tv?.name ?? '');
   const [room, setRoom] = useState(tv?.room ?? '');
   const [content, setContent] = useState<ContentRef>(tv?.defaultContent ?? { kind: 'off' });
+  const [kind, setKind] = useState<TvKind>(tv?.kind ?? 'rtsp');
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
     setBusy(true);
     try {
-      const body = { name: name.trim() || 'Screen', room: room.trim(), defaultContent: content };
+      const body = { name: name.trim() || 'Screen', room: room.trim(), defaultContent: content, kind };
       if (tv) await api.updateTv(tv.id, body);
       else await api.createTv(body);
       onSaved();
@@ -283,6 +314,23 @@ function TvModal({
         <Field label="Screen name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Main hall TV" /></Field>
         <Field label="Room (optional)"><input className="input" value={room} onChange={(e) => setRoom(e.target.value)} placeholder="Main hall" /></Field>
       </div>
+      {beta && (
+        <Field
+          label="How this screen receives the picture"
+          hint="A decoder box pulls a video stream. A browser opens a web page and draws the timetable itself, which uses almost no network — but it can only show a timetable, not a camera."
+        >
+          <select className="select" value={kind} onChange={(e) => setKind(e.target.value as TvKind)}>
+            <option value="rtsp">Video stream (RTSP decoder box)</option>
+            <option value="web">Web page (browser / Raspberry Pi) — beta</option>
+          </select>
+        </Field>
+      )}
+      {kind === 'web' && content.kind === 'source' && (
+        <div className="form-error">
+          A browser screen can only show a timetable. Cameras and HDMI sources are video, and this
+          kind of screen has no video player — pick a timetable, or use a decoder box for this screen.
+        </div>
+      )}
       <Field label="Normally shows" hint="What this screen returns to when no schedule or manual choice applies.">
         <ContentPicker options={options} value={content} onChange={setContent} />
       </Field>

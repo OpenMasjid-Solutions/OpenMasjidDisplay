@@ -135,6 +135,11 @@ export const api = {
     req<Tv>('POST', `/api/tvs/${id}/set`, { content, until }),
   resumeTv: (id: string) => req<Tv>('POST', `/api/tvs/${id}/resume`),
 
+  /** A browser screen's address: the LAN path, plus the public HTTPS one when the admin's
+   *  remote access is routing this app (the same authoritative source the widget uses). */
+  screenInfo: (id: string) =>
+    req<{ path: string; publicUrl: string; publicConfigured: boolean }>('GET', `/api/tvs/${id}/screen-info`),
+
   createSchedule: (b: Partial<ScheduleRule>) => req<ScheduleRule>('POST', '/api/schedules', b),
   updateSchedule: (id: string, b: Partial<ScheduleRule>) => req<ScheduleRule>('PUT', `/api/schedules/${id}`, b),
   deleteSchedule: (id: string) => req('DELETE', `/api/schedules/${id}`),

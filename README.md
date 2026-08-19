@@ -153,6 +153,27 @@ fixing and you're nowhere near a computer.
 Which events go out and to whom is **this app's setting**, not the platform's — OpenMasjidOS's alerts screen only
 covers its own alerts, because those go to the admin while these go to the congregation.
 
+### 🖥️ Screens that are a web page (beta)
+
+A screen doesn't have to be a decoder box. Turn on *Screens that are a web page* in **Settings → Beta
+features** and a screen can instead be a **link you open in any browser** — a Raspberry Pi in kiosk
+mode, a smart TV, or a spare laptop. It shows exactly what your other screens show.
+
+- **Almost no network.** A normal screen is sent video continuously — roughly 1.5 Mbit/s each, forever.
+  A web screen is sent the *timetable*, about a kilobyte, and draws the picture itself. After it loads,
+  there is essentially nothing on the wire.
+- **Works over the internet.** The link rides your OpenMasjidOS remote access, so a screen in another
+  building — or a display you host in the cloud — needs nothing extra.
+- **Identical to a normal screen**, because it is drawn by the *same* renderer: all three layouts, the
+  countdown, the Adhan pop-up, the Iqamah countdown, hadith during salah, the prohibited-time notice,
+  the Iqamah-change reminder, the ticker and the announcement slideshow.
+- It dims itself and shows a red bar if it loses contact with the server, or if the screen's own clock
+  is badly wrong — the same warnings a video screen gives.
+
+> **It cannot show a camera or an HDMI source.** Those are video and a web page has no video player
+> here, so keep a decoder box for those screens. And it is **beta**: it works, but it hasn't been
+> through a season in a real masjid yet.
+
 ### 📷 Cameras and 🖥️ HDMI sources
 
 - Bring in any IP/security camera or an imam camera and put it on a screen with one tap — great for overflow

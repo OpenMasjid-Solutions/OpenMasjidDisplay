@@ -44,7 +44,7 @@ const port = parentPort;
 
 interface Req {
   id: number;
-  kind: 'raw' | 'png' | 'meta' | 'announce';
+  kind: 'raw' | 'png' | 'meta' | 'announce' | 'tone';
   tt: Timetable;
   nowMs: number;
   /** (announce) draw THIS change rather than re-detecting one. The WhatsApp announcer has
@@ -172,6 +172,14 @@ port.on('message', (msg: Req) => {
       const sink = { hotspots: [] as unknown[] };
       renderDisplaySvg(tt, now, { sink: sink as never });
       port.postMessage({ id, ok: true, hotspots: sink.hotspots });
+      return;
+    }
+    if (kind === 'tone') {
+      // Auto text contrast + auto accent for a wallpaper photo. The video pipeline already
+      // derives these per frame; a browser screen needs the SAME numbers, and sampling the
+      // photo a second time in the browser would be a second answer to one question.
+      const { bg } = assets(tt, msg.bgFile);
+      port.postMessage({ id, ok: true, tone: { bgLight: bgIsLight(tt, bg), autoAccent: bgAccent(tt, bg) ?? null } });
       return;
     }
     if (kind === 'announce') {

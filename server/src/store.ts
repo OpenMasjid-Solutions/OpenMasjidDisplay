@@ -36,6 +36,18 @@ export function rid(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
+/**
+ * A capability token for a web screen's public URL.
+ *
+ * Deliberately NOT `rid()`. An id only has to be unique among a few dozen screens, and four
+ * random bytes is plenty for that; this value is the ONLY thing standing between the open
+ * internet and a screen's page, so it is sized to be unguessable rather than merely unique.
+ * 16 bytes base64url ≈ 128 bits — the same order as the session-cookie secret.
+ */
+export function screenToken(): string {
+  return crypto.randomBytes(16).toString('base64url');
+}
+
 export function defaultIqamah(): IqamahConfig {
   return {
     fajr: { mode: 'offset', offset: 20 },
@@ -133,6 +145,8 @@ function freshDB(): DB {
       // Off, with no group and no timetable chosen. Configuring a WhatsApp gateway for
       // something else is not a request to start messaging the congregation from here.
       whatsapp: { iqamahChange: false, groupId: '', groupLabel: '', timetableId: '', daysBefore: 1 },
+      // Beta, so off until asked for.
+      webScreensBeta: false,
     },
     timetables: [seededTimetable()],
     sources: [],

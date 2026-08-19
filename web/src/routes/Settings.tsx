@@ -144,6 +144,8 @@ export function SettingsPage({ state, refetch }: Props) {
 
       <WhatsAppPanel state={state} refetch={refetch} />
 
+      <BetaPanel state={state} refetch={refetch} />
+
       <div className="panel glass">
         <h3 className="section-title" style={{ marginTop: 0 }}>Connecting a screen</h3>
         <p className="muted" style={{ marginBottom: '1rem' }}>
@@ -454,6 +456,51 @@ function WhatsAppLog({ entries, groups, fallbackLabel }: { entries: WhatsAppLogE
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * Beta features — things that work but have not been through a season in a real masjid yet.
+ *
+ * Kept behind a switch rather than shipped on: a masjid whose screens are working should not
+ * be offered a second way of driving them until they choose to try it.
+ */
+function BetaPanel({ state, refetch }: Props) {
+  const toast = useToast();
+  const [webScreens, setWebScreens] = useState(state.settings.webScreensBeta);
+
+  const save = async (v: boolean) => {
+    setWebScreens(v); // optimistic
+    try {
+      await api.saveSettings({ webScreensBeta: v });
+      await refetch();
+      toast(v ? 'Browser screens are now offered when you add a screen.' : 'Browser screens are no longer offered.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save.', 'error');
+      setWebScreens(state.settings.webScreensBeta);
+    }
+  };
+
+  return (
+    <div className="panel glass">
+      <h3 className="section-title" style={{ marginTop: 0 }}>Beta features</h3>
+      <p className="muted" style={{ marginBottom: '1rem' }}>
+        Finished, but new. Try them if they solve a problem you have; leave them off otherwise.
+      </p>
+      <div className="toggle-row row-between">
+        <span className="label" style={{ margin: 0 }}>Screens that are a web page</span>
+        <Toggle checked={webScreens} onChange={save} label="Offer browser screens when adding a screen" />
+      </div>
+      <p className="hint" style={{ marginBlockStart: '0.6rem', maxWidth: 640 }}>
+        Adds a second kind of screen: instead of a decoder box pulling a video stream, the screen opens
+        a <b>web page</b> in any browser — a Raspberry Pi in kiosk mode, a smart TV, or a spare
+        computer. It draws the timetable itself from a few hundred bytes of data rather than receiving
+        video, so it uses a tiny fraction of the network, and it works over the internet through your
+        OpenMasjidOS remote access. <b>It can only show a timetable</b> — cameras and HDMI sources are
+        video and still need a decoder box. Turning this off later leaves any screens you already made
+        working; it only stops offering the option for new ones.
+      </p>
     </div>
   );
 }

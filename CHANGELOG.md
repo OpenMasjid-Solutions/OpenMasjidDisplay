@@ -12,6 +12,31 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Added
+
+- **Screens that are a web page, instead of a decoder box (beta).** Turn on *Screens that are a web
+  page* in Settings → Beta features, and when you add a screen you can choose **Web page** instead of
+  a video stream. You get a link to open in any browser — a Raspberry Pi in kiosk mode, a smart TV, a
+  spare laptop — and it shows exactly the same timetable your other screens show.
+- It uses **almost no network**. A normal screen is sent video continuously, about 1.5 Mbit/s each,
+  forever. A web screen is sent the *timetable* — a bit over a kilobyte — and draws the picture
+  itself, so after it loads there is essentially nothing on the wire. On a masjid with several
+  screens that is the difference between saturating a Wi-Fi link and not noticing it.
+- It **works over the internet**. The link goes through your OpenMasjidOS remote access, so a screen
+  in another building, or a display you host in the cloud, works with nothing extra to set up. The
+  panel shows you the public address when remote access is on, and says so plainly when it isn't.
+- Everything a normal screen does, it does: all three layouts, the countdown, the Adhan pop-up, the
+  Iqamah countdown, hadith during salah, the prohibited-time notice, the Iqamah-change reminder, the
+  scrolling ticker and the announcement slideshow. It is drawn by the *same* code that draws your
+  video screens, so the two cannot disagree.
+- A web screen tells you when something is wrong, like a normal one does: it dims itself and shows a
+  red bar if it loses contact with the server, or if the screen's own clock is badly wrong.
+
+> **What it cannot do:** show a camera or an HDMI source. Those are video, and a web page has no video
+> player here — keep a decoder box for those screens. Web screens are also **beta**: they work, but
+> they have not been through a season in a real masjid yet.
+
+
 ## 0.69.0
 
 ### Added
