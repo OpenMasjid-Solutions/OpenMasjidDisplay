@@ -8,3 +8,6 @@ dist/
 .env
 data/
 server/public/
+# Built by `npm run build:agent` and served to Raspberry Pi screens at /pi/agent.js.
+# Generated from server/src/pi/, so the source is in the tree and the bundle is not.
+server/assets/pi/agent.js

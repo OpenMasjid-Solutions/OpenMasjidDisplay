@@ -13,6 +13,24 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **One command sets up a Raspberry Pi screen.** Screens → Raspberry Pi screens now shows a
+  command to paste into a Pi running Raspberry Pi OS Lite. It installs everything the Pi needs,
+  starts it automatically at every boot, and the television then shows a setup code to type into
+  the dashboard. The command already contains this server’s address — there is nothing to fill in.
+
+- **The Pi draws the screen itself, with no desktop installed.** It writes straight to the
+  television rather than running a web browser, which is what lets it work on a Raspberry Pi 3
+  with 1 GB of memory instead of needing a newer model. It fits whatever television is plugged in,
+  including older 4:3 monitors, without stretching the picture.
+
+- **A Pi screen never goes black without saying why.** While it is waiting to be set up it shows
+  the setup code, its own address on your network, and whether it can reach the display server. If
+  it later loses contact it says so on the television instead of going dark, and recovers by
+  itself when the server comes back. If somebody removes the screen from the dashboard, the Pi
+  goes back to showing a fresh setup code rather than needing to be reinstalled.
+
+- Re-running the setup command updates an existing Pi in place. It will not ask you to set the
+  screen up again, and it does not need the Pi to be removed from the dashboard first.
 - **Set up a Raspberry Pi screen from the dashboard.** Plug the Pi in, it shows a code on the
   television, and the Screens page asks you for that code and a name. Screens waiting to be set
   up appear on their own, so you can see the Pi has connected before you type anything.

@@ -316,6 +316,14 @@ function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [copiedCmd, setCopiedCmd] = useState(false);
+
+  // Built from the address this panel is open on, which is the address that just worked from a
+  // browser on this network — so it is the one most likely to work from the Pi too. It is also
+  // what the server bakes into the script it serves, because the script is fetched from exactly
+  // this URL: point the panel at the tunnel and the Pi is set up through the tunnel, point it at
+  // the LAN and the Pi stays on the LAN. Nothing to choose, and nothing to type wrong.
+  const installCmd = `curl -fsSL ${window.location.origin}/pi.sh | sudo sh`;
 
   const load = () => api.piDevices().then((r) => setDevices(r.devices)).catch(() => setDevices([]));
   useEffect(() => {
@@ -328,7 +336,6 @@ function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
 
   const pending = devices.filter((d) => !d.adopted);
   const adopted = devices.filter((d) => d.adopted);
-  if (!pending.length && !adopted.length) return null;
 
   const adopt = async () => {
     setBusy(true);
@@ -359,6 +366,32 @@ function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
   return (
     <div className="panel glass" style={{ marginBlockEnd: '1rem' }}>
       <h3 className="section-title" style={{ marginTop: 0 }}>Raspberry Pi screens</h3>
+
+      <p className="muted" style={{ marginBlockEnd: '0.6rem' }}>
+        A Raspberry Pi plugged into a television, showing the timetable and playing cameras by
+        itself. Because the Pi opens the camera directly, the video never passes through this
+        server — so cameras keep working at full frame rate even when the server is not in the
+        building.
+      </p>
+      <p className="hint" style={{ marginBlockEnd: '0.5rem' }}>
+        On a Raspberry Pi running Raspberry Pi OS Lite, run this once:
+      </p>
+      <div className="rtsp-box" style={{ marginBlockEnd: '0.5rem' }}>
+        <span className="rtsp-url" title={installCmd} style={{ fontFamily: 'monospace' }}>{installCmd}</span>
+        <button
+          className="btn btn--ghost btn--sm"
+          onClick={() => {
+            void copyText(installCmd).then(() => toast('Command copied.'));
+            setCopiedCmd(true);
+            setTimeout(() => setCopiedCmd(false), 1500);
+          }}
+        >
+          {copiedCmd ? <IconCheck size={14} /> : <IconCopy size={14} />} {copiedCmd ? 'Copied' : 'Copy command'}
+        </button>
+      </div>
+      <p className="hint" style={{ marginBlockEnd: '1rem' }}>
+        The Pi will then show a code on the television. Enter it below.
+      </p>
 
       {pending.length > 0 ? (
         <>
@@ -397,7 +430,9 @@ function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
         </>
       ) : (
         <p className="muted" style={{ marginBottom: 0 }}>
-          No new screens are waiting. Plug a Pi in and it will appear here with a code.
+          {adopted.length
+            ? 'No new screens are waiting. Run the command above on another Pi to add one.'
+            : 'No screens are waiting yet. Once the command above finishes, the Pi appears here with a code.'}
         </p>
       )}
 

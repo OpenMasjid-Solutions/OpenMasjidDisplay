@@ -35,7 +35,10 @@ WORKDIR /server
 COPY server/package.json server/package-lock.json ./
 RUN npm ci
 COPY server/ ./
-RUN npm run build
+# Two outputs from one stage: the server itself, and the single-file agent a Raspberry Pi
+# downloads over curl. The agent is bundled here because this is the stage that has the dev
+# dependencies; the runtime image gets only the finished file.
+RUN npm run build && npm run build:agent
 
 # ---- Runtime (target architecture) ----------------------------------------
 FROM node:22-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS runtime
@@ -76,6 +79,12 @@ COPY CHANGELOG.md ./CHANGELOG.md
 # Naskh Arabic that is verified to contain the ﷺ ligature (U+FDFA); the distro's
 # variable Noto Naskh can drop it to a tofu box under resvg. See assets/fonts/README.md.
 COPY server/assets/fonts /app/fonts
+
+# The Raspberry Pi screen agent and its installer. Served at /pi/agent.js and /pi.sh, which is
+# what makes setting a Pi up a single curl: the script is fetched FROM here, so it already
+# knows the address to point the Pi at. Public by necessity — a Pi being set up holds no
+# credentials yet — and neither file contains a secret.
+COPY --from=server /server/assets/pi /app/pi
 
 # The RTSP server runs inside this container too, so a masjid installs and updates
 # exactly one thing. The app launches and supervises it (mediamtxServer.ts). We ship

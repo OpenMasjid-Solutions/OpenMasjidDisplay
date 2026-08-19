@@ -22,6 +22,14 @@ import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, w
 import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
 import type { FabricCommands } from './fabricCommands';
 import {
+  originFor,
+  renderInstaller,
+  installerTemplate,
+  agentBundlePath,
+  resvgVersion,
+  appVersion,
+} from './piInstaller';
+import {
   enrolDevice,
   findDeviceByToken,
   findPendingByCode,
@@ -355,6 +363,73 @@ export function createApi(deps: Deps) {
       if (/^(?:\/[a-z0-9-]+)?\/(volunteer(?:\/.*)?|api\/volunteer\/.+)$/.test(pathname)) {
         if (!store.db.settings.volunteerRemote) return sendJson(res, 404, { error: 'Not found.' });
         return volunteer(req, res);
+      }
+
+      // ---- Raspberry Pi screens: the one-line install ------------------------------
+      //
+      // Two public files, and they are public deliberately. A Pi being set up holds no
+      // credentials — it cannot, it has never spoken to this server before — so anything needed
+      // to bootstrap one has to be fetchable without them. Neither file contains a secret: the
+      // script's only variable content is this server's own address, and the agent is the same
+      // AGPL source that is in the repository.
+      const piShMatch = /^(?:\/[a-z0-9-]+)?\/pi\.sh$/.test(pathname);
+      const piAgentMatch = /^(?:\/[a-z0-9-]+)?\/pi\/agent\.js$/.test(pathname);
+      if ((piShMatch || piAgentMatch) && method === 'GET') {
+        if (!screenLimiter.allow(req)) {
+          res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
+          res.end('Too many requests.');
+          return;
+        }
+
+        if (piAgentMatch) {
+          // NOT gated on the beta setting, unlike the installer below. A Pi already driving a
+          // screen in a hall fetches this to update itself, and an admin turning the beta off
+          // must not turn that Pi into a brick.
+          const bundle = agentBundlePath();
+          if (!bundle) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+            res.end('The screen agent is not bundled in this build.');
+            return;
+          }
+          res.writeHead(200, {
+            ...SECURITY_HEADERS,
+            'content-type': 'application/javascript; charset=utf-8',
+            // Revalidated rather than cached: the agent changes with the app, and a stale copy
+            // held by a proxy would pin a screen to an old build indefinitely.
+            'cache-control': 'no-cache',
+          });
+          fs.createReadStream(bundle).pipe(res);
+          return;
+        }
+
+        // The installer IS gated: handing somebody a setup command for a feature they have not
+        // switched on leaves them with a Pi showing a code that no page will accept.
+        if (!store.db.settings.webScreensBeta) {
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('Raspberry Pi screens are not enabled. Turn on browser and Pi screens in Settings first.\n');
+          return;
+        }
+
+        const template = installerTemplate();
+        const origin = originFor(req, pathname);
+        if (!template || !origin) {
+          // A refusal, not a guess. A script carrying a mangled address installs cleanly and
+          // then never connects, which is far harder to diagnose than this line.
+          res.writeHead(template ? 400 : 404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end(
+            template
+              ? 'Could not work out this server\'s address from your request. Fetch this over the address a Pi can reach.\n'
+              : 'The installer is not bundled in this build.\n',
+          );
+          return;
+        }
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'content-type': 'text/x-shellscript; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        res.end(renderInstaller(template, origin, resvgVersion(), appVersion()));
+        return;
       }
 
       // ---- Raspberry Pi agents (beta) ---------------------------------------------
