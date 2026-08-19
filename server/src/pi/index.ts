@@ -14,25 +14,27 @@
  *
  *   - **The Pi always polls outward.** Nothing ever connects *to* it. It is behind the masjid's
  *     NAT on a DHCP address, and the display server may be in the cloud, so an inbound
- *     connection is not a design we could have chosen even if we wanted it.
+ *     connection is not a design we could have chosen even if we wanted to.
  *   - **Every failure draws something.** A black television is indistinguishable from a dead Pi,
  *     a dead television, and an unplugged HDMI cable. A television that says the server is
  *     unreachable has already told whoever is looking at it what to go and check.
- *   - **The clock is the server's.** Prayer times computed against a Pi's own clock would be
- *     wrong on every boot without a network, because a Pi has no battery-backed clock at all.
+ *   - **The clock is the server's.** A Pi has no battery-backed clock at all, so its own idea of
+ *     the time after a power cut is whenever the card was last written. Prayer times computed
+ *     against that would be confidently, silently wrong.
  *
- * Slice 2 gets a device from "curl one line" to a pairing code on the television and a screen in
- * the panel. Drawing the timetable itself, and opening the camera, come next.
+ * Two loops run independently: one asks the server what to show, the other draws. They are
+ * separate because they have nothing to do with each other — the state changes when somebody
+ * touches the dashboard, and the picture changes every second because a clock is on it.
  */
 import { Resvg } from '@resvg/resvg-js';
-import {
-  Framebuffer,
-  quietConsole,
-  type FbGeometry,
-} from './framebuffer';
+import { Framebuffer, quietConsole, type FbGeometry } from './framebuffer';
 import { pairingSvg, messageSvg } from './pairing';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
+import { AssetCache } from './assetCache';
+import { RenderCadence, cadenceAdvice } from './cadence';
+import { renderDisplaySvg, activeAnnouncementImage } from '../render/svg';
+import type { Timetable } from '../types';
 import {
   loadConfig,
   saveConfig,
@@ -53,18 +55,35 @@ const HTTP_TIMEOUT_MS = 15_000;
 /** Fallback poll interval. The server sends its own `pollMs` and we prefer that. */
 const POLL_MS = 5_000;
 
-/** Redraw the waiting screen at least this often, so the status line and the connection dot do
- *  not go stale while nothing else is happening. */
-const REDRAW_MS = 5_000;
+/** Long enough without a successful poll that what is on the screen should not be trusted. The
+ *  times themselves stay right — they are computed here — but a change nobody has heard about
+ *  might be sitting unapplied. */
+const STALE_AFTER_MS = 90_000;
 
 const log = (...args: unknown[]): void => {
-  // journalctl timestamps every line already, so this stays bare. No call site anywhere in
-  // this file passes the token or the device secret to it, and none should: the journal on a
-  // masjid Pi is readable by anyone who can reach the box.
+  // journalctl timestamps every line already, so this stays bare. No call site anywhere in this
+  // file passes the token or the device secret to it, and none should: the journal on a masjid
+  // Pi is readable by anyone who can reach the box.
   console.log('[openmasjid-screen]', ...args);
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// ── what the server tells us ─────────────────────────────────────────────────
+
+interface PiStateWire {
+  content: { kind: 'timetable' | 'source' | 'off'; id?: string };
+  timetable: Timetable | null;
+  assets: { background: string | null; logo: string | null; announcements: string[] };
+  fonts: string[];
+  bgLight: boolean;
+  autoAccent: string | null;
+  stream: { url: string; mode: 'direct' | 'normalize' } | null;
+  serverNow: number;
+  clockSuspect: boolean;
+  pollMs: number;
+  screenName: string;
+}
 
 // ── drawing ───────────────────────────────────────────────────────────────────
 
@@ -86,22 +105,44 @@ class Screen {
     return fb ? new Screen(fb, fb.geo) : null;
   }
 
-  /** Rasterise and draw. Returns false on a dropped frame — never throws, because the caller's
-   *  next move is always "try again in a second" regardless. */
-  show(svg: string, srcW = 1920, srcH = 1080): boolean {
+  /**
+   * Rasterise and draw, returning how long the rasterising took.
+   *
+   * That number is the input to the whole cadence decision, so it is measured around the resvg
+   * call alone — not the framebuffer write, which is a memcpy, and not the SVG building, which
+   * is string concatenation. Returns null on a dropped frame; never throws, because the caller's
+   * next move is always "try again shortly" regardless.
+   */
+  show(svg: string, fontFiles: string[] = []): number | null {
     try {
-      const fit = fitMode(srcW, srcH, this.geo.width, this.geo.height);
+      // The renderer stamps its own size, which follows the timetable's orientation and quality
+      // — 1920×1080, 1080×1920 rotated, or 1280×720. Reading it rather than assuming is what
+      // lets a portrait screen work at all.
+      const m = /<svg[^>]*\swidth="(\d+)"[^>]*\sheight="(\d+)"/.exec(svg);
+      const srcW = m ? Number(m[1]) : 1920;
+      const srcH = m ? Number(m[2]) : 1080;
+
+      const t0 = process.hrtime.bigint();
       const img = new Resvg(svg, {
-        fitTo: fit,
-        // The Pi has fontconfig and the DejaVu faces the installer pulls in; the timetable's
-        // bundled fonts arrive with slice 3.
-        font: { loadSystemFonts: true, defaultFontFamily: 'DejaVu Sans' },
+        fitTo: fitMode(srcW, srcH, this.geo.width, this.geo.height),
+        font: fontFiles.length
+          ? {
+              // The server's own curated faces, fetched from it. NOT the system fonts: resvg
+              // picks one font per run rather than falling back glyph by glyph, so a Pi drawing
+              // with whatever the distro ships renders Arabic as tofu boxes.
+              fontFiles,
+              loadSystemFonts: false,
+              defaultFontFamily: 'Noto Sans',
+            }
+          : { loadSystemFonts: true, defaultFontFamily: 'DejaVu Sans' },
       }).render();
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+
       const frame = blitCentered(img.pixels, img.width, img.height, this.geo.width, this.geo.height);
-      return this.fb.draw(frame);
+      return this.fb.draw(frame) ? ms : null;
     } catch (e) {
       log('could not draw a frame:', (e as Error).message);
-      return false;
+      return null;
     }
   }
 }
@@ -124,12 +165,26 @@ async function postJson<T>(url: string, body: unknown): Promise<T | { httpStatus
 }
 
 async function getJson<T>(url: string): Promise<T | { httpStatus: number }> {
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    redirect: 'error',
-  });
+  const res = await fetch(url, { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS), redirect: 'error' });
   if (!res.ok) return { httpStatus: res.status };
   return (await res.json()) as T;
+}
+
+/**
+ * Turn a path the server handed us into a URL this agent can fetch.
+ *
+ * The state's asset and font entries are ROOT-RELATIVE ('/pi/<token>/asset/bg.jpg'), because
+ * that is what a browser screen wants — a browser resolves them against the page it is on. The
+ * agent has no page, so it resolves them against the server it is configured to talk to, which
+ * is the same thing that address means everywhere else here.
+ *
+ * Only a root-relative path is accepted. Anything absolute is refused rather than followed:
+ * this device holds a credential, and a state that could name an arbitrary host would be a way
+ * to make it go and talk to one.
+ */
+function absolute(pathOrUrl: string, server: string): string | null {
+  if (!pathOrUrl.startsWith('/') || pathOrUrl.startsWith('//')) return null;
+  return `${server}${pathOrUrl}`;
 }
 
 const failed = (v: unknown): v is { httpStatus: number } =>
@@ -143,7 +198,7 @@ interface EnrolReply {
   pollMs?: number;
 }
 
-// ── the two states a device can be in ─────────────────────────────────────────
+// ── waiting to be adopted ─────────────────────────────────────────────────────
 
 /**
  * Not yet adopted: show a code, and keep asking whether somebody has typed it.
@@ -151,8 +206,6 @@ interface EnrolReply {
  * Enrolment is re-sent on every pass rather than once, for two reasons. It is how the device
  * finds out it has been adopted — the token comes back in the reply — and it is how the panel's
  * list stays current, since the facts sent along with it are what that list shows.
- *
- * Returns the token once there is one.
  */
 async function waitForAdoption(screen: Screen | null, cfg: AgentConfig, facts: DeviceFacts): Promise<string> {
   let code = '';
@@ -205,6 +258,135 @@ async function waitForAdoption(screen: Screen | null, cfg: AgentConfig, facts: D
   }
 }
 
+// ── adopted: the two loops ───────────────────────────────────────────────────
+
+/**
+ * Everything the drawing loop needs, kept up to date by the polling loop.
+ *
+ * A plain mutable object rather than anything cleverer, because the two loops are the only
+ * readers and writers and neither ever yields in the middle of touching it.
+ */
+class Live {
+  constructor(readonly server: string) {}
+
+  state: PiStateWire | null = null;
+  /** serverNow − our clock, at the last successful poll. */
+  clockOffsetMs = 0;
+  lastPollOk = 0;
+  /** resolved `data:` URIs, keyed by the URL the server gave us */
+  images = new Map<string, string>();
+  fontFiles: string[] = [];
+  forgotten = false;
+
+  serverTime(): Date {
+    return new Date(Date.now() + this.clockOffsetMs);
+  }
+
+  /** True when we have not heard from the server for long enough that the screen may be showing
+   *  a decision that has since been changed. */
+  stale(): boolean {
+    return this.lastPollOk > 0 && Date.now() - this.lastPollOk > STALE_AFTER_MS;
+  }
+}
+
+/**
+ * Fetch anything the current state refers to that we do not already have.
+ *
+ * Deliberately not blocking the drawing loop: a screen that shows the themed background for the
+ * first few seconds while a four-megabyte photograph arrives is behaving correctly, and a screen
+ * that shows nothing until it does is not.
+ */
+async function resolveAssets(live: Live, cache: AssetCache, server: string): Promise<void> {
+  const st = live.state;
+  if (!st) return;
+
+  const urls = [st.assets.background, st.assets.logo, ...st.assets.announcements]
+    .filter((u): u is string => !!u)
+    .map((u) => absolute(u, server))
+    .filter((u): u is string => !!u);
+  for (const url of urls) {
+    if (live.images.has(url)) continue;
+    const uri = await cache.dataUri(url);
+    if (uri) live.images.set(url, uri);
+  }
+  // Drop what this timetable no longer refers to, in memory and on the card.
+  for (const url of [...live.images.keys()]) if (!urls.includes(url)) live.images.delete(url);
+  cache.prune([...urls, ...st.fonts.map((u) => absolute(u, server) ?? u)]);
+
+  const fontUrls = st.fonts.map((u) => absolute(u, server)).filter((u): u is string => !!u);
+  if (fontUrls.length && live.fontFiles.length !== fontUrls.length) {
+    const files: string[] = [];
+    for (const url of fontUrls) {
+      const f = await cache.localFile(url);
+      if (f) files.push(f);
+    }
+    if (files.length) {
+      live.fontFiles = files;
+      log(`fonts ready: ${files.length} face(s) from the display server`);
+    }
+  }
+}
+
+/** A resolved `data:` URI for one of the state's asset paths, or null while it is still being
+ *  fetched — in which case the renderer draws the themed scene instead, which is correct: a
+ *  screen that shows the theme for a few seconds while a photograph arrives is behaving, and one
+ *  that shows nothing until it does is not. */
+function imageFor(live: Live, pathOrNull: string | null): string | null {
+  if (!pathOrNull) return null;
+  const url = absolute(pathOrNull, live.server);
+  return (url && live.images.get(url)) || null;
+}
+
+/** One frame. Returns how long rasterising took, for the cadence.
+ *  Null when nothing was drawn — a dropped frame is not a measurement. */
+function drawFrame(screen: Screen | null, live: Live): number | null {
+  const st = live.state;
+  if (!screen || !st) return null;
+
+  if (st.content.kind === 'source') {
+    // Slice 4 hands the camera's own address to ffmpeg here. Until then, say what is meant to be
+    // on this screen rather than showing a black rectangle that looks like a fault.
+    return screen.show(
+      messageSvg(st.screenName || 'Screen', 'This screen is set to a camera. Camera playback is not in this build yet.'),
+    );
+  }
+
+  const tt = st.timetable;
+  if (!tt) {
+    // Deliberately not a black rectangle. A screen that has simply been switched off should look
+    // switched off ON PURPOSE, and one that is misconfigured should say so — a masjid staring at
+    // a black television has no way to tell those apart.
+    return screen.show(
+      messageSvg(
+        st.content.kind === 'off' ? 'Screen is off' : 'Nothing to show yet',
+        st.screenName || '',
+      ),
+    );
+  }
+
+  const now = live.serverTime();
+  // The slideshow phase is epoch-locked inside the shared renderer, so a Pi, a browser screen and
+  // a decoder screen showing the same timetable change picture together.
+  const annFile = activeAnnouncementImage(tt, now);
+  const annUrl = annFile
+    ? (st.assets.announcements.find((u) => u.endsWith(encodeURIComponent(annFile))) ?? null)
+    : null;
+
+  const svg = renderDisplaySvg(tt, now, {
+    bg: imageFor(live, st.assets.background),
+    logo: imageFor(live, st.assets.logo),
+    announcement: imageFor(live, annUrl),
+    bgLight: st.bgLight,
+    ...(st.autoAccent ? { autoAccent: st.autoAccent } : {}),
+    // NOT tickerBandOnly. That mode exists for pipelines where something else composites the
+    // moving text over the band — ffmpeg for the video path, CSS for a browser screen. Here
+    // there is no compositor, so the renderer draws the ticker itself, exactly as the admin's
+    // still preview does.
+  });
+
+  return screen.show(svg, live.fontFiles);
+}
+
 /**
  * Adopted: hold the state up to date, and draw whatever it says to draw.
  *
@@ -212,49 +394,92 @@ async function waitForAdoption(screen: Screen | null, cfg: AgentConfig, facts: D
  * response to that is to go back to showing a pairing code, not to error out — the device is
  * being handed to somebody, or moved to another hall.
  */
-async function runAdopted(screen: Screen | null, cfg: AgentConfig): Promise<'forgotten'> {
-  let pollMs = POLL_MS;
-  let lastDrawn = 0;
+async function runAdopted(screen: Screen | null, cfg: AgentConfig, cache: AssetCache): Promise<'forgotten'> {
+  const live = new Live(cfg.server);
+  const cadence = new RenderCadence();
+  let advised = '';
 
-  for (;;) {
-    const state = await getJson<{ screenName?: string; content?: { kind?: string }; pollMs?: number }>(
-      `${cfg.server}/pi/${cfg.token}/state`,
-    ).catch((e: Error) => {
-      log('state fetch failed:', e.message);
-      return { httpStatus: 0 };
-    });
+  // ── the polling loop ──
+  const poll = async (): Promise<void> => {
+    let pollMs = POLL_MS;
+    while (!live.forgotten) {
+      const st = await getJson<PiStateWire>(`${cfg.server}/pi/${cfg.token}/state`).catch((e: Error) => {
+        log('state fetch failed:', e.message);
+        return { httpStatus: 0 };
+      });
 
-    if (failed(state)) {
-      if (state.httpStatus === 404) {
-        // The server does not know this token. It was forgotten, or the masjid's data was
-        // restored from a backup that predates this device. Either way: start over.
-        log('this device has been forgotten by the server; returning to pairing');
-        return 'forgotten';
+      if (failed(st)) {
+        if (st.httpStatus === 404) {
+          // The server does not know this token. It was forgotten, or the masjid's data was
+          // restored from a backup that predates this device. Either way: start over.
+          log('this device has been forgotten by the server; returning to pairing');
+          live.forgotten = true;
+          return;
+        }
+        await sleep(Math.min(pollMs * 3, 15_000));
+        continue;
       }
-      screen?.show(
-        messageSvg('Waiting for the display server', `Cannot reach ${cfg.server}. This screen will recover on its own.`),
-      );
-      await sleep(Math.min(pollMs * 3, 15_000));
-      continue;
-    }
 
-    pollMs = typeof state.pollMs === 'number' && state.pollMs >= 1000 ? state.pollMs : POLL_MS;
+      const first = !live.state;
+      live.state = st;
+      live.clockOffsetMs = st.serverNow - Date.now();
+      live.lastPollOk = Date.now();
+      pollMs = typeof st.pollMs === 'number' && st.pollMs >= 1000 ? st.pollMs : POLL_MS;
+      if (first) {
+        log(`showing "${st.screenName}" — ${st.content.kind}${st.timetable ? ` (${st.timetable.name})` : ''}`);
+        if (Math.abs(live.clockOffsetMs) > 60_000) {
+          log(`this Pi's clock is ${Math.round(live.clockOffsetMs / 1000)}s out; using the server's time`);
+        }
+      }
 
-    // Slice 3 renders the timetable here, and slice 4 hands a camera's address to ffmpeg. Until
-    // then the device is provably working end to end, and says so — which is the point of
-    // stopping the slice here rather than half-building the renderer.
-    if (Date.now() - lastDrawn >= REDRAW_MS) {
-      const kind = state.content?.kind ?? 'off';
-      screen?.show(
-        messageSvg(
-          state.screenName || 'Screen',
-          kind === 'off' ? 'Set up and connected. Nothing is scheduled on this screen.' : `Set up and connected. Showing: ${kind}.`,
-        ),
-      );
-      lastDrawn = Date.now();
+      await resolveAssets(live, cache, cfg.server).catch(() => {
+        /* a missing image draws the themed scene instead; the next poll tries again */
+      });
+      await sleep(pollMs);
     }
-    await sleep(pollMs);
-  }
+  };
+
+  // ── the drawing loop ──
+  const draw = async (): Promise<void> => {
+    while (!live.forgotten) {
+      if (!live.state) {
+        screen?.show(messageSvg('Connecting…', `Waiting for ${cfg.server}`));
+        await sleep(2000);
+        continue;
+      }
+      if (live.stale()) {
+        // Times on screen stay correct — they are computed here — but a change made in the
+        // dashboard may not have reached us, and saying so beats looking healthy.
+        screen?.show(
+          messageSvg('Lost contact with the display server', 'This screen will recover on its own when it comes back.'),
+        );
+        await sleep(5000);
+        continue;
+      }
+
+      const ms = drawFrame(screen, live);
+      if (ms !== null) cadence.record(ms);
+
+      const interval = cadence.intervalMs();
+      if (cadence.settled()) {
+        const advice = cadenceAdvice(interval, live.state.timetable?.quality ?? '1080p');
+        if (advice && advice !== advised) {
+          log(advice);
+          advised = advice;
+        } else if (!advice && advised) {
+          advised = '';
+        }
+      }
+      // Subtract what drawing already cost, so the *interval* is honoured rather than the gap
+      // between frames — otherwise a 400ms frame at a 1s interval ticks every 1.4s and the clock
+      // visibly drifts behind the second it is showing.
+      await sleep(Math.max(50, interval - (ms ?? 0)));
+    }
+  };
+
+  await Promise.race([poll(), draw()]);
+  live.forgotten = true;
+  return 'forgotten';
 }
 
 // ── startup ───────────────────────────────────────────────────────────────────
@@ -304,17 +529,19 @@ async function main(): Promise<void> {
     log(`minted a device identity: ${live.deviceId}`);
   }
 
+  const cache = new AssetCache();
+
   for (;;) {
     if (!live.token) {
       const token = await waitForAdoption(screen, live, facts);
       live = { ...live, token };
       saveConfig(live);
     }
-    const why = await runAdopted(screen, live);
-    if (why === 'forgotten') {
-      live = { server: live.server, deviceId: live.deviceId, deviceSecret: live.deviceSecret };
-      saveConfig(live);
-    }
+    await runAdopted(screen, live, cache);
+    // Forgotten. Drop the token and go back to showing a code; keep the identity, so the panel
+    // recognises the same device rather than growing a second row for it.
+    live = { server: live.server, deviceId: live.deviceId, deviceSecret: live.deviceSecret };
+    saveConfig(live);
   }
 }
 

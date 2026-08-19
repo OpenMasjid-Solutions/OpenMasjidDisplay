@@ -27,6 +27,9 @@ AGENT_VERSION='@@AGENT_VERSION@@'
 PREFIX=/opt/openmasjid-screen
 CONFDIR=/etc/openmasjid-screen
 CONF="$CONFDIR/config.json"
+# Downloaded wallpapers, logos and fonts. Separate from the config because it is disposable —
+# deleting it costs one re-download, deleting the config costs somebody a walk to the television.
+STATEDIR=/var/lib/openmasjid-screen
 SERVICE_USER=omdscreen
 
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -127,6 +130,14 @@ process.stdout.write(cfg.deviceId + "\n");
 chmod 700 "$CONFDIR"
 chmod 600 "$CONF"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFDIR"
+
+# The cache. A masjid's wallpaper is often a photograph of a few megabytes, and re-fetching it
+# every frame would use more bandwidth than the video stream this whole design exists to avoid.
+# Keeping it on disk is also what lets a screen come back after a power cut while the internet
+# is still down.
+mkdir -p "$STATEDIR/cache"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$STATEDIR"
+chmod 750 "$STATEDIR"
 say "Device id: $(cat /tmp/omd-device-id)"
 rm -f /tmp/omd-device-id
 
@@ -206,7 +217,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=$CONFDIR
+ReadWritePaths=$CONFDIR $STATEDIR
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

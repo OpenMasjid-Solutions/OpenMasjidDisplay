@@ -13,6 +13,28 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **A Raspberry Pi screen now shows the timetable.** It draws the same picture your other
+  screens draw, from the same code, so the two cannot disagree — the layout, the countdown, the
+  Adhan and Iqāmah overlays, hadith during salah, the prohibited-time notice, the announcement
+  slideshow and the scrolling ticker.
+
+- **It uses the masjid’s own clock, not the Pi’s.** A Raspberry Pi has no battery-backed clock,
+  so after a power cut its own idea of the time is whenever the memory card was last written.
+  The screen follows the display server’s time instead, which is the only way prayer times can
+  be right on the first morning after an outage.
+
+- **Your wallpaper, logo and announcements are kept on the Pi.** They are fetched once rather
+  than continuously, so a screen uses almost no network after it starts — and it can come back
+  after a power cut and show the right picture even while the internet is still down.
+
+- **Arabic renders properly on a Pi.** The screen is sent the same font files the display server
+  draws with, rather than relying on whatever the Raspberry Pi happens to have installed, which
+  would show Arabic as empty boxes.
+
+- **A slower Pi slows down instead of struggling.** The screen measures how long it takes to
+  draw and picks a rate it can keep up with, leaving room for the camera and the network. If it
+  cannot manage a live-looking clock it says so in its log and suggests setting that timetable
+  to 720p, which roughly halves the work.
 - **One command sets up a Raspberry Pi screen.** Screens → Raspberry Pi screens now shows a
   command to paste into a Pi running Raspberry Pi OS Lite. It installs everything the Pi needs,
   starts it automatically at every boot, and the television then shows a setup code to type into

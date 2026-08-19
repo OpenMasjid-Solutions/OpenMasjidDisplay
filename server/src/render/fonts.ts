@@ -21,7 +21,12 @@ const log = makeLog('fonts');
 // distro's copy of the same family — e.g. our STATIC Noto Naskh Arabic (verified to
 // carry the ﷺ ligature, U+FDFA) is picked ahead of the distro's variable font, which
 // resvg can render that glyph as a tofu box. See assets/fonts/README.md.
-const DIRS = ['/app/fonts', '/usr/share/fonts', '/usr/local/share/fonts'];
+// OMD_FONT_DIR is scanned ahead of all of them, so the server can be run from a source
+// checkout — where /app/fonts does not exist — and still draw with the vendored faces rather
+// than falling back to system fonts. Unset in the image, where /app/fonts is the real thing.
+const DIRS = [process.env.OMD_FONT_DIR, '/app/fonts', '/usr/share/fonts', '/usr/local/share/fonts'].filter(
+  (d): d is string => !!d,
+);
 
 // The curated faces, in priority order. Matched on the file's basename (without
 // extension). Keep this small — EVERY file here is parsed on EVERY frame, so a

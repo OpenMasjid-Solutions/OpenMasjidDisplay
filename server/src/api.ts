@@ -48,6 +48,7 @@ import {
   WEB_POLL_MS,
 } from './webScreen';
 import { clockSuspect } from './render/renderer';
+import { fontOptions } from './render/fonts';
 import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
@@ -178,6 +179,23 @@ function serveStatic(res: ServerResponse, pathname: string): boolean {
  * page must build its own URLs with it or every fetch lands on the platform root. Derived from
  * the request rather than configured, so it is right whichever way the screen was opened.
  */
+/**
+ * The font files a Raspberry Pi screen should draw with: exactly the ones this server picked.
+ *
+ * resvg chooses a single font per run rather than falling back glyph by glyph, so a Pi loading
+ * a different set does not degrade gracefully — Arabic comes out as tofu boxes. Sending the
+ * basenames and serving the files by basename keeps the two in lockstep with no path ever
+ * crossing the wire.
+ */
+function piFontNames(): string[] {
+  return (fontOptions().fontFiles ?? []).map((f) => path.basename(f));
+}
+
+function piFontPath(name: string): string | null {
+  const hit = (fontOptions().fontFiles ?? []).find((f) => path.basename(f) === name);
+  return hit ?? null;
+}
+
 function basePathPrefix(pathname: string): string {
   const m = /^(\/[a-z0-9-]+)\/s\//.exec(pathname);
   return m ? m[1] : '';
@@ -440,7 +458,8 @@ export function createApi(deps: Deps) {
       // credentials), so it is bounded: rate-limited here, capped in number in piAgent.ts, and
       // it can only ever create a PENDING row. Content requires a token, and a token only
       // exists once an admin has typed the code shown on that screen.
-      const piMatch = /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|asset\/[\w.\-]{1,120}))$/.exec(pathname);
+      const piMatch =
+        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(pathname);
       if (piMatch) {
         if (!screenLimiter.allow(req)) {
           res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
@@ -488,9 +507,30 @@ export function createApi(deps: Deps) {
             clockSuspect: clockSuspect(),
             bgLight: tone.bgLight,
             autoAccent: tone.autoAccent,
+            fontNames: piFontNames(),
           });
           res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
           res.end(JSON.stringify(state));
+          return;
+        }
+
+        if (what.startsWith('font/') && method === 'GET') {
+          // Served from the SAME curated list the renderer draws with, looked up by basename —
+          // so this can only ever hand over a file this process had already chosen to load, and
+          // never an arbitrary path. That is the whole access-control story here.
+          const file = piFontPath(what.slice('font/'.length));
+          if (!file) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+            res.end('Not found.');
+            return;
+          }
+          res.writeHead(200, {
+            ...SECURITY_HEADERS,
+            'content-type': 'font/ttf',
+            // Fonts change only when the image does, and a Pi caches them on disk anyway.
+            'cache-control': 'public, max-age=604800, immutable',
+          });
+          fs.createReadStream(file).pipe(res);
           return;
         }
 

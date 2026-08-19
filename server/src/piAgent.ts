@@ -227,6 +227,15 @@ export interface PiState {
   /** the timetable to render locally, when showing one */
   timetable: Timetable | null;
   assets: { background: string | null; logo: string | null; announcements: string[] };
+  /**
+   * The font files this server renders with, for the Pi to fetch once and draw with.
+   *
+   * Not a nicety. resvg picks ONE font per run and does not fall back per glyph, so a Pi
+   * drawing with whatever the distro happens to ship renders Arabic as tofu boxes — and the
+   * ﷺ ligature in particular, which the vendored face exists specifically to carry. Handing
+   * over the same files is what makes a Pi screen and a decoder screen agree.
+   */
+  fonts: string[];
   bgLight: boolean;
   autoAccent: string | null;
   /**
@@ -248,12 +257,22 @@ export interface PiState {
 const asset = (base: string, token: string, file: string) =>
   `${base}/pi/${encodeURIComponent(token)}/asset/${encodeURIComponent(file)}`;
 
+const fontUrl = (base: string, token: string, name: string) =>
+  `${base}/pi/${encodeURIComponent(token)}/font/${encodeURIComponent(name)}`;
+
 export function piState(
   db: DB,
   device: PiDevice,
   tv: Tv | null,
   nowMs: number,
-  opts: { basePrefix: string; clockSuspect: boolean; bgLight: boolean; autoAccent: string | null },
+  opts: {
+    basePrefix: string;
+    clockSuspect: boolean;
+    bgLight: boolean;
+    autoAccent: string | null;
+    /** basenames of the font files this server draws with, resolved by the caller */
+    fontNames: string[];
+  },
 ): PiState {
   const off = { kind: 'off' as const };
   if (!tv) {
@@ -262,6 +281,7 @@ export function piState(
       source: 'default',
       timetable: null,
       assets: { background: null, logo: null, announcements: [] },
+      fonts: [],
       bgLight: false,
       autoAccent: null,
       stream: null,
@@ -286,6 +306,7 @@ export function piState(
       logo: tt?.logoImage ? asset(opts.basePrefix, token, tt.logoImage) : null,
       announcements: (tt?.announcements?.images ?? []).map((f) => asset(opts.basePrefix, token, f)),
     },
+    fonts: opts.fontNames.map((n) => fontUrl(opts.basePrefix, token, n)),
     bgLight: opts.bgLight,
     autoAccent: opts.autoAccent,
     // Only for an ENABLED source. A disabled one is "off", not "try anyway".

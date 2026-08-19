@@ -36,8 +36,27 @@ export interface FbGeometry {
   stride: number;
 }
 
-/** The device we draw to. Separate from the geometry so tests can drive a plain file. */
-export const FB_DEVICE = '/dev/fb0';
+/**
+ * The device we draw to.
+ *
+ * Overridable, together with the geometry, so the agent can be run on a development machine
+ * that has no framebuffer at all: point it at an ordinary file and the frames it would have put
+ * on a television can be decoded and looked at. On a Pi both are unset and the kernel is the
+ * only source of either.
+ */
+export const FB_DEVICE = process.env.OMD_SCREEN_FB || '/dev/fb0';
+
+/** Geometry override for that same development path, as `WIDTHxHEIGHTxBPP` (e.g. `1920x1080x32`).
+ *  Only consulted when the kernel has nothing to say, because on a Pi the kernel is
+ *  authoritative and a stale override would draw a correct picture at the wrong size. */
+export function geometryOverride(): FbGeometry | null {
+  const m = /^(\d{2,5})x(\d{2,5})x(16|32)$/.exec((process.env.OMD_SCREEN_FB_GEOMETRY || '').trim());
+  if (!m) return null;
+  const width = Number(m[1]);
+  const height = Number(m[2]);
+  const bpp = Number(m[3]);
+  return { width, height, bpp, stride: width * (bpp / 8) };
+}
 
 function readSys(name: string): string | null {
   try {
@@ -80,7 +99,9 @@ export function parseGeometry(
 
 /** Read the attached screen's actual layout, or null if there is no framebuffer here. */
 export function readGeometry(): FbGeometry | null {
-  return parseGeometry(readSys('virtual_size'), readSys('bits_per_pixel'), readSys('stride'));
+  // The kernel wins wherever it has an opinion. An override left set on a real Pi would
+  // otherwise draw a perfectly correct picture at the wrong size for the attached television.
+  return parseGeometry(readSys('virtual_size'), readSys('bits_per_pixel'), readSys('stride')) ?? geometryOverride();
 }
 
 /**
