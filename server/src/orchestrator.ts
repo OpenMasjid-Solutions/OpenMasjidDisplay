@@ -102,12 +102,19 @@ export class Orchestrator {
     for (const { tv, res } of resolutions) {
       const cp = this.contentPath(res.content);
       if (!cp) continue;
-      // Browser screens deliberately do not count: a timetable shown ONLY on web screens
-      // needs no ffmpeg pipeline and no resvg loop at all. That is the whole saving — a
-      // masjid that moves every screen to a browser stops encoding video entirely.
-      if (tv.kind === 'web') continue;
-      if (res.content.kind === 'timetable') refTt.add(cp);
-      else if (res.content.kind === 'source') refSrc.add(cp);
+      if (res.content.kind === 'timetable') {
+        // A browser screen renders the timetable ITSELF, so it needs no ffmpeg pipeline and no
+        // resvg loop. That is the whole saving: a masjid that moves every screen to a browser
+        // stops encoding video entirely.
+        if (tv.kind === 'web') continue;
+        refTt.add(cp);
+      } else if (res.content.kind === 'source') {
+        // A camera is the opposite case, and skipping it here was a real bug: a browser cannot
+        // render a camera, it PLAYS one — as HLS, which MediaMTX can only serve from a path it
+        // has been told to pull. Leaving web screens out meant the source path was never
+        // created, so every camera on a browser screen was "unavailable".
+        refSrc.add(cp);
+      }
     }
 
     const activeTts = db.timetables.filter((t) => refTt.has(t.id));

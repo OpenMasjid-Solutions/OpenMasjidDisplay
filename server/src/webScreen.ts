@@ -37,13 +37,20 @@ import { config } from './config';
 /** How long a browser screen may go unheard-from before it is reported offline.
  *
  *  The RTSP equivalent is "MediaMTX says nobody is reading the path". A browser has no such
- *  signal, so it checks in on a timer and this is the grace: three missed check-ins, which
- *  survives a Wi-Fi blip without pretending a dark screen is fine. */
-export const WEB_SEEN_TIMEOUT_MS = 95_000;
+ *  signal, so every state poll doubles as a check-in and this is the grace: six missed polls,
+ *  which survives a Wi-Fi blip without pretending a dark screen is fine. */
+export const WEB_SEEN_TIMEOUT_MS = 30_000;
 
-/** How often the page re-fetches its state. Config changes land within this; the clock and
- *  every per-second behaviour are local and do not wait for it. */
-export const WEB_POLL_MS = 30_000;
+/**
+ * How often the page re-fetches its state.
+ *
+ * This is what a switch in the panel costs before the wall follows it. At 30 s it read as a
+ * frozen screen — someone changes a screen to the camera, watches the old picture sit there,
+ * and reloads the page. Five seconds is the difference between "it works" and "it is broken",
+ * and it costs about 1.8 kbit/s against RTSP's 1500 — still three orders of magnitude less.
+ * The clock, the countdown and every per-second behaviour are local and never wait for this.
+ */
+export const WEB_POLL_MS = 5_000;
 
 /** In-memory record of which browser screens have checked in, and when.
  *
@@ -163,7 +170,7 @@ export function webScreenState(
  *    content, so a token cannot be used to enumerate or watch a stream that screen is not
  *    showing.
  */
-export function hlsTargetFor(db: DB, tv: Tv, nowMs: number, rest: string): string | null {
+export function hlsTargetFor(db: DB, tv: Tv, nowMs: number, rest: string, search = ''): string | null {
   const res = resolveTv(tv, db.schedules, new Date(nowMs), db.settings.scheduleTimezone);
   if (res.content.kind !== 'source' || !res.content.id) return null;
   const src = db.sources.find((x) => x.id === res.content.id);
@@ -175,5 +182,9 @@ export function hlsTargetFor(db: DB, tv: Tv, nowMs: number, rest: string): strin
   // how traversal guards get walked past. HLS filenames are plain — index.m3u8, init.mp4,
   // segment7.mp4 — so anything else is simply not ours.
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(rest) || rest.includes('..')) return null;
-  return `${config.mediamtxHlsUrl}/${encodeURIComponent(src.id)}/${rest}`;
+  // MediaMTX tracks a viewer with ?session=<uuid> on the sub-playlist and every segment, so
+  // the query has to survive the hop. Validated separately and conservatively — it is appended
+  // only after the FILENAME has passed, so it can never be used to reshape the path.
+  const q = /^\?[A-Za-z0-9=&_.\-]{0,200}$/.test(search) ? search : '';
+  return `${config.mediamtxHlsUrl}/${encodeURIComponent(src.id)}/${rest}${q}`;
 }

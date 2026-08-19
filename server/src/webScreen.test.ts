@@ -257,3 +257,31 @@ test('the proxied path cannot climb out of the stream', () => {
     assert.ok(hlsTargetFor(d, tv, NOW, good), `must allow: ${good}`);
   }
 });
+
+test('the MediaMTX session query survives the hop, but cannot reshape the path', () => {
+  // MediaMTX hands the player sub-playlist and segment URIs carrying ?session=<uuid>. Dropping
+  // it made every request after the first playlist fail, which looks exactly like a camera that
+  // does not work. It is validated separately and appended only after the FILENAME has passed.
+  const { hlsTargetFor } = require('./webScreen') as typeof import('./webScreen');
+  const { normSource } = require('./validate') as typeof import('./validate');
+  const cam = normSource({ name: 'Imam', url: 'rtsp://cam.local/live', enabled: true });
+  const tv = normTv({ name: 'Hall', kind: 'web', defaultContent: { kind: 'source', id: cam.id } });
+  const d = db([tv]);
+  d.sources = [cam];
+
+  const ok = hlsTargetFor(d, tv, NOW, 'video1_stream.m3u8', '?session=23e180bb-0ce9-4296-a9a6-814458313351');
+  // endsWith, not a regex: the value contains '?' and '.', and escaping those through two
+  // layers is how this assertion previously passed against the wrong pattern.
+  assert.ok(
+    ok!.endsWith('/video1_stream.m3u8?session=23e180bb-0ce9-4296-a9a6-814458313351'),
+    `unexpected target: ${ok}`,
+  );
+
+  // A query that is not a plain parameter list is dropped, not passed on.
+  for (const bad of ['?a=../../x', '?x=<script>', '?p=' + 'a'.repeat(400), '?a=1#frag']) {
+    const t = hlsTargetFor(d, tv, NOW, 'seg1.mp4', bad);
+    assert.ok(t && !t.includes('?'), 'a suspicious query must be dropped: ' + bad);
+  }
+  // And it still cannot rescue an invalid filename.
+  assert.equal(hlsTargetFor(d, tv, NOW, '../etc', '?session=x'), null);
+});

@@ -13,6 +13,13 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Cameras really do work on a web screen now.** The previous build still showed "Camera
+  unavailable": the camera was never being pulled in for browser screens, and two further
+  problems sat behind that. Verified end to end this time — a real H.264 stream, played through
+  the page.
+- **Switching what a web screen shows now happens within a few seconds** instead of needing the
+  page to be reloaded.
+
 - **Cameras and HDMI sources now work on a web screen.** They used to go black: a browser cannot
   play the video format a decoder box uses. The stream is now converted on the fly and played in the
   page, so a browser screen can show everything a normal screen can.

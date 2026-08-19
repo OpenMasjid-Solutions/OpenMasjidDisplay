@@ -415,7 +415,11 @@ export function createApi(deps: Deps) {
         // same stream in a container a browser can play and we pass it through — see
         // webScreen.hlsTargetFor for why this is scoped to the screen's CURRENT content.
         if (sub.startsWith('/hls/') && method === 'GET') {
-          const target = hlsTargetFor(store.db, tv, Date.now(), sub.slice('/hls/'.length));
+          // The QUERY STRING has to go through. MediaMTX hands the player sub-playlist and
+          // segment URIs carrying ?session=<uuid>, and dropping it makes every request after
+          // the first playlist fail — which looks exactly like "the camera does not work".
+          // It is appended AFTER the filename is validated, so it can never widen the path.
+          const target = hlsTargetFor(store.db, tv, Date.now(), sub.slice('/hls/'.length), url.search);
           if (!target) {
             res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
             res.end('Not found.');
@@ -423,7 +427,23 @@ export function createApi(deps: Deps) {
           }
           markWebScreenSeen(tv.id, Date.now());
           try {
-            const upstream = await fetch(target, { redirect: 'error' });
+            // NOT redirect:'error' here, which is the rule for calls to the PLATFORM — an
+            // untrusted remote host that could bounce us at some other internal address.
+            // MediaMTX is our own sidecar on loopback, and it answers the first playlist
+            // request with a 302 to ?cookieCheck=1 (its session probe). Refusing that was why
+            // every camera reported "unavailable". So: follow exactly one hop, and only if it
+            // stays on the same loopback origin — which keeps the SSRF property that mattered.
+            let upstream = await fetch(target, { redirect: 'manual' });
+            if (upstream.status >= 300 && upstream.status < 400) {
+              const loc = upstream.headers.get('location') ?? '';
+              const next = new URL(loc, target);
+              if (next.origin !== new URL(config.mediamtxHlsUrl).origin) {
+                res.writeHead(502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+                res.end('Stream unavailable.');
+                return;
+              }
+              upstream = await fetch(next, { redirect: 'error' });
+            }
             if (!upstream.ok || !upstream.body) {
               res.writeHead(upstream.status === 404 ? 404 : 502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
               res.end('Stream not ready.');

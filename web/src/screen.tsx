@@ -8,7 +8,7 @@
  * An RTSP screen is fed ~1.5 Mbit/s of H.264 forever, because a decoder box can only speak
  * video. A browser can render for itself, so this page fetches the TIMETABLE (about half a
  * kilobyte) and draws locally once a second. After the first load the network carries almost
- * nothing: a state poll every 30 s and a heartbeat, both tiny.
+ * nothing: one small state poll every few seconds, which doubles as the heartbeat.
  *
  * ## One renderer, not two
  *
@@ -207,14 +207,14 @@ let video: HTMLVideoElement | null = null;
 let hls: { destroy(): void } | null = null;
 /** Remember what we are already playing, so a 1 Hz redraw does not tear the stream down and
  *  rebuild it every second. */
-let playingSrc = '';
+let playingId = '';
 
 function stopVideo(): void {
   hls?.destroy();
   hls = null;
   video?.remove();
   video = null;
-  playingSrc = '';
+  playingId = '';
 }
 
 /**
@@ -224,9 +224,12 @@ function stopVideo(): void {
  * only where the browser cannot — and it is a DYNAMIC import, so a masjid whose screens only
  * ever show a timetable never downloads it.
  */
-async function showVideo(): Promise<void> {
+async function showVideo(sourceId: string): Promise<void> {
   const src = `${SELF}/hls/index.m3u8`;
-  if (playingSrc === src && video) return;
+  // Keyed on the SOURCE, not the URL. The URL is identical for every camera — the server
+  // resolves it against whatever the screen is currently showing — so comparing URLs would
+  // leave the previous camera playing after a switch between two of them.
+  if (playingId === sourceId && video) return;
   stopVideo();
   hideMessage();
 
@@ -238,7 +241,7 @@ async function showVideo(): Promise<void> {
   el.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;';
   document.body.appendChild(el);
   video = el;
-  playingSrc = src;
+  playingId = sourceId;
 
   // Say so rather than showing black while the stream warms up — MediaMTX pulls a source on
   // demand, so the first few seconds after a switch are genuinely empty.
@@ -255,16 +258,46 @@ async function showVideo(): Promise<void> {
       showMessage('This screen’s browser cannot play video', 'Use a decoder box for camera screens.');
       return;
     }
-    const h = new Hls({ lowLatencyMode: true, backBufferLength: 10 });
+    const h = new Hls({
+      lowLatencyMode: true,
+      backBufferLength: 10,
+      // The first playlist request is EXPECTED to 404 for a few seconds. MediaMTX pulls a
+      // camera on demand, so nothing exists until our request wakes it — being patient here
+      // is the difference between "it works" and "Camera unavailable" every time a screen
+      // switches to a camera.
+      manifestLoadPolicy: {
+        default: {
+          maxTimeToFirstByteMs: 20_000,
+          maxLoadTimeMs: 30_000,
+          timeoutRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 4000 },
+          errorRetry: { maxNumRetry: 8, retryDelayMs: 1000, maxRetryDelayMs: 4000 },
+        },
+      },
+    });
     h.loadSource(src);
     h.attachMedia(el);
+
+    // Only give up on the wall after hls.js has exhausted its own retries, and keep trying
+    // underneath the message — a camera that comes back should heal without anyone driving to
+    // the masjid. A message that flickers on every transient hiccup is worse than none, so
+    // non-fatal errors are left to hls.js entirely.
+    let recovering = false;
     h.on(Hls.Events.ERROR, (_e, data) => {
-      // Only a FATAL error is worth telling the wall about; hls.js recovers from the rest by
-      // itself, and a message that flickers on every hiccup is worse than none.
       if (!data.fatal) return;
-      showMessage('Camera unavailable', 'The stream stopped. It will retry automatically.');
-      h.startLoad();
+      showMessage('Camera unavailable', 'Still trying — it will appear when the stream returns.');
+      if (recovering) return;
+      recovering = true;
+      setTimeout(() => {
+        recovering = false;
+        try {
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
+          else h.startLoad();
+        } catch {
+          /* the next error will bring us back here */
+        }
+      }, 3000);
     });
+    h.on(Hls.Events.FRAG_BUFFERED, hideMessage);
     hls = h;
   } catch {
     showMessage('Could not start the video player', '');
@@ -313,7 +346,7 @@ function draw(): void {
     ticker.el?.remove();
     ticker = { text: '', el: null };
     applyStaleMark(null);
-    void showVideo();
+    void showVideo(state.content.id ?? '');
     return;
   }
   if (!tt) {
@@ -363,18 +396,7 @@ async function poll(): Promise<void> {
     // Keep drawing from the last known state. The times stay correct — they are computed
     // locally — and `staleReason` marks the picture once the gap gets long enough to matter.
   }
-  setTimeout(() => void poll(), state?.pollMs ?? 30_000);
-}
-
-/** The heartbeat. A browser screen has no RTSP path, so this is the only way the panel can
- *  say whether a television is actually on. */
-async function heartbeat(): Promise<void> {
-  try {
-    await fetch(`${SELF}/seen`, { method: 'POST', cache: 'no-store' });
-  } catch {
-    /* the next one will do */
-  }
-  setTimeout(() => void heartbeat(), 30_000);
+  setTimeout(() => void poll(), state?.pollMs ?? 5_000);
 }
 
 async function main(): Promise<void> {
@@ -393,8 +415,9 @@ async function main(): Promise<void> {
     draw();
     setInterval(draw, 1000);
   }, toNextSecond);
+  // The state poll doubles as the heartbeat — the server marks a screen seen whenever it
+  // asks — so a second request for the same fact would only be more traffic.
   void poll();
-  void heartbeat();
   // A television left on for months: reload weekly so a shipped bundle change eventually
   // lands without anyone driving to the masjid with a keyboard.
   setTimeout(() => window.location.reload(), 7 * 24 * 60 * 60_000);
