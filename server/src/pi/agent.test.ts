@@ -12,6 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGeometry, packFrame } from './framebuffer';
+import { parseFbset } from './fbset';
 import { fitMode, blitCentered } from './raster';
 import { pickLanIp, deviceFacts } from './device';
 import fs from 'node:fs';
@@ -394,4 +395,46 @@ test('no mode at all still works', () => {
     bpp: 32,
     stride: 7680,
   });
+});
+
+// ── reading the screen from the kernel, not from a guess ─────────────────────
+
+test('fbset separates the visible size from the virtual one', () => {
+  // The distinction sysfs cannot express, and the reason a picture ended up composed at twice the
+  // width of the television. `geometry` is: xres yres xres_virtual yres_virtual depth.
+  const out = [
+    'mode "1920x1080"',
+    '    geometry 1920 1080 3840 2160 16',
+    '    timings 0 0 0 0 0 0 0',
+    'endmode',
+    '',
+    'Frame buffer device information:',
+    '    Name        : BCM2708 FB',
+    '    LineLength  : 7680',
+  ].join('\n');
+  const g = parseFbset(out);
+  assert.equal(g?.width, 1920, 'draw at the VISIBLE width');
+  assert.equal(g?.height, 1080);
+  assert.equal(g?.bpp, 16);
+  assert.equal(g?.stride, 7680, 'but step rows by the real line length');
+});
+
+test('a missing LineLength falls back to the VIRTUAL width, never the visible one', () => {
+  // Using the visible width as a stride shears the picture into a diagonal — the other half of
+  // this same class of bug.
+  const g = parseFbset('    geometry 1920 1080 3840 2160 32\n');
+  assert.equal(g?.stride, 3840 * 4);
+});
+
+test('a nonsense or truncated fbset answer is refused, not guessed at', () => {
+  // It must fall back to sysfs rather than produce a confidently wrong screen.
+  assert.equal(parseFbset(''), null);
+  assert.equal(parseFbset('geometry 1920 1080'), null);
+  assert.equal(parseFbset('    geometry 1920 1080 1920 1080 24\n'), null, '24bpp is not packable here');
+  assert.equal(parseFbset('    geometry 0 0 0 0 16\n'), null);
+});
+
+test('the ordinary case, where visible and virtual agree', () => {
+  const g = parseFbset('    geometry 1920 1080 1920 1080 32\n    LineLength  : 7680\n');
+  assert.deepEqual(g, { width: 1920, height: 1080, bpp: 32, stride: 7680 });
 });

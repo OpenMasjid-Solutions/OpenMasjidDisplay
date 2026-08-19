@@ -23,6 +23,7 @@
  * tested against each layout rather than against whatever monitor happens to be plugged in.
  */
 import fs from 'node:fs';
+import { readFbset } from './fbset';
 
 /** Where the kernel publishes the framebuffer's layout. */
 const SYS = '/sys/class/graphics/fb0';
@@ -132,6 +133,12 @@ export function describeFramebuffer(): string {
 }
 
 export function readGeometry(): FbGeometry | null {
+  // fbset first, because it is the only source that separates the VISIBLE size from the virtual
+  // one — it performs the same ioctls a real graphics program would. The sysfs files below
+  // cannot make that distinction, which is how a picture ended up composed at twice the width of
+  // the television and clipped through the middle of every centred line.
+  const viaIoctl = readFbset();
+  if (viaIoctl) return viaIoctl;
   // The kernel wins wherever it has an opinion. An override left set on a real Pi would
   // otherwise draw a perfectly correct picture at the wrong size for the attached television.
   return (

@@ -13,6 +13,11 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **A Raspberry Pi screen now asks the system what size the television actually is**, rather than
+  working it out from settings that can describe a larger area than is really shown. On some sets
+  the picture was drawn too big and only its corner appeared.
+
+### Fixed
 - **A Raspberry Pi screen on some televisions was drawn too large and cut off at the right.** It
   now uses the size the television is actually showing rather than the size of the memory the Pi
   set aside for it, which on some sets is larger.

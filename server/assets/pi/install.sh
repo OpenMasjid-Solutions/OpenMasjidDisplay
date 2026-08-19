@@ -265,7 +265,7 @@ apt-get $APT_OPTS update || die 'apt-get update failed — check this Pi has a w
 say 'installing node and the tools the agent needs'
 # shellcheck disable=SC2086
 apt-get $APT_OPTS install -y --no-install-recommends \
-  nodejs npm ca-certificates curl openssl fonts-dejavu-core \
+  nodejs npm ca-certificates curl openssl fonts-dejavu-core fbset \
   || die 'could not install the base packages'
 
 command -v node >/dev/null 2>&1 || die 'node did not install; check `apt-get install nodejs`'

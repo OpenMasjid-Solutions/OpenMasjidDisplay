@@ -29,6 +29,7 @@
 import { Resvg } from '@resvg/resvg-js';
 import { Framebuffer, quietConsole, describeFramebuffer, FB_DEVICE, type FbGeometry } from './framebuffer';
 import { VideoPlayer } from './video';
+import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
@@ -562,7 +563,8 @@ async function main(): Promise<void> {
     log(`framebuffer ${screen.geo.width}x${screen.geo.height} @ ${screen.geo.bpp}bpp, stride ${screen.geo.stride}`);
     // The raw values too: a picture in the wrong place is decided by these, and they cannot be
     // reproduced anywhere but on the television it is plugged into.
-    log(`kernel says: ${describeFramebuffer()}`);
+    log(`sysfs: ${describeFramebuffer()}`);
+    log(`ioctl: ${describeFbset()}`);
     // Draw something IMMEDIATELY — before the config is read and long before the network is
     // touched. The text console is taken off this screen shortly after we start, and until we
     // have painted, whatever the boot happened to be printing at that instant stays on the
