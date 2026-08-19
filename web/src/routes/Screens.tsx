@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useState, useEffect } from 'react';
 import { api } from '../api';
-import type { AppState, Tv, TvKind, ContentRef, TvStatus } from '../types';
+import type { AppState, Tv, TvKind, ContentRef, TvStatus, PiDeviceInfo } from '../types';
 import { contentOptions, ContentPicker, contentLabel } from '../content';
 import {
   Modal,
@@ -15,6 +15,7 @@ import {
   IconCheck,
   IconRefresh,
   MasjidMark,
+  Spinner,
   copyText,
   useToast,
 } from '../ui';
@@ -69,6 +70,10 @@ export function Screens({ state, refetch }: Props) {
           <IconPlus size={16} /> Add screen
         </button>
       </div>
+
+      {/* Above the grid on purpose: a Pi that has just been plugged in is the thing someone is
+          looking for when they open this page, and it is useless until it has been set up. */}
+      {state.settings.webScreensBeta && <PiDevices refetch={refetch} />}
 
       {state.tvs.length === 0 ? (
         <div className="empty-state glass" style={{ borderRadius: 'var(--radius-card)' }}>
@@ -291,6 +296,130 @@ function ScreenCard({
             server's network address, and the link will use that address for your screens.
           </div>
         )
+      )}
+    </div>
+  );
+}
+
+
+/**
+ * Raspberry Pi screens waiting to be set up, and the ones already adopted.
+ *
+ * The flow this serves: plug a Pi in, it shows a code on the television, you type that code
+ * here. The code — rather than the Pi's IP address — is what gets typed, because the Pi is
+ * behind the masjid's network on an address that can change, and the display server may not
+ * even be in the building. Typing what is on the screen also proves you can see it.
+ */
+function PiDevices({ refetch }: { refetch: () => Promise<void> }) {
+  const toast = useToast();
+  const [devices, setDevices] = useState<PiDeviceInfo[]>([]);
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api.piDevices().then((r) => setDevices(r.devices)).catch(() => setDevices([]));
+  useEffect(() => {
+    void load();
+    // A Pi that is plugged in while this page is open should appear without a refresh — that
+    // is exactly when someone is watching for it.
+    const t = setInterval(() => void load(), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  const pending = devices.filter((d) => !d.adopted);
+  const adopted = devices.filter((d) => d.adopted);
+  if (!pending.length && !adopted.length) return null;
+
+  const adopt = async () => {
+    setBusy(true);
+    try {
+      await api.piAdopt(code.trim(), name.trim());
+      setCode('');
+      setName('');
+      await load();
+      await refetch();
+      toast('Screen added. It will start showing in a few seconds.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not set that screen up.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const forget = async (d: PiDeviceInfo) => {
+    try {
+      await api.piForget(d.id);
+      await load();
+      toast('Forgotten. That screen will show a new code.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not forget it.', 'error');
+    }
+  };
+
+  return (
+    <div className="panel glass" style={{ marginBlockEnd: '1rem' }}>
+      <h3 className="section-title" style={{ marginTop: 0 }}>Raspberry Pi screens</h3>
+
+      {pending.length > 0 ? (
+        <>
+          <p className="muted" style={{ marginBottom: '0.8rem' }}>
+            {pending.length === 1 ? 'A screen is' : `${pending.length} screens are`} waiting to be set up.
+            Type the code showing on it.
+          </p>
+          <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 0.9rem', display: 'grid', gap: '0.4rem' }}>
+            {pending.map((d) => (
+              <li key={d.id} className="hint" style={{ display: 'flex', gap: '0.6rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                <span className={`status-dot${d.online ? '' : ' status-dot--idle'}`} />
+                <b style={{ fontFamily: 'monospace', fontSize: '1.05rem', letterSpacing: '0.12em', color: 'var(--color-ink)' }}>{d.code}</b>
+                <span>{d.hostname}</span>
+                {d.ip && <span className="muted">· {d.ip}</span>}
+                {d.model && <span className="muted">· {d.model}</span>}
+              </li>
+            ))}
+          </ul>
+          <div className="grid2">
+            <Field label="Code from the screen">
+              <input
+                className="input"
+                value={code}
+                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                placeholder="K7M2QX"
+                style={{ fontFamily: 'monospace', letterSpacing: '0.12em' }}
+              />
+            </Field>
+            <Field label="Name this screen" hint="What you'll call it in the panel — e.g. Main hall.">
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Main hall" />
+            </Field>
+          </div>
+          <button className="btn btn--primary btn--sm" onClick={adopt} disabled={busy || code.trim().length < 4} style={{ marginBlockStart: '0.8rem' }}>
+            {busy ? <><Spinner /> Setting up…</> : 'Set up this screen'}
+          </button>
+        </>
+      ) : (
+        <p className="muted" style={{ marginBottom: 0 }}>
+          No new screens are waiting. Plug a Pi in and it will appear here with a code.
+        </p>
+      )}
+
+      {adopted.length > 0 && (
+        <div style={{ marginBlockStart: pending.length ? '1.2rem' : '0.8rem' }}>
+          <div className="label" style={{ marginBlockEnd: '0.4rem' }}>Set up</div>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: '0.35rem' }}>
+            {adopted.map((d) => (
+              <li key={d.id} className="hint" style={{ display: 'flex', gap: '0.6rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                <span className={`status-dot${d.online ? '' : ' status-dot--idle'}`} title={d.online ? 'Checking in' : 'Not checking in'} />
+                <span>{d.hostname}</span>
+                {d.ip && <span className="muted">· {d.ip}</span>}
+                <span className="muted">· agent {d.agentVersion || '?'}</span>
+                <button className="btn btn--ghost btn--sm" onClick={() => void forget(d)}>Forget</button>
+              </li>
+            ))}
+          </ul>
+          <p className="hint" style={{ marginBlockStart: '0.5rem' }}>
+            Forgetting a Pi makes it show a new code so it can be set up again. The screen it was
+            driving is kept.
+          </p>
+        </div>
       )}
     </div>
   );

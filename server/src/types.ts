@@ -328,6 +328,9 @@ export interface PiDevice {
   /** Issued at adoption; the capability the agent authenticates with from then on. Absent
    *  while the device is still pending, which is what makes "pending" a real state. */
   token?: string;
+  /** SHA-256 of the secret the agent minted at install. Proof that a device claiming an id
+   *  really is that device — which is what makes the id safe to accept from a client. */
+  secretHash?: string;
   /** What the agent told us about itself, so an admin can tell two Pis apart. Treated as
    *  display text only — it is unauthenticated at enrolment time. */
   hostname: string;

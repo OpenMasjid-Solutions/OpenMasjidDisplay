@@ -172,7 +172,22 @@ export interface WhatsAppSettings {
   daysBefore: number;
 }
 
-export type TvKind = 'rtsp' | 'web';
+export type TvKind = 'rtsp' | 'web' | 'pi';
+
+/** A Raspberry Pi running the display agent, as the dashboard sees it. */
+export interface PiDeviceInfo {
+  id: string;
+  /** the pairing code shown on its screen; empty once adopted, because the code is spent */
+  code: string;
+  adopted: boolean;
+  hostname: string;
+  ip: string;
+  model: string;
+  agentVersion: string;
+  tvId?: string;
+  online: boolean;
+  lastSeenAt: string;
+}
 
 export interface Settings {
   defaultQuality: Quality;

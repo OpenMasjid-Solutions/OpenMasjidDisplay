@@ -13,6 +13,10 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Set up a Raspberry Pi screen from the dashboard.** Plug the Pi in, it shows a code on the
+  television, and the Screens page asks you for that code and a name. Screens waiting to be set
+  up appear on their own, so you can see the Pi has connected before you type anything.
+
 - **Groundwork for screens driven by a Raspberry Pi.** A Pi will be able to run one install
   command, show a pairing code on the screen, and be adopted from the dashboard by typing that
   code. When such a screen shows a camera, the Pi opens the camera directly on your own network

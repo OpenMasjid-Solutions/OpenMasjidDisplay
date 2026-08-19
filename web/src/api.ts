@@ -13,6 +13,7 @@ import type {
   IqamahScheduleEntry,
   Release,
   WhatsAppStatus,
+  PiDeviceInfo,
 } from './types';
 
 let onUnauth: () => void = () => {};
@@ -139,6 +140,16 @@ export const api = {
    *  remote access is routing this app (the same authoritative source the widget uses). */
   screenInfo: (id: string) =>
     req<{ path: string; publicUrl: string; publicConfigured: boolean }>('GET', `/api/tvs/${id}/screen-info`),
+
+  /** Raspberry Pi agents this masjid has seen — pending ones waiting to be adopted, and
+   *  adopted ones with their liveness. */
+  piDevices: () => req<{ devices: PiDeviceInfo[] }>('GET', '/api/pi/devices'),
+
+  /** Adopt the screen showing this code, creating the screen it will drive. */
+  piAdopt: (code: string, name: string) => req<{ tv: Tv }>('POST', '/api/pi/adopt', { code, name }),
+
+  /** Forget a device: it goes back to showing a fresh pairing code. Its screen is kept. */
+  piForget: (id: string) => req<{ ok: boolean }>('POST', `/api/pi/${id}/forget`),
 
   createSchedule: (b: Partial<ScheduleRule>) => req<ScheduleRule>('POST', '/api/schedules', b),
   updateSchedule: (id: string, b: Partial<ScheduleRule>) => req<ScheduleRule>('PUT', `/api/schedules/${id}`, b),

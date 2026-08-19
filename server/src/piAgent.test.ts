@@ -76,13 +76,26 @@ test('a device that enrols is PENDING and gets no token', () => {
 
 test('a reboot comes back as the SAME device with the SAME code', () => {
   // Otherwise every power cut papers the dashboard with duplicates of one screen, and the code
-  // on the wall stops matching the one an admin is looking at.
+  // on the wall stops matching the one an admin is looking at. The agent keeps its id AND its
+  // secret across reboots, which is what lets the row be reused safely.
   const d = db();
-  const first = enrolDevice(d, { deviceId: 'pi_abc123', hostname: 'masjid-pi' }, NOW);
-  const second = enrolDevice(d, { deviceId: 'pi_abc123', hostname: 'masjid-pi' }, NOW + 60_000);
+  const id = { deviceId: 'pi_abc123', deviceSecret: 'kept-across-reboots', hostname: 'masjid-pi' };
+  const first = enrolDevice(d, id, NOW);
+  const second = enrolDevice(d, id, NOW + 60_000);
   assert.equal(d.piDevices?.length, 1);
   assert.equal(second.device.id, first.device.id);
   assert.equal(second.result.code, first.result.code);
+});
+
+test('without a secret, a device cannot claim an existing row at all', () => {
+  // The consequence of the rule above, stated plainly: an agent that lost its secret is a new
+  // device and shows a new code. That is recoverable and visible; silently adopting someone
+  // else's row would not be.
+  const d = db();
+  enrolDevice(d, { deviceId: 'pi_x', deviceSecret: 's' }, NOW);
+  const bare = enrolDevice(d, { deviceId: 'pi_x' }, NOW + 1000);
+  assert.notEqual(bare.device.id, 'pi_x');
+  assert.equal(d.piDevices!.length, 2);
 });
 
 test('what a device says about itself is treated as display text, nothing more', () => {
@@ -244,4 +257,65 @@ test('a pi screen is a real screen kind, and its device binding is not client-se
   // that could choose it could steal someone else's screen.
   const forged = normTv({ name: 'Hall', kind: 'pi', piDeviceId: 'pi_someone_elses' });
   assert.equal(forged.piDeviceId, undefined);
+});
+
+// ── the device secret: why a device id is safe to accept from a client ───────
+
+test('a device only gets its token back by proving it is that device', () => {
+  // The agent has to learn its token somehow, and enrolment is the only channel it has. But
+  // enrolment is unauthenticated, so handing the token to whoever presents a device id would
+  // turn the id into a credential — and the id is not secret: it is logged, shown in the
+  // panel, and chosen by the client.
+  const d = db();
+  const { device } = enrolDevice(d, { deviceId: 'pi_1', deviceSecret: 'real-secret-abc' }, NOW);
+  device.token = makeDeviceToken();
+
+  const proper = enrolDevice(d, { deviceId: 'pi_1', deviceSecret: 'real-secret-abc' }, NOW + 1000);
+  assert.equal(proper.result.adopted, true);
+  assert.equal(proper.result.token, device.token, 'the real device gets its token');
+});
+
+test('an impostor claiming a known device id gets nothing, and does not disturb it', () => {
+  const d = db();
+  const { device } = enrolDevice(d, { deviceId: 'pi_1', deviceSecret: 'real-secret-abc' }, NOW);
+  device.token = makeDeviceToken();
+  const realCode = device.code;
+
+  const impostor = enrolDevice(d, { deviceId: 'pi_1', deviceSecret: 'guessed' }, NOW + 1000);
+  assert.equal(impostor.result.token, undefined, 'no token without the secret');
+  assert.equal(impostor.result.adopted, false);
+  assert.notEqual(impostor.device.id, 'pi_1', 'it is enrolled as a NEW device, not given the existing one');
+
+  // And the genuine device is untouched — same id, same code, same token.
+  const real = d.piDevices!.find((x) => x.id === 'pi_1')!;
+  assert.equal(real.code, realCode);
+  assert.equal(real.token, device.token);
+});
+
+test('a claimed id is not refused outright, because refusing would confirm it exists', () => {
+  // Enrolling the impostor as a fresh pending device tells them nothing at all.
+  const d = db();
+  enrolDevice(d, { deviceId: 'pi_1', deviceSecret: 's1' }, NOW);
+  const out = enrolDevice(d, { deviceId: 'pi_1', deviceSecret: 'wrong' }, NOW + 1000);
+  assert.equal(out.result.adopted, false);
+  assert.ok(out.result.code, 'it gets an ordinary pending code, like any new device');
+});
+
+test('the secret is never stored in the clear', () => {
+  const d = db();
+  enrolDevice(d, { deviceId: 'pi_1', deviceSecret: 'real-secret-abc' }, NOW);
+  const stored = JSON.stringify(d.piDevices);
+  assert.ok(!stored.includes('real-secret-abc'), 'a stored secret must not be usable');
+  assert.match(d.piDevices![0].secretHash!, /^[0-9a-f]{64}$/);
+});
+
+test('a device that sends no secret can never be adopted into a working state', () => {
+  // It stays pending from its own point of view, which is visible and fixable (re-run the
+  // installer) rather than a screen that silently never starts.
+  const d = db();
+  const { device } = enrolDevice(d, { deviceId: 'pi_nosecret' }, NOW);
+  device.token = makeDeviceToken();
+  const again = enrolDevice(d, { deviceId: 'pi_nosecret' }, NOW + 1000);
+  assert.equal(again.result.token, undefined);
+  assert.equal(again.result.adopted, false);
 });

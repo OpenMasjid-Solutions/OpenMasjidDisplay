@@ -76,12 +76,38 @@ export function makeDeviceToken(): string {
 /** Self-reported text from an unauthenticated device, reduced to something safe to show an
  *  admin: control characters folded to spaces (written as ESCAPES — literal control bytes in
  *  source are invisible and get reformatted away), then trimmed and clamped. */
+/**
+ * Hash of the device's secret.
+ *
+ * A plain SHA-256 rather than scrypt, deliberately: this is not a human-chosen password but 16
+ * random bytes minted by the agent, so there is no dictionary to slow an attacker down and
+ * nothing for a work factor to buy. What matters is that the stored value is not itself usable
+ * and that the comparison is constant time.
+ */
+function hashSecret(secret: string): string {
+  return crypto.createHash('sha256').update(secret, 'utf8').digest('hex');
+}
+
+function secretMatches(presented: string, storedHash: string | undefined): boolean {
+  if (!presented || !storedHash) return false;
+  const a = Buffer.from(hashSecret(presented), 'hex');
+  const b = Buffer.from(storedHash, 'hex');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 const str = (v: unknown, max: number): string =>
   typeof v === 'string' ? v.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').trim().slice(0, max) : '';
 
 export interface EnrolInput {
   /** the device's own persistent id, so a reboot does not create a second pending row */
   deviceId?: unknown;
+  /**
+   * A high-entropy secret the agent mints at install and keeps. It is what makes the device id
+   * safe to accept from a client: the id says "which row", the secret says "and I am really
+   * it". Without this pair, an unauthenticated enrol could hand someone else's token out.
+   */
+  deviceSecret?: unknown;
   hostname?: unknown;
   ip?: unknown;
   model?: unknown;
@@ -93,6 +119,16 @@ export interface EnrolResult {
   code: string;
   deviceId: string;
   adopted: boolean;
+  /**
+   * The device's credential, returned ONLY once it has been adopted AND it proved it is the
+   * same device that first enrolled.
+   *
+   * This is the whole reason `deviceSecret` exists. The agent has to learn its token somehow,
+   * and enrolment is the only channel it has — but enrolment is unauthenticated, so handing
+   * the token to anyone who presents a device id would make the id a credential, and the id is
+   * not secret. It is printed in logs, shown in the panel, and guessable if someone picks it.
+   */
+  token?: string;
   pollMs: number;
 }
 
@@ -109,7 +145,14 @@ export function enrolDevice(db: DB, input: EnrolInput, nowMs: number): { device:
   const devices = (db.piDevices ??= []);
 
   const claimedId = str(input.deviceId, 64);
-  let device = claimedId ? devices.find((d) => d.id === claimedId) : undefined;
+  const secret = str(input.deviceSecret, 200);
+  const existing = claimedId ? devices.find((d) => d.id === claimedId) : undefined;
+
+  // An id that exists but cannot be proved is treated as an UNKNOWN device, not as an error.
+  // Refusing would confirm the id is real; enrolling it fresh tells an attacker nothing and
+  // leaves the genuine device's row untouched.
+  let device = existing && secretMatches(secret, existing.secretHash) ? existing : undefined;
+  const impostor = !!existing && !device;
 
   if (device) {
     // A known device: refresh what it says about itself, and its liveness.
@@ -122,7 +165,9 @@ export function enrolDevice(db: DB, input: EnrolInput, nowMs: number): { device:
     // A device id is accepted from the agent so a reboot is not a new device, but it is only
     // ever a LOOKUP key — it grants nothing, because a pending device has no token.
     device = {
-      id: claimedId || `pi_${crypto.randomBytes(6).toString('hex')}`,
+      // A claimed id is only reused when it was not already taken by someone who can prove it.
+      id: !claimedId || impostor ? `pi_${crypto.randomBytes(6).toString('hex')}` : claimedId,
+      secretHash: secret ? hashSecret(secret) : undefined,
       code: makePairingCode(),
       hostname: str(input.hostname, 64) || 'raspberrypi',
       ip: str(input.ip, 64),
@@ -135,9 +180,19 @@ export function enrolDevice(db: DB, input: EnrolInput, nowMs: number): { device:
     prunePending(db, nowMs);
   }
 
+  // The token is handed back only to a device that proved itself. A device that enrolled
+  // before secrets existed, or one that sent none, stays pending as far as it can tell — the
+  // fix is to re-run the installer, which mints one.
+  const proved = !!device.secretHash && secretMatches(secret, device.secretHash);
   return {
     device,
-    result: { code: device.code, deviceId: device.id, adopted: !!device.token, pollMs: PI_POLL_MS },
+    result: {
+      code: device.code,
+      deviceId: device.id,
+      adopted: !!device.token && proved,
+      ...(device.token && proved ? { token: device.token } : {}),
+      pollMs: PI_POLL_MS,
+    },
   };
 }
 
