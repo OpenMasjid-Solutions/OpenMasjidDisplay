@@ -23,7 +23,7 @@
  * read either. The URL arrives over an authenticated channel from our own server, which has
  * already validated it — this is the second lock on the same door, not the first.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import type { FbGeometry } from './framebuffer';
 
 /**
@@ -34,6 +34,64 @@ import type { FbGeometry } from './framebuffer';
  * of bug the server's own comment records having been bitten by.
  */
 export const FF_PROTOCOLS = 'rtp,rtcp,udp,tcp,rtsp,rtsps,srtp,tls,crypto,rtmp,rtmps';
+
+/**
+ * How long ffmpeg may sit on a silent socket before giving up, in microseconds.
+ *
+ * Without this there is no bound at all. The RTSP demuxer defaults its timeout to zero and passes
+ * that down to tcp/tls, and with interleaved TCP there is no keepalive — so a mid-stream network
+ * failure blocks the read forever with the socket nominally open. Because the output is the
+ * framebuffer, the last decoded frame then stays on the television indefinitely: a still,
+ * entirely plausible picture of the camera, with nothing in the log, nothing counted as a
+ * failure, and nothing reported to the dashboard. It is the worst failure in this file precisely
+ * because it does not look like one.
+ */
+const SOCKET_TIMEOUT_US = 10_000_000;
+
+/**
+ * Which spelling of the socket timeout this ffmpeg understands.
+ *
+ * It moved: on 4.x the microsecond socket timeout is `-stimeout` and `-timeout` means how long to
+ * wait for an incoming connection; from 5.0 `-timeout` took over the socket meaning. Guessing
+ * wrong is not harmless — ffmpeg rejects an unknown option and the camera never plays at all.
+ *
+ * So ask it, once, the same way the installer asks whether it can write to a framebuffer. A build
+ * that answers neither gets no flag: an unbounded read is bad, and no video at all is worse.
+ */
+let timeoutFlag: string | null | undefined;
+export function socketTimeoutFlag(ffmpeg = 'ffmpeg', probe?: (bin: string) => string): string | null {
+  if (timeoutFlag !== undefined) return timeoutFlag;
+  let help = '';
+  try {
+    help = probe
+      ? probe(ffmpeg)
+      : execFileSync(ffmpeg, ['-hide_banner', '-h', 'demuxer=rtsp'], {
+          encoding: 'utf8',
+          timeout: 5000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+  } catch {
+    help = '';
+  }
+  timeoutFlag = pickTimeoutFlag(help);
+  return timeoutFlag;
+}
+
+/** Pure half of the above, so the version-sniffing is testable without ffmpeg. */
+export function pickTimeoutFlag(help: string): string | null {
+  // Prefer -timeout only when its own help text says microseconds; on 4.x that same name is the
+  // listen timeout and setting it would break nothing visibly but bound nothing either.
+  const timeoutLine = /^\s*-timeout\s+.*$/m.exec(help)?.[0] ?? '';
+  if (/microsecond/i.test(timeoutLine)) return 'timeout';
+  if (/^\s*-stimeout\s/m.test(help)) return 'stimeout';
+  if (timeoutLine) return 'timeout';
+  return null;
+}
+
+/** Test seam — the probe result is cached for the life of the process. */
+export function __resetTimeoutFlagForTests(): void {
+  timeoutFlag = undefined;
+}
 
 /** The pixel layout the kernel's framebuffer device expects, by depth. */
 function pixFmt(bpp: number): string {
@@ -52,7 +110,11 @@ function pixFmt(bpp: number): string {
  * It is also not always present or working, which is why the caller falls back rather than
  * insisting.
  */
-export function videoArgs(url: string, geo: FbGeometry, opts: { hw: boolean; device: string }): string[] {
+export function videoArgs(
+  url: string,
+  geo: FbGeometry,
+  opts: { hw: boolean; device: string; timeoutFlag?: string | null },
+): string[] {
   const { width: w, height: h } = geo;
   return [
     '-hide_banner',
@@ -66,6 +128,8 @@ export function videoArgs(url: string, geo: FbGeometry, opts: { hw: boolean; dev
     // camera. The server pulls its own sources the same way.
     '-rtsp_transport',
     'tcp',
+    // Bound the read. Before -i, because it is an option for the input.
+    ...(opts.timeoutFlag ? [`-${opts.timeoutFlag}`, String(SOCKET_TIMEOUT_US)] : []),
     // The Pi's V4L2 hardware decoder, when we are trying it. Before -i, because it selects the
     // decoder for the input.
     ...(opts.hw ? ['-c:v', 'h264_v4l2m2m'] : []),
@@ -94,14 +158,34 @@ export function redactCreds(s: string): string {
 /**
  * Decide whether a failure is worth retrying without hardware decoding.
  *
- * A Pi whose kernel has no V4L2 M2M decoder, or whose ffmpeg was built without it, fails
- * immediately and consistently — so a *fast* failure while hardware decoding is the signal.
- * A stream that ran for a while and then stopped is a network problem, and dropping to software
- * decoding would not help; it would just quietly double the processor use for the rest of the
- * device's life.
+ * A Pi whose kernel has no V4L2 M2M decoder fails immediately and consistently, so a fast failure
+ * while hardware decoding is *a* signal — but it is a weak one, and taking it at face value was
+ * wrong on real hardware. A TLS handshake that failed in four seconds logged "hardware decoding
+ * unavailable", switched to software, and stayed there for the life of the process, because the
+ * exit handler leaves `stopped` false so `play()` never reaches the line that re-arms it. The
+ * board was decoding in software, at roughly double the processor cost, for no reason at all.
+ *
+ * Deliberately NOT error-string matching. A Debian build with no v4l2_m2m says
+ * `Unknown decoder 'h264_v4l2m2m'`; a broken bcm2835-codec says
+ * `ioctl(VIDIOC_STREAMON): Invalid argument`; an allowlist that misses either replaces this bug
+ * with its inverse. Instead the caller drops hardware AT MOST ONCE per camera and re-arms it after
+ * any run that lasted, so a wrong guess costs one attempt rather than the life of the device.
  */
-export function shouldDropHardware(ranForMs: number, usedHw: boolean): boolean {
-  return usedHw && ranForMs < 5_000;
+export function shouldDropHardware(ranForMs: number, usedHw: boolean, alreadyTried: boolean): boolean {
+  return usedHw && !alreadyTried && ranForMs < 5_000;
+}
+
+/**
+ * Whether a run lasted long enough to count as healthy, resetting the backoff.
+ *
+ * Without this the failure count only ever rises: it is zeroed in `play()`, which no-ops on every
+ * later poll because the camera has not changed. So a camera that drops every few minutes reaches
+ * the 30-second cap within the first half hour, and from then on every recovery takes the full 30
+ * seconds — half a minute of an ffmpeg error card on a prayer-hall wall, every single time. The
+ * server already gets this right in renderer.ts and this mirrors it.
+ */
+export function ranHealthily(ranForMs: number): boolean {
+  return ranForMs > 30_000;
 }
 
 /**
@@ -141,6 +225,9 @@ export class VideoPlayer {
   private lastError = '';
   private startedAt = 0;
   private timer: NodeJS.Timeout | null = null;
+  /** Whether hardware decoding has already been given up on for THIS camera. Reset per camera, so
+   *  a wrong guess costs one attempt rather than the life of the device. */
+  private triedHw = false;
 
   constructor(
     private readonly device: string,
@@ -162,6 +249,7 @@ export class VideoPlayer {
     this.stopped = false;
     this.failures = 0;
     this.hw = true;
+    this.triedHw = false;
     this.spawn();
   }
 
@@ -186,7 +274,11 @@ export class VideoPlayer {
 
   private spawn(): void {
     if (this.stopped || !this.geo) return;
-    const args = videoArgs(this.url, this.geo, { hw: this.hw, device: this.device });
+    const args = videoArgs(this.url, this.geo, {
+      hw: this.hw,
+      device: this.device,
+      timeoutFlag: socketTimeoutFlag(this.ffmpeg),
+    });
     this.startedAt = Date.now();
     this.log(`camera: opening ${redactCreds(this.url)}${this.hw ? ' (hardware decoding)' : ''}`);
 
@@ -203,9 +295,21 @@ export class VideoPlayer {
     }
     this.proc = proc;
 
+    // Keep a TAIL, and prefer the FIRST error-looking line in it.
+    //
+    // The previous version took the last line of each chunk and let later chunks overwrite it.
+    // ffmpeg prints the cause before the symptom, so that reliably threw away the useful line and
+    // kept the useless one: the reported "The specified session has been invalidated for some
+    // reason" is GnuTLS's second-order complaint, emitted only after an earlier fatal error had
+    // already marked the session dead — and that earlier line is the one that says why.
+    let tail = '';
     proc.stderr?.on('data', (b: Buffer) => {
-      const line = redactCreds(String(b).trim()).split('\n').pop() ?? '';
-      if (line) this.lastError = line.slice(0, 300);
+      tail = (tail + redactCreds(String(b))).slice(-800);
+      const first = tail
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l && !/^\s*(Input #|Stream #|Metadata:|Duration:|encoder|frame=)/.test(l));
+      if (first) this.lastError = first.slice(0, 300);
     });
 
     proc.on('exit', (code) => {
@@ -214,13 +318,27 @@ export class VideoPlayer {
       const ranFor = Date.now() - this.startedAt;
       if (this.stopped) return;
 
-      if (shouldDropHardware(ranFor, this.hw)) {
-        // The board or this ffmpeg build has no working V4L2 decoder. Say so once and carry on
-        // in software rather than looping on a request that will never succeed.
-        this.log('camera: hardware decoding unavailable, falling back to software');
+      if (shouldDropHardware(ranFor, this.hw, this.triedHw)) {
+        // Might be a board with no working V4L2 decoder — or might be a TLS handshake that failed
+        // in four seconds and has nothing to do with decoding. Try software ONCE, and say which it
+        // is rather than asserting the decoder is missing.
+        this.triedHw = true;
         this.hw = false;
+        this.log(`camera: failed in ${Math.round(ranFor / 1000)}s with hardware decoding; trying software once: ${this.lastError}`);
         this.spawn();
         return;
+      }
+
+      if (ranHealthily(ranFor)) {
+        // It ran. Whatever went wrong is a fresh problem, so start the backoff over — otherwise a
+        // camera that drops every few minutes is stuck at the 30-second cap for good, and every
+        // recovery shows half a minute of an error card on the wall.
+        this.failures = 0;
+        // And give the hardware decoder another chance: if it worked for a while, it works.
+        if (this.triedHw) {
+          this.triedHw = false;
+          this.hw = true;
+        }
       }
 
       this.failures++;

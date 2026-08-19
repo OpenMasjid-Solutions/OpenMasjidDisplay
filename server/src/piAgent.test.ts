@@ -196,7 +196,7 @@ test('a Pi showing a camera is handed the CAMERA\'S OWN address', () => {
   const { device } = enrolDevice(d, { deviceId: 'pi_1' }, NOW);
   device.token = makeDeviceToken();
 
-  const st = piState(d, device, tv, NOW, { basePrefix: '', clockSuspect: false, bgLight: false, autoAccent: null, fontNames: [] });
+  const st = piState(d, device, tv, NOW, { basePrefix: '', clockSuspect: false, bgLight: false, autoAccent: null, fontNames: [], fontFamilies: { default: 'DejaVu Sans', serif: 'DejaVu Sans', sansSerif: 'DejaVu Sans' } });
   assert.equal(st.content.kind, 'source');
   assert.deepEqual(st.stream, { url: 'rtsp://192.168.1.90:554/live', mode: 'direct' });
   assert.equal(st.timetable, null);
@@ -209,7 +209,7 @@ test('a disabled camera is not handed over at all', () => {
   d.sources = [cam];
   const { device } = enrolDevice(d, { deviceId: 'pi_1' }, NOW);
   device.token = makeDeviceToken();
-  assert.equal(piState(d, device, tv, NOW, { basePrefix: '', clockSuspect: false, bgLight: false, autoAccent: null, fontNames: [] }).stream, null);
+  assert.equal(piState(d, device, tv, NOW, { basePrefix: '', clockSuspect: false, bgLight: false, autoAccent: null, fontNames: [], fontFamilies: { default: 'DejaVu Sans', serif: 'DejaVu Sans', sansSerif: 'DejaVu Sans' } }).stream, null);
 });
 
 test('a Pi showing a timetable gets the timetable, and no stream', () => {
@@ -220,7 +220,7 @@ test('a Pi showing a timetable gets the timetable, and no stream', () => {
   const { device } = enrolDevice(d, { deviceId: 'pi_1' }, NOW);
   device.token = makeDeviceToken();
 
-  const st = piState(d, device, tv, NOW, { basePrefix: '/display', clockSuspect: false, bgLight: false, autoAccent: null, fontNames: [] });
+  const st = piState(d, device, tv, NOW, { basePrefix: '/display', clockSuspect: false, bgLight: false, autoAccent: null, fontNames: [], fontFamilies: { default: 'DejaVu Sans', serif: 'DejaVu Sans', sansSerif: 'DejaVu Sans' } });
   assert.equal(st.timetable?.id, tt.id);
   assert.equal(st.stream, null);
   assert.equal(st.serverNow, NOW, 'the Pi renders against the SERVER clock, not its own');
@@ -232,7 +232,7 @@ test('an adopted device with no screen yet is simply off', () => {
   const d = db();
   const { device } = enrolDevice(d, { deviceId: 'pi_1' }, NOW);
   device.token = makeDeviceToken();
-  const st = piState(d, device, null, NOW, { basePrefix: '', clockSuspect: false, bgLight: false, autoAccent: null, fontNames: [] });
+  const st = piState(d, device, null, NOW, { basePrefix: '', clockSuspect: false, bgLight: false, autoAccent: null, fontNames: [], fontFamilies: { default: 'DejaVu Sans', serif: 'DejaVu Sans', sansSerif: 'DejaVu Sans' } });
   assert.equal(st.content.kind, 'off');
   assert.equal(st.timetable, null);
   assert.equal(st.stream, null);

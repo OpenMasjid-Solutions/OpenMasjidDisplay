@@ -236,6 +236,20 @@ export interface PiState {
    * over the same files is what makes a Pi screen and a decoder screen agree.
    */
   fonts: string[];
+  /**
+   * The family NAMES the server resolves generic families to — not a nicety either.
+   *
+   * Sending the font files was only half of it. resvg also has to be told which family to use for
+   * an unnamed font and for a `serif` request, and the server computes those from what it actually
+   * loaded: it has no serif at all, so it maps serif onto the sans it did load, and the sans it
+   * loads is DejaVu unless a Noto Sans happens to be present.
+   *
+   * The agent used to hardcode "Noto Sans". Where the server had settled on DejaVu that named a
+   * face which was not loaded, resvg substituted something else, and text laid out with one set of
+   * metrics was drawn with another — so it overflowed the boxes around it. Same files, same SVG,
+   * different widths.
+   */
+  fontFamilies: { default: string; serif: string; sansSerif: string };
   bgLight: boolean;
   autoAccent: string | null;
   /**
@@ -272,6 +286,8 @@ export function piState(
     autoAccent: string | null;
     /** basenames of the font files this server draws with, resolved by the caller */
     fontNames: string[];
+    /** and the family names it resolves generic families to, so the Pi resolves them identically */
+    fontFamilies: { default: string; serif: string; sansSerif: string };
   },
 ): PiState {
   const off = { kind: 'off' as const };
@@ -282,6 +298,7 @@ export function piState(
       timetable: null,
       assets: { background: null, logo: null, announcements: [] },
       fonts: [],
+      fontFamilies: opts.fontFamilies,
       bgLight: false,
       autoAccent: null,
       stream: null,
@@ -307,6 +324,7 @@ export function piState(
       announcements: (tt?.announcements?.images ?? []).map((f) => asset(opts.basePrefix, token, f)),
     },
     fonts: opts.fontNames.map((n) => fontUrl(opts.basePrefix, token, n)),
+    fontFamilies: opts.fontFamilies,
     bgLight: opts.bgLight,
     autoAccent: opts.autoAccent,
     // Only for an ENABLED source. A disabled one is "off", not "try anyway".

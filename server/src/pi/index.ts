@@ -83,6 +83,7 @@ interface PiStateWire {
   timetable: Timetable | null;
   assets: { background: string | null; logo: string | null; announcements: string[] };
   fonts: string[];
+  fontFamilies?: { default: string; serif: string; sansSerif: string };
   bgLight: boolean;
   autoAccent: string | null;
   stream: { url: string; mode: 'direct' | 'normalize' } | null;
@@ -120,7 +121,11 @@ class Screen {
    * is string concatenation. Returns null on a dropped frame; never throws, because the caller's
    * next move is always "try again shortly" regardless.
    */
-  show(svg: string, fontFiles: string[] = []): number | null {
+  show(
+    svg: string,
+    fontFiles: string[] = [],
+    families?: { default: string; serif: string; sansSerif: string },
+  ): number | null {
     try {
       // Before anything else: has the television changed the mode under us? A 4K set renegotiates
       // after boot, the driver reallocates the framebuffer, and frames addressed with the old size
@@ -147,7 +152,13 @@ class Screen {
               // with whatever the distro ships renders Arabic as tofu boxes.
               fontFiles,
               loadSystemFonts: false,
-              defaultFontFamily: 'Noto Sans',
+              // The families come from the server too. Hardcoding "Noto Sans" here named a face
+              // that is not loaded when the server settled on DejaVu, so resvg substituted
+              // something else and text laid out with one set of metrics was drawn with another —
+              // which is what pushed it out of the boxes around it.
+              defaultFontFamily: families?.default ?? 'DejaVu Sans',
+              serifFamily: families?.serif ?? families?.default ?? 'DejaVu Sans',
+              sansSerifFamily: families?.sansSerif ?? families?.default ?? 'DejaVu Sans',
             }
           : { loadSystemFonts: true, defaultFontFamily: 'DejaVu Sans' },
       }).render();
@@ -391,7 +402,7 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
     // still preview does.
   });
 
-  return screen.show(svg, live.fontFiles);
+  return screen.show(svg, live.fontFiles, live.state?.fontFamilies);
 }
 
 /**

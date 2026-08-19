@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { videoArgs, redactCreds, shouldDropHardware, retryDelayMs, FF_PROTOCOLS } from './video';
+import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, retryDelayMs, FF_PROTOCOLS } from './video';
 import type { FbGeometry } from './framebuffer';
 
 const HD: FbGeometry = { width: 1920, height: 1080, bpp: 32, stride: 7680 };
@@ -86,14 +86,14 @@ test('hardware decoding is selected before the input, or it selects nothing', ()
 
 test('a fast failure while hardware decoding means try software instead', () => {
   // A board or ffmpeg build with no working V4L2 decoder fails immediately, every time.
-  assert.equal(shouldDropHardware(300, true), true);
+  assert.equal(shouldDropHardware(300, true, false), true);
 });
 
 test('a stream that ran and then dropped is a network problem, not a decoder one', () => {
   // Dropping to software here would not help; it would quietly double the processor use for the
   // rest of the device's life.
-  assert.equal(shouldDropHardware(120_000, true), false);
-  assert.equal(shouldDropHardware(300, false), false, 'already in software: nothing left to drop');
+  assert.equal(shouldDropHardware(120_000, true, false), false);
+  assert.equal(shouldDropHardware(300, false, false), false, 'already in software: nothing left to drop');
 });
 
 test('retries back off, but not so far that a camera coming back goes unnoticed', () => {
@@ -122,4 +122,47 @@ test('the protocol list is literally the server\'s, not a copy that has drifted'
   const m = /const FF_PROTOCOLS = '([^']+)'/.exec(src);
   assert.ok(m, "could not find the server's FF_PROTOCOLS — has it been renamed?");
   assert.equal(FF_PROTOCOLS, m[1], 'the Pi and the server must allow exactly the same protocols');
+});
+
+// ── found by review, and confirmed against the real log from a Pi ────────────
+
+test('hardware decoding is given up on at most once, not for the life of the device', () => {
+  // The real log said "hardware decoding unavailable, falling back to software" four seconds after
+  // a TLS handshake failure — nothing to do with the decoder. The board then software-decoded at
+  // roughly double the cost for the life of the process, because the exit handler leaves the player
+  // running so play() never reaches the line that re-arms it.
+  assert.equal(shouldDropHardware(300, true, false), true, 'the first fast failure may try software');
+  assert.equal(shouldDropHardware(300, true, true), false, 'but only once — after that it is not the decoder');
+});
+
+test('a run that lasted resets the backoff', () => {
+  // Without this the failure count only rises, so a camera that drops every few minutes reaches the
+  // 30s cap inside half an hour and every later recovery shows half a minute of an error card.
+  assert.equal(ranHealthily(60_000), true);
+  assert.equal(ranHealthily(31_000), true);
+  assert.equal(ranHealthily(4_000), false, 'a fast failure is not a healthy run');
+  assert.equal(ranHealthily(30_000), false, 'the boundary is exclusive, matching the server');
+});
+
+test('the socket timeout option name is probed, because it changed between ffmpeg versions', () => {
+  // Guessing wrong is not harmless: ffmpeg rejects an unknown option and the camera never plays.
+  // ffmpeg 5+ — -timeout is the socket timeout.
+  assert.equal(pickTimeoutFlag('  -timeout            <int>  set timeout (in microseconds) of socket I/O\n'), 'timeout');
+  // ffmpeg 4.x — -timeout is the LISTEN timeout, and -stimeout is the socket one.
+  assert.equal(
+    pickTimeoutFlag('  -timeout  <int>  set maximum timeout (in seconds) to wait for incoming connections\n  -stimeout <int>  set socket TCP I/O timeout in microseconds\n'),
+    'stimeout',
+  );
+  // A build that offers neither gets no flag: unbounded is bad, no video at all is worse.
+  assert.equal(pickTimeoutFlag(''), null);
+});
+
+test('the timeout is passed before the input, or it applies to nothing', () => {
+  const a = videoArgs('rtsp://cam', HD, { hw: false, device: '/dev/fb0', timeoutFlag: 'timeout' });
+  const t = a.indexOf('-timeout');
+  assert.ok(t > 0, 'a camera that stalls must not freeze the last frame on the wall for ever');
+  assert.ok(t < a.indexOf('-i'));
+  assert.equal(a[t + 1], '10000000', 'ten seconds, in microseconds');
+  // And a build with no such option must still produce a working command line.
+  assert.ok(!videoArgs('rtsp://cam', HD, { hw: false, device: '/dev/fb0', timeoutFlag: null }).includes('-timeout'));
 });

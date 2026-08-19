@@ -13,6 +13,17 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **Text no longer spills outside its box on a Raspberry Pi screen.** The Pi was drawing with a
+  different font than the layout was measured against, so everything came out slightly too wide.
+  It now uses exactly the fonts the display server does.
+
+- **A camera on a Raspberry Pi screen recovers properly.** Three faults: a stalled camera could
+  leave the last frame frozen on the television indefinitely with nothing reported; a camera that
+  dropped repeatedly got stuck waiting the full thirty seconds before every retry; and a stream
+  that failed quickly for an unrelated reason made the screen stop using the Pi’s video hardware
+  for good, doubling its processor use. The reason a camera failed is also reported more usefully.
+
+### Fixed
 - **The cursor no longer jumps out of the box while you type a Raspberry Pi setup code.** The form
   was being rebuilt whenever the list of waiting screens refreshed, which threw away what you had
   typed. You can also now type a code straight off the television before the list has caught up.

@@ -192,6 +192,18 @@ function piFontNames(): string[] {
   return (fontOptions().fontFiles ?? []).map((f) => path.basename(f));
 }
 
+/** The generic-family mapping this server renders with. Sent to a Pi so it resolves an unnamed or
+ *  `serif` font to the same real face — otherwise the text is drawn at widths the layout did not
+ *  allow for, and overflows. */
+function piFontFamilies(): { default: string; serif: string; sansSerif: string } {
+  const o = fontOptions();
+  return {
+    default: o.defaultFontFamily,
+    serif: o.serifFamily ?? o.defaultFontFamily,
+    sansSerif: o.sansSerifFamily ?? o.defaultFontFamily,
+  };
+}
+
 function piFontPath(name: string): string | null {
   const hit = (fontOptions().fontFiles ?? []).find((f) => path.basename(f) === name);
   return hit ?? null;
@@ -517,6 +529,7 @@ export function createApi(deps: Deps) {
             bgLight: tone.bgLight,
             autoAccent: tone.autoAccent,
             fontNames: piFontNames(),
+            fontFamilies: piFontFamilies(),
           });
           res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
           res.end(JSON.stringify(state));
