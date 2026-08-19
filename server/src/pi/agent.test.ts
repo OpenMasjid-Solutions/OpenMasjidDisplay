@@ -458,3 +458,44 @@ test('a mode change is noticed and followed, not cached for ever', async () => {
   assert.equal(fb!.geo.width, 4, 'and must not lose the geometry it was given');
   fb!.close();
 });
+
+test('16bpp dithers rather than truncating, or every gradient becomes a staircase', () => {
+  // Reported as a timetable that looked washed out and "very simple" on a Pi whose framebuffer
+  // came up at 16bpp — 65k colours for a design built on soft gradients and translucent panels.
+  // Truncating the low bits turned each gradient into a handful of flat bands.
+  const W = 256;
+  const rgba = Buffer.alloc(W * 4 * 4);
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < W; x++) {
+      const d = (y * W + x) * 4;
+      rgba[d] = 3 + Math.round((x * 9) / 255);
+      rgba[d + 1] = 13 + Math.round((x * 45) / 255);
+      rgba[d + 2] = 26 + Math.round((x * 51) / 255);
+      rgba[d + 3] = 255;
+    }
+  }
+  const out = packFrame(rgba, { width: W, height: 4, bpp: 16, stride: W * 2 });
+
+  let transitions = 0;
+  let prev = -1;
+  for (let x = 0; x < W; x++) {
+    const v = out[x * 2] | (out[x * 2 + 1] << 8);
+    if (v !== prev) transitions++;
+    prev = v;
+  }
+  // Straight truncation of this ramp gives 18 hard steps; the dither gives a fine mixture.
+  assert.ok(transitions > 100, `only ${transitions} transitions — the dither is not working`);
+});
+
+test('the dither is stable, so a redrawn frame does not shimmer', () => {
+  // The same frame is drawn every second. A random dither would make every flat area crawl.
+  const rgba = new Uint8Array(16 * 4 * 4).fill(90);
+  const geo = { width: 16, height: 4, bpp: 16 as const, stride: 32 };
+  assert.deepEqual([...packFrame(rgba, geo)], [...packFrame(rgba, geo)]);
+});
+
+test('dithering a near-white pixel does not wrap it to black', () => {
+  // The offset is added before quantising, so it has to be clamped.
+  const out = packFrame(Uint8Array.from([255, 255, 255, 255]), { width: 1, height: 1, bpp: 16, stride: 2 });
+  assert.deepEqual([...out], [0xff, 0xff]);
+});

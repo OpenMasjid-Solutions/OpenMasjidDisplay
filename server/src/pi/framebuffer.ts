@@ -159,6 +159,14 @@ export function readGeometry(): FbGeometry | null {
  * `src` is expected to be tightly packed at `width × height × 4`. The output is `stride`-based,
  * so any row padding the kernel wants is preserved.
  */
+/**
+ * A 4x4 ordered-dither matrix, values 0..15.
+ *
+ * Fixed rather than random on purpose: the same frame is redrawn once a second, and a random
+ * dither would make every flat area crawl.
+ */
+const BAYER_4X4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
 export function packFrame(src: Uint8Array, geo: FbGeometry): Buffer {
   const { width, height, bpp, stride } = geo;
   const need = width * height * 4;
@@ -183,13 +191,32 @@ export function packFrame(src: Uint8Array, geo: FbGeometry): Buffer {
     return out;
   }
 
-  // 16bpp: RGB565, little-endian. Truncating the low bits is the standard reduction and is what
-  // the hardware does with a deeper source anyway.
+  // 16bpp: RGB565, little-endian — five bits of red, six of green, five of blue. Sixty-five
+  // thousand colours instead of sixteen million.
+  //
+  // DITHERED, not truncated. Truncating is the obvious reduction and it is what an earlier version
+  // did, but this display is built out of soft gradients and translucent panels, and throwing away
+  // the low bits turns every one of those into a staircase of flat bands. The reported symptom was
+  // exactly that: the timetable looked washed out and "very simple" on a Pi where the same SVG
+  // looks right in a browser. It was not the colours being wrong, it was the gradients dying.
+  //
+  // An ordered (Bayer) dither fixes it for about the same cost as the truncation: add a small,
+  // position-dependent offset before quantising, so a colour halfway between two representable
+  // values is drawn as a fine checkerboard of both instead of snapping to one. The pattern is
+  // fixed rather than random, so successive frames are identical and the picture does not shimmer
+  // — which matters when the same frame is redrawn every second.
   for (let y = 0; y < height; y++) {
     let s = y * width * 4;
     let d = y * stride;
+    const row = (y & 3) << 2;
     for (let x = 0; x < width; x++) {
-      const v = ((src[s] & 0xf8) << 8) | ((src[s + 1] & 0xfc) << 3) | (src[s + 2] >> 3);
+      const t = BAYER_4X4[row | (x & 3)];
+      // The offset is scaled to each channel's own quantisation step: 8 levels for the 5-bit
+      // channels, 4 for the 6-bit green. Clamped, or a near-white pixel wraps to black.
+      const r = src[s] + (t >> 1) > 255 ? 255 : src[s] + (t >> 1);
+      const g = src[s + 1] + (t >> 2) > 255 ? 255 : src[s + 1] + (t >> 2);
+      const b = src[s + 2] + (t >> 1) > 255 ? 255 : src[s + 2] + (t >> 1);
+      const v = ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
       out[d] = v & 0xff;
       out[d + 1] = v >> 8;
       s += 4;

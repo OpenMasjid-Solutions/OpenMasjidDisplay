@@ -403,6 +403,21 @@ if [ -f "$BOOTCFG" ]; then
     printf '\n# Added by OpenMasjidDisplay: keep HDMI alive when the TV is off at boot\nhdmi_force_hotplug=1\n' >> "$BOOTCFG"
     NEEDS_REBOOT=1
   fi
+  # Ask for a 32-bit framebuffer.
+  #
+  # On a 16-bit one there are 65 thousand colours instead of 16 million, and this display is built
+  # out of soft gradients and translucent panels — every one of them becomes a staircase of flat
+  # bands. The reported symptom was a timetable that looked washed out and "very simple" beside the
+  # same design in a browser, on a Pi whose framebuffer came up at 16bpp.
+  #
+  # The agent dithers when it has to, which hides most of it, but this removes the problem rather
+  # than concealing it. Some display drivers ignore the request, which is exactly why the dither is
+  # not optional.
+  if ! grep -q '^framebuffer_depth=32' "$BOOTCFG" 2>/dev/null; then
+    say 'asking for a 32-bit framebuffer, so gradients do not band'
+    printf '\n# Added by OpenMasjidDisplay: 32-bit colour, so gradients do not band\nframebuffer_depth=32\nframebuffer_ignore_alpha=1\n' >> "$BOOTCFG"
+    NEEDS_REBOOT=1
+  fi
 fi
 
 BOOTCMD=/boot/firmware/cmdline.txt

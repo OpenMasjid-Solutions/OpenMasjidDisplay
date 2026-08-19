@@ -13,6 +13,12 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **The timetable no longer looks washed out on a Raspberry Pi screen.** Some Pis come up with a
+  screen mode that has far fewer colours available, which turned every gradient into flat bands.
+  The Pi now blends those shades instead, and setup asks the Pi for full colour so the problem
+  does not arise in the first place.
+
+### Fixed
 - **Text no longer spills outside its box on a Raspberry Pi screen.** The Pi was drawing with a
   different font than the layout was measured against, so everything came out slightly too wide.
   It now uses exactly the fonts the display server does.
