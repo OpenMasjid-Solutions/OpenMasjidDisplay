@@ -94,7 +94,16 @@ ENV PORT=8080 \
     MTX_APIADDRESS=127.0.0.1:9997 \
     MTX_RTSPTRANSPORTS=tcp \
     MTX_RTMP=no \
-    MTX_HLS=no \
+    # HLS is ON but bound to LOOPBACK ONLY, and is never published as a port. It exists so a
+    # BROWSER screen can show a camera: a browser cannot play RTSP, and HLS is the one
+    # container format any browser can be made to play. The app reverse-proxies it under
+    # /s/<token>/hls/... on the control-panel port, so it inherits that port's TLS and the
+    # admin's tunnel, and a camera is reachable only through a screen's own capability token.
+    # Binding to 127.0.0.1 is what stops it becoming a second, unauthenticated way to watch
+    # the masjid's cameras.
+    MTX_HLS=yes \
+    MTX_HLSADDRESS=127.0.0.1:8888 \
+    MTX_HLSVARIANT=lowLatency \
     MTX_WEBRTC=no \
     MTX_SRT=no
 EXPOSE 8080 8081 8554

@@ -32,6 +32,7 @@
  */
 import type { Timetable, Tv, DB } from './types';
 import { resolveTv } from './scheduler';
+import { config } from './config';
 
 /** How long a browser screen may go unheard-from before it is reported offline.
  *
@@ -143,4 +144,36 @@ export function webScreenState(
     pollMs: WEB_POLL_MS,
     name: tv.name,
   };
+}
+
+/**
+ * Proxy MediaMTX's HLS output for a camera or HDMI source onto a browser screen.
+ *
+ * A browser cannot play RTSP — that is why a web screen showing a camera used to be black.
+ * MediaMTX can serve the same stream as HLS, so it is enabled on LOOPBACK ONLY and reverse-
+ * proxied through here. Three consequences, all deliberate:
+ *
+ *  - **No new published port.** It rides the control-panel port, which the platform already
+ *    fronts with TLS and already routes through the admin's tunnel — so a remote screen plays
+ *    a camera over HTTPS with nothing extra configured.
+ *  - **A camera is only reachable through a screen's own token.** MediaMTX's HLS listener is
+ *    not exposed, so this route is the only way in, and it is behind the same capability the
+ *    rest of the page is.
+ *  - **Only paths this app owns.** The requested path is checked against the screen's CURRENT
+ *    content, so a token cannot be used to enumerate or watch a stream that screen is not
+ *    showing.
+ */
+export function hlsTargetFor(db: DB, tv: Tv, nowMs: number, rest: string): string | null {
+  const res = resolveTv(tv, db.schedules, new Date(nowMs), db.settings.scheduleTimezone);
+  if (res.content.kind !== 'source' || !res.content.id) return null;
+  const src = db.sources.find((x) => x.id === res.content.id);
+  if (!src || !src.enabled) return null;
+  // `rest` is whatever follows /hls/ — index.m3u8, a segment, an init file. It must belong to
+  // THIS screen's stream and must not climb out of it.
+  // An exact allowlist, and nothing is normalised first. Stripping a leading slash (or any
+  // other tidying) means the string that is CHECKED is not the string that was SENT, which is
+  // how traversal guards get walked past. HLS filenames are plain — index.m3u8, init.mp4,
+  // segment7.mp4 — so anything else is simply not ours.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(rest) || rest.includes('..')) return null;
+  return `${config.mediamtxHlsUrl}/${encodeURIComponent(src.id)}/${rest}`;
 }

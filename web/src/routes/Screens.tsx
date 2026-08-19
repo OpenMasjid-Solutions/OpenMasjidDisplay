@@ -150,6 +150,7 @@ function ScreenCard({
   onCopy: (url: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [copiedPublic, setCopiedPublic] = useState(false);
   const effective = status?.effective ?? tv.defaultContent;
   const ready = status?.streamReady ?? false;
   // The screen is lit and pulling, but its timetable stopped updating — the times on it
@@ -172,9 +173,13 @@ function ScreenCard({
     void api.screenInfo(tv.id).then((r) => { if (live) setPublicScreenUrl(r.publicUrl); }).catch(() => {});
     return () => { live = false; };
   }, [isWeb, tv.id]);
-  const url = isWeb
-    ? publicScreenUrl || `${location.origin}/s/${tv.webToken ?? ''}`
-    : `rtsp://${location.hostname}:${state.rtsp.port}/${tv.id}`;
+  // A web screen has TWO useful addresses and they are not interchangeable. A television in
+  // the building should use the local one — it stays on the LAN, needs no internet, and keeps
+  // working if the line drops. A screen elsewhere (or a display hosted in the cloud) needs the
+  // public one. Showing only whichever exists made the local address vanish the moment remote
+  // access was turned on, which is exactly backwards for the screens that are on this network.
+  const localUrl = `${location.origin}/s/${tv.webToken ?? ''}`;
+  const url = isWeb ? localUrl : `rtsp://${location.hostname}:${state.rtsp.port}/${tv.id}`;
   const localHost = /^(localhost|127\.|0\.0\.0\.0|::1|\[)/.test(location.hostname);
   const sourceTag =
     status?.source === 'override' ? 'Manual' : status?.source === 'schedule' ? 'Scheduled' : 'Default';
@@ -243,13 +248,34 @@ function ScreenCard({
           {copied ? <IconCheck size={14} /> : <IconCopy size={14} />} {copied ? 'Copied' : 'Copy link'}
         </button>
       </div>
+      {isWeb && (
+        <div className="rtsp-box">
+          <span className="rtsp-url" title={publicScreenUrl || 'Remote access is off'}>
+            {publicScreenUrl || 'No public address — remote access is off in OpenMasjidOS'}
+          </span>
+          {publicScreenUrl && (
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => {
+                onCopy(publicScreenUrl);
+                setCopiedPublic(true);
+                setTimeout(() => setCopiedPublic(false), 1500);
+              }}
+            >
+              {copiedPublic ? <IconCheck size={14} /> : <IconCopy size={14} />} {copiedPublic ? 'Copied' : 'Copy remote link'}
+            </button>
+          )}
+        </div>
+      )}
       {isWeb ? (
         <div className="hint">
-          Open this link in a browser on the screen (a Raspberry Pi in kiosk mode, a smart TV, or any
+          Open one of these in a browser on the screen (a Raspberry Pi in kiosk mode, a smart TV, or any
           computer). It draws the timetable itself, so it uses almost no network after it loads.
+          <br />
+          Use the <b>first (local) link</b> for screens in the masjid — it stays on your network.
           {publicScreenUrl
-            ? ' This is your public address, so it works from anywhere.'
-            : ' This is a local address — turn on remote access in OpenMasjidOS to get one that works off-site.'}
+            ? ' Use the second for a screen somewhere else, or one you host in the cloud.'
+            : ' Turn on remote access in OpenMasjidOS to also get an address that works off-site.'}
         </div>
       ) : (
         localHost && (

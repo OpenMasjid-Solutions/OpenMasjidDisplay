@@ -25,6 +25,7 @@ import {
   findByToken,
   webScreenState,
   markWebScreenSeen,
+  hlsTargetFor,
   WEB_POLL_MS,
 } from './webScreen';
 import { clockSuspect } from './render/renderer';
@@ -346,7 +347,7 @@ export function createApi(deps: Deps) {
       // Cloudflare tunnel and therefore over HTTPS from anywhere — the platform serves this
       // app under /<appId>/ and does not strip the prefix. The page fetches relative to
       // itself, so the same markup works on the LAN and remotely with no configuration.
-      const screenMatch = /^(?:\/[a-z0-9-]+)?\/s\/([A-Za-z0-9_-]{16,64})(\/state|\/seen|\/asset\/([\w.\-]{1,120}))?$/.exec(pathname);
+      const screenMatch = /^(?:\/[a-z0-9-]+)?\/s\/([A-Za-z0-9_-]{16,64})(\/state|\/seen|\/hls\/[\w.\-]{1,80}|\/asset\/([\w.\-]{1,120}))?$/.exec(pathname);
       if (screenMatch) {
         if (!screenLimiter.allow(req)) {
           res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
@@ -407,6 +408,48 @@ export function createApi(deps: Deps) {
             'cache-control': 'public, max-age=86400',
           });
           fs.createReadStream(found.path).pipe(res);
+          return;
+        }
+
+        // A camera / HDMI source, as HLS. The browser cannot play RTSP, so MediaMTX serves the
+        // same stream in a container a browser can play and we pass it through — see
+        // webScreen.hlsTargetFor for why this is scoped to the screen's CURRENT content.
+        if (sub.startsWith('/hls/') && method === 'GET') {
+          const target = hlsTargetFor(store.db, tv, Date.now(), sub.slice('/hls/'.length));
+          if (!target) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+            res.end('Not found.');
+            return;
+          }
+          markWebScreenSeen(tv.id, Date.now());
+          try {
+            const upstream = await fetch(target, { redirect: 'error' });
+            if (!upstream.ok || !upstream.body) {
+              res.writeHead(upstream.status === 404 ? 404 : 502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+              res.end('Stream not ready.');
+              return;
+            }
+            res.writeHead(200, {
+              ...SECURITY_HEADERS,
+              'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+              // A playlist changes every segment; a segment never does. Getting this wrong
+              // either stalls playback or re-downloads video that has not changed.
+              'cache-control': /\.m3u8$/.test(sub) ? 'no-store' : 'public, max-age=60',
+            });
+            const reader = upstream.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (!res.write(Buffer.from(value))) await new Promise((r) => res.once('drain', r));
+            }
+            res.end();
+          } catch (err) {
+            log.debug(`hls proxy failed: ${err instanceof Error ? err.message : err}`);
+            if (!res.headersSent) {
+              res.writeHead(502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+              res.end('Stream unavailable.');
+            } else res.end();
+          }
           return;
         }
 

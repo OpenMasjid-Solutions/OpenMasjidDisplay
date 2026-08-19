@@ -41,6 +41,9 @@ export const config = {
 
   /** How the app talks to MediaMTX (loopback — same container). */
   mediamtxApiUrl: env('MEDIAMTX_API_URL', 'http://127.0.0.1:9997'),
+  /** MediaMTX's HLS server, loopback-only and never published. Browser screens play cameras
+   *  through it, reverse-proxied under a screen's token — see webScreen.ts. */
+  mediamtxHlsUrl: env('MEDIAMTX_HLS_URL', 'http://127.0.0.1:8888'),
   /** Where the app PUBLISHES rendered timetables (app -> mediamtx). */
   rtspInternal: env('MEDIAMTX_RTSP_INTERNAL', 'rtsp://127.0.0.1:8554'),
   /** What MediaMTX uses to pull from ITSELF for per-TV self-relay paths. */

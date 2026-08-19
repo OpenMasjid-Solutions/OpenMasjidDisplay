@@ -13,6 +13,14 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Cameras and HDMI sources now work on a web screen.** They used to go black: a browser cannot
+  play the video format a decoder box uses. The stream is now converted on the fly and played in the
+  page, so a browser screen can show everything a normal screen can.
+- A web screen now shows **two links** — a local one for screens in the masjid (it stays on your
+  network) and, when remote access is on, a public one for a screen somewhere else.
+- A web screen never just goes black. If it is switched off, still connecting to a camera, or the
+  camera is unavailable, it says so on the screen.
+
 
 - Fixed the container build for browser screens: the web bundle needs the server's renderer at build time, and the image build stage did not have it.
 

@@ -200,6 +200,105 @@ function syncTicker(tt: Timetable, now: Date, w: number, h: number): void {
   }
 }
 
+
+// ── video: a camera or HDMI source on a browser screen ──────────────────────
+
+let video: HTMLVideoElement | null = null;
+let hls: { destroy(): void } | null = null;
+/** Remember what we are already playing, so a 1 Hz redraw does not tear the stream down and
+ *  rebuild it every second. */
+let playingSrc = '';
+
+function stopVideo(): void {
+  hls?.destroy();
+  hls = null;
+  video?.remove();
+  video = null;
+  playingSrc = '';
+}
+
+/**
+ * Play the screen's current source.
+ *
+ * Native HLS first (Safari, iOS, several smart-TV browsers) because it costs nothing; hls.js
+ * only where the browser cannot — and it is a DYNAMIC import, so a masjid whose screens only
+ * ever show a timetable never downloads it.
+ */
+async function showVideo(): Promise<void> {
+  const src = `${SELF}/hls/index.m3u8`;
+  if (playingSrc === src && video) return;
+  stopVideo();
+  hideMessage();
+
+  const el = document.createElement('video');
+  el.autoplay = true;
+  el.muted = true; // a browser will refuse to autoplay with sound, and a wall has no speakers
+  el.playsInline = true;
+  el.controls = false;
+  el.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;';
+  document.body.appendChild(el);
+  video = el;
+  playingSrc = src;
+
+  // Say so rather than showing black while the stream warms up — MediaMTX pulls a source on
+  // demand, so the first few seconds after a switch are genuinely empty.
+  showMessage('Connecting to the camera…', state?.name ?? '');
+  el.addEventListener('playing', hideMessage, { once: true });
+
+  if (el.canPlayType('application/vnd.apple.mpegurl')) {
+    el.src = src;
+    return;
+  }
+  try {
+    const { default: Hls } = await import('hls.js');
+    if (!Hls.isSupported()) {
+      showMessage('This screen’s browser cannot play video', 'Use a decoder box for camera screens.');
+      return;
+    }
+    const h = new Hls({ lowLatencyMode: true, backBufferLength: 10 });
+    h.loadSource(src);
+    h.attachMedia(el);
+    h.on(Hls.Events.ERROR, (_e, data) => {
+      // Only a FATAL error is worth telling the wall about; hls.js recovers from the rest by
+      // itself, and a message that flickers on every hiccup is worse than none.
+      if (!data.fatal) return;
+      showMessage('Camera unavailable', 'The stream stopped. It will retry automatically.');
+      h.startLoad();
+    });
+    hls = h;
+  } catch {
+    showMessage('Could not start the video player', '');
+  }
+}
+
+// ── a message on the wall, instead of a black rectangle ─────────────────────
+
+function showMessage(title: string, detail: string): void {
+  let el = document.getElementById('msg');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'msg';
+    el.style.cssText =
+      'position:fixed;inset:0;z-index:5;display:grid;place-items:center;text-align:center;' +
+      'background:#03080f;color:#8593AD;font-family:system-ui,sans-serif;gap:0.6rem;';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '';
+  const h = document.createElement('div');
+  h.textContent = title;
+  h.style.cssText = 'font-size:3.2vh;font-weight:600;color:#F4F7FB;';
+  const d = document.createElement('div');
+  d.textContent = detail;
+  d.style.cssText = 'font-size:2vh;margin-top:0.8vh;';
+  const wrap = document.createElement('div');
+  wrap.append(h, d);
+  el.appendChild(wrap);
+}
+
+function hideMessage(): void {
+  document.getElementById('msg')?.remove();
+}
+
 /** One frame. Called once a second — the same cadence the video pipeline renders at, which is
  *  what the colon blink and the prohibited-time flash are timed against. */
 function draw(): void {
@@ -207,15 +306,32 @@ function draw(): void {
   const now = serverTime();
   const tt = state.timetable;
 
-  if (!tt || state.content.kind !== 'timetable') {
-    // A camera or HDMI source cannot be shown in a browser screen (see the note in the panel);
-    // "off" is a black screen by design.
+  if (state.content.kind === 'source') {
+    // A camera or HDMI encoder. The browser cannot play RTSP, so the server proxies the same
+    // stream as HLS under this screen's own token — see webScreen.hlsTargetFor.
     root.innerHTML = '';
-    applyStaleMark(null);
     ticker.el?.remove();
     ticker = { text: '', el: null };
+    applyStaleMark(null);
+    void showVideo();
     return;
   }
+  if (!tt) {
+    // Deliberately not a black rectangle. A screen that has simply been switched off should
+    // look switched off ON PURPOSE, and one that is misconfigured should say so — a masjid
+    // staring at a black TV has no way to tell those apart, which is exactly the bug this
+    // replaced.
+    stopVideo();
+    root.innerHTML = '';
+    ticker.el?.remove();
+    ticker = { text: '', el: null };
+    applyStaleMark(null);
+    showMessage(state.content.kind === 'off' ? 'Screen is off' : 'Nothing to show yet', state.name);
+    return;
+  }
+  // Back to a timetable: tear down anything the other two modes left behind.
+  stopVideo();
+  hideMessage();
 
   // The slideshow phase is epoch-locked in the same function the render worker calls, so a
   // browser screen and a decoder screen showing the same timetable change picture together.

@@ -201,3 +201,59 @@ test('a temp dir is not needed for any of this', () => {
   // writing it would spin the debounced save and the reconcile listener on every beat.
   assert.ok(os.tmpdir());
 });
+
+// ── the HLS proxy guard ──────────────────────────────────────────────────────
+//
+// MediaMTX's HLS listener is loopback-only and unauthenticated, so this function is the ONLY
+// thing standing between a screen token and the masjid's cameras. It must hand back a URL for
+// exactly the stream that screen is currently showing, and nothing else.
+
+test('a camera is proxied only for a screen that is actually showing it', () => {
+  const { hlsTargetFor } = require('./webScreen') as typeof import('./webScreen');
+  const { normSource } = require('./validate') as typeof import('./validate');
+  const cam = normSource({ name: 'Imam', url: 'rtsp://cam.local/live', enabled: true });
+  const tv = normTv({ name: 'Hall', kind: 'web', defaultContent: { kind: 'source', id: cam.id } });
+  const d = db([tv]);
+  d.sources = [cam];
+
+  const target = hlsTargetFor(d, tv, NOW, 'index.m3u8');
+  assert.ok(target, 'a screen showing a camera should get a stream');
+  assert.match(target!, new RegExp(`/${cam.id}/index\.m3u8$`));
+
+  // The same token, but the screen is showing a timetable: no stream at all.
+  const ttScreen = normTv({ name: 'Hall', kind: 'web', defaultContent: { kind: 'timetable', id: 'tt_x' } }, tv);
+  assert.equal(hlsTargetFor(db([ttScreen]), ttScreen, NOW, 'index.m3u8'), null);
+
+  // A disabled source is not watchable either.
+  const off = { ...cam, enabled: false };
+  const d2 = db([tv]);
+  d2.sources = [off];
+  assert.equal(hlsTargetFor(d2, tv, NOW, 'index.m3u8'), null);
+});
+
+test('the proxied path cannot climb out of the stream', () => {
+  const { hlsTargetFor } = require('./webScreen') as typeof import('./webScreen');
+  const { normSource } = require('./validate') as typeof import('./validate');
+  const cam = normSource({ name: 'Imam', url: 'rtsp://cam.local/live', enabled: true });
+  const tv = normTv({ name: 'Hall', kind: 'web', defaultContent: { kind: 'source', id: cam.id } });
+  const d = db([tv]);
+  d.sources = [cam];
+
+  for (const bad of [
+    '../../v3/config/global/get', // MediaMTX's own API
+    '..%2f..%2fetc%2fpasswd',
+    'a/b.m3u8',
+    '/absolute',
+    String.raw`x\y`, // a real backslash: the plain literal collapses to "xy"
+    '',
+    'seg?query=1',
+    'http://evil.example/x.m3u8',
+  ]) {
+    assert.equal(hlsTargetFor(d, tv, NOW, bad), null, `must refuse: ${bad}`);
+  }
+
+  // …while the shapes MediaMTX actually serves are allowed.
+  for (const good of ['index.m3u8', 'stream.m3u8', 'init.mp4', 'segment123.mp4', 'part-7.mp4']) {
+    assert.ok(hlsTargetFor(d, tv, NOW, good), `must allow: ${good}`);
+  }
+});
