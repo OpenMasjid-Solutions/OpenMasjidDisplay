@@ -19,6 +19,14 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
+# The browser-screen page (web/src/screen.tsx) imports the SERVER's own renderer —
+# server/src/render/svg.ts — so that a screen drawn in a browser and a screen encoded to
+# video come from one implementation instead of two that drift apart. That import needs the
+# server sources present at ../../server/src while the web bundle is built. They are copied
+# to a SIBLING path, matching the repo layout the import expects; nothing from here reaches
+# the runtime image, which takes only /web/dist.
+COPY server/src /server/src
+COPY server/tsconfig.json /server/tsconfig.json
 RUN npm run build
 
 # ---- Compile the server (TypeScript → dist) -------------------------------

@@ -14,6 +14,8 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ### Added
 
+- Fixed the container build for browser screens: the web bundle needs the server's renderer at build time, and the image build stage did not have it.
+
 - **Screens that are a web page, instead of a decoder box (beta).** Turn on *Screens that are a web
   page* in Settings → Beta features, and when you add a screen you can choose **Web page** instead of
   a video stream. You get a link to open in any browser — a Raspberry Pi in kiosk mode, a smart TV, a
