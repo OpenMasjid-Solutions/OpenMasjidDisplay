@@ -373,7 +373,7 @@ export function normSource(input: unknown, base?: Source): Source {
 
 export function normTv(input: unknown, base?: Tv): Tv {
   const o = asObj(input);
-  const kind = oneOf(o.kind, ['rtsp', 'web'] as const, base?.kind ?? 'rtsp');
+  const kind = oneOf(o.kind, ['rtsp', 'web', 'pi'] as const, base?.kind ?? 'rtsp');
   return {
     id: base?.id ?? rid('tv'),
     name: str(o.name, base?.name ?? 'Screen', 80) || 'Screen',
@@ -386,6 +386,9 @@ export function normTv(input: unknown, base?: Tv): Tv {
     // from whoever is posting the form. An existing token is kept so a screen's URL survives
     // every rename and re-point — a decoder box or a Pi has that URL saved.
     ...(kind === 'web' ? { webToken: base?.webToken || screenToken() } : {}),
+    // Set by the adoption handler, never by a client: it is the binding between a screen and
+    // a physical device, and letting a form choose it would let a form steal one.
+    ...(base?.piDeviceId ? { piDeviceId: base.piDeviceId } : {}),
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };
 }

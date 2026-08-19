@@ -13,6 +13,13 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Groundwork for screens driven by a Raspberry Pi.** A Pi will be able to run one install
+  command, show a pairing code on the screen, and be adopted from the dashboard by typing that
+  code. When such a screen shows a camera, the Pi opens the camera directly on your own network
+  instead of the server sending it video — which is what will let the display server run in the
+  cloud without video crossing the internet twice. This release contains the pairing and the
+  screen type only; the Pi software itself follows.
+
 - **A camera on a web screen no longer dies after about ten seconds** with "Too many requests".
   The limit that protects the page was also being applied to the video itself, and video asks for
   a lot more than a page does. Verified with 90 seconds of continuous playback: no failures.

@@ -22,6 +22,7 @@ import { RenderManager, type NormalizeSpec } from './render/renderer';
 import { dimsFor } from './render/svg';
 import { resolveTv } from './scheduler';
 import { webScreenOnline } from './webScreen';
+import { deviceOnline } from './piAgent';
 import {
   ping,
   listConfiguredPaths,
@@ -106,13 +107,18 @@ export class Orchestrator {
         // A browser screen renders the timetable ITSELF, so it needs no ffmpeg pipeline and no
         // resvg loop. That is the whole saving: a masjid that moves every screen to a browser
         // stops encoding video entirely.
-        if (tv.kind === 'web') continue;
+        if (tv.kind === 'web' || tv.kind === 'pi') continue;
         refTt.add(cp);
       } else if (res.content.kind === 'source') {
-        // A camera is the opposite case, and skipping it here was a real bug: a browser cannot
-        // render a camera, it PLAYS one — as HLS, which MediaMTX can only serve from a path it
-        // has been told to pull. Leaving web screens out meant the source path was never
-        // created, so every camera on a browser screen was "unavailable".
+        // A Pi agent opens the camera's own RTSP address directly, on the same LAN as the
+        // camera. Pulling it here as well would mean the server carrying video it is not
+        // showing to anyone — and with the server in the cloud, carrying it across the
+        // internet twice. That is precisely what the device exists to avoid.
+        if (tv.kind === 'pi') continue;
+        // A BROWSER screen is the opposite case, and skipping it here was a real bug: a browser
+        // cannot render a camera, it PLAYS one — as HLS, which MediaMTX can only serve from a
+        // path it has been told to pull. Leaving web screens out meant the source path was
+        // never created, so every camera on a browser screen was "unavailable".
         refSrc.add(cp);
       }
     }
@@ -144,9 +150,10 @@ export class Orchestrator {
       for (const { tv, res } of resolutions) {
         const cp = this.contentPath(res.content);
         if (!cp) continue;
-        // A browser screen has no decoder and no RTSP path — it renders the SVG itself. Give
-        // it one and MediaMTX would hold a relay open for a reader that never arrives.
-        if (tv.kind === 'web') continue;
+        // Neither a browser screen nor a Pi has a decoder pointed at an RTSP path: they draw
+        // the timetable themselves and open a camera directly. Programming one would leave
+        // MediaMTX holding a relay open for a reader that never arrives.
+        if (tv.kind === 'web' || tv.kind === 'pi') continue;
         desired.set(tv.id, {
           source: `${config.rtspLoopback}/${cp}`,
           sourceOnDemand: true,
@@ -193,9 +200,13 @@ export class Orchestrator {
       // the cleanest "the screen is on and showing the stream" signal.
       let pulling = false;
       if (tv.kind === 'web') {
-        // The browser-screen equivalent: it checks in on a timer, and three missed check-ins
-        // is offline. Same field, so the panel badge and the offline alert are unchanged.
+        // The browser-screen equivalent: it checks in on a timer, and six missed polls is
+        // offline. Same field, so the panel badge and the offline alert are unchanged.
         pulling = webScreenOnline(tv.id, Date.now());
+      } else if (tv.kind === 'pi') {
+        // Same idea for a device, keyed on the DEVICE rather than the screen: the agent is
+        // what checks in, and a screen with no device adopted yet is simply offline.
+        pulling = !!tv.piDeviceId && deviceOnline(tv.piDeviceId, Date.now());
       } else if (reachable && cp) {
         const st = await getPathState(tv.id);
         pulling = !!st && st.readers >= 1;
@@ -206,7 +217,7 @@ export class Orchestrator {
       // loop on the server — it draws for itself — so a frozen-frame verdict would be about a
       // pipeline this screen does not use. It marks its own picture instead (screen.tsx),
       // from the server clock it is handed and from whether it can still reach us.
-      const isTt = res.content.kind === 'timetable' && !!cp && tv.kind !== 'web';
+      const isTt = res.content.kind === 'timetable' && !!cp && tv.kind !== 'web' && tv.kind !== 'pi';
       const reason = isTt ? this.render.staleReason(cp!) : null;
       statuses.push({
         tvId: tv.id,

@@ -1,0 +1,262 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+/**
+ * piAgent.ts — pairing a Raspberry Pi that drives a screen.
+ *
+ * ## The shape of it
+ *
+ * A browser screen (`webScreen.ts`) is a page someone opens. This is a *device*: a Pi running
+ * our agent, installed with one command, which then behaves like a screen the masjid owns.
+ * The difference that matters is what happens when the screen shows a camera. A browser has to
+ * be fed video by the server; the Pi is on the same LAN as the camera and can pull the RTSP
+ * itself. So the server hands it an ADDRESS instead of a stream, and never touches the video —
+ * which is what lets the display server run in the cloud at all.
+ *
+ * ## Why the device calls us
+ *
+ * "Read the IP off the screen, type it into the dashboard" is how the setup reads, and it is
+ * how an installer experiences it. It is not how the connection can work: the Pi is behind the
+ * masjid's NAT on an address DHCP may move, and a cloud server can never reach 192.168.x.x. So
+ * the agent polls outward — it learned the server's address from its own install command — and
+ * the thing the admin types is a short pairing CODE.
+ *
+ * ## Three states, and the token is what separates them
+ *
+ *  - **pending**: the device has announced itself and shows a code. It has NO token, so it can
+ *    learn nothing about this masjid beyond "you are not adopted yet".
+ *  - **adopted**: an admin matched the code. A token is issued, and only then does the device
+ *    get a screen's content.
+ *  - **forgotten**: the token is dropped and the device falls back to pending on its next call.
+ *
+ * Enrolment is necessarily unauthenticated — a fresh Pi has no credentials — so it is bounded
+ * in every direction: rate-limited upstream, capped in number, and it can only ever create a
+ * pending row carrying self-reported display text.
+ */
+import crypto from 'node:crypto';
+import type { DB, PiDevice, Timetable, Tv } from './types';
+import { resolveTv } from './scheduler';
+
+/** How many un-adopted devices may be remembered at once.
+ *
+ *  Enrolment is unauthenticated, so without a cap anyone who can reach the port could grow the
+ *  store without bound. A masjid adopts a Pi within minutes of plugging it in; twenty pending
+ *  at once is already generous, and the oldest is evicted rather than the newest refused —
+ *  otherwise a flood would lock out the very device someone is standing in front of. */
+export const MAX_PENDING_DEVICES = 20;
+
+/** A pending device forgotten after this long without checking in. Long enough to survive
+ *  someone plugging the Pi in and going to find a laptop. */
+export const PENDING_TTL_MS = 24 * 60 * 60_000;
+
+/** Missed check-ins before a device counts as offline — the `streamReady` equivalent, matching
+ *  the browser screens' six missed polls. */
+export const PI_SEEN_TIMEOUT_MS = 30_000;
+
+/** How often the agent asks for its state. Same as a browser screen: fast enough that changing
+ *  what a screen shows feels immediate, small enough to be free. */
+export const PI_POLL_MS = 5_000;
+
+/**
+ * The pairing-code alphabet: no 0/O/1/I/5/S, because this is read off a television from across
+ * a room and then typed. A code that can be misread is a support call.
+ */
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRTUVWXYZ2346789';
+
+export function makePairingCode(): string {
+  const b = crypto.randomBytes(6);
+  return Array.from(b, (x) => CODE_ALPHABET[x % CODE_ALPHABET.length]).join('');
+}
+
+/** The agent's credential once adopted. 16 bytes, like a screen token — it is the whole access
+ *  control on an endpoint no human will ever authenticate. */
+export function makeDeviceToken(): string {
+  return crypto.randomBytes(16).toString('base64url');
+}
+
+/** Self-reported text from an unauthenticated device, reduced to something safe to show an
+ *  admin: control characters folded to spaces (written as ESCAPES — literal control bytes in
+ *  source are invisible and get reformatted away), then trimmed and clamped. */
+const str = (v: unknown, max: number): string =>
+  typeof v === 'string' ? v.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').trim().slice(0, max) : '';
+
+export interface EnrolInput {
+  /** the device's own persistent id, so a reboot does not create a second pending row */
+  deviceId?: unknown;
+  hostname?: unknown;
+  ip?: unknown;
+  model?: unknown;
+  agentVersion?: unknown;
+}
+
+export interface EnrolResult {
+  /** what the agent should show on screen while it waits */
+  code: string;
+  deviceId: string;
+  adopted: boolean;
+  pollMs: number;
+}
+
+/**
+ * A device announcing itself.
+ *
+ * Everything here is self-reported and unauthenticated, so it is treated as display text and
+ * nothing else — stripped of control characters and clamped. The one thing that matters is
+ * that a device which reboots or loses power comes back as the SAME pending row with the SAME
+ * code, rather than papering the dashboard with duplicates of one screen.
+ */
+export function enrolDevice(db: DB, input: EnrolInput, nowMs: number): { device: PiDevice; result: EnrolResult } {
+  const now = new Date(nowMs).toISOString();
+  const devices = (db.piDevices ??= []);
+
+  const claimedId = str(input.deviceId, 64);
+  let device = claimedId ? devices.find((d) => d.id === claimedId) : undefined;
+
+  if (device) {
+    // A known device: refresh what it says about itself, and its liveness.
+    device.hostname = str(input.hostname, 64) || device.hostname;
+    device.ip = str(input.ip, 64) || device.ip;
+    device.model = str(input.model, 64) || device.model;
+    device.agentVersion = str(input.agentVersion, 32) || device.agentVersion;
+    device.lastSeenAt = now;
+  } else {
+    // A device id is accepted from the agent so a reboot is not a new device, but it is only
+    // ever a LOOKUP key — it grants nothing, because a pending device has no token.
+    device = {
+      id: claimedId || `pi_${crypto.randomBytes(6).toString('hex')}`,
+      code: makePairingCode(),
+      hostname: str(input.hostname, 64) || 'raspberrypi',
+      ip: str(input.ip, 64),
+      model: str(input.model, 64),
+      agentVersion: str(input.agentVersion, 32),
+      firstSeenAt: now,
+      lastSeenAt: now,
+    };
+    devices.push(device);
+    prunePending(db, nowMs);
+  }
+
+  return {
+    device,
+    result: { code: device.code, deviceId: device.id, adopted: !!device.token, pollMs: PI_POLL_MS },
+  };
+}
+
+/** Forget stale pending devices, then the oldest if still over the cap. Adopted devices are
+ *  never touched — they belong to the masjid, not to this bound. */
+export function prunePending(db: DB, nowMs: number): void {
+  const devices = db.piDevices ?? [];
+  const kept = devices.filter((d) => d.token || nowMs - Date.parse(d.lastSeenAt || '') < PENDING_TTL_MS);
+  const pending = kept.filter((d) => !d.token).sort((a, b) => Date.parse(a.lastSeenAt) - Date.parse(b.lastSeenAt));
+  const drop = new Set(pending.slice(0, Math.max(0, pending.length - MAX_PENDING_DEVICES)).map((d) => d.id));
+  db.piDevices = kept.filter((d) => !drop.has(d.id));
+}
+
+/** Look a device up by the token it presents. Adopted devices only — a pending one has no
+ *  token, so there is nothing to match and nothing it can reach. */
+export function findDeviceByToken(db: DB, token: string): PiDevice | null {
+  if (!token) return null;
+  return (db.piDevices ?? []).find((d) => d.token === token) ?? null;
+}
+
+/** Match a code an admin typed. Case- and space-insensitive, because it was read off a screen
+ *  and typed by hand. Only pending devices can be matched — a code is spent at adoption. */
+export function findPendingByCode(db: DB, code: string): PiDevice | null {
+  const want = code.replace(/[\s-]/g, '').toUpperCase();
+  if (want.length < 4) return null;
+  return (db.piDevices ?? []).find((d) => !d.token && d.code === want) ?? null;
+}
+
+export interface PiState {
+  content: { kind: 'timetable' | 'source' | 'off'; id?: string };
+  source: 'override' | 'schedule' | 'default';
+  /** the timetable to render locally, when showing one */
+  timetable: Timetable | null;
+  assets: { background: string | null; logo: string | null; announcements: string[] };
+  bgLight: boolean;
+  autoAccent: string | null;
+  /**
+   * The camera's OWN address, for the agent to open directly.
+   *
+   * This single field is the reason the whole device exists. A browser screen has to be fed
+   * video through the server — which, with the server in the cloud, means the picture crosses
+   * the internet twice and arrives as a slideshow. The Pi is on the same network as the
+   * camera, so it is handed the address and pulls the stream itself: the server carries none
+   * of it, and a cloud-hosted display server becomes possible.
+   */
+  stream: { url: string; mode: 'direct' | 'normalize' } | null;
+  serverNow: number;
+  clockSuspect: boolean;
+  pollMs: number;
+  screenName: string;
+}
+
+const asset = (base: string, token: string, file: string) =>
+  `${base}/pi/${encodeURIComponent(token)}/asset/${encodeURIComponent(file)}`;
+
+export function piState(
+  db: DB,
+  device: PiDevice,
+  tv: Tv | null,
+  nowMs: number,
+  opts: { basePrefix: string; clockSuspect: boolean; bgLight: boolean; autoAccent: string | null },
+): PiState {
+  const off = { kind: 'off' as const };
+  if (!tv) {
+    return {
+      content: off,
+      source: 'default',
+      timetable: null,
+      assets: { background: null, logo: null, announcements: [] },
+      bgLight: false,
+      autoAccent: null,
+      stream: null,
+      serverNow: nowMs,
+      clockSuspect: opts.clockSuspect,
+      pollMs: PI_POLL_MS,
+      screenName: '',
+    };
+  }
+  // The SAME resolution every other kind of screen uses, so a schedule rule or a volunteer's
+  // override moves a Pi, a browser and a decoder identically.
+  const res = resolveTv(tv, db.schedules, new Date(nowMs), db.settings.scheduleTimezone);
+  const tt = res.content.kind === 'timetable' ? db.timetables.find((t) => t.id === res.content.id) ?? null : null;
+  const src = res.content.kind === 'source' ? db.sources.find((s) => s.id === res.content.id) : undefined;
+  const token = device.token ?? '';
+  return {
+    content: res.content,
+    source: res.source,
+    timetable: tt,
+    assets: {
+      background: tt?.backgroundImage ? asset(opts.basePrefix, token, tt.backgroundImage) : null,
+      logo: tt?.logoImage ? asset(opts.basePrefix, token, tt.logoImage) : null,
+      announcements: (tt?.announcements?.images ?? []).map((f) => asset(opts.basePrefix, token, f)),
+    },
+    bgLight: opts.bgLight,
+    autoAccent: opts.autoAccent,
+    // Only for an ENABLED source. A disabled one is "off", not "try anyway".
+    stream: src && src.enabled ? { url: src.url, mode: src.mode } : null,
+    serverNow: nowMs,
+    clockSuspect: opts.clockSuspect,
+    pollMs: PI_POLL_MS,
+    screenName: tv.name,
+  };
+}
+
+// ── liveness, exactly as browser screens do it ───────────────────────────────
+
+const seen = new Map<string, number>();
+
+export function markDeviceSeen(deviceId: string, nowMs: number): void {
+  seen.set(deviceId, nowMs);
+  if (seen.size > 200) for (const [k, t] of seen) if (nowMs - t > PI_SEEN_TIMEOUT_MS) seen.delete(k);
+}
+
+export function deviceOnline(deviceId: string, nowMs: number): boolean {
+  const at = seen.get(deviceId);
+  return at != null && nowMs - at <= PI_SEEN_TIMEOUT_MS;
+}
+
+/** Test seam. */
+export function __resetDevicesForTests(): void {
+  seen.clear();
+}

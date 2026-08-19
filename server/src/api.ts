@@ -22,6 +22,17 @@ import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, w
 import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
 import type { FabricCommands } from './fabricCommands';
 import {
+  enrolDevice,
+  findDeviceByToken,
+  findPendingByCode,
+  markDeviceSeen,
+  makeDeviceToken,
+  piState,
+  prunePending,
+  PI_POLL_MS,
+  deviceOnline,
+} from './piAgent';
+import {
   findByToken,
   webScreenState,
   markWebScreenSeen,
@@ -67,7 +78,7 @@ import {
   normSettings,
   normContent,
 } from './validate';
-import type { DB, Timetable } from './types';
+import type { DB, Timetable, Tv } from './types';
 
 const log = makeLog('api');
 
@@ -344,6 +355,85 @@ export function createApi(deps: Deps) {
       if (/^(?:\/[a-z0-9-]+)?\/(volunteer(?:\/.*)?|api\/volunteer\/.+)$/.test(pathname)) {
         if (!store.db.settings.volunteerRemote) return sendJson(res, 404, { error: 'Not found.' });
         return volunteer(req, res);
+      }
+
+      // ---- Raspberry Pi agents (beta) ---------------------------------------------
+      //
+      // A device, not a page. The agent polls US — it is behind the masjid's NAT on an address
+      // DHCP may move, and the display server may be in the cloud, so nothing here ever
+      // connects outward to a Pi. Enrolment has to be unauthenticated (a fresh Pi holds no
+      // credentials), so it is bounded: rate-limited here, capped in number in piAgent.ts, and
+      // it can only ever create a PENDING row. Content requires a token, and a token only
+      // exists once an admin has typed the code shown on that screen.
+      const piMatch = /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|asset\/[\w.\-]{1,120}))$/.exec(pathname);
+      if (piMatch) {
+        if (!screenLimiter.allow(req)) {
+          res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
+          res.end('Too many requests.');
+          return;
+        }
+
+        if (piMatch[1] === 'enrol' && method === 'POST') {
+          const body = await readBody(req, 4_000).catch(() => null);
+          if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+          let out!: ReturnType<typeof enrolDevice>['result'];
+          store.update((db) => {
+            out = enrolDevice(db, body, Date.now()).result;
+          });
+          markDeviceSeen(out.deviceId, Date.now());
+          // A pending device is told only that it is pending. It learns nothing about this
+          // masjid until an admin has adopted it.
+          return sendJson(res, 200, out);
+        }
+
+        const device = findDeviceByToken(store.db, piMatch[2] ?? '');
+        if (!device) {
+          // 404, never 403 — a token that no longer works must not be distinguishable from one
+          // that never did.
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('Not found.');
+          return;
+        }
+        markDeviceSeen(device.id, Date.now());
+        const what = piMatch[3] ?? '';
+
+        if (what === 'seen' && method === 'POST') return sendJson(res, 200, { ok: true, pollMs: PI_POLL_MS });
+
+        if (what === 'state' && method === 'GET') {
+          const tv = device.tvId ? store.db.tvs.find((t) => t.id === device.tvId) ?? null : null;
+          const tt =
+            tv && tv.kind === 'pi'
+              ? store.db.timetables.find(
+                  (t) => t.id === resolveTv(tv, store.db.schedules, new Date(), store.db.settings.scheduleTimezone).content.id,
+                )
+              : undefined;
+          const tone = tt?.backgroundImage ? await backgroundTone(tt) : { bgLight: false, autoAccent: null };
+          const state = piState(store.db, device, tv, Date.now(), {
+            basePrefix: basePathPrefix(pathname),
+            clockSuspect: clockSuspect(),
+            bgLight: tone.bgLight,
+            autoAccent: tone.autoAccent,
+          });
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(state));
+          return;
+        }
+
+        if (what.startsWith('asset/') && method === 'GET') {
+          const found = uploadFilePath(what.slice('asset/'.length));
+          if (!found) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+            res.end('Not found.');
+            return;
+          }
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': found.mime, 'cache-control': 'public, max-age=86400' });
+          fs.createReadStream(found.path).pipe(res);
+          return;
+        }
+
+        res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+        res.end('Not found.');
+        return;
       }
 
       // ---- Browser screens (beta): the page a TV/Raspberry Pi opens ---------------
@@ -1240,6 +1330,63 @@ export function createApi(deps: Deps) {
         const publicConfigured = !!site?.enabled && !!site.publicUrl;
         const publicUrl = publicConfigured && tt.widget?.enabled ? `${site!.publicUrl}/w/${tt.id}` : '';
         return sendJson(res, 200, { enabled: !!tt.widget?.enabled, publicUrl, publicConfigured });
+      }
+
+      // The Raspberry Pi agents this masjid has seen — pending ones waiting to be adopted,
+      // and adopted ones with their liveness. Admin-gated, unlike the agent's own routes.
+      if (pathname === '/api/pi/devices' && method === 'GET') {
+        store.update((db) => prunePending(db, Date.now()));
+        const now = Date.now();
+        return sendJson(res, 200, {
+          devices: (store.db.piDevices ?? []).map((d) => ({
+            id: d.id,
+            code: d.token ? '' : d.code, // a spent code is never shown again
+            adopted: !!d.token,
+            hostname: d.hostname,
+            ip: d.ip,
+            model: d.model,
+            agentVersion: d.agentVersion,
+            tvId: d.tvId,
+            online: deviceOnline(d.id, now),
+            lastSeenAt: d.lastSeenAt,
+          })),
+        });
+      }
+
+      // Adopt a device by the code showing on its screen, creating the screen it will drive.
+      // The code is the proof: whoever types it can see that television.
+      if (pathname === '/api/pi/adopt' && method === 'POST') {
+        const body = await readBody(req);
+        const code = typeof body.code === 'string' ? body.code : '';
+        const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
+        const pending = findPendingByCode(store.db, code);
+        if (!pending) return sendJson(res, 404, { error: 'No screen is showing that code. Check the code on the screen and try again.' });
+        if (atCap(res, store.db.tvs)) return;
+        let created!: Tv;
+        store.update((db) => {
+          const d = db.piDevices!.find((x) => x.id === pending.id)!;
+          const tv = normTv({ name: name || d.hostname || 'Screen', kind: 'pi', defaultContent: { kind: 'off' } });
+          tv.piDeviceId = d.id;
+          db.tvs.push(tv);
+          d.token = makeDeviceToken();
+          d.tvId = tv.id;
+          created = tv;
+        });
+        return sendJson(res, 200, { tv: created });
+      }
+
+      // Forget a device: drop its token so it falls back to pending and shows a fresh code.
+      // The screen it drove is left alone — deleting someone's screen is a separate decision.
+      const piForget = /^\/api\/pi\/([\w-]+)\/forget$/.exec(pathname);
+      if (piForget && method === 'POST') {
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piForget[1]);
+          if (d) {
+            delete d.token;
+            delete d.tvId;
+          }
+        });
+        return sendJson(res, 200, { ok: true });
       }
 
       // A browser screen's address, for the panel to hand to whoever is setting the TV up.

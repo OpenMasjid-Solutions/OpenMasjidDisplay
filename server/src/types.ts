@@ -301,7 +301,45 @@ export interface ContentRef {
  * not. `web` is a browser opening an HTTPS page that renders the SAME SVG locally from a
  * ~0.5 KB payload, so the network carries data instead of video.
  */
-export type TvKind = 'rtsp' | 'web';
+export type TvKind = 'rtsp' | 'web' | 'pi';
+
+/**
+ * A paired display device — a Raspberry Pi running the agent.
+ *
+ * ## Why the device calls US, rather than the dashboard calling it
+ *
+ * The setup reads as "the screen shows its address, you type it into the dashboard", and that
+ * is what an installer sees. But the server cannot be the side that connects: the Pi sits on
+ * the masjid's LAN behind NAT, on an address DHCP is free to move, and the entire point of
+ * this design is that the display server may live in the cloud. A cloud server can never reach
+ * 192.168.1.x.
+ *
+ * So the agent learns the server's address from its own install command and polls OUTWARD, and
+ * what the admin types is a short pairing CODE. The code is doing real work rather than
+ * ceremony: it is proof that whoever is adopting this device can physically see the screen it
+ * is plugged into. The IP is still shown, because it is how you tell two Pis apart — but
+ * nothing ever connects to it.
+ */
+export interface PiDevice {
+  id: string;
+  /** Short and human-readable, shown on the screen until adopted (e.g. "K7M2QX"). Read off a
+   *  television across a room, so the alphabet excludes anything that can be misread. */
+  code: string;
+  /** Issued at adoption; the capability the agent authenticates with from then on. Absent
+   *  while the device is still pending, which is what makes "pending" a real state. */
+  token?: string;
+  /** What the agent told us about itself, so an admin can tell two Pis apart. Treated as
+   *  display text only — it is unauthenticated at enrolment time. */
+  hostname: string;
+  /** The LAN address it printed on screen. Informational: nothing ever connects to it. */
+  ip: string;
+  model: string;
+  agentVersion: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  /** The screen this device drives, once adopted. */
+  tvId?: string;
+}
 
 export interface Tv {
   id: string;
@@ -312,6 +350,8 @@ export interface Tv {
   override?: { content: ContentRef; until: number | null } | null;
   /** absent = 'rtsp', so every screen that existed before web screens keeps working */
   kind?: TvKind;
+  /** for kind 'pi': the paired device driving this screen */
+  piDeviceId?: string;
   /**
    * Unguessable id for a `web` screen's public URL (/s/<token>).
    *
@@ -439,6 +479,8 @@ export interface DB {
   sources: Source[];
   tvs: Tv[];
   schedules: ScheduleRule[];
+  /** Raspberry Pi agents that have announced themselves, adopted or not. */
+  piDevices?: PiDevice[];
   /** what we handed to the platform's WhatsApp queue, newest last. Doubles as the
    *  "already announced" record, which is why it is persisted rather than in-memory:
    *  a restart must not re-post a change the group has already been told about. */
