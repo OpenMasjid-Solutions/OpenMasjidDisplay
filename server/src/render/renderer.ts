@@ -83,6 +83,23 @@ export interface TickerSpec {
 // stays at 1 fps on the worker; ffmpeg just duplicates frames and animates the text).
 // Quantising the scroll to a whole number of pixels PER FRAME is what removes judder.
 const TICKER_FPS = 20;
+
+/**
+ * Output frame rate for a timetable with no ticker — i.e. nothing on screen that moves.
+ *
+ * This is the single biggest lever on this app's CPU, and it was set to 15 on the strength of the
+ * comment in timetableArgs() that said the encoder "has ample headroom". Measured in the shipped
+ * container, that was backwards: for one 1080p screen the encoder ran ~3.5x the renderer
+ * (1429 ffmpeg ticks against 414 for node), so the output frame rate — not the SVG raster — is
+ * what a masjid without a hardware encoder is actually paying for.
+ *
+ * Encoding the same 20s of static content: 15 fps took 4470ms, 8 fps took 2300ms, 5 fps 1773ms.
+ * 8 keeps very nearly all of the saving (1.94x) and stays in the range commodity decoders and
+ * browsers handle without complaint, which 5 starts to push. Nothing is lost visually: without a
+ * ticker the picture changes once a second (the clock), so 8 frames per second is already 8x more
+ * often than the content does anything.
+ */
+export const STATIC_FPS = 8;
 /** Rasterise the timetable at a CAPPED resolution and let ffmpeg upscale to the
  *  output. The heavy per-second work is the resvg render; capping it (a 720p frame is
  *  ~2.25× cheaper than 1080p) keeps every render well under its 1-second slot even
@@ -131,7 +148,10 @@ export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d
   const up = inDims.width !== d.width || inDims.height !== d.height
     ? `scale=${d.width}:${d.height}:flags=lanczos,`
     : '';
-  if (!ticker) return `${up}format=${pixFmt},fps=15`;
+  // Must stay equal to timetableArgs()'s `ofps` for the no-ticker case. If this filter emits more
+  // frames than the encoder is configured for, ffmpeg rasterises and scales every one of them and
+  // then throws the surplus away — paying the full cost of the higher rate for none of it.
+  if (!ticker) return `${up}format=${pixFmt},fps=${STATIC_FPS}`;
   // NB: no `fps=` here. The pipeline now feeds genuine CFR frames at TICKER_FPS (the
   // last render, duplicated in real time between the 1 fps SVG renders), so drawtext
   // animates on real, evenly-paced frames. A hardware decoder gets a steady frame every
@@ -218,13 +238,16 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
   // The display is mostly static high-detail (gradients, glass, crisp text), so a low
   // CBR starved it and it went blocky/banded. Give it a generous bitrate — the content
   // compresses well so this only spends bits where detail actually needs them — and use
-  // a slightly better preset (the heavy work is the 1 fps SVG render, so the encoder has
-  // ample headroom). GOP is one keyframe per second at the output fps.
-  const ofps = ticker ? TICKER_FPS : 15;
+  // a slightly better preset. GOP is one keyframe per second at the output fps.
+  //
+  // This comment used to justify the preset with "the heavy work is the 1 fps SVG render, so the
+  // encoder has ample headroom". Measurement says the opposite — see STATIC_FPS above — so the
+  // headroom claim is gone and the static frame rate is chosen on the numbers instead.
+  const ofps = ticker ? TICKER_FPS : STATIC_FPS;
   // With a ticker we feed genuine CFR frames at TICKER_FPS (the pipeline duplicates the
   // last render in real time), so the input framerate IS the output framerate and there
-  // is no `fps=` filter. Without a ticker the SVG-per-second feed (1 fps) is upsampled by
-  // the `fps=15` filter as before (static content, no motion to stutter).
+  // is no `fps=` filter. Without a ticker the SVG-per-second feed (1 fps) is upsampled by the
+  // `fps=${STATIC_FPS}` filter (static content, so there is no motion to stutter).
   const inFps = ticker ? TICKER_FPS : 1;
   const br = bitrate > 0 ? bitrate : d.height >= 1080 ? 8000 : 4000;
   const buf = br * 2;

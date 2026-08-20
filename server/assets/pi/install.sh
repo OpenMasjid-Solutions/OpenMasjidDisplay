@@ -668,6 +668,17 @@ set -eu
 PREFIX=/opt/openmasjid-screen
 SPOOL=/var/lib/openmasjid-screen/control
 
+# The server address and the trust settings the installer worked out.
+#
+# This heredoc is QUOTED, so nothing in this file was substituted when it was written — $SERVER
+# here is a runtime variable, not a baked-in string. Without this line it is simply unset, and the
+# reinstall branch below took its "no server address" path every single time. update.sh sources the
+# same file for the same reason; this one did not, and since the panel's Update button became a
+# reinstall that meant Update silently did nothing at all.
+SERVER=""
+CURL_OPTS=""
+[ -f "$PREFIX/trust.env" ] && . "$PREFIX/trust.env"
+
 [ -d "$SPOOL" ] || exit 0
 for req in "$SPOOL"/*; do
   [ -f "$req" ] || continue

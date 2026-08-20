@@ -12,17 +12,25 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- The Update button on a Raspberry Pi screen did nothing at all. The screen accepted the
+  request and reported it as done, but it could not work out the address to download from, so
+  it quietly left itself alone. Update now installs what it was asked to.
+
+### Changed
+- Timetable screens use roughly half the processor they used to. Nothing on a timetable moves,
+  so the picture was being sent to the screen far more often than it actually changes; it now
+  goes at a rate that matches. Screens with a scrolling message are unchanged, and so is camera
+  video — both of those do move. Worth most on a machine with no video card, where this was the
+  single largest thing the app was spending its processor on.
+
 ### Added
 - **One Update button for a Raspberry Pi screen, and it applies everything.** It installs the
   current version and re-applies the screen’s setup in one step, so a fix never needs a keyboard
   in front of the Pi. The card also says whether the screen is already up to date.
-- **Re-run setup on a Raspberry Pi screen from the dashboard.** Update installs new screen
-  software, but some fixes also change how the Pi is configured — and those used to need somebody
-  with a keyboard in front of it. Re-run setup applies them for you. It takes a few minutes and
-  sometimes asks for a reboot afterwards, which is also a button now.
-- **Reboot a Raspberry Pi screen from the dashboard.** Alongside Update and Restart, there is now
-  a Reboot button for when restarting the software is not enough. The Pi limits itself to one
-  reboot every ten minutes, so a stuck screen cannot end up cycling out of reach.
+- **Reboot a Raspberry Pi screen from the dashboard.** For when reinstalling is not enough.
+  The Pi limits itself to one reboot every ten minutes, so a stuck screen cannot end up cycling
+  out of reach.
 
 - **Update and restart a Raspberry Pi screen from the dashboard.** Each Pi screen now has Update
   and Restart buttons on its card. Nothing connects to the Pi — it picks the instruction up on its

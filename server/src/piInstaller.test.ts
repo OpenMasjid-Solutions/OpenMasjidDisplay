@@ -481,3 +481,40 @@ test('re-running setup does not deadlock against the unit that triggered it', ()
   const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
   assert.ok(/setsid sh "\$TMP"/.test(ctl), 'the installer must be detached from the one-shot');
 });
+
+test('control.sh can actually reach the server it is told to reinstall from', () => {
+  // This shipped broken. control.sh is written with a QUOTED heredoc (<<'CTL'), so nothing inside
+  // it is substituted when the installer writes it — $SERVER in that file is a runtime variable,
+  // not a baked-in address. It was never assigned and never sourced, so it was simply empty, and
+  // the reinstall branch took its "no server address" path every single time. The panel's Update
+  // button had just been changed to send `reinstall`, so Update silently did nothing at all.
+  //
+  // The failure is invisible from the outside: the command is accepted, acknowledged, and logged.
+  // Only the screen's own log said why nothing happened.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+
+  assert.ok(
+    /^\s*\[ -f "\$PREFIX\/trust\.env" \] && \. "\$PREFIX\/trust\.env"/m.test(ctl),
+    'control.sh must source trust.env — update.sh does, for exactly this reason',
+  );
+
+  // The general form of the same bug: every variable control.sh reads must be defined somewhere in
+  // control.sh, since the quoted heredoc guarantees the installer contributes nothing to it.
+  const assigned = new Set<string>();
+  for (const m of ctl.matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/gm)) assigned.add(m[1]);
+  for (const m of ctl.matchAll(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b/g)) assigned.add(m[1]);
+  // trust.env is the installer's own file; these are the two settings it is documented to carry.
+  if (/trust\.env/.test(ctl)) { assigned.add('SERVER'); assigned.add('CURL_OPTS'); }
+
+  const shellProvided = new Set(['PATH', 'HOME', 'IFS', 'PWD', '1', '2', '@', '*', '?', '#', '$', '!', '0']);
+  const used = new Set<string>();
+  for (const m of ctl.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)) used.add(m[1]);
+
+  const undefinedVars = [...used].filter((v) => !assigned.has(v) && !shellProvided.has(v));
+  assert.deepEqual(
+    undefinedVars,
+    [],
+    `control.sh reads variables nothing ever sets (the quoted heredoc substitutes nothing): ${undefinedVars.join(', ')}`,
+  );
+});
