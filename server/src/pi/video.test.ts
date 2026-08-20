@@ -139,9 +139,14 @@ test('a run that lasted resets the backoff', () => {
   // Without this the failure count only rises, so a camera that drops every few minutes reaches the
   // 30s cap inside half an hour and every later recovery shows half a minute of an error card.
   assert.equal(ranHealthily(60_000), true);
-  assert.equal(ranHealthily(31_000), true);
+  // The case that mattered on real hardware: a UniFi stream playing about thirty seconds and then
+  // dropping. At the old 30s threshold that scored as unhealthy EVERY time, so the gap between
+  // attempts grew 1s, 2s, 4s … 30s while the drop itself never changed.
+  assert.equal(ranHealthily(28_000), true, 'a stream that played for 28s plainly worked');
+  assert.equal(ranHealthily(12_000), true);
+  // A failure to START is still counted, so a camera switched off overnight still backs off.
   assert.equal(ranHealthily(4_000), false, 'a fast failure is not a healthy run');
-  assert.equal(ranHealthily(30_000), false, 'the boundary is exclusive, matching the server');
+  assert.equal(ranHealthily(10_000), false, 'the boundary is exclusive');
 });
 
 test('the socket timeout option name is probed, because it changed between ffmpeg versions', () => {

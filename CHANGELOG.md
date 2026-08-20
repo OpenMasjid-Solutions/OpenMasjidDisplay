@@ -13,6 +13,12 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **A camera that drops now comes back straight away instead of taking longer each time.** A stream
+  that played for half a minute and then dropped was being treated as if it had never worked, so
+  each gap grew — one second, then two, then four, up to thirty. Anything that played for more
+  than ten seconds now counts as working, so the picture returns almost immediately.
+
+### Fixed
 - **The cursor really does stay in the text box now.** Any dialog in the panel could steal focus
   back to itself whenever the page behind it refreshed, which took the cursor out of whatever you
   were typing. It affected every dialog, not just the Raspberry Pi one.

@@ -185,7 +185,19 @@ export function shouldDropHardware(ranForMs: number, usedHw: boolean, alreadyTri
  * server already gets this right in renderer.ts and this mirrors it.
  */
 export function ranHealthily(ranForMs: number): boolean {
-  return ranForMs > 30_000;
+  // TEN seconds, not thirty.
+  //
+  // Thirty was lifted from the server's own pipeline, where it guards something else, and on a real
+  // camera it sat exactly on the failure it was supposed to absorb: a UniFi stream that played for
+  // about thirty seconds and dropped scored as NOT healthy every single time, so the failure count
+  // only ever climbed and the gap between attempts grew 1s, 2s, 4s … 30s. The drop stayed the same
+  // and our response to it got steadily worse.
+  //
+  // A stream that played for ten seconds plainly connected, authenticated and delivered video. That
+  // is a mid-stream drop, not a failure to start, and the right response is to try again at once.
+  // A genuine connect failure — wrong address, refused, bad certificate — ends in under five
+  // seconds and is still counted, so the backoff still protects a camera that is switched off.
+  return ranForMs > 10_000;
 }
 
 /**
