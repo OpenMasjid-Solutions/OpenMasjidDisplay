@@ -32,6 +32,9 @@ import {
 import {
   enrolDevice,
   updateDeviceFacts,
+  queueCommand,
+  ackCommand,
+  isPiCommand,
   findDeviceByToken,
   findPendingByCode,
   markDeviceSeen,
@@ -472,7 +475,9 @@ export function createApi(deps: Deps) {
       // it can only ever create a PENDING row. Content requires a token, and a token only
       // exists once an admin has typed the code shown on that screen.
       const piMatch =
-        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(pathname);
+        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|command-ack|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(
+          pathname,
+        );
       if (piMatch) {
         if (!screenLimiter.allow(req)) {
           res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
@@ -503,6 +508,16 @@ export function createApi(deps: Deps) {
         }
         markDeviceSeen(device.id, Date.now());
         const what = piMatch[3] ?? '';
+
+        // The device acknowledging an instruction. It does this BEFORE carrying it out, because
+        // both instructions end the process that would otherwise have done the acknowledging — see
+        // ackCommand. Unauthenticated is impossible here: the token in the path is the credential.
+        if (what === 'command-ack' && method === 'POST') {
+          const body = (await readBody(req, 1_000).catch(() => null)) as { id?: unknown } | null;
+          const id = typeof body?.id === 'string' ? body.id : '';
+          if (id) store.update((db) => ackCommand(db, device.id, id));
+          return sendJson(res, 200, { ok: true });
+        }
 
         if (what === 'seen' && method === 'POST') {
           // A periodic check-in. Its real job is refreshing what the panel shows — most of all
@@ -1514,6 +1529,21 @@ export function createApi(deps: Deps) {
 
       // Forget a device: drop its token so it falls back to pending and shows a fresh code.
       // The screen it drove is left alone — deleting someone's screen is a separate decision.
+      // Ask a Pi to do something. It is not sent anywhere — it is left for the device to collect
+      // on its next poll, so this returns "asked", never "done".
+      const piCmd = /^\/api\/pi\/([\w-]+)\/command$/.exec(pathname);
+      if (piCmd && method === 'POST') {
+        const body = (await readBody(req, 1_000).catch(() => null)) as { action?: unknown } | null;
+        if (!isPiCommand(body?.action)) return sendJson(res, 400, { error: 'Unknown action.' });
+        let queued: ReturnType<typeof queueCommand> = null;
+        store.update((db) => {
+          queued = queueCommand(db, piCmd[1], body!.action as 'restart' | 'update', Date.now());
+        });
+        if (!queued) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
+        log.info(`queued "${(body as { action: string }).action}" for pi device ${piCmd[1]}`);
+        return sendJson(res, 202, { queued: true });
+      }
+
       const piForget = /^\/api\/pi\/([\w-]+)\/forget$/.exec(pathname);
       if (piForget && method === 'POST') {
         store.update((db) => {

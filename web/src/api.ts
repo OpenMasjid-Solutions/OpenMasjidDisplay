@@ -148,6 +148,11 @@ export const api = {
   /** Adopt the screen showing this code, creating the screen it will drive. */
   piAdopt: (code: string, name: string) => req<{ tv: Tv }>('POST', '/api/pi/adopt', { code, name }),
 
+  /** Ask a Pi to do something. 202 means QUEUED, not done: the device is not reachable from here,
+   *  it collects the instruction on its own poll within about five seconds. */
+  piCommand: (id: string, action: 'restart' | 'update') =>
+    req<{ queued: boolean }>('POST', `/api/pi/${id}/command`, { action }),
+
   /** Forget a device: it goes back to showing a fresh pairing code. Its screen is kept. */
   piForget: (id: string) => req<{ ok: boolean }>('POST', `/api/pi/${id}/forget`),
 

@@ -266,6 +266,9 @@ export interface PiState {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
+  /** What the panel has asked this device to do, if anything. Collected on the device's own poll,
+   *  because nothing can connect to it. */
+  command: { id: string; action: PiCommandAction } | null;
 }
 
 const asset = (base: string, token: string, file: string) =>
@@ -306,6 +309,7 @@ export function piState(
       clockSuspect: opts.clockSuspect,
       pollMs: PI_POLL_MS,
       screenName: '',
+      command: pendingCommand(device, nowMs),
     };
   }
   // The SAME resolution every other kind of screen uses, so a schedule rule or a volunteer's
@@ -333,6 +337,7 @@ export function piState(
     clockSuspect: opts.clockSuspect,
     pollMs: PI_POLL_MS,
     screenName: tv.name,
+    command: pendingCommand(device, nowMs),
   };
 }
 

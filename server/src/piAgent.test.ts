@@ -25,7 +25,7 @@ import {
   PENDING_TTL_MS,
   PI_SEEN_TIMEOUT_MS,
   __resetDevicesForTests,
-} from './piAgent';
+ queueCommand, pendingCommand, ackCommand, isPiCommand, PI_COMMAND_TTL_MS } from './piAgent';
 import type { DB, Settings, Tv } from './types';
 
 const NOW = new Date('2026-08-19T12:00:00Z').getTime();
@@ -318,4 +318,67 @@ test('a device that sends no secret can never be adopted into a working state', 
   const again = enrolDevice(d, { deviceId: 'pi_nosecret' }, NOW + 1000);
   assert.equal(again.result.token, undefined);
   assert.equal(again.result.adopted, false);
+});
+
+// ── asking a device to do something it cannot be told directly ───────────────
+
+test('a queued command is offered to the device, then cleared when it acknowledges', () => {
+  const d = db();
+  const { device } = enrolDevice(d, { deviceId: 'pi_a', deviceSecret: 's' }, NOW);
+  device.token = 'tok';
+  const q = queueCommand(d, device.id, 'restart', NOW);
+  assert.ok(q, 'an adopted device can be asked');
+  assert.deepEqual(pendingCommand(device, NOW), { id: q!.id, action: 'restart' });
+
+  ackCommand(d, device.id, q!.id);
+  assert.equal(pendingCommand(device, NOW), null, 'once acknowledged it must not be offered again');
+});
+
+test('a device that has not been set up cannot be asked to do anything', () => {
+  const d = db();
+  const { device } = enrolDevice(d, { deviceId: 'pi_a', deviceSecret: 's' }, NOW);
+  assert.equal(queueCommand(d, device.id, 'restart', NOW), null, 'pending devices hold no token');
+  assert.equal(queueCommand(d, 'pi_nonexistent', 'restart', NOW), null);
+});
+
+test('a command expires, so a screen switched off at the wall does not obey it days later', () => {
+  const d = db();
+  const { device } = enrolDevice(d, { deviceId: 'pi_a', deviceSecret: 's' }, NOW);
+  device.token = 'tok';
+  queueCommand(d, device.id, 'restart', NOW);
+  assert.ok(pendingCommand(device, NOW + 60_000), 'still valid a minute later');
+  assert.equal(pendingCommand(device, NOW + PI_COMMAND_TTL_MS + 1), null, 'not three days later');
+});
+
+test('a stale acknowledgement cannot clear a newer command', () => {
+  // Two clicks in quick succession: the ack for the first must not swallow the second.
+  const d = db();
+  const { device } = enrolDevice(d, { deviceId: 'pi_a', deviceSecret: 's' }, NOW);
+  device.token = 'tok';
+  const first = queueCommand(d, device.id, 'restart', NOW)!;
+  const second = queueCommand(d, device.id, 'update', NOW)!;
+  assert.notEqual(first.id, second.id);
+  ackCommand(d, device.id, first.id);
+  assert.deepEqual(pendingCommand(device, NOW), { id: second.id, action: 'update' });
+});
+
+test('asking twice replaces rather than queues', () => {
+  // These are "what should this screen do next", not a work list. Two clicks on Restart mean one
+  // restart.
+  const d = db();
+  const { device } = enrolDevice(d, { deviceId: 'pi_a', deviceSecret: 's' }, NOW);
+  device.token = 'tok';
+  queueCommand(d, device.id, 'restart', NOW);
+  const latest = queueCommand(d, device.id, 'update', NOW)!;
+  assert.equal(pendingCommand(device, NOW)?.action, 'update');
+  assert.equal(pendingCommand(device, NOW)?.id, latest.id);
+});
+
+test('only the two known actions are accepted', () => {
+  // The dispatcher on the device has no default branch that runs anything, and this is the gate
+  // in front of it.
+  for (const ok of ['restart', 'update']) assert.equal(isPiCommand(ok), true, ok);
+  for (const no of ['reboot', 'rm -rf /', '', 'RESTART', 'wifi-set', null, 7]) {
+    assert.equal(isPiCommand(no as unknown), false, String(no));
+  }
 });

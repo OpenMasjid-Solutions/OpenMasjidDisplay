@@ -194,3 +194,36 @@ test('a performance warning is not reported as the reason a camera failed', () =
   for (const l of noise) assert.ok(NOISE.test(l), `should be ignored: ${l.slice(0, 60)}`);
   for (const l of real) assert.ok(!NOISE.test(l), `should be reported: ${l.slice(0, 60)}`);
 });
+
+test('hardware decoding is not retried on a board that does not have it', () => {
+  // From the real log, every 35 seconds for as long as it ran:
+  //   camera: opening rtsps://... (hardware decoding)
+  //   camera: failed in 2s with hardware decoding; trying software once:
+  //     [h264_v4l2m2m @ ...] Could not find a valid device
+  // Two seconds of black screen on every reconnect, for a decoder this board does not have. The
+  // healthy run that triggered the re-arm was in SOFTWARE, so it said nothing about the hardware.
+  //
+  // shouldDropHardware already refuses a second attempt within one camera; the missing half was
+  // not re-arming across reconnects unless hardware had genuinely worked.
+  assert.equal(shouldDropHardware(2_000, true, false), true, 'try software after the first fast failure');
+  assert.equal(shouldDropHardware(2_000, true, true), false, 'and never again for this camera');
+});
+
+test('a clean exit is a stream ending, not a failure', () => {
+  // The other half of the same log: "ffmpeg exited (0) after 33s". Exit ZERO — UniFi tore the RTSP
+  // session down and ffmpeg reported a clean end of stream. Counting that as a failure grew the
+  // backoff for something that had just worked perfectly for half a minute.
+  //
+  // ranHealthily covers the 33s; the exit code is what distinguishes "ended" from "broke".
+  assert.equal(ranHealthily(33_000), true);
+  // And the guard is on the code itself, so even a SHORT clean exit does not accumulate.
+  const src = fs.readFileSync(path.resolve(__dirname, 'video.ts'), 'utf8');
+  assert.ok(/if \(code === 0\) \{/.test(src), 'a clean exit must be handled before the failure path');
+  // Scoped to the EXIT handler. There is another `failures++` in the spawn-failure path, which
+  // legitimately comes earlier in the file — comparing against that one proves nothing.
+  const handler = src.slice(src.indexOf("proc.on('exit'"));
+  const zero = handler.indexOf('if (code === 0) {');
+  const bump = handler.indexOf('this.failures++');
+  assert.ok(zero >= 0 && bump >= 0, 'both branches must exist in the exit handler');
+  assert.ok(zero < bump, 'a clean exit must be handled BEFORE the failure count is raised');
+});

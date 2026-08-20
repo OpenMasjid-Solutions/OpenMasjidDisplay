@@ -379,6 +379,9 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFDIR"
 # Keeping it on disk is also what lets a screen come back after a power cut while the internet
 # is still down.
 mkdir -p "$STATEDIR/cache"
+# Where the agent leaves a request for something it is not allowed to do itself. It can write
+# here; it cannot write /opt, which is where the thing that ACTS on the request lives.
+mkdir -p "$STATEDIR/control"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$STATEDIR"
 chmod 750 "$STATEDIR"
 say "device id: $(cat /tmp/omd-device-id)"
@@ -615,10 +618,83 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 
+# ── doing what the agent may not ─────────────────────────────────────────────
+#
+# "Update now" from the dashboard needs root: it replaces the agent in /opt, which the agent
+# deliberately cannot write, so that a long-lived network-facing process cannot rewrite its own
+# code.
+#
+# There is NO sudoers entry here, and that is not a preference. The agent runs with
+# NoNewPrivileges=yes, which makes execve() ignore setuid bits entirely — sudo detects the flag and
+# refuses outright. The only way to make sudo work would be to delete that line, which would re-open
+# every setuid binary on the box to the one process most exposed to the network. Strictly worse than
+# the feature is worth.
+#
+# So root is the active party. The agent leaves a file; a .path unit notices; a root one-shot acts.
+# The request is UNLINKED BEFORE IT IS ACTED ON, because a request that survived the action would
+# re-trigger the watcher and repeat it for ever.
+
+cat > "$PREFIX/control.sh" <<'CTL'
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+# Carry out a request the screen agent left, then remove it. Runs as root, from a .path unit.
+set -eu
+PREFIX=/opt/openmasjid-screen
+SPOOL=/var/lib/openmasjid-screen/control
+
+[ -d "$SPOOL" ] || exit 0
+for req in "$SPOOL"/*; do
+  [ -f "$req" ] || continue
+  # Read it, then DELETE IT, before doing anything. A request still present afterwards would
+  # retrigger the watcher and loop.
+  action=$(head -c 32 "$req" 2>/dev/null | tr -dc 'a-z-' || true)
+  rm -f "$req"
+  case "$action" in
+    update)
+      echo "control: running the updater at the dashboard's request"
+      "$PREFIX/update.sh" || echo "control: the updater reported a problem"
+      ;;
+    *)
+      # A closed set with no default that runs anything. An agent that has been tampered with can
+      # write a file here; it cannot invent a new verb.
+      echo "control: ignoring unknown request '$action'"
+      ;;
+  esac
+done
+CTL
+chmod 700 "$PREFIX/control.sh"
+
+cat > /etc/systemd/system/openmasjid-screen-control.service <<'UNIT'
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=OpenMasjidDisplay: carry out a screen agent request
+
+[Service]
+Type=oneshot
+ExecStart=/opt/openmasjid-screen/control.sh
+UNIT
+
+cat > /etc/systemd/system/openmasjid-screen-control.path <<'UNIT'
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=OpenMasjidDisplay: watch for a screen agent request
+
+[Path]
+# DirectoryNotEmpty rather than PathExists: it re-checks after the service finishes, so a request
+# that arrived while the last one was running is still picked up.
+DirectoryNotEmpty=/var/lib/openmasjid-screen/control
+Unit=openmasjid-screen-control.service
+
+[Install]
+WantedBy=paths.target
+UNIT
+
 systemctl daemon-reload
 systemctl enable --now openmasjid-screen-console.service >/dev/null 2>&1 || true
 systemctl enable openmasjid-screen.service >/dev/null 2>&1
 systemctl enable --now openmasjid-screen-update.timer >/dev/null 2>&1 || true
+systemctl enable --now openmasjid-screen-control.path >/dev/null 2>&1 || true
 systemctl restart openmasjid-screen.service
 
 printf '\n\033[32m==> Done.\033[0m Installed agent %s.\n' "$AGENT_VERSION"

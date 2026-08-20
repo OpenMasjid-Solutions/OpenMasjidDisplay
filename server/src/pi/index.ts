@@ -26,6 +26,8 @@
  * separate because they have nothing to do with each other — the state changes when somebody
  * touches the dashboard, and the picture changes every second because a clock is on it.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { Resvg } from '@resvg/resvg-js';
 import { Framebuffer, quietConsole, describeFramebuffer, FB_DEVICE, type FbGeometry } from './framebuffer';
 import { VideoPlayer } from './video';
@@ -91,6 +93,7 @@ interface PiStateWire {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
+  command?: { id: string; action: 'restart' | 'update' } | null;
 }
 
 // ── drawing ───────────────────────────────────────────────────────────────────
@@ -222,6 +225,84 @@ interface EnrolReply {
   adopted: boolean;
   token?: string;
   pollMs?: number;
+}
+
+/**
+ * Where the id of the last command we carried out is kept.
+ *
+ * In the state directory, which is the one place the agent may write. It has to survive a restart,
+ * because `restart` and `update` both END THIS PROCESS: without a record, the agent would come
+ * back, poll, be offered the same instruction, and act on it again — for ever, every five seconds,
+ * with `Restart=always` guaranteeing nothing ever stops it. The server clearing the command on
+ * acknowledgement is the first guard; this is the one that holds when the acknowledgement is the
+ * thing that got lost.
+ */
+const LAST_COMMAND_FILE = `${process.env.OMD_SCREEN_CACHE ? `${process.env.OMD_SCREEN_CACHE}/..` : '/var/lib/openmasjid-screen'}/last-command`;
+
+function lastCommandId(): string {
+  try {
+    return fs.readFileSync(LAST_COMMAND_FILE, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function rememberCommand(id: string): void {
+  try {
+    fs.mkdirSync(path.dirname(LAST_COMMAND_FILE), { recursive: true });
+    fs.writeFileSync(LAST_COMMAND_FILE, `${id}\n`);
+  } catch {
+    // If this cannot be written we must NOT act: an unrecorded restart is an endless one.
+    throw new Error('could not record the command; refusing to act on it');
+  }
+}
+
+/**
+ * Carry out an instruction from the panel.
+ *
+ * The order is the whole safety property: acknowledge FIRST, record it, and only then act. Both
+ * actions end this process, so anything done after acting is not done at all.
+ *
+ * `restart` needs no privileges whatsoever — exiting is enough, because systemd is configured to
+ * bring the agent straight back. `update` does need root, so it is left as a request in a
+ * directory a root-side unit is watching; see the installer.
+ */
+async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart' | 'update' }): Promise<void> {
+  if (cmd.id === lastCommandId()) return; // already done; the ack simply never landed
+
+  // Tell the server before doing anything, so a command cannot be collected twice.
+  const acked = await postJson(`${cfg.server}/pi/${cfg.token}/command-ack`, { id: cmd.id }).catch(() => ({
+    httpStatus: 0,
+  }));
+  if (failed(acked)) {
+    log(`could not acknowledge "${cmd.action}"; leaving it for the next poll`);
+    return;
+  }
+  rememberCommand(cmd.id);
+
+  if (cmd.action === 'restart') {
+    log('restarting at the panel\'s request');
+    // No privileges needed: systemd restarts us. Flush first — process.exit does not wait for
+    // stdout, and the reason for a restart is exactly what somebody will look for afterwards.
+    setTimeout(() => process.exit(0), 250);
+    return;
+  }
+
+  if (cmd.action === 'update') {
+    // The agent cannot write /opt — deliberately, so it cannot rewrite its own code. Leave a
+    // request for the root-side updater instead. Written through a temporary name and renamed, so
+    // the watcher never sees a half-written file.
+    try {
+      const dir = '/var/lib/openmasjid-screen/control';
+      fs.mkdirSync(dir, { recursive: true });
+      const tmp = `${dir}/.${cmd.id}`;
+      fs.writeFileSync(tmp, `update\n`);
+      fs.renameSync(tmp, `${dir}/${cmd.id}`);
+      log('asked the updater to check for a new version');
+    } catch (e) {
+      log('could not ask the updater:', (e as Error).message);
+    }
+  }
 }
 
 // ── waiting to be adopted ─────────────────────────────────────────────────────
@@ -454,6 +535,12 @@ async function runAdopted(
         if (Math.abs(live.clockOffsetMs) > 60_000) {
           log(`this Pi's clock is ${Math.round(live.clockOffsetMs / 1000)}s out; using the server's time`);
         }
+      }
+
+      if (st.command) {
+        // Deliberately awaited: a restart ends this loop, and there is nothing after it worth
+        // racing.
+        await runCommand(cfg, st.command).catch((e: Error) => log('command failed:', e.message));
       }
 
       await resolveAssets(live, cache, cfg.server).catch(() => {

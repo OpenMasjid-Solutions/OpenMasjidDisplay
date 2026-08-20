@@ -368,3 +368,36 @@ test('nothing in the expanded heredocs can be executed by accident', () => {
   }
   assert.deepEqual(offenders, [], `command substitution or an unknown variable in an expanded heredoc:\n${offenders.join('\n')}`);
 });
+
+test('the root dispatcher removes a request BEFORE acting on it', () => {
+  // A request still present after the action would retrigger the .path unit and repeat it for ever.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'));
+  const del = ctl.indexOf('rm -f "$req"');
+  const act = ctl.indexOf('"$PREFIX/update.sh"');
+  assert.ok(del > 0 && act > 0, 'both the delete and the action must exist');
+  assert.ok(del < act, 'the request must be unlinked first, or the screen loops');
+});
+
+test('the dispatcher runs a closed set of verbs with no escape hatch', () => {
+  // A compromised agent can drop a file in the spool. It must not be able to invent a verb.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  assert.ok(/tr -dc 'a-z-'/.test(ctl), 'the verb must be reduced to a safe alphabet');
+  assert.ok(/case "\$action" in/.test(ctl));
+  assert.ok(/^\s*update\)/m.test(ctl), 'update is the only action');
+  // The default branch must not execute anything.
+  const def = /\*\)([\s\S]*?);;/.exec(ctl)?.[1] ?? '';
+  assert.ok(!/\$\(|`|eval|sh |exec /.test(def), `the default branch runs something: ${def.trim()}`);
+});
+
+test('the spool is writable by the agent and the dispatcher is not', () => {
+  const tpl = installerTemplate() as string;
+  // The agent may leave a request...
+  assert.ok(tpl.includes('mkdir -p "$STATEDIR/control"'));
+  const rwp = /^ReadWritePaths=(.*)$/m.exec(tpl)?.[1] ?? '';
+  assert.ok(rwp.includes('$STATEDIR'), 'the spool must be inside what the agent can write');
+  // ...but must not be able to change what acts on it.
+  assert.ok(!rwp.includes('$PREFIX'), 'control.sh must stay out of the agent\'s reach');
+  assert.ok(tpl.includes('chmod 700 "$PREFIX/control.sh"'));
+});

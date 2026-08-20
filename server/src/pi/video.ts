@@ -255,6 +255,9 @@ export class VideoPlayer {
   /** Whether hardware decoding has already been given up on for THIS camera. Reset per camera, so
    *  a wrong guess costs one attempt rather than the life of the device. */
   private triedHw = false;
+  /** Set only once hardware decoding has ACTUALLY produced a working stream. Until then there is
+   *  nothing to fall back to, and retrying it costs a black screen every reconnect. */
+  private hwEverWorked = false;
 
   constructor(
     private readonly device: string,
@@ -343,7 +346,23 @@ export class VideoPlayer {
       if (this.proc !== proc) return; // superseded by a newer spawn
       this.proc = null;
       const ranFor = Date.now() - this.startedAt;
+      // Note whether the HARDWARE decoder is what produced a working stream. Nothing else can tell
+      // us that, and re-arming it later depends on it.
+      if (this.hw && ranHealthily(ranFor)) this.hwEverWorked = true;
       if (this.stopped) return;
+
+      // Exit code ZERO is not a failure.
+      //
+      // Seen on a real UniFi camera: it plays for about thirty seconds and ffmpeg exits 0, because
+      // the server tore the RTSP session down and ffmpeg reports that as a clean end of stream.
+      // Counting it as a failure grew the backoff for something that had just worked perfectly.
+      // Reopen at once, and say what actually happened rather than printing an error.
+      if (code === 0) {
+        this.failures = 0;
+        this.log(`camera: the stream ended after ${Math.round(ranFor / 1000)}s; reopening`);
+        this.scheduleRetry();
+        return;
+      }
 
       if (shouldDropHardware(ranFor, this.hw, this.triedHw)) {
         // Might be a board with no working V4L2 decoder — or might be a TLS handshake that failed
@@ -361,8 +380,13 @@ export class VideoPlayer {
         // camera that drops every few minutes is stuck at the 30-second cap for good, and every
         // recovery shows half a minute of an error card on the wall.
         this.failures = 0;
-        // And give the hardware decoder another chance: if it worked for a while, it works.
-        if (this.triedHw) {
+        // Give the hardware decoder another chance ONLY if it has ever actually worked.
+        //
+        // It used to re-arm unconditionally. On a board whose V4L2 decoder does not exist — the
+        // real log says "Could not find a valid device", every single attempt — that burned two
+        // seconds of black screen on EVERY reconnect, for ever. And the healthy run that gets us
+        // here was in software, so it says nothing whatever about the hardware.
+        if (this.triedHw && this.hwEverWorked) {
           this.triedHw = false;
           this.hw = true;
         }

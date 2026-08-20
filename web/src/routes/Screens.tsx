@@ -16,6 +16,7 @@ import {
   IconCopy,
   IconCheck,
   IconRefresh,
+  IconDownload,
   MasjidMark,
   Spinner,
   copyText,
@@ -162,8 +163,27 @@ function ScreenCard({
   onDelete: () => void;
   onCopy: (url: string) => void;
 }) {
+  const toast = useToast();
   const [copied, setCopied] = useState(false);
   const [copiedPublic, setCopiedPublic] = useState(false);
+  const [sending, setSending] = useState<'' | 'restart' | 'update'>('');
+
+  /** Queue an instruction for the Pi. It is not sent — the device collects it, so say so. */
+  const ask = async (deviceId: string, action: 'restart' | 'update') => {
+    setSending(action);
+    try {
+      await api.piCommand(deviceId, action);
+      toast(
+        action === 'restart'
+          ? 'Asked the screen to restart. It will go blank for a few seconds.'
+          : 'Asked the screen to check for an update. It restarts itself if it finds one.',
+      );
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not reach the display server.', 'error');
+    } finally {
+      setSending('');
+    }
+  };
   const effective = status?.effective ?? tv.defaultContent;
   const ready = status?.streamReady ?? false;
   // The screen is lit and pulling, but its timetable stopped updating — the times on it
@@ -257,13 +277,33 @@ function ScreenCard({
       )}
 
       {isPi ? (
-        // What a person actually needs from a device on a shelf: is it alive, where is it, and what
-        // is it running. No link, because there is nothing to connect to.
+        // What a person actually needs from a device on a shelf: is it alive, where is it, what is
+        // it running — and the two things they will want to do to it. No link, because there is
+        // nothing to connect to.
         <div className="rtsp-box" style={{ justifyContent: 'flex-start', gap: '0.7rem', flexWrap: 'wrap' }}>
           <span className={`status-dot${device?.online ? '' : ' status-dot--idle'}`} title={device?.online ? 'Checking in' : 'Not checking in'} />
           <span className="hint">Raspberry Pi</span>
           <span className="hint" style={{ fontFamily: 'monospace' }}>{device?.ip || 'address unknown'}</span>
           <span className="hint muted">agent {device?.agentVersion || '?'}</span>
+          <span style={{ flex: 1 }} />
+          {/* Nothing can connect TO the Pi, so these are requests it collects on its own poll —
+              within about five seconds. The wording says asked, never done. */}
+          <button
+            className="btn btn--ghost btn--sm"
+            disabled={!device || sending !== ''}
+            title="Ask this screen to check for a newer version now"
+            onClick={() => device && ask(device.id, 'update')}
+          >
+            {sending === 'update' ? <Spinner /> : <IconDownload size={14} />} Update
+          </button>
+          <button
+            className="btn btn--ghost btn--sm"
+            disabled={!device || sending !== ''}
+            title="Ask this screen to restart its software"
+            onClick={() => device && ask(device.id, 'restart')}
+          >
+            {sending === 'restart' ? <Spinner /> : <IconRefresh size={14} />} Restart
+          </button>
         </div>
       ) : (
         <div className="rtsp-box">

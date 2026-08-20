@@ -12,6 +12,19 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Added
+- **Update and restart a Raspberry Pi screen from the dashboard.** Each Pi screen now has Update
+  and Restart buttons on its card. Nothing connects to the Pi — it picks the instruction up on its
+  own, within about five seconds — so the dashboard says it has been asked, not that it is done.
+  Update checks for a newer version and restarts only if it finds one.
+
+### Fixed
+- **A camera on a Raspberry Pi screen stops blinking every half minute.** Two causes. The screen
+  kept retrying the Pi’s video hardware on a board that does not have it, costing two black
+  seconds every time it reconnected; and when a camera ended a stream normally — which some
+  cameras do every thirty seconds — that was treated as a fault and the wait before reconnecting
+  grew each time.
+
 ### Fixed
 - **A long date no longer runs past the edge of its panel.** On the layout that shows the whole
   date on one line, something like “Wednesday, September 30, 2026” was too wide for a narrow
