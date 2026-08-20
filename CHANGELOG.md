@@ -18,6 +18,11 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- A camera no longer flashes "Camera unavailable" while it is simply reconnecting. Some cameras
+  end the connection on their own schedule and it comes straight back, but the screen was putting
+  a warning up for three seconds each time, which looked like a fault on a camera that was
+  working. The picture now stays on screen through a brief reconnect, and the warning is kept for
+  a camera that really has stopped answering.
 - Camera pictures on a Raspberry Pi screen are much smoother, and stop cutting out every half
   minute. A large camera was being given to the Pi in a way that wasted about a third of the
   board for nothing, so it could not keep up with the picture arriving — and once a screen falls

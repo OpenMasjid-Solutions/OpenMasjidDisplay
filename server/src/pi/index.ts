@@ -71,6 +71,15 @@ const STALE_AFTER_MS = 90_000;
 const CHECKIN_MS = 5 * 60_000;
 
 /**
+ * How long a camera may be between frames before the screen says so.
+ *
+ * Long enough to cover a reconnect, short enough that a camera which has actually gone away does
+ * not leave a stale picture up pretending to be live. Six seconds covers the measured case — a
+ * clean end of stream, a sub-second retry, and a TLS handshake — with room to spare.
+ */
+const CAMERA_GRACE_MS = 6_000;
+
+/**
  * The last lines this agent logged, kept in memory and reported to the server.
  *
  * Deliberately OUR OWN lines rather than journalctl. Reading the journal would need a privilege the
@@ -639,6 +648,9 @@ async function runAdopted(
     }
   };
 
+  /** When the camera stopped playing, so a routine reconnect can be told from a real outage. */
+  let cameraDownSince = 0;
+
   // ── the drawing loop ──
   const draw = async (): Promise<void> => {
     while (!live.forgotten) {
@@ -664,7 +676,26 @@ async function runAdopted(
         player.play(stream.url, screen.geo);
         const st = player.status();
         if (st.playing) {
+          cameraDownSince = 0;
           await sleep(2000);
+          continue;
+        }
+        // A gap of a second or two is normal here and does not mean anything is wrong. Some cameras
+        // tear the session down on their own schedule — a UniFi one measured on real hardware ends
+        // it every seventy seconds or so, cleanly, and ffmpeg reports that as a normal end of
+        // stream — and the reconnect that follows takes about as long as a TLS handshake.
+        //
+        // Painting "Camera unavailable" into that gap was worse than the gap. It put a warning on
+        // the wall for three seconds every minute or so on a camera that was working, which reads
+        // as a broken screen rather than a brief hiccup. The framebuffer still holds the last frame
+        // ffmpeg wrote, so drawing NOTHING leaves the picture standing and the reconnect is
+        // invisible.
+        //
+        // After the grace period it is no longer a hiccup and the card is the right answer: a
+        // camera that is genuinely unreachable must say so, not show a frozen picture for ever.
+        if (!cameraDownSince) cameraDownSince = Date.now();
+        if (Date.now() - cameraDownSince < CAMERA_GRACE_MS) {
+          await sleep(400);
           continue;
         }
         // Between attempts. Saying which camera and what went wrong turns "the screen is black"
