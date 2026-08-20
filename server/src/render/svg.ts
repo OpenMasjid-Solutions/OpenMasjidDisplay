@@ -1225,7 +1225,22 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
   if (c.showSeconds) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
   if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
   if (showDates) {
-    const ds = clamp(b.h * 0.11, 12, 26);
+    let ds = clamp(b.h * 0.11, 12, 26);
+    // Shrink to fit, exactly as the clock above already does.
+    //
+    // This panel draws the FULL date on one line, and the long English form is 29 characters —
+    // "Wednesday, September 30, 2026". On a narrow panel that runs past the card's edge, which is
+    // what "text spilling out of the box" was. It only showed sometimes because it needs both this
+    // layout (the burn-in rotation changes every five minutes) and a long date: "Sunday, May 3,
+    // 2026" fits comfortably.
+    //
+    // Both lines are measured and ONE scale is applied to both, so the Gregorian and Hijri lines
+    // stay the same size as each other — shrinking only the offender would look like a mistake.
+    const widestDate = Math.max(
+      c.greg ? approxWidth(c.greg, ds) : 0,
+      c.hij ? approxWidth(c.hij, ds * 0.98) : 0,
+    );
+    if (widestDate > avail) ds *= avail / widestDate;
     if (c.greg) out.push(text(edge, b.y + b.h * 0.68, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, anchor: align }));
     if (c.hij) out.push(text(edge, b.y + b.h * 0.86, c.hij, { size: ds * 0.98, fill: c.p.goldSoft, family: FONT_DISPLAY, anchor: align }));
   }

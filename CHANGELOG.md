@@ -13,6 +13,12 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **A long date no longer runs past the edge of its panel.** On the layout that shows the whole
+  date on one line, something like “Wednesday, September 30, 2026” was too wide for a narrow
+  panel. It now shrinks slightly to fit, exactly as the clock above it already did, and short
+  dates are left at full size. This affected every kind of screen, not just Raspberry Pi ones.
+
+### Fixed
 - **A Raspberry Pi screen no longer reports a speed warning as a broken camera.** It was showing a
   note about colour conversion in place of the actual reason, which hid whatever had really gone
   wrong.
