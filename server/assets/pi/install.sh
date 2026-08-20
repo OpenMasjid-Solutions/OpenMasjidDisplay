@@ -680,6 +680,42 @@ for req in "$SPOOL"/*; do
       echo "control: running the updater at the dashboard's request"
       "$PREFIX/update.sh" || echo "control: the updater reported a problem"
       ;;
+    reinstall)
+      # Re-run the whole installer, so a change to the service unit, the boot settings or the
+      # installed packages can be applied without anybody opening a shell on the Pi. The updater
+      # above replaces the agent file and NOTHING else, which is why this verb has to exist.
+      #
+      # Worth being clear about what this is: root fetching a shell script from the display server
+      # and running it. That is the same thing the admin does by hand to install a screen in the
+      # first place, over the same pinned certificate — but it can now happen without a person
+      # present, so it is fetched over the SAME verified channel as everything else, checked for
+      # truncation before it runs, and rate limited.
+      if [ -z "${SERVER:-}" ]; then
+        echo 'control: no server address; cannot re-run the installer'
+      else
+        now=$(date +%s)
+        last=0
+        [ -f "$PREFIX/last-reinstall" ] && last=$(cat "$PREFIX/last-reinstall" 2>/dev/null || echo 0)
+        case "$last" in *[!0-9]*|'') last=0 ;; esac
+        if [ $((now - last)) -lt 300 ]; then
+          echo "control: refusing to re-run the installer again so soon ($((now - last))s ago)"
+        else
+          echo "$now" > "$PREFIX/last-reinstall"
+          TMP=/tmp/omd-reinstall.sh
+          # shellcheck disable=SC2086
+          if curl -fsSL --max-time 120 $CURL_OPTS "$SERVER/pi.sh" -o "$TMP" && [ -s "$TMP" ] && sh -n "$TMP"; then
+            echo 'control: re-running the installer at the dashboard request'
+            # Detached from this one-shot on purpose. The installer restarts the very service that
+            # led to us being triggered, and systemd would otherwise consider that a dependency
+            # of a unit it is still starting.
+            setsid sh "$TMP" >/dev/null 2>&1 &
+          else
+            echo 'control: could not fetch a usable installer; leaving the screen alone'
+          fi
+          rm -f "$TMP" 2>/dev/null || true
+        fi
+      fi
+      ;;
     reboot)
       # Rate limited, and that is not optional. A reboot loop takes a screen off the wall for
       # good and nobody is watching it; one every ten minutes is far more than a person needs and

@@ -13,6 +13,10 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Re-run setup on a Raspberry Pi screen from the dashboard.** Update installs new screen
+  software, but some fixes also change how the Pi is configured — and those used to need somebody
+  with a keyboard in front of it. Re-run setup applies them for you. It takes a few minutes and
+  sometimes asks for a reboot afterwards, which is also a button now.
 - **Reboot a Raspberry Pi screen from the dashboard.** Alongside Update and Restart, there is now
   a Reboot button for when restarting the software is not enough. The Pi limits itself to one
   reboot every ten minutes, so a stuck screen cannot end up cycling out of reach.

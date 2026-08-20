@@ -93,7 +93,7 @@ interface PiStateWire {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
-  command?: { id: string; action: 'restart' | 'update' | 'reboot' } | null;
+  command?: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' } | null;
 }
 
 // ── drawing ───────────────────────────────────────────────────────────────────
@@ -267,7 +267,7 @@ function rememberCommand(id: string): void {
  * bring the agent straight back. `update` does need root, so it is left as a request in a
  * directory a root-side unit is watching; see the installer.
  */
-async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart' | 'update' | 'reboot' }): Promise<void> {
+async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' }): Promise<void> {
   if (cmd.id === lastCommandId()) return; // already done; the ack simply never landed
 
   // Tell the server before doing anything, so a command cannot be collected twice.
@@ -295,6 +295,14 @@ async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart'
 
   if (cmd.action === 'reboot') {
     requestPrivileged(cmd.id, 'reboot', 'asked the system to reboot');
+    return;
+  }
+
+  if (cmd.action === 'reinstall') {
+    // Re-runs the whole installer, which is the only thing that can change the service unit, the
+    // boot settings and the installed packages. Self-update replaces the agent file and nothing
+    // else, so without this a fix in either of those needs somebody at a keyboard.
+    requestPrivileged(cmd.id, 'reinstall', 'asked the installer to run again');
   }
 }
 
@@ -309,7 +317,7 @@ async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart'
  * a half-written file — and the verb is one of a fixed set the dispatcher matches against, never
  * anything derived from the network.
  */
-function requestPrivileged(id: string, verb: 'update' | 'reboot', said: string): void {
+function requestPrivileged(id: string, verb: 'update' | 'reboot' | 'reinstall', said: string): void {
   try {
     const dir = '/var/lib/openmasjid-screen/control';
     fs.mkdirSync(dir, { recursive: true });

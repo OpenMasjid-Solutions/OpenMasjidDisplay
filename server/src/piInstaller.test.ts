@@ -422,7 +422,7 @@ test('the dispatcher still executes nothing outside its closed set', () => {
   const tpl = installerTemplate() as string;
   const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
   const verbs = [...ctl.matchAll(/^\s{4}([a-z|]+)\)/gm)].map((m) => m[1]);
-  assert.deepEqual(verbs.sort(), ['reboot', 'update'], `unexpected verbs: ${verbs.join(', ')}`);
+  assert.deepEqual(verbs.sort(), ['reboot', 'reinstall', 'update'], `unexpected verbs: ${verbs.join(', ')}`);
   const def = /\*\)([\s\S]*?);;/.exec(ctl)?.[1] ?? '';
   assert.ok(!/\$\(|`|eval|exec /.test(def), `the default branch runs something: ${def.trim()}`);
 });
@@ -451,4 +451,33 @@ test('the decoder is given enough GPU memory to decode 1080p', () => {
   const tpl = installerTemplate() as string;
   assert.ok(/gpu_mem=128/.test(tpl), 'the installer must raise the split');
   assert.ok(/grep -q '\^gpu_mem=' /.test(tpl), 'and must not fight an explicit setting already there');
+});
+
+test('re-running setup from the panel is fetched over the SAME verified channel', () => {
+  // This is the one action where root fetches a shell script from the display server and runs it.
+  // That is exactly what an admin does by hand to install a screen — but it can now happen with
+  // nobody present, so it must not take a shortcut the manual path would not take.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  const branch = ctl.slice(ctl.indexOf('reinstall)'), ctl.indexOf('reboot)'));
+
+  assert.ok(/\$CURL_OPTS/.test(branch), 'it must use the pinned certificate, like every other fetch');
+  assert.ok(/"\$SERVER\/pi\.sh"/.test(branch), 'and only ever this server');
+  assert.ok(!/-k\b/.test(branch), 'never with verification disabled');
+  // A truncated download must not be executed as root.
+  assert.ok(/sh -n "\$TMP"/.test(branch), 'the script must parse before it is run');
+  assert.ok(/\[ -s "\$TMP" \]/.test(branch), 'and must not be empty');
+  // Rate limited, remembered where the agent cannot forge it.
+  assert.ok(/-lt 300/.test(branch), 'one re-run per five minutes at most');
+  assert.ok(/\$PREFIX\/last-reinstall/.test(branch), 'in /opt, which the agent cannot write');
+  assert.ok(/\*\[!0-9\]\*/.test(branch), 'a corrupt timestamp must not read as "never"');
+});
+
+test('re-running setup does not deadlock against the unit that triggered it', () => {
+  // The installer restarts openmasjid-screen, and this dispatcher was itself started by a path unit
+  // watching a directory that service writes to. Running it in the foreground makes systemd wait on
+  // a unit it is still starting.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  assert.ok(/setsid sh "\$TMP"/.test(ctl), 'the installer must be detached from the one-shot');
 });

@@ -167,10 +167,10 @@ function ScreenCard({
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const [copiedPublic, setCopiedPublic] = useState(false);
-  const [sending, setSending] = useState<'' | 'restart' | 'update' | 'reboot'>('');
+  const [sending, setSending] = useState<'' | 'restart' | 'update' | 'reboot' | 'reinstall'>('');
 
   /** Queue an instruction for the Pi. It is not sent — the device collects it, so say so. */
-  const ask = async (deviceId: string, action: 'restart' | 'update' | 'reboot') => {
+  const ask = async (deviceId: string, action: 'restart' | 'update' | 'reboot' | 'reinstall') => {
     setSending(action);
     try {
       await api.piCommand(deviceId, action);
@@ -179,6 +179,8 @@ function ScreenCard({
           ? 'Asked the screen to restart. It will go blank for a few seconds.'
           : action === 'reboot'
             ? 'Asked the Raspberry Pi to reboot. It will be back in about a minute.'
+            : action === 'reinstall'
+              ? 'Asked the Pi to run setup again. This takes a few minutes and may need a reboot afterwards.'
             : 'Asked the screen to check for an update. It restarts itself if it finds one.',
       );
     } catch (e) {
@@ -317,6 +319,17 @@ function ScreenCard({
             onClick={() => device && ask(device.id, 'reboot')}
           >
             {sending === 'reboot' ? <Spinner /> : <IconPower size={14} />} Reboot
+          </button>
+          {/* The only action that can change the service unit, the boot settings or the installed
+              packages. Update replaces the agent file and nothing else, so a fix in any of those
+              would otherwise need somebody with a keyboard in front of the Pi. */}
+          <button
+            className="btn btn--ghost btn--sm"
+            disabled={!device || sending !== ''}
+            title="Run setup again on this Pi. Applies changes that a normal update cannot, and takes a few minutes."
+            onClick={() => device && ask(device.id, 'reinstall')}
+          >
+            {sending === 'reinstall' ? <Spinner /> : <IconDownload size={14} />} Re-run setup
           </button>
         </div>
       ) : (

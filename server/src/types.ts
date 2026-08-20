@@ -344,7 +344,7 @@ export interface PiDevice {
   tvId?: string;
   /** What this device should do next, left for it to collect on its own poll. Cleared as soon
    *  as it acknowledges — see ackCommand for why that must happen BEFORE it acts. */
-  command?: { id: string; action: 'restart' | 'update' | 'reboot'; issuedAt: number };
+  command?: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall'; issuedAt: number };
 }
 
 export interface Tv {
