@@ -176,6 +176,20 @@ function SourceModal({ src, onClose, onSaved }: { src: Source | null; onClose: (
         <p className="hint" style={{ marginBlockStart: '0.4rem', lineHeight: 1.5 }}>
           <strong>UniFi cameras:</strong> in UniFi Protect open the camera’s settings, turn on <strong>RTSP</strong> (it’s off by default), and paste the link it shows — the secure <code>rtsps://…</code> one works too. If a secure link won’t connect, switch the option below to <em>Most compatible</em>.
         </p>
+        {/* Not a nicety. A camera's top stream is often 4MP or 4K at 30fps, and that is past what a
+            Raspberry Pi can decode in software — measured on a Pi 3 with a 2688x1512 camera, it
+            managed 6 frames a second and the camera hung up on it every half minute. The same Pi on
+            a 1080p or 720p stream is comfortable. Most cameras publish several streams at once, so
+            this costs the masjid nothing but knowing to pick one. */}
+        <p className="hint" style={{ marginBlockStart: '0.4rem', lineHeight: 1.5 }}>
+          <strong>Pick the 1080p or 720p stream, not the highest one.</strong> Most cameras publish
+          the same picture at two or three sizes at the same time — often labelled High, Medium and
+          Low. A 4K or 4-megapixel stream is more than a Raspberry Pi screen can keep up with, and it
+          shows: the picture stutters and the camera keeps dropping the connection. The smaller
+          stream looks the same on a television across a hall and plays smoothly. On UniFi, the
+          camera’s RTSP settings let you switch each stream on separately and give you a link for
+          each one.
+        </p>
         <div className="row" style={{ gap: '0.6rem', marginBlockStart: '0.5rem', alignItems: 'center' }}>
           <button type="button" className="btn btn--ghost btn--sm" onClick={test} disabled={testing}>{testing ? <><Spinner /> Testing…</> : 'Test connection'}</button>
           {testResult && (

@@ -518,3 +518,68 @@ test('control.sh can actually reach the server it is told to reinstall from', ()
     `control.sh reads variables nothing ever sets (the quoted heredoc substitutes nothing): ${undefinedVars.join(', ')}`,
   );
 });
+
+test('anything root writes back to the agent is left readable BY the agent', () => {
+  // Root writes the Wi-Fi result; the agent reads it, reports it, and deletes it. The first version
+  // left it root-owned at mode 0600, which the agent cannot open — so the outcome of every join was
+  // written to a file nobody could read and never removed. The failure is silent in both directions:
+  // the panel shows no result, and the file accumulates.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+
+  const writes = ctl.split('\n').filter((l) => l.includes('> "$RES"'));
+  assert.ok(writes.length >= 3, `expected the result file to be written on every outcome, saw ${writes.length}`);
+  for (const line of writes) {
+    assert.ok(
+      line.includes('chown "$AGENT_USER" "$RES"'),
+      `a result written without handing it to the agent is one the agent cannot read:\n  ${line.trim()}`,
+    );
+  }
+  // And the user it is handed to has to be the one the service actually runs as.
+  assert.match(tpl, /^AGENT_USER=omdscreen$/m);
+  assert.match(tpl, /^SERVICE_USER=omdscreen$/m);
+});
+
+test('the Wi-Fi verbs survive the dispatcher\'s own character filter', () => {
+  // The verb is read as `head -c 32 | tr -dc 'a-z-'`. A verb containing anything else silently
+  // becomes a different string and falls through to "unknown request" — so the naming is load
+  // bearing, not cosmetic.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  const lines = ctl.split('\n').map((l) => l.trim());
+  for (const verb of ['wifi-on', 'wifi-off', 'wifi-join', 'wifi-forget', 'wifi-rescan']) {
+    assert.equal(verb, verb.replace(/[^a-z-]/g, ''), `${verb} would not survive tr -dc 'a-z-'`);
+    // A plain line comparison rather than a built regex — a backslash in a constructed pattern is
+    // one editing round away from silently matching nothing, which is how this test first passed
+    // while asserting almost nothing.
+    assert.ok(lines.includes(`${verb})`), `the dispatcher has no branch for ${verb}`);
+  }
+});
+
+test('turning Wi-Fi off, or forgetting it, is refused when it is the only way back', () => {
+  // A screen with no cable that loses its radio cannot be recovered from the dashboard, because the
+  // dashboard reaches it over that radio. The panel also disables these buttons, but a disabled
+  // button is a courtesy — this is the safeguard.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  for (const verb of ['wifi-off', 'wifi-forget']) {
+    const branch = ctl.slice(ctl.indexOf(`${verb})`), ctl.indexOf(';;', ctl.indexOf(`${verb})`)));
+    assert.match(branch, /ethernet:connected/, `${verb} must check for a cable first`);
+    assert.match(branch, /refusing/, `${verb} must say why it refused`);
+  }
+});
+
+test('a join is only reported as working once the SERVER has been reached over Wi-Fi', () => {
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  const branch = ctl.slice(ctl.indexOf('wifi-join)'));
+
+  // Bound to the interface, or with a cable still in the kernel answers from the CABLE and the test
+  // proves nothing about the radio.
+  assert.match(branch, /curl [^\n]*--interface wlan0/, 'the reachability test must be bound to wlan0');
+  // The requested network must be the one we ended up on: a failed connect leaves wlan0 on the OLD
+  // network, and every later check would then pass on the strength of that.
+  assert.match(branch, /\$active" != "\$SSID/, 'it must confirm which network it actually joined');
+  // And a failure has to undo itself, or a half-working profile outlives the attempt.
+  assert.match(branch, /connection delete/, 'a failed join must remove the profile it created');
+});

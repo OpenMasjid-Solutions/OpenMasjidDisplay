@@ -116,6 +116,10 @@ export interface EnrolInput {
   recentLog?: unknown;
   /** how the device is attached to the network, for the panel to draw an icon from */
   net?: unknown;
+  /** the Wi-Fi networks the device can currently see */
+  networks?: unknown;
+  /** what root reported about the last join it was asked to make */
+  wifiResult?: unknown;
 }
 
 export interface EnrolResult {
@@ -393,6 +397,36 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput, n
 
   const net = normDeviceNet(input.net);
   if (net) device.net = net;
+
+  // Bounded hard, and every field re-derived. This is a list chosen entirely by an unprivileged
+  // device that goes straight into a page somebody clicks on. Thirty is far more networks than any
+  // masjid can see and still leaves the list usable.
+  if (Array.isArray(input.networks)) {
+    device.networks = input.networks
+      .slice(0, 30)
+      .map((n) => {
+        const o = (n ?? {}) as Record<string, unknown>;
+        const sig = Number(o.signal);
+        return {
+          ssid: str(o.ssid, 32),
+          signal: Number.isFinite(sig) ? Math.max(0, Math.min(100, Math.round(sig))) : 0,
+          secured: o.secured !== false,
+          active: o.active === true,
+        };
+      })
+      .filter((n) => n.ssid);
+  }
+
+  if (input.wifiResult && typeof input.wifiResult === 'object') {
+    const o = input.wifiResult as Record<string, unknown>;
+    device.wifiResult = {
+      // null is a real third answer: the join worked but nothing could prove the server was still
+      // reachable over it. Collapsing that into success is how a screen gets stranded quietly.
+      ok: o.ok === true ? true : o.ok === false ? false : null,
+      detail: str(o.detail, 200),
+      at: new Date(nowMs).toISOString(),
+    };
+  }
 }
 
 /**
@@ -431,7 +465,23 @@ export function __resetDevicesForTests(): void {
 // its next state poll, at most five seconds later. That shapes everything here.
 
 /** Actions a Pi can be asked to perform from the panel. A closed set, checked on the way in. */
-export const PI_COMMANDS = ['restart', 'update', 'reboot', 'reinstall', 'logs'] as const;
+export const PI_COMMANDS = [
+  'restart',
+  'update',
+  'reboot',
+  'reinstall',
+  'logs',
+  // Managing the screen's own network. Every one of these is carried out by root on the device via
+  // the control spool, because NetworkManager refuses all of them to an unprivileged caller
+  // (measured: enable-disable-wifi is "no" even for the pi user, and settings.modify.system needs
+  // an interactive polkit prompt no daemon can answer). READING what networks are visible needs no
+  // privilege at all and is therefore not a command — the agent just reports it.
+  'wifi-on',
+  'wifi-off',
+  'wifi-join',
+  'wifi-forget',
+  'wifi-rescan',
+] as const;
 export type PiCommandAction = (typeof PI_COMMANDS)[number];
 
 /**
@@ -449,6 +499,8 @@ export interface PiCommand {
   id: string;
   action: PiCommandAction;
   issuedAt: number;
+  /** Only for 'wifi-join'. Held just long enough for the device to collect it — see queueCommand. */
+  wifi?: { ssid: string; psk: string };
 }
 
 export function isPiCommand(v: unknown): v is PiCommandAction {
@@ -462,18 +514,86 @@ export function isPiCommand(v: unknown): v is PiCommandAction {
  * this screen do next". Two clicks on Restart mean one restart, and a click on Update after a click
  * on Restart means update.
  */
-export function queueCommand(db: DB, deviceId: string, action: PiCommandAction, nowMs: number): PiCommand | null {
+export function queueCommand(
+  db: DB,
+  deviceId: string,
+  action: PiCommandAction,
+  nowMs: number,
+  wifi?: { ssid: string; psk: string },
+): PiCommand | null {
   const device = db.piDevices?.find((d) => d.id === deviceId);
   if (!device || !device.token) return null;
   device.command = { id: `c_${crypto.randomBytes(6).toString('hex')}`, action, issuedAt: nowMs };
+  // Remember when an install was asked for, because the panel has nothing else to go on.
+  //
+  // A reinstall takes over two minutes on a Pi — fetch, apt, npm, restart — and for all of that
+  // time the card showed the OLD version and "update available", which is indistinguishable from
+  // the button having done nothing. Somebody watching that reasonably presses it again, and the
+  // device's own five-minute rate limit then refuses the second press silently, which makes it look
+  // broken twice. The command itself is cleared the moment the device acknowledges it, seconds
+  // later, so it cannot answer "is an update happening"; this can.
+  if (action === 'reinstall' || action === 'update') device.updateAskedAt = nowMs;
+  // A Wi-Fi passphrase, on its way to a device that is going to use it once.
+  //
+  // It lives on the command, which means it is written to the store like everything else, and it is
+  // deleted the instant the device acknowledges — seconds later, and at the latest when the 120s TTL
+  // expires. That is the shortest life this can have while still surviving a server restart between
+  // the click and the device's next poll, which it must: losing it would leave somebody wondering
+  // why nothing happened. It is never logged, and never returned by any read endpoint.
+  if (action === 'wifi-join' && wifi) device.command.wifi = wifi;
   return device.command;
 }
 
 /** What this device should be told to do, if anything — expired commands are not mentioned. */
-export function pendingCommand(device: PiDevice, nowMs: number): { id: string; action: PiCommandAction } | null {
+export function pendingCommand(
+  device: PiDevice,
+  nowMs: number,
+): { id: string; action: PiCommandAction; wifi?: { ssid: string; psk: string } } | null {
   const c = device.command;
   if (!c || nowMs - c.issuedAt > PI_COMMAND_TTL_MS) return null;
-  return { id: c.id, action: c.action };
+  return c.wifi ? { id: c.id, action: c.action, wifi: c.wifi } : { id: c.id, action: c.action };
+}
+
+/**
+ * The details for a 'wifi-join', validated here as well as on the device.
+ *
+ * Checked in both places deliberately. This is the friendly check, so somebody typing a password
+ * into the dashboard is told what is wrong immediately instead of waiting two minutes for a screen
+ * to report a failure. The check that actually MATTERS is the one root does on the device, because
+ * this one is on the far side of a network from it and cannot be the thing standing between an
+ * attacker and an nmcli argument.
+ *
+ * Rejects a leading dash for the same reason the device does: nmcli would read it as an option.
+ */
+export function normWifiJoin(raw: unknown): { ssid: string; psk: string } | { error: string } {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const ssid = typeof o.ssid === 'string' ? o.ssid : '';
+  const psk = typeof o.psk === 'string' ? o.psk : '';
+  if (!ssid) return { error: 'Choose a network to join.' };
+  // 32 BYTES, not characters — an SSID is a byte string and a name in Arabic or Urdu reaches the
+  // limit at a third of the character count.
+  if (Buffer.byteLength(ssid, 'utf8') > 32) return { error: 'That network name is too long to be a real one.' };
+  if (ssid.startsWith('-')) return { error: 'A network name cannot begin with a dash.' };
+  // Character CODES rather than a regex character class. A control character written as an escape
+  // inside a class is exactly the kind of thing that survives one round of editing and not the
+  // next — this validator was briefly a syntax error for that reason — and a silently broken
+  // check here is worse than no check, because it reads as one.
+  const hasControl = (v: string): boolean => {
+    for (let k = 0; k < v.length; k++) {
+      const c = v.charCodeAt(k);
+      if (c < 0x20 || c === 0x7f) return true;
+    }
+    return false;
+  };
+  if (hasControl(ssid)) return { error: 'That network name contains characters a screen cannot use.' };
+  if (psk) {
+    const hex64 = /^[0-9a-fA-F]{64}$/.test(psk);
+    if (!hex64 && (psk.length < 8 || psk.length > 63)) {
+      return { error: 'A Wi-Fi password must be at least 8 characters.' };
+    }
+    if (hasControl(psk)) return { error: 'That password contains characters a screen cannot use.' };
+  }
+  return { ssid, psk };
 }
 
 /**

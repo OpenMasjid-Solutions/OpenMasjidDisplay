@@ -13,11 +13,30 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Set up Wi-Fi on a Raspberry Pi screen from the dashboard.** The screen reports which networks
+  it can see, and you pick one and type the password without going near the Pi. Before it keeps
+  the new network it checks that this dashboard is still reachable over it, and undoes the change
+  if it is not — so a wrong password or a guest network that blocks everything cannot leave a
+  screen stranded. Turning Wi-Fi off, or forgetting a network, is refused unless a cable is
+  carrying the screen.
+- Each Raspberry Pi screen now shows whether it is on a cable or Wi-Fi, with the network name and
+  signal. A weak signal is highlighted: it is the usual reason a screen stutters and not something
+  anybody thinks to check.
+
+### Added
 - A Raspberry Pi screen now shows whether it is on a cable or on Wi-Fi, and which network. A
   weak Wi-Fi signal is highlighted, because it is the usual reason a screen stutters or drops
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- Update on a Raspberry Pi screen now says it is working. Installing takes a couple of minutes,
+  and for all of that time the card showed the old version and "update available" — which looks
+  exactly like a button that did nothing, so it got pressed again, and the screen refuses a second
+  attempt within five minutes without saying so. It now reads "Updating…" until it is done.
+- When adding a camera, the notes now say to use its 1080p or 720p stream rather than its largest
+  one. A 4K or 4-megapixel stream is more than a Raspberry Pi can keep up with, and the result is
+  a stuttering picture that keeps dropping out — which looks like a broken screen rather than a
+  camera set too high.
 - A camera no longer flashes "Camera unavailable" while it is simply reconnecting. Some cameras
   end the connection on their own schedule and it comes straight back, but the screen was putting
   a warning up for three seconds each time, which looked like a fault on a camera that was

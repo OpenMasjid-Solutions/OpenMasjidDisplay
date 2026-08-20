@@ -35,7 +35,7 @@ import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
-import { netFacts } from './network';
+import { netFacts, scanNetworks } from './network';
 import { AssetCache } from './assetCache';
 import { RenderCadence, cadenceAdvice } from './cadence';
 import { renderDisplaySvg, activeAnnouncementImage } from '../render/svg';
@@ -117,7 +117,22 @@ interface PiStateWire {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
-  command?: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs' } | null;
+  command?: {
+    id: string;
+    action:
+      | 'restart'
+      | 'update'
+      | 'reboot'
+      | 'reinstall'
+      | 'logs'
+      | 'wifi-on'
+      | 'wifi-off'
+      | 'wifi-join'
+      | 'wifi-forget'
+      | 'wifi-rescan';
+    /** Only ever present for 'wifi-join'. The password is used once and never logged. */
+    wifi?: { ssid: string; psk: string };
+  } | null;
 }
 
 // ── drawing ───────────────────────────────────────────────────────────────────
@@ -293,7 +308,7 @@ function rememberCommand(id: string): void {
  */
 async function runCommand(
   cfg: AgentConfig,
-  cmd: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs' },
+  cmd: NonNullable<PiStateWire['command']>,
   live: Live,
 ): Promise<void> {
   if (cmd.id === lastCommandId()) return; // already done; the ack simply never landed
@@ -334,6 +349,43 @@ async function runCommand(
     return;
   }
 
+  if (cmd.action === 'wifi-on' || cmd.action === 'wifi-off' || cmd.action === 'wifi-forget' || cmd.action === 'wifi-rescan') {
+    requestPrivileged(cmd.id, cmd.action, `asked the system to ${cmd.action.replace('-', ' ')}`);
+    return;
+  }
+
+  if (cmd.action === 'wifi-join') {
+    // The details CANNOT travel in the spool file. The dispatcher reads a verb as
+    // `head -c 32 | tr -dc 'a-z-'`, which deletes digits, spaces, punctuation and capitals — a
+    // network called "Masjid 5G" would arrive as "masjidg". That filter's narrowness is what keeps
+    // the verb set closed, so it stays exactly as it is and the payload goes beside it.
+    //
+    // Both fields are base64 so no network name or password can introduce a newline, a quote or a
+    // leading dash into the file's shape. Root decodes and validates them itself — this side is a
+    // courier, not the check.
+    if (!cmd.wifi?.ssid) {
+      log('a Wi-Fi join arrived with no network name; ignoring it');
+      return;
+    }
+    try {
+      const dir = '/var/lib/openmasjid-screen';
+      const b64 = (v: string): string => Buffer.from(v, 'utf8').toString('base64');
+      const NL = String.fromCharCode(10);
+      const body = b64(cmd.wifi.ssid) + NL + b64(cmd.wifi.psk ?? '') + NL;
+      // Written and renamed BEFORE the verb, so the dispatcher can never wake on a join whose
+      // details have not landed yet. Mode 0600: it holds the masjid's Wi-Fi password.
+      const tmp = `${dir}/.wifi-request`;
+      fs.writeFileSync(tmp, body, { mode: 0o600 });
+      fs.renameSync(tmp, `${dir}/wifi-request`);
+    } catch (e) {
+      log('could not leave the Wi-Fi details for the system:', (e as Error).message);
+      return;
+    }
+    // The name is fine to log — it is on the air for anyone to see. The password never is.
+    requestPrivileged(cmd.id, 'wifi-join', `asked the system to join "${cmd.wifi.ssid}"`);
+    return;
+  }
+
   if (cmd.action === 'reinstall') {
     // Re-runs the whole installer, which is the only thing that can change the service unit, the
     // boot settings and the installed packages. Self-update replaces the agent file and nothing
@@ -353,7 +405,17 @@ async function runCommand(
  * a half-written file — and the verb is one of a fixed set the dispatcher matches against, never
  * anything derived from the network.
  */
-function requestPrivileged(id: string, verb: 'update' | 'reboot' | 'reinstall', said: string): void {
+type PrivilegedVerb =
+  | 'update'
+  | 'reboot'
+  | 'reinstall'
+  | 'wifi-on'
+  | 'wifi-off'
+  | 'wifi-join'
+  | 'wifi-forget'
+  | 'wifi-rescan';
+
+function requestPrivileged(id: string, verb: PrivilegedVerb, said: string): void {
   try {
     const dir = '/var/lib/openmasjid-screen/control';
     fs.mkdirSync(dir, { recursive: true });
@@ -366,11 +428,37 @@ function requestPrivileged(id: string, verb: 'update' | 'reboot' | 'reinstall', 
   }
 }
 
+/**
+ * What root said about the last Wi-Fi join, if it has said anything since we last looked.
+ *
+ * Read-and-delete: the result is a one-off answer to one request, and leaving it would have the
+ * panel reporting an old failure next to a working connection. Root writes it; we only ever read
+ * it, so a corrupt or half-written file is treated as no answer rather than as a problem.
+ */
+function readWifiResult(): { ok: boolean | null; detail: string } | undefined {
+  const p = '/var/lib/openmasjid-screen/wifi-result';
+  try {
+    if (!fs.existsSync(p)) return undefined;
+    const [verdict = '', detail = ''] = fs.readFileSync(p, 'utf8').split(String.fromCharCode(10));
+    fs.unlinkSync(p);
+    // 'unverified' is its own answer and must not read as success: it means the join worked but
+    // nothing proved the display server could still be reached afterwards.
+    const ok = verdict.trim() === 'yes' ? true : verdict.trim() === 'no' ? false : null;
+    return { ok, detail: detail.trim().slice(0, 200) };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Tell the server what this device is, how it is attached, and what it has been saying. */
 async function checkIn(cfg: AgentConfig, facts: DeviceFacts): Promise<void> {
   // Gathered fresh on every check-in rather than once at startup: a cable being pulled out is
   // exactly the event this exists to show, and it happens long after boot.
   const net = await netFacts();
+  // What this screen can see. Reading the list NetworkManager already holds needs no privilege at
+  // all — verified inside this agent's own sandbox — so it costs nothing to report and it is what
+  // lets somebody pick a network in the dashboard rather than type its name from memory.
+  const networks = net.hasWifi ? await scanNetworks() : [];
   await postJson(`${cfg.server}/pi/${cfg.token}/seen`, {
     hostname: facts.hostname,
     ip: facts.ip,
@@ -378,6 +466,8 @@ async function checkIn(cfg: AgentConfig, facts: DeviceFacts): Promise<void> {
     agentVersion: AGENT_VERSION,
     recentLog,
     net,
+    networks,
+    wifiResult: readWifiResult(),
   }).catch(() => ({ httpStatus: 0 }));
 }
 
@@ -586,6 +676,13 @@ async function runAdopted(
   const poll = async (): Promise<void> => {
     let pollMs = POLL_MS;
     while (!live.forgotten) {
+      // Has root left an answer about a Wi-Fi join? Checked here, on the poll, rather than waiting
+      // for the next check-in — those are five minutes apart, and somebody who has just pressed
+      // Connect is watching the dashboard now. A stat every few seconds is nothing; making them
+      // wait five minutes to find out whether their password was right is the difference between a
+      // feature and a guessing game.
+      if (fs.existsSync('/var/lib/openmasjid-screen/wifi-result')) live.checkInNow = true;
+
       const st = await getJson<PiStateWire>(`${cfg.server}/pi/${cfg.token}/state`).catch((e: Error) => {
         log('state fetch failed:', e.message);
         return { httpStatus: 0 };

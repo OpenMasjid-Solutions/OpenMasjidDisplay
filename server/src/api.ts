@@ -35,6 +35,8 @@ import {
   queueCommand,
   ackCommand,
   isPiCommand,
+  normWifiJoin,
+  type PiCommandAction,
   findDeviceByToken,
   findPendingByCode,
   markDeviceSeen,
@@ -1508,6 +1510,11 @@ export function createApi(deps: Deps) {
             // nothing — the agent ships from the same commit as the server, so one string
             // describes both.
             upToDate: !!d.agentVersion && d.agentVersion === appVersion(),
+            networks: d.networks ?? [],
+            wifiResult: d.wifiResult,
+            // Whether an install is in flight. The device is the authority on what it is running,
+            // so this is only ever a hint that it is busy — the version changing is the real answer.
+            updateAskedAt: d.updateAskedAt,
             // How it is attached. Absent until the device has checked in with an agent new enough
             // to report it, so the panel has to treat "unknown" as its own state rather than
             // drawing a broken cable at every screen that has not upgraded yet.
@@ -1544,14 +1551,32 @@ export function createApi(deps: Deps) {
       // on its next poll, so this returns "asked", never "done".
       const piCmd = /^\/api\/pi\/([\w-]+)\/command$/.exec(pathname);
       if (piCmd && method === 'POST') {
-        const body = (await readBody(req, 1_000).catch(() => null)) as { action?: unknown } | null;
+        // Room for a Wi-Fi passphrase now, so the cap is no longer 1KB.
+        const body = (await readBody(req, 4_000).catch(() => null)) as
+          | { action?: unknown; wifi?: unknown }
+          | null;
         if (!isPiCommand(body?.action)) return sendJson(res, 400, { error: 'Unknown action.' });
+        const action = body!.action as PiCommandAction;
+
+        // Joining a network is the only command that carries data, so it is the only one that is
+        // checked. Checked HERE so somebody typing a password is told immediately what is wrong;
+        // the check that actually protects the device is the one root does on it, since this one sits
+        // on the far side of a network from the thing running nmcli.
+        let wifi: { ssid: string; psk: string } | undefined;
+        if (action === 'wifi-join') {
+          const parsed = normWifiJoin(body!.wifi);
+          if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
+          wifi = parsed;
+        }
+
         let queued: ReturnType<typeof queueCommand> = null;
         store.update((db) => {
-          queued = queueCommand(db, piCmd[1], body!.action as 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs', Date.now());
+          queued = queueCommand(db, piCmd[1], action, Date.now(), wifi);
         });
         if (!queued) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
-        log.info(`queued "${(body as { action: string }).action}" for pi device ${piCmd[1]}`);
+        // The network NAME is fine in a log — it is broadcast on the air. The passphrase never is,
+        // and there is no branch here that could put it in one.
+        log.info(`queued "${action}"${wifi ? ` for network "${wifi.ssid}"` : ''} for pi device ${piCmd[1]}`);
         return sendJson(res, 202, { queued: true });
       }
 

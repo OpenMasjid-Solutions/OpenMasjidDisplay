@@ -150,8 +150,23 @@ export const api = {
 
   /** Ask a Pi to do something. 202 means QUEUED, not done: the device is not reachable from here,
    *  it collects the instruction on its own poll within about five seconds. */
-  piCommand: (id: string, action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs') =>
-    req<{ queued: boolean }>('POST', `/api/pi/${id}/command`, { action }),
+  /** Leave an instruction for a Pi to collect on its next poll. Never "done" — always "asked". */
+  piCommand: (
+    id: string,
+    action:
+      | 'restart'
+      | 'update'
+      | 'reboot'
+      | 'reinstall'
+      | 'logs'
+      | 'wifi-on'
+      | 'wifi-off'
+      | 'wifi-join'
+      | 'wifi-forget'
+      | 'wifi-rescan',
+    /** Only for 'wifi-join'. The passphrase is used once on the device and never logged. */
+    wifi?: { ssid: string; psk: string },
+  ) => req<{ queued: boolean }>('POST', `/api/pi/${id}/command`, wifi ? { action, wifi } : { action }),
 
   /** Forget a device: it goes back to showing a fresh pairing code. Its screen is kept. */
   piForget: (id: string) => req<{ ok: boolean }>('POST', `/api/pi/${id}/forget`),

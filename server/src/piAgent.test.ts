@@ -9,6 +9,8 @@
  * camera's own address so the server never carries the video.
  */
 import test from 'node:test';
+import fs from 'node:fs';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import { normTv, normSettings, normSource, normTimetable } from './validate';
 import {
@@ -25,7 +27,7 @@ import {
   PENDING_TTL_MS,
   PI_SEEN_TIMEOUT_MS,
   __resetDevicesForTests,
- queueCommand, pendingCommand, ackCommand, isPiCommand, PI_COMMAND_TTL_MS, normDeviceNet } from './piAgent';
+ queueCommand, pendingCommand, ackCommand, isPiCommand, PI_COMMAND_TTL_MS, normDeviceNet, PI_COMMANDS } from './piAgent';
 import type { DB, Settings, Tv } from './types';
 
 const NOW = new Date('2026-08-19T12:00:00Z').getTime();
@@ -439,4 +441,49 @@ test('a long or hostile SSID is cut down and stripped like every other device fa
   assert.equal(n?.ssid.length, 32, 'an SSID cannot exceed 32 bytes, so anything longer is a lie');
   // Control characters are what str() exists to remove; a newline in a name breaks the list layout.
   assert.doesNotMatch(String(normDeviceNet({ link: 'wifi', ssid: 'a\nb\u0000c' })?.ssid), /[\n\u0000]/);
+});
+
+test('the command list in types.ts has not drifted from the closed set', () => {
+  // PI_COMMANDS is the real gate — the device only acts on a verb that appears in it. types.ts
+  // spells the same list out again because it must not import from here, and a union that has
+  // fallen behind means the store cannot hold a command the server will happily queue.
+  const src = fs.readFileSync(path.resolve(__dirname, 'types.ts'), 'utf8');
+  const block = /command\?: \{[\s\S]*?issuedAt: number;/.exec(src);
+  assert.ok(block, 'could not find PiDevice.command in types.ts — has it been renamed?');
+  for (const action of PI_COMMANDS) {
+    assert.ok(block[0].includes(`'${action}'`), `types.ts is missing the '${action}' command`);
+  }
+});
+
+test('a Wi-Fi passphrase is carried only for a join, and only until it is collected', () => {
+  __resetDevicesForTests();
+  const db = { piDevices: [], tvs: [] } as unknown as DB;
+  const { device: dev } = enrolDevice(db, { deviceId: 'd1' }, 1000);
+  dev.token = makeDeviceToken();
+
+  const wifi = { ssid: 'Masjid WiFi', psk: 'hunter2pass' };
+  const cmd = queueCommand(db, dev.id, 'wifi-join', 2000, wifi);
+  assert.ok(cmd);
+  assert.deepEqual(dev.command?.wifi, wifi, 'the device has to be able to collect it');
+  assert.deepEqual(pendingCommand(dev, 2001)?.wifi, wifi);
+
+  // Acknowledging is what deletes it, and the device acknowledges BEFORE acting.
+  ackCommand(db, dev.id, cmd!.id);
+  assert.equal(dev.command, undefined, 'the passphrase must not outlive the command');
+
+  // And it is never attached to anything else. Read the device back out rather than reusing `dev`,
+  // whose type the assertion above has already narrowed to "has no command".
+  queueCommand(db, dev.id, 'reboot', 3000, wifi);
+  const after = db.piDevices!.find((d) => d.id === dev.id)!;
+  assert.equal(after.command?.action, 'reboot');
+  assert.equal(after.command?.wifi, undefined, 'only a join carries credentials');
+});
+
+test('an expired join stops offering the passphrase', () => {
+  __resetDevicesForTests();
+  const db = { piDevices: [], tvs: [] } as unknown as DB;
+  const { device: dev } = enrolDevice(db, { deviceId: 'd2' }, 1000);
+  dev.token = makeDeviceToken();
+  queueCommand(db, dev.id, 'wifi-join', 1000, { ssid: 'N', psk: 'hunter2pass' });
+  assert.equal(pendingCommand(dev, 1000 + PI_COMMAND_TTL_MS + 1), null, 'a stale join is not offered');
 });

@@ -666,7 +666,12 @@ cat > "$PREFIX/control.sh" <<'CTL'
 # Carry out a request the screen agent left, then remove it. Runs as root, from a .path unit.
 set -eu
 PREFIX=/opt/openmasjid-screen
+STATEDIR=/var/lib/openmasjid-screen
 SPOOL=/var/lib/openmasjid-screen/control
+# The unprivileged user the agent runs as. It has to be able to READ what we write back to it —
+# a result file left owned by root at mode 0600 is one the agent cannot open, so the answer never
+# reaches the dashboard and the file sits there for ever. Kept in step with SERVICE_USER above.
+AGENT_USER=omdscreen
 
 # The server address and the trust settings the installer worked out.
 #
@@ -762,6 +767,136 @@ for req in "$SPOOL"/*; do
         echo "$now" > "$PREFIX/last-reboot"
         echo 'control: rebooting at the dashboard request'
         systemctl reboot
+      fi
+      ;;
+    wifi-on)
+      nmcli radio wifi on 2>/dev/null && echo 'control: Wi-Fi radio on' || echo 'control: could not turn the Wi-Fi radio on'
+      ;;
+    wifi-off)
+      # Refused while Wi-Fi is the only way back. Turning the radio off on a screen that has no
+      # cable strands it somewhere nobody can reach it without physically going to the masjid, and
+      # the dashboard cannot undo it afterwards because the dashboard talks to it over that radio.
+      if nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | grep -q '^[^:]*:ethernet:connected'; then
+        nmcli radio wifi off 2>/dev/null && echo 'control: Wi-Fi radio off (the cable is carrying it)' \
+          || echo 'control: could not turn the Wi-Fi radio off'
+      else
+        echo 'control: refusing to turn Wi-Fi off — there is no cable, so it is the only way back'
+      fi
+      ;;
+    wifi-rescan)
+      # Reading the list NetworkManager already has needs no privilege and the agent does it for
+      # itself. Asking for a FRESH scan is a polkit action ("wifi.scan"), which a headless daemon
+      # cannot satisfy, so it has to come through here.
+      nmcli device wifi rescan 2>/dev/null || true
+      echo 'control: asked for a fresh Wi-Fi scan'
+      ;;
+    wifi-forget)
+      # Only ever the saved profile for a network we are NOT currently relying on.
+      if nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | grep -q '^[^:]*:ethernet:connected'; then
+        cur=$(nmcli -t -f GENERAL.CONNECTION device show wlan0 2>/dev/null | cut -d: -f2- || true)
+        [ -n "$cur" ] && nmcli connection delete "$cur" >/dev/null 2>&1 || true
+        echo 'control: forgot the saved Wi-Fi network'
+      else
+        echo 'control: refusing to forget Wi-Fi — there is no cable, so it is the only way back'
+      fi
+      ;;
+    wifi-join)
+      # ── The one branch that takes DATA from the agent, so it is the one that validates. ──
+      #
+      # The verb file cannot carry it. `head -c 32 | tr -dc 'a-z-'` above deletes digits, spaces,
+      # punctuation and capitals, so a network called "Masjid 5G" arrives as "masjidg" — there is no
+      # encoding of an SSID and a passphrase that survives that, and it must not be loosened, because
+      # the narrowness of that filter is what makes the verb set closed.
+      #
+      # So the payload travels beside it in its own file, and every byte of it is treated as hostile
+      # until checked HERE, as root, rather than trusted because the agent wrote it. Each field is
+      # base64 so that a newline, a quote or a leading dash in a network name cannot change the shape
+      # of the file or of any command built from it.
+      REQ="$STATEDIR/wifi-request"
+      RES="$STATEDIR/wifi-result"
+      if [ ! -f "$REQ" ]; then
+        # Two joins queued at once, and the second payload replaced the first. Not an error worth
+        # aborting the rest of the spool for — `set -e` would do exactly that.
+        echo 'control: a Wi-Fi join was asked for with no details attached; ignoring'
+        continue
+      fi
+      SSID=$(sed -n 1p "$REQ" 2>/dev/null | base64 -d 2>/dev/null || true)
+      PSK=$(sed -n 2p "$REQ" 2>/dev/null | base64 -d 2>/dev/null || true)
+      rm -f "$REQ"
+
+      fail() { printf 'no\n%s\n' "$1" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true; echo "control: Wi-Fi join failed: $1"; }
+
+      # 1..32 bytes, and nothing that is not printable. A leading '-' is rejected outright: nmcli
+      # would read it as an option, which is the argument-injection shape this repo already refuses
+      # to allow anywhere near ffmpeg.
+      if [ -z "$SSID" ] || [ "${#SSID}" -gt 32 ]; then
+        fail 'that network name is not a usable length'
+      elif [ "${SSID#-}" != "$SSID" ]; then
+        fail 'a network name cannot begin with a dash'
+      elif [ "$(printf '%s' "$SSID" | wc -l)" -ne 0 ] || [ "$(printf '%s' "$PSK" | wc -l)" -ne 0 ]; then
+        # A separate test, and it has to be, because grep CANNOT find this. grep examines one line at
+        # a time, so a newline is never a character inside any line it sees — the printable-range
+        # check below is structurally blind to exactly this one byte, and let "a\nb" through as a
+        # valid network name when it was first written. Counting lines is the test that works.
+        fail 'a network name or password cannot contain a line break'
+      elif printf '%s' "$SSID" | LC_ALL=C grep -q '[^ -~]'; then
+        fail 'that network name contains characters this screen cannot use'
+      elif [ -n "$PSK" ] && { [ "${#PSK}" -lt 8 ] || [ "${#PSK}" -gt 63 ]; } && ! printf '%s' "$PSK" | LC_ALL=C grep -qE '^[0-9a-fA-F]{64}$'; then
+        fail 'a Wi-Fi password must be at least 8 characters'
+      elif [ -n "$PSK" ] && printf '%s' "$PSK" | LC_ALL=C grep -q '[^ -~]'; then
+        fail 'that password contains characters this screen cannot use'
+      else
+        nmcli radio wifi on >/dev/null 2>&1 || true
+        # Array-form in spirit: every value is a separate, quoted word. Never `eval`, never a
+        # command assembled into a string.
+        if [ -n "$PSK" ]; then
+          nmcli --wait 45 device wifi connect "$SSID" password "$PSK" >/dev/null 2>&1 || true
+        else
+          nmcli --wait 45 device wifi connect "$SSID" >/dev/null 2>&1 || true
+        fi
+
+        # ── Association is NOT success, and this is the whole point of the branch. ──
+        #
+        # nmcli returns 0 once the device reaches ACTIVATED, which means associated and holding a
+        # DHCP lease. A guest VLAN with client isolation, a captive portal, or a subnet with no route
+        # to the display server all reach ACTIVATED and leave a screen that can never be managed
+        # again. So the test is whether the SERVER is reachable, over wlan0 specifically.
+        #
+        # --interface is what forces that. With a cable still plugged in there are two default
+        # routes and the kernel picks by destination, so an unbound request would happily prove the
+        # CABLE works and tell us nothing. Measured on a Pi 3: bound to wlan0 an off-subnet request
+        # left from the wlan0 address while the default route was the cable's, and it needed no
+        # privilege to do it.
+        # FIRST: are we actually on the network that was asked for?
+        #
+        # This check is not paranoia, it is the difference between a correct answer and a confidently
+        # wrong one. If nmcli cannot find the requested network it fails and leaves wlan0 associated
+        # with whatever it was on before — so every test below would pass, on the strength of the OLD
+        # connection, and the panel would report that a network it never joined works fine.
+        active=$(nmcli -t -f IN-USE,SSID device wifi list 2>/dev/null | sed -n 's/^\*://p' | head -1 || true)
+        ip4=$(nmcli -t -f IP4.ADDRESS device show wlan0 2>/dev/null | cut -d: -f2- | head -1 || true)
+        if [ "$active" != "$SSID" ]; then
+          fail 'could not join that network — check the name and the password'
+        elif [ -z "$ip4" ]; then
+          fail 'joined that network but it did not give this screen an address'
+        elif [ -z "${SERVER:-}" ]; then
+          # Nothing to prove reachability against. Report the address and say so plainly rather than
+          # claiming a success that has not been tested.
+          printf 'unverified\n%s\n' "$ip4" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true
+          echo 'control: joined Wi-Fi but there is no server address to test against'
+        elif curl -fsS -I --interface wlan0 --max-time 12 $CURL_OPTS "$SERVER/pi.sh" -o /dev/null 2>/dev/null; then
+          printf 'yes\n%s\n' "$ip4" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true
+          echo 'control: Wi-Fi joined and the display server is reachable over it'
+        else
+          # Roll it back. Leaving a profile that half-works means the next boot may prefer it over
+          # the cable and take the screen off the network for good.
+          cur=$(nmcli -t -f GENERAL.CONNECTION device show wlan0 2>/dev/null | cut -d: -f2- || true)
+          if [ -n "$cur" ]; then
+            nmcli connection down "$cur" >/dev/null 2>&1 || true
+            nmcli connection delete "$cur" >/dev/null 2>&1 || true
+          fi
+          fail 'joined that network but the display server could not be reached over it, so it has been undone'
+        fi
       fi
       ;;
     *)

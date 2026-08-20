@@ -194,6 +194,13 @@ export interface PiDeviceInfo {
   /** the last lines the agent logged, as it saw them. Display text only. */
   recentLog?: string[];
   logAt?: string;
+  /** The Wi-Fi networks this screen can see, strongest first. */
+  networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
+  /** The outcome of the last join. `ok: null` = joined, but the server was not proven reachable. */
+  wifiResult?: { ok: boolean | null; detail: string; at: string };
+  /** When an install was last asked for, so the card can say it is busy for the couple of minutes
+   *  it takes. Not proof of anything: the version changing is what says it worked. */
+  updateAskedAt?: number;
   /** How the screen is attached to the network. Undefined — not 'none' — until the device has
    *  checked in with an agent new enough to report it, which is a different thing from being
    *  unplugged and has to be drawn differently. */

@@ -344,12 +344,39 @@ export interface PiDevice {
   tvId?: string;
   /** What this device should do next, left for it to collect on its own poll. Cleared as soon
    *  as it acknowledges — see ackCommand for why that must happen BEFORE it acts. */
-  command?: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs'; issuedAt: number };
+  /** NOTE: the list of actions is PI_COMMANDS in piAgent.ts, which is the closed set the device
+   *  checks against. It is spelled out again here because this file must not import from there, and
+   *  `piAgentCommandsMatchTypes` in piAgent.test.ts fails if the two ever drift apart. */
+  command?: {
+    id: string;
+    action:
+      | 'restart'
+      | 'update'
+      | 'reboot'
+      | 'reinstall'
+      | 'logs'
+      | 'wifi-on'
+      | 'wifi-off'
+      | 'wifi-join'
+      | 'wifi-forget'
+      | 'wifi-rescan';
+    issuedAt: number;
+    /** Only for 'wifi-join', and deleted as soon as the device acknowledges the command. */
+    wifi?: { ssid: string; psk: string };
+  };
   /** The last lines the agent logged, as IT saw them — sent on check-in so the panel can show
    *  what a screen is doing without anybody opening a shell on it. Display text only. */
   recentLog?: string[];
   /** when that log was collected, so the panel can say how stale it is */
   logAt?: string;
+  /** When an install was last asked for from the panel. Used only to say "updating" while the
+   *  device is busy doing it — the command is acknowledged within seconds, long before it finishes. */
+  updateAskedAt?: number;
+  /** The Wi-Fi networks this screen can see. Self-reported, for the panel to offer a choice. */
+  networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
+  /** What the device's root side reported about the last join. `ok: null` means it joined but
+   *  nothing proved the display server was still reachable over it — not a success. */
+  wifiResult?: { ok: boolean | null; detail: string; at: string };
   /** How this screen is attached to the network, as IT sees it. Self-reported and sanitised on
    *  arrival like every other device fact — this is decoration for the panel, never a decision. */
   net?: DeviceNet;
