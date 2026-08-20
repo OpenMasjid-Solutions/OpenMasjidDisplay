@@ -401,3 +401,28 @@ test('the spool is writable by the agent and the dispatcher is not', () => {
   assert.ok(!rwp.includes('$PREFIX'), 'control.sh must stay out of the agent\'s reach');
   assert.ok(tpl.includes('chmod 700 "$PREFIX/control.sh"'));
 });
+
+test('reboot is rate limited, or a screen can be taken off the wall for good', () => {
+  // Nobody is watching a masjid screen. A reboot loop is not an inconvenience, it is a dead screen
+  // until somebody drives there — so the limit is on the DEVICE, not in the panel that asked.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  assert.ok(/^\s*reboot\)/m.test(ctl), 'the verb must exist');
+  assert.ok(/systemctl reboot/.test(ctl));
+  assert.ok(/-lt 600/.test(ctl), 'one reboot per ten minutes at most');
+  assert.ok(/last-reboot/.test(ctl), 'and the last one has to be remembered across reboots');
+  // The remembered timestamp lives where the agent cannot forge it.
+  assert.ok(/\$PREFIX\/last-reboot/.test(ctl), 'in /opt, which the agent cannot write');
+  // A corrupt stamp must not read as "never rebooted, go ahead" AND must not crash the dispatcher.
+  assert.ok(/\*\[!0-9\]\*/.test(ctl), 'a non-numeric stamp has to be handled');
+});
+
+test('the dispatcher still executes nothing outside its closed set', () => {
+  // Adding a verb is exactly when this stops being true by accident.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  const verbs = [...ctl.matchAll(/^\s{4}([a-z|]+)\)/gm)].map((m) => m[1]);
+  assert.deepEqual(verbs.sort(), ['reboot', 'update'], `unexpected verbs: ${verbs.join(', ')}`);
+  const def = /\*\)([\s\S]*?);;/.exec(ctl)?.[1] ?? '';
+  assert.ok(!/\$\(|`|eval|exec /.test(def), `the default branch runs something: ${def.trim()}`);
+});

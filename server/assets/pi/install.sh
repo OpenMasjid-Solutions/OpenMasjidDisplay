@@ -655,6 +655,22 @@ for req in "$SPOOL"/*; do
       echo "control: running the updater at the dashboard's request"
       "$PREFIX/update.sh" || echo "control: the updater reported a problem"
       ;;
+    reboot)
+      # Rate limited, and that is not optional. A reboot loop takes a screen off the wall for
+      # good and nobody is watching it; one every ten minutes is far more than a person needs and
+      # slow enough that a masjid notices something is wrong rather than never seeing a picture.
+      now=$(date +%s)
+      last=0
+      [ -f "$PREFIX/last-reboot" ] && last=$(cat "$PREFIX/last-reboot" 2>/dev/null || echo 0)
+      case "$last" in *[!0-9]*|'') last=0 ;; esac
+      if [ $((now - last)) -lt 600 ]; then
+        echo "control: refusing to reboot again so soon ($((now - last))s ago)"
+      else
+        echo "$now" > "$PREFIX/last-reboot"
+        echo 'control: rebooting at the dashboard request'
+        systemctl reboot
+      fi
+      ;;
     *)
       # A closed set with no default that runs anything. An agent that has been tampered with can
       # write a file here; it cannot invent a new verb.

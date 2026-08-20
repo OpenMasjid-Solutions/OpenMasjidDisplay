@@ -93,7 +93,7 @@ interface PiStateWire {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
-  command?: { id: string; action: 'restart' | 'update' } | null;
+  command?: { id: string; action: 'restart' | 'update' | 'reboot' } | null;
 }
 
 // ── drawing ───────────────────────────────────────────────────────────────────
@@ -267,7 +267,7 @@ function rememberCommand(id: string): void {
  * bring the agent straight back. `update` does need root, so it is left as a request in a
  * directory a root-side unit is watching; see the installer.
  */
-async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart' | 'update' }): Promise<void> {
+async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart' | 'update' | 'reboot' }): Promise<void> {
   if (cmd.id === lastCommandId()) return; // already done; the ack simply never landed
 
   // Tell the server before doing anything, so a command cannot be collected twice.
@@ -289,19 +289,36 @@ async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart'
   }
 
   if (cmd.action === 'update') {
-    // The agent cannot write /opt — deliberately, so it cannot rewrite its own code. Leave a
-    // request for the root-side updater instead. Written through a temporary name and renamed, so
-    // the watcher never sees a half-written file.
-    try {
-      const dir = '/var/lib/openmasjid-screen/control';
-      fs.mkdirSync(dir, { recursive: true });
-      const tmp = `${dir}/.${cmd.id}`;
-      fs.writeFileSync(tmp, `update\n`);
-      fs.renameSync(tmp, `${dir}/${cmd.id}`);
-      log('asked the updater to check for a new version');
-    } catch (e) {
-      log('could not ask the updater:', (e as Error).message);
-    }
+    requestPrivileged(cmd.id, 'update', 'asked the updater to check for a new version');
+    return;
+  }
+
+  if (cmd.action === 'reboot') {
+    requestPrivileged(cmd.id, 'reboot', 'asked the system to reboot');
+  }
+}
+
+/**
+ * Leave a request for the root side to carry out.
+ *
+ * The agent cannot do either of these itself, deliberately: it cannot write /opt, so it cannot
+ * rewrite its own code, and it holds no capability that would let it reboot the machine. What it
+ * CAN do is write one file into a spool directory that a root-owned systemd path unit is watching.
+ *
+ * Written under a dot-prefixed temporary name and renamed into place, so the watcher never wakes on
+ * a half-written file — and the verb is one of a fixed set the dispatcher matches against, never
+ * anything derived from the network.
+ */
+function requestPrivileged(id: string, verb: 'update' | 'reboot', said: string): void {
+  try {
+    const dir = '/var/lib/openmasjid-screen/control';
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = `${dir}/.${id}`;
+    fs.writeFileSync(tmp, `${verb}\n`);
+    fs.renameSync(tmp, `${dir}/${id}`);
+    log(said);
+  } catch (e) {
+    log(`could not ask for "${verb}":`, (e as Error).message);
   }
 }
 

@@ -374,11 +374,11 @@ test('asking twice replaces rather than queues', () => {
   assert.equal(pendingCommand(device, NOW)?.id, latest.id);
 });
 
-test('only the two known actions are accepted', () => {
+test('only the known actions are accepted', () => {
   // The dispatcher on the device has no default branch that runs anything, and this is the gate
   // in front of it.
-  for (const ok of ['restart', 'update']) assert.equal(isPiCommand(ok), true, ok);
-  for (const no of ['reboot', 'rm -rf /', '', 'RESTART', 'wifi-set', null, 7]) {
+  for (const ok of ['restart', 'update', 'reboot']) assert.equal(isPiCommand(ok), true, ok);
+  for (const no of ['rm -rf /', '', 'RESTART', 'wifi-set', 'shutdown', 'poweroff', null, 7]) {
     assert.equal(isPiCommand(no as unknown), false, String(no));
   }
 });

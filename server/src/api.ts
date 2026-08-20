@@ -1537,7 +1537,7 @@ export function createApi(deps: Deps) {
         if (!isPiCommand(body?.action)) return sendJson(res, 400, { error: 'Unknown action.' });
         let queued: ReturnType<typeof queueCommand> = null;
         store.update((db) => {
-          queued = queueCommand(db, piCmd[1], body!.action as 'restart' | 'update', Date.now());
+          queued = queueCommand(db, piCmd[1], body!.action as 'restart' | 'update' | 'reboot', Date.now());
         });
         if (!queued) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
         log.info(`queued "${(body as { action: string }).action}" for pi device ${piCmd[1]}`);

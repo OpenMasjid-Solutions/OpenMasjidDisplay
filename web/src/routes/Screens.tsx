@@ -16,6 +16,7 @@ import {
   IconCopy,
   IconCheck,
   IconRefresh,
+  IconPower,
   IconDownload,
   MasjidMark,
   Spinner,
@@ -166,17 +167,19 @@ function ScreenCard({
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const [copiedPublic, setCopiedPublic] = useState(false);
-  const [sending, setSending] = useState<'' | 'restart' | 'update'>('');
+  const [sending, setSending] = useState<'' | 'restart' | 'update' | 'reboot'>('');
 
   /** Queue an instruction for the Pi. It is not sent — the device collects it, so say so. */
-  const ask = async (deviceId: string, action: 'restart' | 'update') => {
+  const ask = async (deviceId: string, action: 'restart' | 'update' | 'reboot') => {
     setSending(action);
     try {
       await api.piCommand(deviceId, action);
       toast(
         action === 'restart'
           ? 'Asked the screen to restart. It will go blank for a few seconds.'
-          : 'Asked the screen to check for an update. It restarts itself if it finds one.',
+          : action === 'reboot'
+            ? 'Asked the Raspberry Pi to reboot. It will be back in about a minute.'
+            : 'Asked the screen to check for an update. It restarts itself if it finds one.',
       );
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not reach the display server.', 'error');
@@ -303,6 +306,17 @@ function ScreenCard({
             onClick={() => device && ask(device.id, 'restart')}
           >
             {sending === 'restart' ? <Spinner /> : <IconRefresh size={14} />} Restart
+          </button>
+          {/* A full power cycle of the board, not just the software. Rate limited on the device
+              to one every ten minutes, because a reboot loop takes a screen off the wall for good
+              and nobody is watching it. */}
+          <button
+            className="btn btn--ghost btn--sm"
+            disabled={!device || sending !== ''}
+            title="Restart the whole Raspberry Pi. Use this if restarting the software did not help."
+            onClick={() => device && ask(device.id, 'reboot')}
+          >
+            {sending === 'reboot' ? <Spinner /> : <IconPower size={14} />} Reboot
           </button>
         </div>
       ) : (

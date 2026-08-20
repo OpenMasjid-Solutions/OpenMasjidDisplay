@@ -13,6 +13,10 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Reboot a Raspberry Pi screen from the dashboard.** Alongside Update and Restart, there is now
+  a Reboot button for when restarting the software is not enough. The Pi limits itself to one
+  reboot every ten minutes, so a stuck screen cannot end up cycling out of reach.
+
 - **Update and restart a Raspberry Pi screen from the dashboard.** Each Pi screen now has Update
   and Restart buttons on its card. Nothing connects to the Pi — it picks the instruction up on its
   own, within about five seconds — so the dashboard says it has been asked, not that it is done.

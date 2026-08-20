@@ -391,7 +391,7 @@ export function __resetDevicesForTests(): void {
 // its next state poll, at most five seconds later. That shapes everything here.
 
 /** Actions a Pi can be asked to perform from the panel. A closed set, checked on the way in. */
-export const PI_COMMANDS = ['restart', 'update'] as const;
+export const PI_COMMANDS = ['restart', 'update', 'reboot'] as const;
 export type PiCommandAction = (typeof PI_COMMANDS)[number];
 
 /**
