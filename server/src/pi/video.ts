@@ -93,6 +93,15 @@ export function __resetTimeoutFlagForTests(): void {
   timeoutFlag = undefined;
 }
 
+/**
+ * Frames a second to ask the camera for.
+ *
+ * A Pi 3 decoding 1080p in software — which is all it can do, since its V4L2 decoder reports
+ * "Could not find a valid device" — plus a colour conversion per frame, saturates the board. Half
+ * the frames is half of both, and nobody watching a prayer hall can tell 12fps from 25.
+ */
+const CAMERA_FPS = 12;
+
 /** The pixel layout the kernel's framebuffer device expects, by depth. */
 function pixFmt(bpp: number): string {
   return bpp === 16 ? 'rgb565le' : 'bgra';
@@ -142,7 +151,21 @@ export function videoArgs(
     // The framebuffer device will not scale, and refuses a size that is not exactly its own. Fit
     // inside and pad the rest black — never stretch, which makes a room look the wrong shape.
     '-vf',
-    `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,format=${pixFmt(geo.bpp)}`,
+    // Order matters, and every stage here is there to spend less of the board.
+    //
+    // `fps` FIRST, before scaling or converting: dropping frames early means the expensive stages
+    // run on fewer of them. A masjid measured `Consumed 12min CPU` over twelve minutes of wall
+    // clock — a completely pegged core — which starved the timetable renderer down to a frame
+    // every seven seconds. The server's own transcode has always capped itself the same way
+    // (renderer.ts), and 12fps on a camera pointed at a prayer hall is not something anybody sees.
+    //
+    // The conversion is last, and deliberately in TWO steps on a 16-bit screen. swscale has no
+    // accelerated path from yuv420p straight to rgb565le — it says so in the log, and then does it
+    // one pixel at a time in C — but the routes into and out of bgra are SIMD. Going via bgra costs
+    // an extra pass over the frame and skips the slow one.
+    `fps=${CAMERA_FPS},scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2${
+      geo.bpp === 16 ? ',format=bgra' : ''
+    },format=${pixFmt(geo.bpp)}`,
     '-f',
     'fbdev',
     opts.device,

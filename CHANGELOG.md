@@ -23,6 +23,10 @@ CLAUDE.md § *The changelog has two audiences*.
   Update checks for a newer version and restarts only if it finds one.
 
 ### Fixed
+- **A camera on a Raspberry Pi screen no longer takes the whole board with it.** Playing a camera
+  was using an entire processor core, which starved the timetable and left the clock updating every
+  few seconds. Cameras now play at a lower frame rate, and the colour conversion takes a faster
+  route — both invisible on a screen across a hall.
 - **A camera on a Raspberry Pi screen stops blinking every half minute.** Two causes. The screen
   kept retrying the Pi’s video hardware on a board that does not have it, costing two black
   seconds every time it reconnected; and when a camera ended a stream normally — which some

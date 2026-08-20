@@ -227,3 +227,30 @@ test('a clean exit is a stream ending, not a failure', () => {
   assert.ok(zero >= 0 && bump >= 0, 'both branches must exist in the exit handler');
   assert.ok(zero < bump, 'a clean exit must be handled BEFORE the failure count is raised');
 });
+
+test('the frame rate is capped, and capped BEFORE the expensive stages', () => {
+  // A masjid measured "Consumed 12min CPU" over twelve minutes of wall clock — a pegged core — and
+  // the timetable renderer was starved down to a frame every seven seconds. Dropping frames first
+  // means the scale and the colour conversion run on fewer of them.
+  const vf = args('rtsp://cam')[args('rtsp://cam').indexOf('-vf') + 1];
+  assert.ok(vf.startsWith('fps='), `fps must come first: ${vf}`);
+  assert.ok(vf.indexOf('fps=') < vf.indexOf('scale='));
+  assert.ok(vf.indexOf('fps=') < vf.indexOf('format='));
+});
+
+test('a 16bpp screen converts via bgra, avoiding the unaccelerated path', () => {
+  // ffmpeg says so itself, in the log from a real Pi:
+  //   [swscaler] No accelerated colorspace conversion found from yuv420p to rgb565le
+  // …and then does it one pixel at a time. The routes into and out of bgra are SIMD, so going the
+  // long way round is faster than the short one.
+  const g16: FbGeometry = { width: 1920, height: 1080, bpp: 16, stride: 3840 };
+  const vf16 = videoArgs('rtsp://c', g16, { hw: false, device: '/dev/fb0' })[
+    videoArgs('rtsp://c', g16, { hw: false, device: '/dev/fb0' }).indexOf('-vf') + 1
+  ];
+  assert.ok(vf16.includes('format=bgra,format=rgb565le'), `expected a two-step conversion: ${vf16}`);
+
+  // A 32bpp screen needs no second step — bgra IS what the framebuffer wants.
+  const vf32 = args('rtsp://c', HD)[args('rtsp://c', HD).indexOf('-vf') + 1];
+  assert.ok(vf32.endsWith('format=bgra'), vf32);
+  assert.ok(!vf32.includes('rgb565'), 'and must not convert twice for nothing');
+});
