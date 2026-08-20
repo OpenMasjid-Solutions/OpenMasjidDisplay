@@ -753,3 +753,28 @@ test('the deferred certificate check happens after node is installed, and only w
   const trustEnvAt = tpl.indexOf('} > "$TRUSTENV"');
   assert.ok(trustEnvAt > 0 && trustEnvAt < recheck, 'trust.env is written before the re-check — hence the above');
 });
+
+test('the Wi-Fi reachability check uses a request the server actually answers', () => {
+  // This was a live bug. The check was `curl -I` — a HEAD — because a HEAD looks like the cheap way
+  // to ask "are you there". The display server answers HEAD /pi.sh with 401 and GET with 200, so
+  // with -f the check failed on every join, the profile was rolled back on every join, and the
+  // screen reported the network unreachable when it was fine.
+  //
+  // A safeguard that fires on a false negative is worse than no safeguard: it is indistinguishable
+  // from the fault it exists to catch, and it makes the feature look broken rather than careful.
+  //
+  // The sandbox test that exercised this branch stubbed curl to succeed, so it could never have
+  // found it — which is why this asserts the SHAPE of the request rather than trusting a stub.
+  const tpl = installerTemplate() as string;
+  const branch = tpl.slice(tpl.indexOf('wifi-join)'));
+  const check = branch.slice(0, branch.indexOf(';;'));
+
+  const line = check
+    .split('\n')
+    .find((l) => l.includes('--interface wlan0') && l.includes('curl'));
+  assert.ok(line, 'the reachability check must exist and be bound to wlan0');
+  assert.ok(!/\s-I\b/.test(line), 'a HEAD request is answered 401 by this server — use a GET');
+  assert.ok(!/--head\b/.test(line), 'nor the long form of it');
+  assert.match(line, /-fsS/, 'it must still fail on an HTTP error, or it proves nothing');
+  assert.match(line, /--max-time/, 'and be bounded, or a silent network hangs the join');
+});

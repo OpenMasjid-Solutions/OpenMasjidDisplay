@@ -1023,7 +1023,20 @@ for req in "$SPOOL"/*; do
           # claiming a success that has not been tested.
           printf 'unverified\n%s\n' "$ip4" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true
           echo 'control: joined Wi-Fi but there is no server address to test against'
-        elif curl -fsS -I --interface wlan0 --max-time 12 $CURL_OPTS "$SERVER/pi.sh" -o /dev/null 2>/dev/null; then
+        # A GET, not a HEAD, and that distinction was a real bug.
+        #
+        # This used to be `curl -I`, chosen because a HEAD looked like the cheap way to ask "are you
+        # there". The display server answers HEAD /pi.sh with 401 while answering GET with 200 — so
+        # with -f the check failed every single time, the join was rolled back every single time, and
+        # the screen reported "the display server could not be reached over it" for a network that
+        # worked perfectly well. A safeguard firing on a false negative is worse than no safeguard:
+        # it is indistinguishable from the fault it exists to catch.
+        #
+        # It was not caught earlier because the sandbox test that exercised this branch stubbed curl
+        # to succeed. The stub answered the question the real server does not.
+        #
+        # The installer is ~60KB, fetched once per join attempt, over a LAN. Cheap enough.
+        elif curl -fsS --interface wlan0 --max-time 12 $CURL_OPTS "$SERVER/pi.sh" -o /dev/null 2>/dev/null; then
           printf 'yes\n%s\n' "$ip4" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true
           echo 'control: Wi-Fi joined and the display server is reachable over it'
         else

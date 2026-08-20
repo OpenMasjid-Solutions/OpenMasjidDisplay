@@ -41,6 +41,10 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- **Joining a Wi-Fi network always failed, even when the network was fine.** Before keeping a new
+  network the screen checks it can still reach this dashboard over it — a good check, asked the
+  wrong way. The request it used was one the display server refuses, so the check failed every
+  time, every join was undone, and the screen reported the network unreachable when it was not.
 - The Wi-Fi panel opens in the middle of the screen. It was appearing off to one side, dimming only
   part of the page, running off the bottom, and being drawn over by the toolbar — all because a
   dialog opened from a screen card was being positioned inside that card rather than on the page.
