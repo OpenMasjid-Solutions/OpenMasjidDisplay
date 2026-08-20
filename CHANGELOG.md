@@ -41,6 +41,12 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- Dialogs that open as a window are now solid, instead of letting the page show through them. The
+  Wi-Fi panel in particular was hard to read against the screens behind it. They also scroll
+  properly now: the frame stays put and only the contents move, so a long list of networks no
+  longer runs off the bottom.
+- Wi-Fi strength is shown as bars rather than a percentage, the way a phone or laptop shows it. A
+  weak network’s bar is highlighted. The exact figure is still there if you hover over it.
 - **Wi-Fi setup on a Raspberry Pi screen now works.** The screen reports the networks it can see
   as part of its regular check-in, and those check-ins were being rejected by the server for being
   too large — so the dashboard never learned the screen had Wi-Fi at all, and the Wi-Fi button

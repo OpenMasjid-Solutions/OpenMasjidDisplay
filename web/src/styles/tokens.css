@@ -45,6 +45,13 @@
   --glass-saturate-strong: 200%;
   --glass-bg: rgba(10, 24, 40, 0.55);
   --glass-bg-raised: rgba(15, 32, 64, 0.68);
+  /* A WINDOW is opaque. Glass is right for cards floating over a wallpaper, and wrong for a
+     dialog you are reading a list in: at 0.68 alpha the cards behind it stayed legible through
+     it, and the eye kept resolving them instead of the content. macOS does the same thing —
+     vibrancy on sidebars, solid where the work happens. */
+  --window-bg: #101f3a;
+  --window-head: #16294a;
+  --window-edge: rgba(160, 205, 235, 0.16);
   --glass-bg-inset: rgba(3, 13, 26, 0.45);
   --glass-tint: rgba(34, 211, 238, 0.06);
   --glass-highlight: rgba(186, 230, 253, 0.22);
@@ -113,6 +120,9 @@
   --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.08);
   --glass-bg: rgba(255, 255, 255, 0.55);
   --glass-bg-raised: rgba(255, 255, 255, 0.72);
+  --window-bg: #ffffff;
+  --window-head: #f2f6fb;
+  --window-edge: rgba(2, 132, 199, 0.18);
   --glass-bg-inset: rgba(240, 249, 255, 0.60);
   --glass-tint: rgba(2, 132, 199, 0.04);
   --glass-highlight: rgba(255, 255, 255, 0.90);

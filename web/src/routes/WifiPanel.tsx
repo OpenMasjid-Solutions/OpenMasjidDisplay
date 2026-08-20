@@ -23,7 +23,7 @@
 import { useState } from 'react';
 import { api } from '../api';
 import type { PiDeviceInfo } from '../types';
-import { Modal, Field, Spinner, IconWifi, IconRefresh, IconNoLink, IconTrash, IconCheck, useToast } from '../ui';
+import { Modal, Field, Spinner, SignalBars, IconWifi, IconRefresh, IconNoLink, IconTrash, IconCheck, useToast } from '../ui';
 
 type WifiAction = 'wifi-on' | 'wifi-off' | 'wifi-join' | 'wifi-forget' | 'wifi-rescan';
 
@@ -151,7 +151,7 @@ export function WifiPanel({
                 screen&rsquo;s next check-in, within a few seconds.
               </p>
             ) : (
-              <div style={{ display: 'grid', gap: '0.3rem', maxHeight: '30vh', overflow: 'auto' }}>
+              <div style={{ display: 'grid', gap: '0.3rem' }}>
                 {nets.map((n) => (
                   <button
                     key={n.ssid}
@@ -171,7 +171,7 @@ export function WifiPanel({
                       </span>
                     )}
                     {!n.secured && <span className="hint muted">open</span>}
-                    <span className="hint muted">{n.signal}%</span>
+                    <SignalBars percent={n.signal} />
                   </button>
                 ))}
               </div>

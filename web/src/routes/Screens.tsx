@@ -22,6 +22,7 @@ import {
   IconWifi,
   IconEthernet,
   IconNoLink,
+  SignalBars,
   MasjidMark,
   Spinner,
   copyText,
@@ -489,7 +490,7 @@ function NetBadge({ net }: { net?: PiDeviceNet }) {
         style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: weak ? 'var(--color-warn, #fbbf24)' : undefined }}
       >
         <IconWifi size={14} /> {net.ssid || 'Wi-Fi'}
-        {net.signal ? <span className="muted">{net.signal}%</span> : null}
+        {net.signal ? <SignalBars percent={net.signal} /> : null}
       </span>
     );
   }

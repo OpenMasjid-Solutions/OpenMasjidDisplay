@@ -554,7 +554,27 @@ h1, h2, h3, p { margin: 0; }
 .modal--window {
   width: min(52rem, 94vw); height: min(78vh, 46rem); max-height: none;
   display: flex; flex-direction: column; overflow: hidden;
+  /* Opaque, and this overrides .glass-raised deliberately — see --window-bg. Both the image
+     AND the colour have to be reset, because .glass-raised paints a gradient on top of its
+     background-color, and the blur has to go or the surface still samples what is behind it. */
+  background-image: none;
+  background-color: var(--window-bg);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 1px solid var(--window-edge);
+  border-radius: 12px;
+  /* A window sits above the page rather than in it, and the shadow is what says so once the
+     translucency is gone. */
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.5), 0 3px 10px rgba(0, 0, 0, 0.3);
+  padding: 0;
 }
+/* Title bar: its own band, like a real window, rather than text floating on the body. */
+/* Scoped to modal-head--win, which only the Modal component emits. whatsnew.tsx builds its own
+   head with a separate traffic-light row above it, and giving THAT a padded band would leave
+   the lights floating outside it. */
+.modal--window .modal-head--win { margin: 0; padding: 0.7rem 0.95rem 0.65rem; background: var(--window-head); border-block-end: 1px solid var(--window-edge); }
+.modal--window .modal-body { padding: 1.1rem 1.2rem 1.2rem; }
+.modal--window .modal-foot { margin: 0; padding: 0.8rem 1.2rem; border-block-start: 1px solid var(--window-edge); background: var(--window-head); }
 .modal--window .modal-head { display: flex; align-items: flex-start; gap: 0.6rem; margin-block-end: 0.8rem; }
 .modal--window .modal-body { overflow-y: auto; min-height: 0; }
 .card-head__main { min-width: 0; flex: 1; }

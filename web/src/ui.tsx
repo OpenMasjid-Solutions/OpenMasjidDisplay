@@ -79,6 +79,46 @@ export const IconEthernet = (p: IP) => <Svg {...p}><rect x="6" y="10" width="12"
 // Not attached to anything — the same plug with the run of wire broken.
 export const IconNoLink = (p: IP) => <Svg {...p}><path d="M4 4l16 16" /><path d="M9 5h6M7 12h4M13 12h4" /></Svg>;
 
+/**
+ * Signal strength as bars, the way every other device shows it.
+ *
+ * A percentage is precision nobody can use: "72%" and "85%" prompt a comparison that means nothing,
+ * because received signal strength is not linear in anything a person cares about and the number
+ * moves several points while you watch it. Four bars answers the only real question — will this one
+ * work — and it is the vocabulary every phone and laptop has already taught everybody.
+ *
+ * The exact percentage stays available as a tooltip, for the rare case where somebody is walking an
+ * aerial around a hall and wants to see it move.
+ */
+export function SignalBars({ percent, size = 14 }: { percent: number; size?: number }) {
+  // Four buckets. The thresholds are deliberately not even quarters: below about a third, Wi-Fi
+  // starts costing retransmissions long before it stops working, so that band is worth its own
+  // (single, warning-coloured) bar rather than being lumped in with the middle.
+  const level = percent >= 75 ? 4 : percent >= 50 ? 3 : percent >= 30 ? 2 : percent > 0 ? 1 : 0;
+  const weak = level <= 1 && level > 0;
+  return (
+    <span
+      title={`Signal ${Math.round(percent)}%`}
+      aria-label={`Signal ${level} of 4`}
+      style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 1.5, height: size, lineHeight: 0 }}
+    >
+      {[1, 2, 3, 4].map((i) => (
+        <span
+          key={i}
+          style={{
+            width: Math.max(2, size * 0.16),
+            height: size * (0.3 + i * 0.175),
+            borderRadius: 1,
+            background: i <= level ? (weak ? 'var(--color-warn, #fbbf24)' : 'currentColor') : 'currentColor',
+            // Unfilled bars stay visible but recede, so the scale is readable rather than implied.
+            opacity: i <= level ? 1 : 0.22,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
 /** OpenMasjid crescent + dome brand mark. Rendered as a CSS mask painted in
  *  `currentColor`, so it adapts to light/dark themes and stays crisp at any size. */
 export function MasjidMark({ size = 26 }: IP) {
@@ -257,12 +297,31 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
 
   if (!open) return null;
 
+  /**
+   * `windowed` has to add `modal--window`, and it did not.
+   *
+   * The prop styled only the HEADER — it produced the macOS traffic lights — while the class that
+   * makes the thing a window was applied by hand in exactly one place, whatsnew.tsx. So any other
+   * caller passing `windowed` got a window's chrome with a sheet's geometry: the whole dialog
+   * scrolled as one piece instead of being a fixed frame with a scrolling body, and a long list
+   * (the Wi-Fi network list, which is what exposed this) ran past the bottom of it.
+   */
+  const shellClass = [
+    'modal',
+    'glass-raised',
+    windowed ? 'modal--window' : '',
+    wide ? 'modal--wide' : '',
+    maximized ? 'modal--max' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
     <div className="modal-backdrop">
       <div
         ref={ref}
         tabIndex={-1}
-        className={`modal glass-raised${wide ? ' modal--wide' : ''}${maximized ? ' modal--max' : ''}`}
+        className={shellClass}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -286,7 +345,11 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
             </>
           )}
         </div>
-        {children}
+        {/* A windowed dialog is a fixed frame whose BODY scrolls, so its content needs its own
+            element to scroll inside — without one, `overflow: hidden` on the frame simply clips a
+            long list and there is no way to reach the end of it. Every other modal keeps scrolling
+            as a single block, which is right for a short form. */}
+        {windowed ? <div className="modal-body">{children}</div> : children}
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
     </div>
