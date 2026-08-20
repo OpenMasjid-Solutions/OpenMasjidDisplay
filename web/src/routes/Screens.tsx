@@ -16,7 +16,6 @@ import {
   IconCopy,
   IconCheck,
   IconRefresh,
-  IconSparkle,
   IconPower,
   IconDownload,
   MasjidMark,
@@ -168,24 +167,17 @@ function ScreenCard({
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const [copiedPublic, setCopiedPublic] = useState(false);
-  const [sending, setSending] = useState<'' | 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs'>('');
-  const [showLog, setShowLog] = useState(false);
+  const [sending, setSending] = useState<'' | 'reboot' | 'reinstall'>('');
 
   /** Queue an instruction for the Pi. It is not sent — the device collects it, so say so. */
-  const ask = async (deviceId: string, action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs') => {
+  const ask = async (deviceId: string, action: 'reboot' | 'reinstall') => {
     setSending(action);
     try {
       await api.piCommand(deviceId, action);
       toast(
-        action === 'restart'
-          ? 'Asked the screen to restart. It will go blank for a few seconds.'
-          : action === 'reboot'
-            ? 'Asked the Raspberry Pi to reboot. It will be back in about a minute.'
-            : action === 'logs'
-              ? 'Asked the screen for its latest log.'
-              : action === 'reinstall'
-              ? 'Asked the Pi to run setup again. This takes a few minutes and may need a reboot afterwards.'
-            : 'Asked the screen to check for an update. It restarts itself if it finds one.',
+        action === 'reboot'
+          ? 'Asked the Raspberry Pi to reboot. It will be back in about a minute.'
+          : 'Asked the screen to update. It takes a few minutes and restarts itself when it is done.',
       );
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not reach the display server.', 'error');
@@ -285,39 +277,6 @@ function ScreenCard({
         </button>
       )}
 
-      {showLog && device && (
-        <Modal
-          open
-          windowed
-          wide
-          onClose={() => setShowLog(false)}
-          title={`${tv.name} — what this screen is reporting`}
-          footer={<button className="btn" onClick={() => setShowLog(false)}>Close</button>}
-        >
-          <p className="hint" style={{ marginBlockEnd: '0.6rem' }}>
-            {device.logAt
-              ? `Collected ${new Date(device.logAt).toLocaleTimeString()}. The screen sends these every few minutes; asking refreshes it within a few seconds.`
-              : 'Nothing reported yet. A screen sends this shortly after it starts.'}
-          </p>
-          <pre
-            style={{
-              margin: 0,
-              maxHeight: '60vh',
-              overflow: 'auto',
-              fontSize: '0.78rem',
-              lineHeight: 1.5,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              background: 'var(--color-surface-2, rgba(0,0,0,0.25))',
-              padding: '0.7rem 0.8rem',
-              borderRadius: 'var(--radius-sm, 8px)',
-            }}
-          >
-            {device.recentLog?.length ? device.recentLog.join('\n') : 'No lines yet.'}
-          </pre>
-        </Modal>
-      )}
-
       {isPi ? (
         // What a person actually needs from a device on a shelf: is it alive, where is it, what is
         // it running — and the two things they will want to do to it. No link, because there is
@@ -327,30 +286,35 @@ function ScreenCard({
           <span className="hint">Raspberry Pi</span>
           <span className="hint" style={{ fontFamily: 'monospace' }}>{device?.ip || 'address unknown'}</span>
           <span className="hint muted">agent {device?.agentVersion || '?'}</span>
+          {/* Whether it is current is a FACT about the screen, so it is stated here beside the
+              version rather than hidden inside a button's label. The button stays usable either
+              way: updating also re-applies the setup, and a matching version says nothing about
+              that. */}
+          {device?.agentVersion ? (
+            <span className="hint" style={{ color: device.upToDate ? 'var(--color-ok, #4ade80)' : 'var(--color-warn, #fbbf24)' }}>
+              {device.upToDate ? '· up to date' : '· update available'}
+            </span>
+          ) : null}
           <span style={{ flex: 1 }} />
-          {/* Nothing can connect TO the Pi, so these are requests it collects on its own poll —
-              within about five seconds. The wording says asked, never done. */}
-          {/* Says which of the two situations you are in, rather than offering a button that
-              might do nothing. The agent ships from the same commit as this server, so one version
-              string describes both sides. */}
+          {/* ONE update button, not two.
+              It runs the full installer, which replaces the agent AND re-applies the service unit
+              and the boot settings. There used to be a separate "Re-run setup" for the second half,
+              and that split leaked how it works rather than describing a choice anybody wants to
+              make: both were correct answers to "my screen needs the newest thing", which made
+              picking between them impossible.
+              Nothing can connect TO the Pi, so this is a request it collects on its own poll. The
+              wording says asked, never done. */}
           <button
             className="btn btn--ghost btn--sm"
-            disabled={!device || sending !== '' || device.upToDate}
+            disabled={!device || sending !== ''}
             title={
               device?.upToDate
-                ? `This screen is running ${device.agentVersion}, the same version as this server`
-                : 'Ask this screen to install the current version now'
+                ? `Already running ${device.agentVersion}. Running this again re-applies its setup.`
+                : 'Install the current version on this screen and re-apply its setup'
             }
-            onClick={() => device && ask(device.id, 'update')}
+            onClick={() => device && ask(device.id, 'reinstall')}
           >
-            {sending === 'update' ? (
-              <Spinner />
-            ) : device?.upToDate ? (
-              <IconCheck size={14} />
-            ) : (
-              <IconDownload size={14} />
-            )}{' '}
-            {device?.upToDate ? 'Up to date' : 'Update'}
+            {sending === 'reinstall' ? <Spinner /> : <IconDownload size={14} />} Update
           </button>
           {/* A full power cycle of the board, not just the software. Rate limited on the device
               to one every ten minutes, because a reboot loop takes a screen off the wall for good
@@ -362,34 +326,6 @@ function ScreenCard({
             onClick={() => device && ask(device.id, 'reboot')}
           >
             {sending === 'reboot' ? <Spinner /> : <IconPower size={14} />} Reboot
-          </button>
-          {/* The only action that can change the service unit, the boot settings or the installed
-              packages. Update replaces the agent file and nothing else, so a fix in any of those
-              would otherwise need somebody with a keyboard in front of the Pi. */}
-          <button
-            className="btn btn--ghost btn--sm"
-            disabled={!device || sending !== ''}
-            title="Run setup again on this Pi. Applies changes that a normal update cannot, and takes a few minutes."
-            onClick={() => device && ask(device.id, 'reinstall')}
-          >
-            {sending === 'reinstall' ? <Spinner /> : <IconDownload size={14} />} Re-run setup
-          </button>
-          {/* The agent keeps its own last eighty lines and sends them on check-in. Not journalctl —
-              reading that would need a privilege the agent does not have, and these are the lines
-              that actually say which camera it opened and why one failed. */}
-          <button
-            className="btn btn--ghost btn--sm"
-            disabled={!device || sending !== ''}
-            title="Show what this screen has been reporting"
-            onClick={() => {
-              if (!device) return;
-              setShowLog(true);
-              // Ask for a fresh one too: the device sends these every few minutes, and this cuts
-              // the wait to about five seconds. Nothing here depends on it arriving.
-              void ask(device.id, 'logs');
-            }}
-          >
-            <IconSparkle size={14} /> Logs
           </button>
         </div>
       ) : (

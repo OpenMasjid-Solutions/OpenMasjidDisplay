@@ -13,12 +13,9 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
-- **Read a Raspberry Pi screen’s log from the dashboard.** A Logs button on the screen’s card
-  shows what it has been reporting — which camera it opened, why one failed — without opening a
-  terminal on the Pi.
-
-- **Update now says “Up to date”** when a screen is already running the current version, instead of
-  offering an update that would do nothing.
+- **One Update button for a Raspberry Pi screen, and it applies everything.** It installs the
+  current version and re-applies the screen’s setup in one step, so a fix never needs a keyboard
+  in front of the Pi. The card also says whether the screen is already up to date.
 - **Re-run setup on a Raspberry Pi screen from the dashboard.** Update installs new screen
   software, but some fixes also change how the Pi is configured — and those used to need somebody
   with a keyboard in front of it. Re-run setup applies them for you. It takes a few minutes and
@@ -39,8 +36,9 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ### Changed
 
-- The Restart button on a Raspberry Pi screen has been removed. Reboot does what people meant by
-  it, and two buttons that both restarted something was one too many.
+- A Raspberry Pi screen now has just two buttons, Update and Reboot. Restart did nearly the same
+  thing as Reboot, and a separate “Re-run setup” was a second correct answer to “my screen needs
+  the newest thing” — which made choosing between them impossible.
 - **Raspberry Pi screens can now use the video hardware to play cameras.** They never could: a
   security setting on the screen software was blocking access to the decoder, and the Pi was also
   not reserving enough memory for it. Both are corrected during setup, and a camera should use a

@@ -31,7 +31,7 @@ services:
     # .github/workflows/checks.yml fails the build if the version format or ANY image
     # line is wrong for the branch it is on, in either direction. See CLAUDE.md →
     # "Branching policy".
-    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.70.0-dev.33
+    image: ghcr.io/openmasjid-solutions/openmasjiddisplay:0.70.0-dev.34
     restart: unless-stopped
     environment:
       PORT: "8080"
