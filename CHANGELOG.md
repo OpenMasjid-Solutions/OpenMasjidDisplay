@@ -18,6 +18,15 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- Update on a Raspberry Pi screen reported success and did nothing. It said it was re-running the
+  installer, then the installer was killed a fraction of a second later — and because it counted
+  as an attempt, pressing Update again for the next five minutes was refused. It now genuinely
+  runs, and what it does is recorded on the screen so a failure halfway through can be read
+  afterwards instead of disappearing.
+- A camera failure no longer shows internal ffmpeg wording on the screen. A UniFi camera was
+  reporting "Error in the pull function" under "Camera unavailable", together with an internal
+  memory address; it now says the secure connection failed and what to check. Failures that were
+  already readable, like an unauthorised or not-found response, are still shown as they were.
 - The Update button on a Raspberry Pi screen did nothing at all. The screen accepted the
   request and reported it as done, but it could not work out the address to download from, so
   it quietly left itself alone. Update now installs what it was asked to.

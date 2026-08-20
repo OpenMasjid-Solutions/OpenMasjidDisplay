@@ -221,6 +221,39 @@ const ERROR_SHAPE =
  * Pure so the classification is testable, which matters: every wrong answer here has been visible
  * to a congregation.
  */
+/**
+ * ffmpeg prefixes most lines with the component that emitted them and its address in memory, e.g.
+ * `[tls @ 0x557cc6a7e0] `. On a television that is a meaningless eight-byte number in front of the
+ * only part anybody can read, so it comes off every line before it is shown.
+ */
+export function stripFfmpegTag(line: string): string {
+  return line.replace(/^\s*(?:\[[^\]]*@\s*0x[0-9a-f]+\]\s*)+/gi, '').trim();
+}
+
+/**
+ * Messages that state a failure — so ERROR_SHAPE rightly matches them — but say nothing a masjid
+ * can act on, paired with what they actually mean.
+ *
+ * "Error in the pull function" is the one that prompted this: it is GnuTLS's generic read failure,
+ * shown verbatim on a masjid's wall under "Camera unavailable". It is a true statement about a
+ * function nobody watching has heard of. The allowlist was right to let it through — it IS the
+ * error — and quoting it was still the wrong call, so the fix belongs here rather than in the
+ * pattern that classifies lines.
+ *
+ * Deliberately short. Every entry has to be a message seen on real hardware, because guessing at
+ * ffmpeg phrasings is how the noise filters above got defeated three times.
+ */
+const OPAQUE: [RegExp, string][] = [
+  [
+    /error in the (pull|push) function/i,
+    'The secure connection to this camera failed. Check its address and port, and that the camera still has its stream switched on.',
+  ],
+  [
+    /immediate exit requested/i,
+    'The camera stopped responding and the connection was given up.',
+  ],
+];
+
 export function cameraFailureText(tail: string, truncated: boolean): string {
   const lines = tail.split('\n');
   // A sliced first line is a fragment and cannot be classified — drop it outright.
@@ -228,7 +261,11 @@ export function cameraFailureText(tail: string, truncated: boolean): string {
   const hit = lines
     .map((l) => l.trim())
     .find((l) => l && !NOISE.test(l) && !NOISE_ANYWHERE.test(l) && ERROR_SHAPE.test(l));
-  return hit ? hit.slice(0, 300) : 'Could not play this camera. Its address or network may be wrong.';
+  if (!hit) return 'Could not play this camera. Its address or network may be wrong.';
+  const clean = stripFfmpegTag(hit);
+  for (const [pattern, plain] of OPAQUE) if (pattern.test(clean)) return plain;
+  // Nothing left once the tag came off means the line WAS only a tag.
+  return clean ? clean.slice(0, 300) : 'Could not play this camera. Its address or network may be wrong.';
 }
 
 /** Strip any user:pass@ from a URL before it can reach a log. Cameras are very often configured

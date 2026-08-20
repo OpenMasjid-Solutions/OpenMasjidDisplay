@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, cameraFailureText, retryDelayMs, FF_PROTOCOLS } from './video';
+import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, cameraFailureText, stripFfmpegTag, retryDelayMs, FF_PROTOCOLS } from './video';
 import type { FbGeometry } from './framebuffer';
 
 const HD: FbGeometry = { width: 1920, height: 1080, bpp: 32, stride: 7680 };
@@ -280,7 +280,11 @@ test('only a line that states a FAILURE is put on the television', () => {
     '[h264_v4l2m2m @ 0x1] Could not find a valid device',
     'Server returned 404 Not Found',
   ]) {
-    assert.equal(cameraFailureText(real, false), real, `lost a real error: ${real.slice(0, 50)}`);
+    // Still exact equality, but against the line with ffmpeg's `[component @ 0xADDRESS]` prefix
+    // removed: the address is an eight-byte number in front of the only part anybody watching can
+    // read. What has to survive is the part that says what went wrong, and it does.
+    assert.equal(cameraFailureText(real, false), stripFfmpegTag(real), `lost a real error: ${real.slice(0, 50)}`);
+    assert.ok(cameraFailureText(real, false).length > 8, `stripped away the whole message: ${real}`);
   }
 });
 
@@ -298,4 +302,42 @@ test('a sliced first line is discarded rather than classified', () => {
   // It is a fragment; nothing true can be said about it.
   const tail = "wscaler @ 0x1] something cut off\nConnection to tcp://cam:554 failed: Connection refused";
   assert.match(cameraFailureText(tail, true), /Connection refused/);
+});
+
+test('the memory address ffmpeg prints is never shown on a wall', () => {
+  assert.equal(stripFfmpegTag('[tls @ 0x557cc6a7e0] Error in the pull function.'), 'Error in the pull function.');
+  assert.equal(stripFfmpegTag('[rtsp @ 0x5624ab] 401 Unauthorized'), '401 Unauthorized');
+  // Nested tags, which ffmpeg emits for a decoder inside an input.
+  assert.equal(
+    stripFfmpegTag('[vist#0:2/h264 @ 0x55ae83a660] [dec:h264_v4l2m2m @ 0x55ae88c390] Error while opening decoder'),
+    'Error while opening decoder',
+  );
+  // A line with no tag is left exactly as it is.
+  assert.equal(stripFfmpegTag('Connection refused'), 'Connection refused');
+});
+
+test('a true error that means nothing to a masjid is translated, not quoted', () => {
+  // Verbatim from a UniFi camera on a real screen. It states a failure, so the allowlist is right
+  // to match it — and "Error in the pull function" under "Camera unavailable" still tells the
+  // person standing there nothing they can do.
+  const out = cameraFailureText('[tls @ 0x557cc6a7e0] Error in the pull function.', false);
+  assert.doesNotMatch(out, /pull function/i, 'the internal phrasing is still being shown');
+  assert.doesNotMatch(out, /0x[0-9a-f]+/i, 'a memory address is still being shown');
+  assert.match(out, /secure connection/i);
+  assert.match(out, /address and port/i, 'it should say what to check');
+});
+
+test('translating the opaque ones does not swallow the useful ones', () => {
+  // The whole value of the allowlist is that a real, readable failure reaches the screen. These
+  // must still be quoted, with only the tag removed.
+  assert.equal(cameraFailureText('[rtsp @ 0x55f] 401 Unauthorized', false), '401 Unauthorized');
+  assert.equal(cameraFailureText('Connection refused', false), 'Connection refused');
+  assert.match(cameraFailureText('[tcp @ 0x1] Connection timed out', false), /^Connection timed out$/);
+});
+
+test('a line that was nothing but a tag falls back to the plain sentence', () => {
+  // Possible once the tail is sliced: the readable half is gone and only the bracket survives.
+  const out = cameraFailureText('[tls @ 0x557cc6a7e0] error', false);
+  assert.equal(out, 'error', 'a one-word remainder is still the line');
+  assert.match(cameraFailureText('[tls @ 0x557cc6a7e0] ', false), /Could not play this camera/);
 });

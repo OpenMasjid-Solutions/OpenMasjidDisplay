@@ -715,15 +715,36 @@ for req in "$SPOOL"/*; do
           TMP=/tmp/omd-reinstall.sh
           # shellcheck disable=SC2086
           if curl -fsSL --max-time 120 $CURL_OPTS "$SERVER/pi.sh" -o "$TMP" && [ -s "$TMP" ] && sh -n "$TMP"; then
-            echo 'control: re-running the installer at the dashboard request'
-            # Detached from this one-shot on purpose. The installer restarts the very service that
-            # led to us being triggered, and systemd would otherwise consider that a dependency
-            # of a unit it is still starting.
-            setsid sh "$TMP" >/dev/null 2>&1 &
+            # Handed to systemd as its OWN transient unit, and that is load-bearing.
+            #
+            # This used to be `setsid sh "$TMP" &` followed by `rm -f "$TMP"`, and it never once
+            # worked. Two independent reasons, both silent:
+            #
+            #  • This service is Type=oneshot, so systemd tears the unit's cgroup down the moment
+            #    control.sh exits (the default KillMode=control-group). setsid starts a new session
+            #    but does NOT move the child out of that cgroup, so the installer was killed a
+            #    fraction of a second after being started.
+            #  • The `rm` raced the child's open() of the very file it was told to run.
+            #
+            # And it reported success either way: the message below was printed, last-reinstall was
+            # stamped, and the five-minute rate limit was consumed — so pressing Update again did
+            # nothing too. A transient unit gets its own cgroup and survives us exiting; it also
+            # survives the installer restarting the agent and this very path unit.
+            #
+            # The output goes to the journal instead of /dev/null, because a reinstall that fails
+            # halfway is exactly the thing somebody will need to be able to read afterwards.
+            if systemd-run --collect --quiet --unit=omd-reinstall \
+              --description='OpenMasjidDisplay: re-run the screen installer' \
+              /bin/sh -c 'sh "$1" 2>&1 | logger -t omd-reinstall; rm -f "$1"' sh "$TMP"; then
+              echo 'control: re-running the installer at the dashboard request'
+            else
+              echo 'control: could not start the installer'
+              rm -f "$TMP" 2>/dev/null || true
+            fi
           else
             echo 'control: could not fetch a usable installer; leaving the screen alone'
+            rm -f "$TMP" 2>/dev/null || true
           fi
-          rm -f "$TMP" 2>/dev/null || true
         fi
       fi
       ;;
