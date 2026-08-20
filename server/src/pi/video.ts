@@ -96,11 +96,42 @@ export function __resetTimeoutFlagForTests(): void {
 /**
  * Frames a second to ask the camera for.
  *
- * A Pi 3 decoding 1080p in software — which is all it can do, since its V4L2 decoder reports
- * "Could not find a valid device" — plus a colour conversion per frame, saturates the board. Half
- * the frames is half of both, and nobody watching a prayer hall can tell 12fps from 25.
+ * A Pi 3 decoding in software — which is all it can do for a stream the V4L2 decoder will not open
+ * — plus a colour conversion per frame, saturates the board. Fewer frames is less of both, and
+ * nobody watching a prayer hall can tell 10fps from 25.
+ *
+ * Eight, and the number was chosen on a measurement that took two attempts to get right.
+ *
+ * The obvious metric is ffmpeg's `speed=`, and it is a trap on a LIVE source: it cannot exceed 1.0x
+ * however much headroom there is, because the frames only arrive as fast as they are sent. So it
+ * says whether the board is keeping up and nothing at all about by how much. Measured on a Pi 3 B+
+ * against a 2688x1512 30fps camera, both 8 and 10 report a flat 1.0x and look equally fine.
+ *
+ * The metric that discriminates is CPU actually consumed, and there is a cliff between them —
+ * cores of the four available, writing real frames to /dev/fb0, with the chain below:
+ *
+ *     fps=12  ->  3.88 cores   (97% of the board,  3% left)
+ *     fps=10  ->  3.83 cores   (96% of the board,  4% left)
+ *     fps=8   ->  3.15 cores   (79% of the board, 21% left)
+ *     fps=6   ->  2.60 cores   (65% of the board, 35% left)
+ *
+ * 12 and 10 are indistinguishable because both simply saturate the board. What the last column buys
+ * is the agent's own work: check-ins, fetching assets, drawing a frame. At 10 there is no room for
+ * any of it, and it shows — ffmpeg ALONE held this camera for 186 seconds at fps=10 without a
+ * hiccup, while the full agent at the same rate lost the stream every 50 to 62 seconds. Falling
+ * behind a source that keeps arriving grows the lag without limit until the camera hangs up, which
+ * is the whole of the "it keeps reconnecting" complaint: the shipped chain ran at 0.528x and died
+ * after 57 seconds, every time.
+ *
+ * So this is a budget, not a preference: leave a fifth of the board for everything that is not
+ * ffmpeg. Nobody watching a prayer hall can tell 8fps from 25, and a steady 8 beats a 10 that
+ * stalls once a minute.
+ *
+ * A camera this size is at the edge of what any Pi 3 can do in software regardless — the honest fix
+ * for one is the camera's own lower-resolution substream, which is a thing only the admin can point
+ * us at.
  */
-const CAMERA_FPS = 12;
+const CAMERA_FPS = 8;
 
 /** The pixel layout the kernel's framebuffer device expects, by depth. */
 function pixFmt(bpp: number): string {
@@ -159,13 +190,29 @@ export function videoArgs(
     // every seven seconds. The server's own transcode has always capped itself the same way
     // (renderer.ts), and 12fps on a camera pointed at a prayer hall is not something anybody sees.
     //
-    // The conversion is last, and deliberately in TWO steps on a 16-bit screen. swscale has no
-    // accelerated path from yuv420p straight to rgb565le — it says so in the log, and then does it
-    // one pixel at a time in C — but the routes into and out of bgra are SIMD. Going via bgra costs
-    // an extra pass over the frame and skips the slow one.
-    `fps=${CAMERA_FPS},scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2${
-      geo.bpp === 16 ? ',format=bgra' : ''
-    },format=${pixFmt(geo.bpp)}`,
+    // `flags=area`, because the default is bicubic and the default is not free. Measured on a Pi 3
+    // B+ against a 2688x1512 camera, writing real frames to /dev/fb0: bicubic 9.43 fps, area 10.68.
+    // Area is also the RIGHT algorithm for a downscale — it averages the source region a pixel
+    // covers — and it is the closest of the cheap filters to what bicubic produced (PSNR 44.4dB,
+    // against bilinear's 43.4 and fast_bilinear's 36.2). On the other side, for a camera SMALLER
+    // than the screen, swscale's area degenerates to bilinear: measured identical to bilinear to
+    // two decimal places at both 640x480 and 1280x720 upscaled, so a small camera loses nothing.
+    //
+    // The conversion is ONE step, and it used to be two. The comment here used to justify going via
+    // bgra: swscale has no accelerated yuv420p -> rgb565le path, it says so in the log and then does
+    // it a pixel at a time in C, whereas the routes into and out of bgra are SIMD. That reasoning is
+    // sound and the conclusion was still wrong, because it counted instructions and ignored memory.
+    // The extra pass writes and re-reads an 8MB bgra frame, and a Pi 3 has far less memory bandwidth
+    // than it has ALU. Measured, again writing to the real framebuffer: via bgra 6.31 fps, direct
+    // 9.43 — the "optimisation" was costing a third of the frames.
+    //
+    // It cost nothing to remove, either. The same camera frame through both chains yields exactly
+    // 268 distinct 16-bit colours, so there is no banding either way. (An earlier comparison across
+    // separate live runs appeared to show a difference; it was comparing different moments of a
+    // moving picture, not different conversions.)
+    `fps=${CAMERA_FPS},scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=area,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,format=${pixFmt(
+      geo.bpp,
+    )}`,
     '-f',
     'fbdev',
     opts.device,

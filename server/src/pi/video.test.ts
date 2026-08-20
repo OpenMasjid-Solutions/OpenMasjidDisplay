@@ -238,21 +238,64 @@ test('the frame rate is capped, and capped BEFORE the expensive stages', () => {
   assert.ok(vf.indexOf('fps=') < vf.indexOf('format='));
 });
 
-test('a 16bpp screen converts via bgra, avoiding the unaccelerated path', () => {
-  // ffmpeg says so itself, in the log from a real Pi:
+test('a 16bpp screen converts in ONE step, because the clever way round was slower', () => {
+  // This test used to assert the opposite, and it was wrong for a measurable reason worth keeping.
+  //
+  // The argument for going via bgra is real as far as it goes: ffmpeg says
   //   [swscaler] No accelerated colorspace conversion found from yuv420p to rgb565le
-  // …and then does it one pixel at a time. The routes into and out of bgra are SIMD, so going the
-  // long way round is faster than the short one.
+  // and then does that conversion a pixel at a time in C, whereas the routes into and out of bgra
+  // are SIMD. So the long way round executes fewer instructions.
+  //
+  // It also moves an extra 8MB per frame, and a Pi 3 is starved of memory bandwidth long before it
+  // runs out of ALU. Measured on a Pi 3 B+ against a 2688x1512 camera, writing real frames to
+  // /dev/fb0: via bgra 6.31 fps, direct 9.43 fps. The optimisation was costing a third of the
+  // frames on the wall, which is most of why that camera looked broken.
+  //
+  // And it bought nothing: the same camera frame through both chains gives exactly 268 distinct
+  // 16-bit colours, so neither one bands more than the other.
   const g16: FbGeometry = { width: 1920, height: 1080, bpp: 16, stride: 3840 };
-  const vf16 = videoArgs('rtsp://c', g16, { hw: false, device: '/dev/fb0' })[
-    videoArgs('rtsp://c', g16, { hw: false, device: '/dev/fb0' }).indexOf('-vf') + 1
-  ];
-  assert.ok(vf16.includes('format=bgra,format=rgb565le'), `expected a two-step conversion: ${vf16}`);
+  const a16 = videoArgs('rtsp://c', g16, { hw: false, device: '/dev/fb0' });
+  const vf16 = a16[a16.indexOf('-vf') + 1];
+  assert.ok(vf16.endsWith('format=rgb565le'), `16bpp must end at rgb565le: ${vf16}`);
+  assert.ok(!vf16.includes('bgra'), `no bgra round trip on a 16bpp screen: ${vf16}`);
 
-  // A 32bpp screen needs no second step — bgra IS what the framebuffer wants.
+  // A 32bpp screen converts once too — bgra IS what that framebuffer wants.
   const vf32 = args('rtsp://c', HD)[args('rtsp://c', HD).indexOf('-vf') + 1];
   assert.ok(vf32.endsWith('format=bgra'), vf32);
   assert.ok(!vf32.includes('rgb565'), 'and must not convert twice for nothing');
+  // Exactly one format stage either way. Two was the bug.
+  for (const [name, vf] of [['16bpp', vf16], ['32bpp', vf32]] as const) {
+    assert.equal((vf.match(/format=/g) ?? []).length, 1, `${name} should convert once: ${vf}`);
+  }
+});
+
+test('the scaler is chosen, not left to the default', () => {
+  // The default is bicubic. Measured against a 2688x1512 camera on a Pi 3 B+, to the real
+  // framebuffer: bicubic 9.43 fps, area 10.68. Area is also correct for a downscale (it averages
+  // the source region) and is the closest cheap filter to bicubic's output — PSNR 44.4dB, against
+  // bilinear 43.4 and fast_bilinear 36.2.
+  //
+  // It must not be fast_bilinear. That is the cheapest and it looks it, and this pipeline is
+  // already the thing a congregation is looking at.
+  const vf = args('rtsp://c', HD)[args('rtsp://c', HD).indexOf('-vf') + 1];
+  assert.ok(vf.includes('flags=area'), `expected an explicit scaler: ${vf}`);
+  assert.ok(!vf.includes('fast_bilinear'), 'fast_bilinear is visibly worse and barely faster');
+});
+
+test('the camera rate stays on the sustainable side of real time', () => {
+  // Below 1.0x speed the decoder falls behind a source that keeps arriving, the lag grows without
+  // limit, and the camera hangs up. Measured on a Pi 3 B+ with a 2688x1512 30fps camera and the
+  // chain above: 8 -> 1.01x, 10 -> 1.01x, 12 -> 0.97x. The old chain ran 0.528x and the stream died
+  // after 57 seconds every time, which was the whole "it keeps reconnecting" complaint.
+  //
+  // So this is a ceiling with a reason, not a taste. Raising it needs a new measurement, not an
+  // argument that a Pi is probably fast enough.
+  const vf = args('rtsp://c', HD)[args('rtsp://c', HD).indexOf('-vf') + 1];
+  const m = /(?:^|,)fps=(\d+)/.exec(vf);
+  assert.ok(m, `the chain must cap the frame rate: ${vf}`);
+  assert.ok(Number(m[1]) <= 8, `${m[1]}fps leaves the board no headroom for the agent itself`);
+  // And it has to come FIRST, or the expensive stages run on frames that get thrown away.
+  assert.ok(vf.startsWith('fps='), `fps must lead the chain: ${vf}`);
 });
 
 

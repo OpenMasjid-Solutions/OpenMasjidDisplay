@@ -18,6 +18,15 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- Camera pictures on a Raspberry Pi screen are much smoother, and stop cutting out every half
+  minute. A large camera was being given to the Pi in a way that wasted about a third of the
+  board for nothing, so it could not keep up with the picture arriving — and once a screen falls
+  behind, the camera eventually hangs up on it, which was the reconnecting. On a 4-megapixel
+  camera the same Pi now puts about 8 frames a second on the wall steadily, where before it
+  managed 6 and lost the stream roughly every 30 to 60 seconds.
+- Very large cameras are still hard work for a Raspberry Pi. If a picture is still not smooth,
+  most cameras can publish a second, smaller stream alongside the main one — pointing the screen
+  at that will help far more than anything else.
 - Update on a Raspberry Pi screen reported success and did nothing. It said it was re-running the
   installer, then the installer was killed a fraction of a second later — and because it counted
   as an attempt, pressing Update again for the next five minutes was refused. It now genuinely
