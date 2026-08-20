@@ -426,3 +426,29 @@ test('the dispatcher still executes nothing outside its closed set', () => {
   const def = /\*\)([\s\S]*?);;/.exec(ctl)?.[1] ?? '';
   assert.ok(!/\$\(|`|eval|exec /.test(def), `the default branch runs something: ${def.trim()}`);
 });
+
+test('the hardware video decoder is reachable by the agent', () => {
+  // Diagnosed from a real Pi. /dev/video10 existed, bcm2835-codec said "Loaded V4L2 decode", and the
+  // service account was in the `video` group — yet ffmpeg reported "Could not find a valid device"
+  // on every attempt. The cause was this unit: naming ANY device in DeviceAllow turns it into an
+  // ALLOWLIST, so the two entries for the framebuffer and the console were denying the codec nodes
+  // regardless of their own permissions.
+  const tpl = installerTemplate() as string;
+  const allows = [...tpl.matchAll(/^DeviceAllow=(.*)$/gm)].map((m) => m[1]);
+  assert.ok(allows.length > 0, 'the unit does use an allowlist');
+  assert.ok(
+    allows.some((a) => a.startsWith('char-video4linux')),
+    `no V4L2 access in the allowlist: ${allows.join(' | ')}`,
+  );
+  // As a class, not a number: the codec node numbering is not stable across kernels.
+  assert.ok(!allows.some((a) => /\/dev\/video\d/.test(a)), 'do not hardcode a video node number');
+});
+
+test('the decoder is given enough GPU memory to decode 1080p', () => {
+  // The same Pi reported gpu=76M. bcm2835-codec is firmware-side, so it draws on the GPU split
+  // rather than system RAM, and 76M is not enough for 1080p — which presents as the decoder simply
+  // not being openable rather than as an error anybody can act on.
+  const tpl = installerTemplate() as string;
+  assert.ok(/gpu_mem=128/.test(tpl), 'the installer must raise the split');
+  assert.ok(/grep -q '\^gpu_mem=' /.test(tpl), 'and must not fight an explicit setting already there');
+});

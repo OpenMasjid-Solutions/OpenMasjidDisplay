@@ -416,6 +416,20 @@ if [ -f "$BOOTCFG" ]; then
   # The agent dithers when it has to, which hides most of it, but this removes the problem rather
   # than concealing it. Some display drivers ignore the request, which is exactly why the dither is
   # not optional.
+  # Give the hardware video decoder enough memory to work with.
+  #
+  # bcm2835-codec is the firmware-side decoder, so it draws on the GPU split rather than on system
+  # RAM. A Pi measured 76M, which is not enough to decode 1080p — and the failure is silent, in the
+  # sense that ffmpeg simply cannot open a decoder and says it could not find one. 128M is the
+  # documented minimum for 1080p and still leaves a 1GB Pi 3 the great majority of its memory.
+  if ! grep -q '^gpu_mem=' "$BOOTCFG" 2>/dev/null; then
+    say 'reserving 128M for the video decoder (needed for hardware camera decoding)'
+    printf '
+# Added by OpenMasjidDisplay: the hardware H.264 decoder needs this to decode 1080p
+gpu_mem=128
+' >> "$BOOTCFG"
+    NEEDS_REBOOT=1
+  fi
   if ! grep -q '^framebuffer_depth=32' "$BOOTCFG" 2>/dev/null; then
     say 'asking for a 32-bit framebuffer, so gradients do not band'
     printf '\n# Added by OpenMasjidDisplay: 32-bit colour, so gradients do not band\nframebuffer_depth=32\nframebuffer_ignore_alpha=1\n' >> "$BOOTCFG"
@@ -512,6 +526,17 @@ LockPersonality=yes
 MemoryDenyWriteExecute=no
 DeviceAllow=/dev/fb0 rw
 DeviceAllow=/dev/tty0 rw
+# The Pi's hardware video decoder, and this line is why it did not work.
+#
+# Naming ANY device in DeviceAllow turns the whole thing into an allowlist — everything unnamed is
+# then denied, however the file's own permissions read. So the two lines above were quietly
+# blocking /dev/video10, and ffmpeg reported it the only way it can: it scanned for a V4L2 decoder,
+# found none it was permitted to open, and said "Could not find a valid device". The decoder was
+# loaded and the service account was in the video group the whole time.
+#
+# char-video4linux covers the codec nodes as a class, which is what is wanted here: the numbering
+# is not stable across kernels, and hardcoding video10 would break on the next one.
+DeviceAllow=char-video4linux rw
 Environment=NODE_ENV=production
 # How this device trusts its display server, decided at install time. Either a pinned certificate
 # (verification ON, against that one certificate) or — said loudly at the time — no verification,

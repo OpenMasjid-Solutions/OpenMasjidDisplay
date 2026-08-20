@@ -23,6 +23,10 @@ CLAUDE.md § *The changelog has two audiences*.
   Update checks for a newer version and restarts only if it finds one.
 
 ### Fixed
+- **Raspberry Pi screens can now use the video hardware to play cameras.** They never could: a
+  security setting on the screen software was blocking access to the decoder, and the Pi was also
+  not reserving enough memory for it. Both are corrected during setup, and a camera should use a
+  fraction of the processor it did before. Requires one reboot to take effect.
 - **A camera on a Raspberry Pi screen no longer takes the whole board with it.** Playing a camera
   was using an entire processor core, which starved the timetable and left the clock updating every
   few seconds. Cameras now play at a lower frame rate, and the colour conversion takes a faster
