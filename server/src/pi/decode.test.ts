@@ -4,11 +4,14 @@
  * The decode decision, tested exhaustively — because it is the one part of the Pi 4 migration that
  * CAN be tested exhaustively without a Pi 4.
  *
- * There is no Pi 4 to measure. Everything the Pi 3 got right came from measuring, so the response is
- * to split the problem: the environment is probed at runtime (and may surprise us), but the DECISION
- * taken given that environment is pure, and is pinned here. If a real Pi 4 behaves unexpectedly, the
- * fault will be in a probed input or a documented ceiling — not in the logic — and that is a much
- * smaller thing to go looking for.
+ * The environment is probed at runtime; the DECISION taken given that environment is pure, and is
+ * pinned here. So if a real board behaves unexpectedly, the fault is in a probed input or a stated
+ * ceiling rather than in the logic — a much smaller thing to go looking for.
+ *
+ * These were first written with no Pi 4 available, and one of them asserted the exact opposite of
+ * what the hardware turned out to do: H.264 through the board's own decoder is SLOWER than through
+ * its processor. The numbers now sit beside the assertions they justify, because a test that pins a
+ * behaviour without saying why is the thing that turns a wrong belief into a permanent one.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -43,16 +46,20 @@ test('H.265 goes to the stateless decoder, and NOT to hevc_v4l2m2m', () => {
   assert.ok(!decodeArgs(plan).join(' ').includes('v4l2m2m'), 'hevc must never be sent to an m2m wrapper');
 });
 
-test('H.264 goes to the stateful m2m decoder', () => {
-  const plan = chooseDecode(src('h264', 1920, 1080), PI4);
-  assert.equal(plan.kind, 'hw-m2m');
-  assert.deepEqual(decodeArgs(plan), ['-c:v', 'h264_v4l2m2m']);
+test('h264_v4l2m2m is never used, however available it looks', () => {
+  // It is advertised by ffmpeg on a Pi, it opens successfully at 1080p, and it is still the wrong
+  // choice: measured 15.46s of CPU against software's 12.95s for the same 10s of 1080p, and it
+  // fails outright at 1440p. Availability is not a reason.
+  for (const [w, h] of [[1280, 720], [1920, 1080], [2560, 1440]]) {
+    const args = decodeArgs(chooseDecode(src('h264', w, h), PI4)).join(' ');
+    assert.ok(!args.includes('v4l2m2m'), `${w}x${h} must not reach an m2m wrapper`);
+  }
 });
 
 test('4K H.265 is hardware; 4K H.264 is not — the two ceilings are different', () => {
   // This asymmetry is the single most important fact about a Pi 4 for this app: the dedicated HEVC
-  // block reaches 4K while H.264 stops at 1080p. Treating "hardware decode" as one capability is
-  // how a 4K camera ends up in software with nobody knowing why.
+  // block is worth using and the H.264 one is not — measured, see decode.ts. Treating "hardware
+  // decode" as one capability is how a 4K camera ends up in software with nobody knowing why.
   assert.equal(chooseDecode(src('hevc', 3840, 2160), PI4).kind, 'hw-drm');
   assert.equal(chooseDecode(src('h264', 3840, 2160), PI4).kind, 'software');
 });
@@ -72,20 +79,30 @@ test('the same camera in H.265 at that size IS hardware — which is the point o
 
 test('every fallback to software says why, in words a masjid can act on', () => {
   // On the Pi 3 the fallback was silent and a stuttering picture had no explanation for months.
-  const cases: [string, SourceInfo, HwCaps][] = [
+  // H.265 losing its hardware path is the case that needs explaining, because there the hardware
+  // was genuinely better and something is missing. Each of these has a DIFFERENT fix, so each has
+  // to read differently.
+  const hevcCases: [string, SourceInfo, HwCaps][] = [
     ['ffmpeg built without v4l2-request', src('hevc', 1920, 1080), { ...PI4, drmHwaccel: false }],
     ['rpivid overlay not enabled', src('hevc', 1920, 1080), { ...PI4, rpivid: false }],
     ['hevc above the 4K ceiling', src('hevc', 7680, 4320), PI4],
-    ['h264 above the 1080p ceiling', src('h264', 2560, 1440), PI4],
-    ['no h264 m2m in this ffmpeg', src('h264', 1280, 720), { ...PI4, h264M2m: false }],
     ['a codec with no hardware path', src('other', 1920, 1080), PI4],
   ];
-  for (const [label, s, c] of cases) {
+  for (const [label, s, c] of hevcCases) {
     const plan = chooseDecode(s, c);
     assert.equal(plan.kind, 'software', label);
     assert.ok(plan.why.length > 40, `${label}: the reason must be a sentence, not a token`);
     assert.match(plan.why, /software/i, `${label}: it must say it is in software`);
     assert.deepEqual(decodeArgs(plan), [], `${label}: software takes no decoder flag`);
+  }
+
+  // H.264 is software by choice rather than by shortfall, so its wording explains rather than
+  // apologises — but it must still explain, and still name a size when the size is the problem.
+  for (const [w, h] of [[1280, 720], [2688, 1512]]) {
+    const plan = chooseDecode(src('h264', w, h), PI4);
+    assert.ok(plan.why.length > 40, `${w}x${h}: the reason must be a sentence`);
+    assert.match(plan.why, /processor|software/i, `${w}x${h}: it must say what is doing the work`);
+    assert.deepEqual(decodeArgs(plan), []);
   }
 });
 
@@ -109,11 +126,30 @@ test('a source of unknown size is never claimed to fit the hardware', () => {
   }
 });
 
-test('exactly at the ceiling is hardware; one pixel over is not', () => {
-  assert.equal(chooseDecode(src('h264', HW_MAX.h264.width, HW_MAX.h264.height), PI4).kind, 'hw-m2m');
-  assert.equal(chooseDecode(src('h264', HW_MAX.h264.width + 1, HW_MAX.h264.height), PI4).kind, 'software');
+test('exactly at the H.265 ceiling is hardware; one pixel over is not', () => {
   assert.equal(chooseDecode(src('hevc', HW_MAX.hevc.width, HW_MAX.hevc.height), PI4).kind, 'hw-drm');
   assert.equal(chooseDecode(src('hevc', HW_MAX.hevc.width, HW_MAX.hevc.height + 1), PI4).kind, 'software');
+});
+
+test('H.264 is decoded in software at every size, because that is measurably faster', () => {
+  // Measured on a Pi 4 Model B Rev 1.4 at 1.8GHz through the real pipeline, in CPU seconds for 10s
+  // of 1080p: software 12.95, `-c:v h264_v4l2m2m` 15.46, `-hwaccel drm` 13.20. The board's H.264
+  // decoder is slower than its own processor, and it fails outright above about 1080p.
+  //
+  // This test asserts the OPPOSITE of what its first version did. That version was written from the
+  // published specification — "the board has an H.264 decoder, therefore use it" — and a single
+  // measurement reversed it. Keeping the reversal explicit here is the point: it is the same mistake
+  // the Pi 3's "the encoder has ample headroom" comment made, caught faster.
+  for (const [w, h] of [[640, 480], [1280, 720], [1920, 1080], [2560, 1440], [2688, 1512], [3840, 2160]]) {
+    const plan = chooseDecode(src('h264', w, h), PI4);
+    assert.equal(plan.kind, 'software', `${w}x${h} H.264 must be software`);
+  }
+  // Below the ceiling it is stated as the fast choice, not apologised for.
+  assert.match(chooseDecode(src('h264', 1920, 1080), PI4).why, /fast way/);
+  // Above it, the size is named and a smaller stream suggested — that is actionable.
+  const big = chooseDecode(src('h264', 2688, 1512), PI4).why;
+  assert.match(big, /2688x1512/);
+  assert.match(big, /1080p or 720p/);
 });
 
 // ── the model gate ───────────────────────────────────────────────────────────

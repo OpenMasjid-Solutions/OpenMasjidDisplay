@@ -13,11 +13,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, cameraFailureText, stripFfmpegTag, retryDelayMs, FF_PROTOCOLS } from './video';
+import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, cameraFailureText, stripFfmpegTag, retryDelayMs, FF_PROTOCOLS, probeArgs } from './video';
 import type { FbGeometry } from './framebuffer';
+import type { DecodePlan } from './decode';
 
 const HD: FbGeometry = { width: 1920, height: 1080, bpp: 32, stride: 7680 };
-const args = (url: string, geo = HD, hw = false) => videoArgs(url, geo, { hw, device: '/dev/fb0' });
+const SOFTWARE: DecodePlan = { kind: 'software', why: 'test' };
+const HW_HEVC: DecodePlan = { kind: 'hw-drm', why: 'test' };
+const args = (url: string, geo = HD, hw = false) =>
+  videoArgs(url, geo, { plan: hw ? HW_HEVC : SOFTWARE, device: '/dev/fb0' });
 
 test('the camera address is one argument, never part of a command string', () => {
   // The whole reason spawn is called in array form. If this were a shell string, the URL below
@@ -69,17 +73,22 @@ test('RTSP runs over TCP, because a dropped packet reads as a broken camera', ()
 });
 
 test('the output goes to the framebuffer device it was given', () => {
-  const a = videoArgs('rtsp://cam', HD, { hw: false, device: '/dev/fb1' });
+  const a = videoArgs('rtsp://cam', HD, { plan: SOFTWARE, device: '/dev/fb1' });
   assert.equal(a[a.indexOf('-f') + 1], 'fbdev');
   assert.equal(a[a.length - 1], '/dev/fb1');
 });
 
 test('hardware decoding is selected before the input, or it selects nothing', () => {
+  // The hardware path is now `-hwaccel drm` for H.265, and there is no H.264 hardware path at all:
+  // measured on a Pi 4, its H.264 decoder costs more CPU than the processor does and fails above
+  // 1080p. So this test moved from asserting h264_v4l2m2m is PRESENT to asserting it is absent —
+  // see decode.ts. What has not changed is the placement rule, which is what this is really about.
   const a = args('rtsp://cam', HD, true);
-  const dec = a.indexOf('h264_v4l2m2m');
-  assert.ok(dec > 0, 'a Pi 3 needs this to manage 1080p at all');
+  const dec = a.indexOf('-hwaccel');
+  assert.ok(dec > 0, 'a hardware plan must carry its selector');
   assert.ok(dec < a.indexOf('-i'), 'a decoder chosen after -i applies to nothing');
-  assert.ok(!args('rtsp://cam', HD, false).includes('h264_v4l2m2m'));
+  assert.ok(!a.includes('h264_v4l2m2m'), 'and it is never the m2m wrapper');
+  assert.ok(!args('rtsp://cam', HD, false).join(' ').includes('-hwaccel'), 'software asks for nothing');
 });
 
 // ── recovering without anyone attending to it ────────────────────────────────
@@ -163,13 +172,13 @@ test('the socket timeout option name is probed, because it changed between ffmpe
 });
 
 test('the timeout is passed before the input, or it applies to nothing', () => {
-  const a = videoArgs('rtsp://cam', HD, { hw: false, device: '/dev/fb0', timeoutFlag: 'timeout' });
+  const a = videoArgs('rtsp://cam', HD, { plan: SOFTWARE, device: '/dev/fb0', timeoutFlag: 'timeout' });
   const t = a.indexOf('-timeout');
   assert.ok(t > 0, 'a camera that stalls must not freeze the last frame on the wall for ever');
   assert.ok(t < a.indexOf('-i'));
   assert.equal(a[t + 1], '10000000', 'ten seconds, in microseconds');
   // And a build with no such option must still produce a working command line.
-  assert.ok(!videoArgs('rtsp://cam', HD, { hw: false, device: '/dev/fb0', timeoutFlag: null }).includes('-timeout'));
+  assert.ok(!videoArgs('rtsp://cam', HD, { plan: SOFTWARE, device: '/dev/fb0', timeoutFlag: null }).includes('-timeout'));
 });
 
 test('a performance warning is not reported as the reason a camera failed', () => {
@@ -254,7 +263,7 @@ test('a 16bpp screen converts in ONE step, because the clever way round was slow
   // And it bought nothing: the same camera frame through both chains gives exactly 268 distinct
   // 16-bit colours, so neither one bands more than the other.
   const g16: FbGeometry = { width: 1920, height: 1080, bpp: 16, stride: 3840 };
-  const a16 = videoArgs('rtsp://c', g16, { hw: false, device: '/dev/fb0' });
+  const a16 = videoArgs('rtsp://c', g16, { plan: SOFTWARE, device: '/dev/fb0' });
   const vf16 = a16[a16.indexOf('-vf') + 1];
   assert.ok(vf16.endsWith('format=rgb565le'), `16bpp must end at rgb565le: ${vf16}`);
   assert.ok(!vf16.includes('bgra'), `no bgra round trip on a 16bpp screen: ${vf16}`);
@@ -282,18 +291,23 @@ test('the scaler is chosen, not left to the default', () => {
   assert.ok(!vf.includes('fast_bilinear'), 'fast_bilinear is visibly worse and barely faster');
 });
 
-test('the camera rate stays on the sustainable side of real time', () => {
-  // Below 1.0x speed the decoder falls behind a source that keeps arriving, the lag grows without
-  // limit, and the camera hangs up. Measured on a Pi 3 B+ with a 2688x1512 30fps camera and the
-  // chain above: 8 -> 1.01x, 10 -> 1.01x, 12 -> 0.97x. The old chain ran 0.528x and the stream died
-  // after 57 seconds every time, which was the whole "it keeps reconnecting" complaint.
+test('the camera rate stays on the sustainable side of real time (Pi 4)', () => {
+  // If the board falls behind a source that keeps arriving, the lag grows without limit and the
+  // camera hangs up — one fault presenting as both a stuttering picture and constant reconnects.
   //
-  // So this is a ceiling with a reason, not a taste. Raising it needs a new measurement, not an
-  // argument that a Pi is probably fast enough.
+  // The ceiling is therefore a headroom budget, and it is measured. On a Pi 4 at 1.8GHz, 25fps
+  // through the real pipeline costs 2.34 of 4 cores for the worst case tried (4K H.265 in hardware)
+  // and 2.00 for a 2688x1512 H.264 in software — leaving 42% of the board for the agent. 30 has not
+  // been measured, so 30 is not permitted: raising this needs a number, not an argument that a Pi 4
+  // is probably fast enough. That argument is exactly what put H.264 on the wrong decoder for an
+  // hour today.
+  //
+  // For scale: the same camera on a Pi 3 needed 3.15 cores at EIGHT fps and still dropped out.
   const vf = args('rtsp://c', HD)[args('rtsp://c', HD).indexOf('-vf') + 1];
   const m = /(?:^|,)fps=(\d+)/.exec(vf);
   assert.ok(m, `the chain must cap the frame rate: ${vf}`);
-  assert.ok(Number(m[1]) <= 8, `${m[1]}fps leaves the board no headroom for the agent itself`);
+  assert.ok(Number(m[1]) <= 25, `${m[1]}fps has not been measured on this board`);
+  assert.ok(Number(m[1]) >= 12, `${m[1]}fps is a Pi 3 ceiling — this board is measured to do far better`);
   // And it has to come FIRST, or the expensive stages run on frames that get thrown away.
   assert.ok(vf.startsWith('fps='), `fps must lead the chain: ${vf}`);
 });
@@ -383,4 +397,64 @@ test('a line that was nothing but a tag falls back to the plain sentence', () =>
   const out = cameraFailureText('[tls @ 0x557cc6a7e0] error', false);
   assert.equal(out, 'error', 'a one-word remainder is still the line');
   assert.match(cameraFailureText('[tls @ 0x557cc6a7e0] ', false), /Could not play this camera/);
+});
+
+test('the probe is given the same protocol allowlist as the player', () => {
+  // ffprobe takes the same attacker-influenced URL ffmpeg does, and would be just as happy to be
+  // talked into reading a local file. An allowlist on the thing that PLAYS the stream and not on the
+  // thing that inspects it is a hole with a confusing shape — the source would be refused at
+  // playback and already fetched at probe time.
+  const a = probeArgs('rtsp://cam/live', 'timeout');
+  const i = a.indexOf('-protocol_whitelist');
+  assert.ok(i >= 0, 'the probe must be restricted too');
+  assert.equal(a[i + 1], FF_PROTOCOLS, 'and to exactly the same list');
+  for (const never of ['file', 'http', 'https', 'concat', 'data', 'pipe']) {
+    assert.ok(!a[i + 1].split(',').includes(never), `${never} must never be probe-able`);
+  }
+});
+
+test('the probe takes the URL as one final argument, never as part of a string', () => {
+  const nasty = 'rtsp://cam/live; id #';
+  const a = probeArgs(nasty);
+  assert.equal(a.filter((x) => x === nasty).length, 1, 'it must appear whole, exactly once');
+  assert.equal(a[a.length - 1], nasty, 'and last, so no flag can follow it');
+});
+
+test('the probe asks only for what the decision needs', () => {
+  const a = probeArgs('rtsp://cam').join(' ');
+  assert.match(a, /-select_streams v:0/, 'the stream that will be played is the one that decides');
+  for (const field of ['codec_name', 'width', 'height']) {
+    assert.ok(a.includes(field), `the decision needs ${field}`);
+  }
+});
+
+test('each decode plan puts its decoder BEFORE -i, or it selects nothing', () => {
+  // The failure this prevents is silent: ffmpeg accepts a decoder flag after -i and applies it to
+  // nothing, so the picture plays in software while every log line says hardware. It holds for
+  // `-hwaccel drm` exactly as it does for `-c:v`, and the two are easy to reason about differently
+  // because only one of them looks like a decoder.
+  const plans: [DecodePlan, string][] = [
+    [{ kind: 'hw-drm', why: 'x' }, '-hwaccel'],
+  ];
+  for (const [plan, needle] of plans) {
+    const a = videoArgs('rtsp://cam', HD, { plan, device: '/dev/fb0' });
+    const at = a.indexOf(needle);
+    assert.ok(at > 0, `${plan.kind} should carry ${needle}`);
+    assert.ok(at < a.indexOf('-i'), `${plan.kind}: a decoder after -i applies to nothing`);
+  }
+});
+
+test('H.265 is never handed to an m2m wrapper, whatever the plan', () => {
+  // hevc_v4l2m2m is advertised by ffmpeg on a Pi and does not work — the Pi's HEVC block is
+  // stateless and that wrapper drives stateful ones. It must not appear anywhere.
+  for (const kind of ['hw-drm', 'software'] as const) {
+    const a = videoArgs('rtsp://cam', HD, { plan: { kind, why: 'x' }, device: '/dev/fb0' }).join(' ');
+    assert.ok(!a.includes('hevc_v4l2m2m'), `${kind} must not reference hevc_v4l2m2m`);
+  }
+});
+
+test('software decoding passes no decoder flag at all', () => {
+  const a = videoArgs('rtsp://cam', HD, { plan: SOFTWARE, device: '/dev/fb0' }).join(' ');
+  assert.ok(!a.includes('-hwaccel'), 'no hwaccel');
+  assert.ok(!a.includes('v4l2m2m'), 'and no m2m decoder');
 });

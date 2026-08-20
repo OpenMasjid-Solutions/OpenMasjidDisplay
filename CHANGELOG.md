@@ -41,6 +41,20 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- **Screens were not reporting anything back to the dashboard.** Every check-in carrying a screen’s
+  recent activity was too large for the server to accept, so it was thrown away — and the screen was
+  told it had been accepted. That took the network details, the Wi-Fi results and the version number
+  with it, which is why a screen could show the wrong version and look perfectly healthy.
+- **A newly set up screen was left without a verified connection to the display server.** On a fresh
+  installation the check that decides whether the server’s certificate can be trusted ran before the
+  software it needed was installed, so it always failed — and reported it as the certificate being
+  wrong. Screens set up this way talked to the server without verifying it. Existing screens are
+  unaffected, and re-running setup repairs one.
+- Camera pictures on a Raspberry Pi 4 run at 25 frames a second, up from 8. The 8 was the most a
+  Pi 3 could manage; a Pi 4 does the same camera at 25 using half the board.
+- H.265 cameras are decoded by the Pi 4’s dedicated video hardware, which is a third to nearly half
+  cheaper than doing it in software, and the saving grows with the size of the picture. H.264 is
+  decoded by the processor, because on this board that is measurably the faster of the two.
 - Update on a Raspberry Pi screen now says it is working. Installing takes a couple of minutes,
   and for all of that time the card showed the old version and "update available" — which looks
   exactly like a button that did nothing, so it got pressed again, and the screen refuses a second

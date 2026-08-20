@@ -65,6 +65,28 @@ die()  { printf '\n\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 # one. DPkg::Lock::Timeout makes apt fail with a real message rather than block indefinitely.
 APT_OPTS='-o DPkg::Lock::Timeout=900'
 
+# Does Node accept the pinned certificate?
+#
+# Asked separately from curl because they are different TLS stacks with different rules — most
+# sharply about certificates carrying a name only in the legacy Subject CN with no SAN, where the
+# two genuinely disagree. curl validates the pin; node is what has to live with it afterwards.
+#
+# Returns TRUE when node is not installed yet, and records that the question is still open. Saying
+# "yes" there is not optimism: curl has already accepted the certificate, and the alternative —
+# treating a missing interpreter as a rejected certificate — is the bug this exists to prevent.
+NODE_CHECK_DEFERRED=0
+node_accepts_ca() {
+  if ! command -v node >/dev/null 2>&1; then
+    NODE_CHECK_DEFERRED=1
+    return 0
+  fi
+  NODE_EXTRA_CA_CERTS="$CA" node -e '
+    fetch(process.argv[1] + "/pi/agent.js", { redirect: "error" })
+      .then((r) => process.exit(r.ok ? 0 : 1))
+      .catch(() => process.exit(1));
+  ' "$SERVER" 2>/dev/null
+}
+
 apt_lock_holder() {
   # fuser is not always installed; fall back to whatever the process table shows.
   for f in /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock; do
@@ -203,12 +225,22 @@ case "$SERVER" in
         # here; Node is what has to live with it for the next several months. Checking only curl
         # can therefore print "pinned — verified against it" and then hand over a screen whose
         # agent cannot make a single request, with nothing afterwards to catch it.
+        # …but node cannot be asked before node is INSTALLED, and it is not installed until step 3.
+        #
+        # This was a real bug, and a quiet one. On a fresh Raspberry Pi OS Lite image there is no
+        # node, so this clause exited 127, `2>/dev/null` swallowed "command not found", the `if`
+        # simply went false, and the installer printed "the certificate does not name the address"
+        # about a certificate whose name was perfectly good — then set
+        # NODE_TLS_REJECT_UNAUTHORIZED=0 in the unit. A missing interpreter was indistinguishable
+        # from a rejected certificate. It never showed up during development because a RE-run has
+        # node and takes the correct branch; it only ever hit first installs, which is exactly what
+        # a migration to new hardware consists of.
+        #
+        # So node's opinion is sought only if there is a node to ask, and otherwise deferred to
+        # after step 3 — see the re-check below. curl's answer stands in the meantime, which is the
+        # right default: it is the stack that validated the pin.
         if curl -fsS --max-time 20 --cacert "$CA" -o /dev/null "$SERVER/pi/agent.js" 2>/dev/null &&
-           NODE_EXTRA_CA_CERTS="$CA" node -e '
-             fetch(process.argv[1] + "/pi/agent.js", { redirect: "error" })
-               .then((r) => process.exit(r.ok ? 0 : 1))
-               .catch(() => process.exit(1));
-           ' "$SERVER" 2>/dev/null; then
+           node_accepts_ca; then
           say "pinned the server's certificate: $CA"
           say 'requests from now on are verified against it — not left unverified'
           CURL_OPTS="--cacert $CA"
@@ -301,6 +333,30 @@ apt-get $APT_OPTS install -y --no-install-recommends \
 
 command -v node >/dev/null 2>&1 || die 'node did not install; check `apt-get install nodejs`'
 say "node $(node -v), npm $(npm -v 2>/dev/null || echo '?')"
+
+# The question deferred in step 2, now that there is a node to ask.
+#
+# Only reached when this Pi had no node at the time the certificate was pinned — i.e. every fresh
+# image. curl accepted the certificate then; if node does NOT, the agent would be unable to make a
+# single request and the screen would pair and then sit there, so the honest answer is to fall back
+# to public-key pinning exactly as step 2 would have done.
+if [ "$NODE_CHECK_DEFERRED" = 1 ] && [ -n "${NODE_TLS_ENV:-}" ] && [ -f "$CA" ]; then
+  if node_accepts_ca; then
+    say 'node accepts the pinned certificate too'
+  else
+    # Only NODE_TLS_ENV changes here, and only because only node is unhappy.
+    #
+    # CURL_OPTS is deliberately left alone: curl validated this certificate a moment ago and is
+    # still perfectly able to use it, so weakening curl to match node would give up verification
+    # that is working. It would also be a no-op — trust.env is written ABOVE this point, so a
+    # change to CURL_OPTS here would never reach the updater that reads it. The systemd unit, which
+    # is what carries NODE_TLS_ENV, is written further down, so this does take effect.
+    warn 'node does not accept the pinned certificate, though curl did'
+    warn 'the updater keeps verifying against it; the agent cannot express "this one certificate" and so verifies nothing'
+    warn 'to fix this properly, give the server a certificate naming that address, then re-run this installer'
+    NODE_TLS_ENV='Environment=NODE_TLS_REJECT_UNAUTHORIZED=0'
+  fi
+fi
 
 step 'Installing ffmpeg (the big one)'
 # By far the largest download here — several hundred megabytes of dependencies on a Pi 3, and the

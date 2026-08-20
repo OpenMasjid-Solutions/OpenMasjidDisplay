@@ -3,16 +3,19 @@
 /**
  * pi/decode.ts — which decoder to use for a camera, and why.
  *
- * A Raspberry Pi 4 has TWO hardware video decoders and they are not the same kind of thing. Getting
- * that wrong is the single easiest way to make this migration fail silently, so the whole decision
- * lives here, in one place, as pure functions that can be tested without any Pi at all.
+ * A Raspberry Pi 4 has two hardware video decoders, and the useful conclusion is not the one a
+ * specification sheet suggests. Everything below was measured on a Pi 4 Model B Rev 1.4 at 1.8GHz
+ * running Debian 13, decoding through the REAL pipeline — scale, rgb565, write to /dev/fb0 — and
+ * counting CPU seconds actually consumed.
  *
- *   H.264  goes to the older VideoCore block, a STATEFUL V4L2 M2M device (/dev/video10, driver
- *          bcm2835-codec). ffmpeg drives it with `-c:v h264_v4l2m2m`. Published ceiling: 1080p60.
+ *   H.265  IS worth decoding in hardware, through the dedicated stateless rpivid block. ffmpeg
+ *          reaches it with `-hwaccel drm`, never with a `-c:v` decoder. Measured saving: 1.42x at
+ *          1080p (16.5s of CPU down to 11.6s) and 1.84x at 4K (42.4s down to 23.1s). The saving
+ *          grows with resolution, which is exactly where it is needed.
  *
- *   H.265  goes to a SEPARATE, dedicated block — rpivid — which is a STATELESS V4L2 decoder using
- *          the kernel request API (/dev/video19, needs `dtoverlay=rpivid-v4l2`). ffmpeg drives it
- *          with `-hwaccel drm`, NOT with a `-c:v` decoder. Published ceiling: 2160p (4K).
+ *   H.264  is NOT. The board's H.264 decoder is slower than its own processor — see
+ *          H264_IS_FASTER_IN_SOFTWARE below for the numbers — and refuses anything much above
+ *          1080p. So H.264 is decoded in software deliberately.
  *
  * ── THE TRAP, and it is a nasty one ──
  *
@@ -30,12 +33,17 @@
  * not something to assume — `hwaccels()` below asks the binary, the same way `socketTimeoutFlag`
  * already asks it about `-timeout`.
  *
- * ── What is actually known here ──
+ * ── What is known, and how ──
  *
- * There is no Pi 4 to measure, and the Pi 3 work is a long lesson in what happens when a plausible
- * belief goes unmeasured. So every number below is labelled with where it came from, nothing is
- * inferred silently, and the decision always produces a `why` string that the screen reports —
- * so the first real Pi 4 says which path it took instead of leaving somebody guessing.
+ * This file was first written with no Pi 4 to test on, and it chose hardware for H.264 because the
+ * board has an H.264 decoder. That was reasoning from a spec sheet, and measurement reversed it
+ * within the hour a real board arrived — the same shape of mistake as every Pi 3 comment that
+ * measurement destroyed. The numbers are therefore quoted inline wherever a choice was made, so the
+ * next person can see what would have to change to justify choosing differently.
+ *
+ * The decision also always produces a `why` string, which the screen reports. On the Pi 3 the
+ * fallback to software was silent and a masjid watched a stuttering picture for months with no
+ * explanation available to anybody.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -55,7 +63,7 @@ export interface SourceInfo {
 export interface HwCaps {
   /** ffmpeg lists the `drm` hwaccel, i.e. it was built with --enable-v4l2-request */
   drmHwaccel: boolean;
-  /** ffmpeg has the stateful H.264 M2M wrapper */
+  /** ffmpeg has the stateful H.264 M2M wrapper. Reported, never used — it is slower than software. */
   h264M2m: boolean;
   /** the rpivid stateless HEVC decoder is present as a device */
   rpivid: boolean;
@@ -63,7 +71,7 @@ export interface HwCaps {
   model: string;
 }
 
-export type DecodeKind = 'hw-drm' | 'hw-m2m' | 'software';
+export type DecodeKind = 'hw-drm' | 'software';
 
 export interface DecodePlan {
   kind: DecodeKind;
@@ -72,19 +80,46 @@ export interface DecodePlan {
 }
 
 /**
- * Published decode ceilings for a Pi 4, from Raspberry Pi's own specification for the board
- * ("H.265 4Kp60 decode, H.264 1080p60 decode").
+ * The one hardware ceiling that matters: how big an H.265 stream the rpivid block will take.
  *
- * DOCUMENTED, not measured. Treat them as the best available answer and not as gospel: on the Pi 3
- * the equivalent H.264 ceiling was never published in a form that predicted the actual failure, and
- * a 2688x1512 level-5.0 stream failed to open with an error that named a missing file. If a real Pi 4
- * turns out to differ, THIS is the constant to correct, and `why` in the plan below is what will
- * have told you.
+ * 2160p is Raspberry Pi's published figure for the board and 4K HEVC was confirmed to decode here,
+ * comfortably — 2.34 of the four cores at 25fps, against 4.1 cores' worth in software. The ceiling
+ * ITSELF has not been probed from above (nothing to hand emits 8K HEVC), so it remains the published
+ * number rather than a measured one. If a stream between 4K and whatever the real limit is turns up,
+ * the safety net in video.ts catches the refusal and drops to software, and the screen says so.
  */
 export const HW_MAX = {
-  h264: { width: 1920, height: 1080 },
   hevc: { width: 3840, height: 2160 },
 } as const;
+
+/**
+ * There is no H.264 entry above, and that is a MEASURED decision rather than an omission.
+ *
+ * ── H264_IS_FASTER_IN_SOFTWARE ──
+ *
+ * A Pi 4 does have an H.264 hardware decoder, and using it is slower than not using it. Measured on
+ * a Pi 4 Model B Rev 1.4 at 1.8GHz, decoding 10s of 1080p H.264 through the real pipeline — scale,
+ * rgb565, write to /dev/fb0 — and counting CPU seconds actually consumed:
+ *
+ *     software                 12.95s
+ *     -c:v h264_v4l2m2m        15.46s     19% WORSE
+ *     -hwaccel drm             13.20s     indistinguishable from software, twice over
+ *
+ * The m2m round trip — copy the frame into the decoder, copy it back — costs more than a Cortex-A72
+ * at 1.8GHz spends decoding it. And `h264_v4l2m2m` FAILS outright above about 1080p ("Could not
+ * find a valid device" at 2560x1440), so the path that is slower is also the path that only works
+ * for the streams that needed help least.
+ *
+ * `-hwaccel drm` measuring identical to software is consistent with ffmpeg quietly falling back:
+ * the rpivid block is HEVC-only, so there is nothing for it to accelerate.
+ *
+ * So H.264 is decoded in software on purpose. This is the exact opposite of what this file said
+ * before there was a Pi 4 to measure, and it is worth being blunt about that: the earlier version
+ * reasoned from a published spec sheet — "the board has an H.264 decoder, therefore use it" — and
+ * was wrong, in the same shape as every Pi 3 comment that measurement destroyed.
+ */
+// (No constant here on purpose — the decision is expressed directly in chooseDecode below. This
+// block exists to be READ from there, and a binding nothing references is only a lint error.)
 
 /** Parse `ffmpeg -hwaccels`. The list is one per line under a header line. */
 export function parseHwaccels(out: string): string[] {
@@ -163,19 +198,19 @@ export function chooseDecode(src: SourceInfo, caps: HwCaps): DecodePlan {
   }
 
   if (src.codec === 'h264') {
-    if (!caps.h264M2m) {
+    // Software, always, and measured — see H264_IS_FASTER_IN_SOFTWARE above. The board's H.264
+    // decoder is slower than its processor and refuses anything much over 1080p.
+    //
+    // The wording avoids apologising for it, because there is nothing wrong: a Pi 4 decodes 1080p
+    // H.264 in software using about a third of one core. It only becomes worth mentioning when the
+    // stream is big enough for the choice to matter to somebody.
+    if (!fits(src, { width: 1920, height: 1080 })) {
       return {
         kind: 'software',
-        why: 'This camera is H.264 and this copy of ffmpeg has no hardware decoder for it, so the picture is being decoded in software.',
+        why: `This H.264 camera is ${dims(src)}. This board decodes H.264 with its processor rather than its video hardware — which is the faster of the two on a Pi 4 — and at that size it is real work. Its 1080p or 720p stream would be much lighter and look the same on a television across a hall.`,
       };
     }
-    if (!fits(src, HW_MAX.h264)) {
-      return {
-        kind: 'software',
-        why: `This H.264 camera is ${dims(src)}, which is above the ${HW_MAX.h264.width}x${HW_MAX.h264.height} this board decodes in hardware, so the picture is being decoded in software. Its 1080p or 720p stream would use the hardware instead, and look the same on a television.`,
-      };
-    }
-    return { kind: 'hw-m2m', why: `Decoding this ${dims(src)} H.264 camera in hardware.` };
+    return { kind: 'software', why: `Decoding this ${dims(src)} H.264 camera in software, which on this board is the fast way.` };
   }
 
   return {
@@ -197,8 +232,11 @@ export function chooseDecode(src: SourceInfo, caps: HwCaps): DecodePlan {
  * read. If a real Pi 4 shows the automatic transfer is not happening, this is the place to add it.
  */
 export function decodeArgs(plan: DecodePlan): string[] {
+  // One hardware form, because only one of them is worth using — see H264_IS_FASTER_IN_SOFTWARE.
+  // Deliberately NOT '-c:v hevc_v4l2m2m': that decoder is advertised by ffmpeg on a Pi and does
+  // not work. Measured on this board it fails with 'Could not find a valid device', because the
+  // Pi's HEVC block is stateless and that wrapper drives stateful ones.
   if (plan.kind === 'hw-drm') return ['-hwaccel', 'drm'];
-  if (plan.kind === 'hw-m2m') return ['-c:v', 'h264_v4l2m2m'];
   return [];
 }
 

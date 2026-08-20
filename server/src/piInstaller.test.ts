@@ -225,11 +225,23 @@ test('a self-signed server is pinned, not waved through', () => {
 
 test('verification is only abandoned when the name cannot match, and never quietly', () => {
   const tpl = installerTemplate() as string;
-  const idx = tpl.indexOf('NODE_TLS_REJECT_UNAUTHORIZED=0');
-  assert.ok(idx > 0, 'the fallback exists');
-  // Every path that reaches it prints a warning first.
-  const before = tpl.slice(Math.max(0, idx - 1500), idx);
-  assert.ok(/warn /.test(before), 'falling back to no verification must be said out loud');
+  // Checks EVERY assignment, not the first mention of the name. The original used indexOf on the
+  // bare string, and once a comment discussed the setting that indexOf started landing on prose —
+  // so the test would have been examining an explanation instead of code. There are now two real
+  // assignment sites (the original fallback, and the deferred re-check once node exists), and both
+  // have to warn before they weaken anything.
+  const lines = tpl.split('\n');
+  const sites = lines
+    .map((l, i) => [l, i] as const)
+    .filter(([l]) => l.includes("NODE_TLS_ENV='Environment=NODE_TLS_REJECT_UNAUTHORIZED=0'") && !l.trim().startsWith('#'));
+  assert.ok(sites.length >= 1, 'the fallback must exist');
+  for (const [, i] of sites) {
+    const before = lines.slice(Math.max(0, i - 40), i).filter((l) => !l.trim().startsWith('#'));
+    assert.ok(
+      before.some((l) => /^\s*warn /.test(l)),
+      `the assignment at line ${i + 1} turns verification off without saying so`,
+    );
+  }
 });
 
 test('even the fallback pins the public key, so an impostor is still refused', () => {
@@ -306,12 +318,20 @@ test('the trust decision does not live in the file the agent overwrites', () => 
 test('the pin is validated with the client that has to live with it', () => {
   // curl and Node are different TLS stacks. Checking only curl can print "pinned — verified" and
   // then hand over a screen whose agent cannot make a single request, with nothing to catch it.
+  //
+  // Node's half now lives in node_accepts_ca rather than inline, because it cannot be asked before
+  // node is installed — see the fresh-install bug its neighbours describe. The property is
+  // unchanged: node IS asked, and asked the same way the agent asks.
   const tpl = installerTemplate() as string;
-  const i = tpl.indexOf('--cacert "$CA"');
-  assert.ok(i > 0);
-  const block = tpl.slice(i, i + 700);
-  assert.ok(/NODE_EXTRA_CA_CERTS="\$CA" node -e/.test(block), 'Node must be asked too, not just curl');
-  assert.ok(block.includes('fetch('), 'and asked the same way the agent asks');
+  const fn = tpl.slice(tpl.indexOf('node_accepts_ca() {'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(body.length > 0, 'node_accepts_ca must exist');
+  assert.match(body, /NODE_EXTRA_CA_CERTS="\$CA" node -e/, 'Node must be asked too, not just curl');
+  assert.ok(body.includes('fetch('), 'and asked the same way the agent asks');
+  assert.ok(body.includes('redirect: "error"'), 'including the redirect guard the agent uses');
+  // And the trust decision must actually consult it.
+  const trust = tpl.slice(tpl.indexOf('--cacert "$CA"'), tpl.indexOf('pinned the server'));
+  assert.match(trust, /node_accepts_ca/, 'the pin decision must consult node');
 });
 
 test('an unreachable server is a refusal, not a silent downgrade', () => {
@@ -661,4 +681,46 @@ test('the H.265 decoder is switched on, and reachable once it is', () => {
   // systemd — indistinguishable, from ffmpeg's side, from having no decoder.
   assert.match(tpl, /^DeviceAllow=char-drm rw$/m, 'hardware H.265 opens /dev/dri/*');
   assert.match(tpl, /^DeviceAllow=char-video4linux rw$/m, 'and hardware H.264 opens /dev/video*');
+});
+
+test('a missing node is not mistaken for a rejected certificate', () => {
+  // The bug: the trust step asked node's opinion of a freshly pinned certificate, and node is not
+  // installed until step 3. On a fresh Raspberry Pi OS Lite image the clause exited 127, the
+  // `2>/dev/null` swallowed "command not found", the `if` went false, and the installer announced
+  // "the certificate does not name the address" about a certificate whose name was fine — then wrote
+  // NODE_TLS_REJECT_UNAUTHORIZED=0 into the service unit. A missing interpreter was byte-identical
+  // to a TLS rejection, and it only ever affected FIRST installs, which is what migrating to new
+  // hardware consists of.
+  const tpl = installerTemplate() as string;
+
+  // node's opinion now goes through a helper that returns TRUE when there is no node to ask.
+  assert.match(tpl, /^node_accepts_ca\(\) \{$/m, 'the node check must be a helper, not inline');
+  const fn = tpl.slice(tpl.indexOf('node_accepts_ca() {'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /command -v node/, 'it has to check node exists before asking it');
+  assert.match(body, /NODE_CHECK_DEFERRED=1/, 'and record that the question is unanswered');
+  assert.match(body, /return 0/, 'returning success when node is absent is the whole fix');
+
+  // The trust decision calls the helper rather than node directly.
+  const trust = tpl.slice(tpl.indexOf('--cacert "$CA"'), tpl.indexOf('pinned the server'));
+  assert.match(trust, /node_accepts_ca/, 'the condition must go through the helper');
+  assert.ok(!/NODE_EXTRA_CA_CERTS="\$CA" node -e/.test(trust), 'and not invoke node inline any more');
+});
+
+test('the deferred certificate check happens after node is installed, and only weakens node', () => {
+  const tpl = installerTemplate() as string;
+  const install = tpl.indexOf("die 'node did not install");
+  const recheck = tpl.indexOf('NODE_CHECK_DEFERRED" = 1');
+  assert.ok(install > 0 && recheck > 0, 'both the install assertion and the re-check must exist');
+  assert.ok(recheck > install, 'asking node before node exists is the bug being fixed');
+
+  // The re-check must NOT touch CURL_OPTS: trust.env is written before this point, so a change
+  // there would never reach the updater — and curl validated the certificate perfectly well, so
+  // weakening it would give up verification that is working.
+  const block = tpl.slice(recheck, tpl.indexOf('step ', recheck));
+  assert.ok(!/CURL_OPTS=/.test(block), 'the re-check must not change curl, only node');
+  assert.match(block, /NODE_TLS_ENV=/, 'it must change the setting that actually reaches the unit');
+
+  const trustEnvAt = tpl.indexOf('} > "$TRUSTENV"');
+  assert.ok(trustEnvAt > 0 && trustEnvAt < recheck, 'trust.env is written before the re-check — hence the above');
 });

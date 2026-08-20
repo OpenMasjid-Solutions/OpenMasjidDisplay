@@ -25,6 +25,7 @@
  */
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import type { FbGeometry } from './framebuffer';
+import { chooseDecode, decodeArgs, hwCaps, parseProbe, type DecodePlan, type SourceInfo } from './decode';
 
 /**
  * Exactly the list the display server allows, character for character.
@@ -47,6 +48,16 @@ export const FF_PROTOCOLS = 'rtp,rtcp,udp,tcp,rtsp,rtsps,srtp,tls,crypto,rtmp,rt
  * because it does not look like one.
  */
 const SOCKET_TIMEOUT_US = 10_000_000;
+
+/**
+ * How long to let the "what is this camera?" probe run before giving up on it.
+ *
+ * Generous enough for an RTSP handshake plus a TLS one over a masjid's network, short enough that a
+ * camera which accepts the connection and then says nothing does not hold a screen blank. Failing
+ * the probe is not fatal — it means the decoder is chosen conservatively and the screen says it
+ * could not tell — so the cost of this expiring is a slower picture, never a blank one.
+ */
+const PROBE_TIMEOUT_MS = 12_000;
 
 /**
  * Which spelling of the socket timeout this ffmpeg understands.
@@ -94,6 +105,39 @@ export function __resetTimeoutFlagForTests(): void {
 }
 
 /**
+ * Arguments for asking a camera what it is, before deciding how to decode it.
+ *
+ * The protocol allowlist is here too, and that is not belt-and-braces. ffprobe takes the same
+ * attacker-influenced URL that ffmpeg does and will just as happily be talked into reading a local
+ * file or fetching an internal address — so the invariant that only STREAM protocols are permitted
+ * has to hold at every place a source URL is handed to a process, not only at the one that plays it.
+ * A source that ffmpeg refuses and ffprobe accepts would be a hole with a confusing shape.
+ *
+ * The URL is the last argument and a single one, for the same reason it is in videoArgs: array-form
+ * spawn, never a command assembled into a string.
+ */
+export function probeArgs(url: string, timeoutFlag?: string | null): string[] {
+  return [
+    '-v',
+    'error',
+    '-protocol_whitelist',
+    FF_PROTOCOLS,
+    '-rtsp_transport',
+    'tcp',
+    ...(timeoutFlag ? [`-${timeoutFlag}`, String(SOCKET_TIMEOUT_US)] : []),
+    // Only the first video stream. A camera can offer several, plus audio and metadata; the one
+    // that will be played is 0:v:0, so that is the one whose shape decides the decoder.
+    '-select_streams',
+    'v:0',
+    '-show_entries',
+    'stream=codec_name,width,height,avg_frame_rate',
+    '-of',
+    'default=nw=1',
+    url,
+  ];
+}
+
+/**
  * Frames a second to ask the camera for.
  *
  * A Pi 3 decoding in software — which is all it can do for a stream the V4L2 decoder will not open
@@ -107,31 +151,27 @@ export function __resetTimeoutFlagForTests(): void {
  * says whether the board is keeping up and nothing at all about by how much. Measured on a Pi 3 B+
  * against a 2688x1512 30fps camera, both 8 and 10 report a flat 1.0x and look equally fine.
  *
- * The metric that discriminates is CPU actually consumed, and there is a cliff between them —
- * cores of the four available, writing real frames to /dev/fb0, with the chain below:
+ * The metric that discriminates is CPU actually consumed. Measured on a Pi 4 Model B Rev 1.4 at
+ * 1.8GHz, at 25fps, through the real pipeline, as cores of the four available:
  *
- *     fps=12  ->  3.88 cores   (97% of the board,  3% left)
- *     fps=10  ->  3.83 cores   (96% of the board,  4% left)
- *     fps=8   ->  3.15 cores   (79% of the board, 21% left)
- *     fps=6   ->  2.60 cores   (65% of the board, 35% left)
+ *     1080p H.265, hardware        1.17 cores   (29% of the board)
+ *     2688x1512 H.264, software    2.00 cores   (50%)
+ *     4K H.265, hardware           2.34 cores   (58%)   <- the worst case measured
  *
- * 12 and 10 are indistinguishable because both simply saturate the board. What the last column buys
- * is the agent's own work: check-ins, fetching assets, drawing a frame. At 10 there is no room for
- * any of it, and it shows — ffmpeg ALONE held this camera for 186 seconds at fps=10 without a
- * hiccup, while the full agent at the same rate lost the stream every 50 to 62 seconds. Falling
- * behind a source that keeps arriving grows the lag without limit until the camera hangs up, which
- * is the whole of the "it keeps reconnecting" complaint: the shipped chain ran at 0.528x and died
- * after 57 seconds, every time.
+ * So even the heaviest camera anybody is likely to point at this leaves 42% of the board for the
+ * agent's own work — check-ins, fetching assets, drawing a frame — which is twice the margin the
+ * Pi 3 needed.
  *
- * So this is a budget, not a preference: leave a fifth of the board for everything that is not
- * ffmpeg. Nobody watching a prayer hall can tell 8fps from 25, and a steady 8 beats a 10 that
- * stalls once a minute.
+ * The contrast is the whole point of the migration. The SAME 2688x1512 camera on a Pi 3 needed
+ * 3.15 cores at EIGHT frames a second, and still lost the stream every half minute, because falling
+ * behind a live source grows the lag without limit until the camera hangs up. A Pi 4 shows it at 25
+ * using half the board.
  *
- * A camera this size is at the edge of what any Pi 3 can do in software regardless — the honest fix
- * for one is the camera's own lower-resolution substream, which is a thing only the admin can point
- * us at.
+ * The Pi 3 numbers are kept here rather than deleted because they are what makes the ceiling
+ * legible: 8 was not a taste, it was the most that board could sustain, and 25 is not ambition, it
+ * is measured with room to spare.
  */
-const CAMERA_FPS = 8;
+const CAMERA_FPS = 25;
 
 /** The pixel layout the kernel's framebuffer device expects, by depth. */
 function pixFmt(bpp: number): string {
@@ -145,15 +185,15 @@ function pixFmt(bpp: number): string {
  * the behaviour — and because there is no way to check them on a development machine other than
  * by reading them.
  *
- * `hw` asks for the Pi's hardware H.264 decoder. It is worth asking for: software-decoding 1080p
- * on a 1.4 GHz Cortex-A53 uses most of the board, and this screen has a timetable to draw as well.
- * It is also not always present or working, which is why the caller falls back rather than
- * insisting.
+ * `plan` says which decoder to use, and it is a three-way choice rather than a boolean because a
+ * Pi 4 has two unrelated hardware decoders reached in two different ways — see pi/decode.ts, which
+ * owns that decision and is where the reasoning lives. This function only turns the decision into
+ * arguments; it does not make it.
  */
 export function videoArgs(
   url: string,
   geo: FbGeometry,
-  opts: { hw: boolean; device: string; timeoutFlag?: string | null },
+  opts: { plan: DecodePlan; device: string; timeoutFlag?: string | null },
 ): string[] {
   const { width: w, height: h } = geo;
   return [
@@ -170,9 +210,10 @@ export function videoArgs(
     'tcp',
     // Bound the read. Before -i, because it is an option for the input.
     ...(opts.timeoutFlag ? [`-${opts.timeoutFlag}`, String(SOCKET_TIMEOUT_US)] : []),
-    // The Pi's V4L2 hardware decoder, when we are trying it. Before -i, because it selects the
-    // decoder for the input.
-    ...(opts.hw ? ['-c:v', 'h264_v4l2m2m'] : []),
+    // The hardware decoder, when there is one to use. Before -i in every form, because these
+    // select the decoder FOR THE INPUT — one placed after -i applies to nothing at all, silently.
+    // That holds for `-hwaccel drm` exactly as it does for `-c:v h264_v4l2m2m`.
+    ...decodeArgs(opts.plan),
     '-i',
     url,
     // Video only. A camera's audio track has nowhere to go on a screen in a prayer hall.
@@ -384,6 +425,10 @@ export interface VideoStatus {
   lastError: string;
   failures: number;
   hardware: boolean;
+  /** What this camera turned out to be, once probed. Absent until then. */
+  source?: SourceInfo;
+  /** Why this decoder was chosen, in words. Reported so a slow picture has an explanation. */
+  decodeWhy?: string;
 }
 
 /**
@@ -398,7 +443,10 @@ export class VideoPlayer {
   private url = '';
   private geo: FbGeometry | null = null;
   private stopped = true;
-  private hw = true;
+  /** What was decided for this camera. Null until the source has been probed. */
+  private plan: DecodePlan | null = null;
+  /** What the camera turned out to be, from one ffprobe per camera. */
+  private source: SourceInfo | null = null;
   private failures = 0;
   private lastError = '';
   private startedAt = 0;
@@ -414,10 +462,19 @@ export class VideoPlayer {
     private readonly device: string,
     private readonly log: (...a: unknown[]) => void,
     private readonly ffmpeg = 'ffmpeg',
+    /** Ships in the same package as ffmpeg; separate only so a test can point it elsewhere. */
+    private readonly ffprobe = 'ffprobe',
   ) {}
 
   status(): VideoStatus {
-    return { playing: !!this.proc, lastError: this.lastError, failures: this.failures, hardware: this.hw };
+    return {
+      playing: !!this.proc,
+      lastError: this.lastError,
+      failures: this.failures,
+      hardware: this.plan ? this.plan.kind !== 'software' : false,
+      source: this.source ?? undefined,
+      decodeWhy: this.plan?.why,
+    };
   }
 
   /** Start, or switch to a different camera. A no-op when already playing this one, so it can be
@@ -429,9 +486,78 @@ export class VideoPlayer {
     this.geo = geo;
     this.stopped = false;
     this.failures = 0;
-    this.hw = true;
+    this.plan = null;
+    this.source = null;
     this.triedHw = false;
+    // Asking the camera what it is takes a second or two, so it must not happen on this thread:
+    // play() is called from the drawing loop, and blocking there would stop the clock. The loop
+    // already holds the last frame for a few seconds before it says anything is wrong, which is
+    // exactly the gap this leaves.
+    void this.decideThenSpawn(url);
+  }
+
+  /**
+   * Ask the camera what it is, choose a decoder, then start.
+   *
+   * One ffprobe per camera, rather than the old try-hardware-and-see. On a Pi 3 there was one
+   * hardware decoder and one thing to try, so a wrong guess cost a single failed attempt. A Pi 4 has
+   * two unrelated decoders reached in two different ways, and guessing between them makes a wrong
+   * guess indistinguishable from a broken camera — while asking costs one cheap process and yields
+   * the actual numbers needed to tell somebody their camera is too big for the hardware.
+   */
+  private async decideThenSpawn(url: string): Promise<void> {
+    const src = await this.probeSource(url);
+    // The screen may have been switched to something else while we were asking.
+    if (this.stopped || this.url !== url) return;
+    this.source = src;
+    this.plan = chooseDecode(src, hwCaps(this.ffmpeg));
+    this.log('camera: ' + this.plan.why);
     this.spawn();
+  }
+
+  /**
+   * What this camera is sending. Never throws, and never holds the screen up for long.
+   *
+   * A probe that fails leaves an unknown source, and chooseDecode treats an unknown size as "do not
+   * claim this fits the hardware" — so it is decoded in software and the screen says it could not
+   * tell. That is the honest failure. Handing an oversized stream to a decoder that cannot open it
+   * is what produced the Pi 3's "No such file or directory", and sent everyone looking at device
+   * permissions for a week.
+   */
+  private probeSource(url: string): Promise<SourceInfo> {
+    return new Promise((resolve) => {
+      const unknown: SourceInfo = { codec: 'other', width: 0, height: 0, fps: 0 };
+      let done = false;
+      const finish = (v: SourceInfo): void => {
+        if (done) return;
+        done = true;
+        resolve(v);
+      };
+      try {
+        // Array-form, and with the same protocol allowlist ffmpeg gets — see probeArgs.
+        const p = spawn(this.ffprobe, probeArgs(url, socketTimeoutFlag(this.ffmpeg)), {
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        let out = '';
+        p.stdout?.on('data', (b: Buffer) => {
+          out = (out + String(b)).slice(0, 4000);
+        });
+        p.on('error', () => finish(unknown));
+        p.on('exit', () => finish(out ? parseProbe(out) : unknown));
+        // A camera that accepts the connection and then says nothing must not stall the screen.
+        const t = setTimeout(() => {
+          try {
+            p.kill('SIGKILL');
+          } catch {
+            /* already gone */
+          }
+          finish(unknown);
+        }, PROBE_TIMEOUT_MS);
+        t.unref?.();
+      } catch {
+        finish(unknown);
+      }
+    });
   }
 
   stop(): void {
@@ -455,13 +581,16 @@ export class VideoPlayer {
 
   private spawn(): void {
     if (this.stopped || !this.geo) return;
+    const plan: DecodePlan = this.plan ?? { kind: 'software', why: 'Decoding in software.' };
     const args = videoArgs(this.url, this.geo, {
-      hw: this.hw,
+      plan,
       device: this.device,
       timeoutFlag: socketTimeoutFlag(this.ffmpeg),
     });
     this.startedAt = Date.now();
-    this.log(`camera: opening ${redactCreds(this.url)}${this.hw ? ' (hardware decoding)' : ''}`);
+    this.log(
+      `camera: opening ${redactCreds(this.url)}${plan.kind === 'software' ? '' : ' (hardware decoding)'}`,
+    );
 
     let proc: ChildProcess;
     try {
@@ -496,7 +625,8 @@ export class VideoPlayer {
       const ranFor = Date.now() - this.startedAt;
       // Note whether the HARDWARE decoder is what produced a working stream. Nothing else can tell
       // us that, and re-arming it later depends on it.
-      if (this.hw && ranHealthily(ranFor)) this.hwEverWorked = true;
+      const wasHardware = this.plan ? this.plan.kind !== 'software' : false;
+      if (wasHardware && ranHealthily(ranFor)) this.hwEverWorked = true;
       if (this.stopped) return;
 
       // Exit code ZERO is not a failure.
@@ -512,12 +642,20 @@ export class VideoPlayer {
         return;
       }
 
-      if (shouldDropHardware(ranFor, this.hw, this.triedHw)) {
-        // Might be a board with no working V4L2 decoder — or might be a TLS handshake that failed
-        // in four seconds and has nothing to do with decoding. Try software ONCE, and say which it
-        // is rather than asserting the decoder is missing.
+      if (shouldDropHardware(ranFor, wasHardware, this.triedHw)) {
+        // Might be a decoder that will not open this particular stream — or might be a TLS
+        // handshake that failed in four seconds and has nothing to do with decoding. Try software
+        // ONCE, and say which it is rather than asserting the decoder is missing.
+        //
+        // This is the safety net UNDER the probe, not a replacement for it. The probe decides from
+        // the source's real codec and size; this catches the case where the hardware refuses a
+        // stream that should have fitted. Both are needed, because a published ceiling is not the
+        // same thing as what the silicon actually does — the Pi 3 taught that at length.
         this.triedHw = true;
-        this.hw = false;
+        this.plan = {
+          kind: 'software',
+          why: 'The hardware decoder would not open this camera, so the picture is being decoded in software.',
+        };
         this.log(`camera: failed in ${Math.round(ranFor / 1000)}s with hardware decoding; trying software once: ${this.lastError}`);
         this.spawn();
         return;
@@ -534,9 +672,12 @@ export class VideoPlayer {
         // real log says "Could not find a valid device", every single attempt — that burned two
         // seconds of black screen on EVERY reconnect, for ever. And the healthy run that gets us
         // here was in software, so it says nothing whatever about the hardware.
-        if (this.triedHw && this.hwEverWorked) {
+        // Re-derived from what the camera actually is, rather than flipped back to "hardware".
+        // With two decoders there is no single hardware setting to restore — the right one depends
+        // on the codec — so the decision is simply taken again from the probe we already have.
+        if (this.triedHw && this.hwEverWorked && this.source) {
           this.triedHw = false;
-          this.hw = true;
+          this.plan = chooseDecode(this.source, hwCaps(this.ffmpeg));
         }
       }
 

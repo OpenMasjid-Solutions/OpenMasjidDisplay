@@ -55,7 +55,7 @@ import {
 } from './webScreen';
 import { clockSuspect } from './render/renderer';
 import { fontOptions } from './render/fonts';
-import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
+import { SECURITY_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
@@ -524,7 +524,24 @@ export function createApi(deps: Deps) {
         if (what === 'seen' && method === 'POST') {
           // A periodic check-in. Its real job is refreshing what the panel shows — most of all
           // the agent version, which changes underneath us when a Pi updates itself.
-          const body = await readBody(req, 2_000).catch(() => null);
+          // The cap is DERIVED from what updateDeviceFacts is willing to store, not chosen.
+          //
+          // It was 2,000 bytes while the store accepted 80 log lines of up to 300 characters plus
+          // 30 networks — so a realistic check-in measured 9,250 bytes and was rejected every time,
+          // silently, taking the agent version and the network facts down with it. The two limits
+          // have to be reasoned about together or they drift apart again: 80 x 300 for the log is
+          // 24KB on its own, and everything else is small beside it.
+          //
+          // The enrolment route next door already had twice this cap for a much thinner body, which
+          // is the clearest sign 2,000 was never sized against anything.
+          const SEEN_MAX_BYTES = 32_000;
+          const body = await readBody(req, SEEN_MAX_BYTES).catch((e: unknown) => e);
+          if (body instanceof Error) {
+            // Say so, rather than answering 200 to something that was thrown away. An older agent
+            // treats a 413 as a failed post and simply tries again later, which is correct.
+            const tooBig = (body as { code?: string }).code === BODY_TOO_LARGE;
+            return sendJson(res, tooBig ? 413 : 400, { error: tooBig ? 'body too large' : 'bad request' });
+          }
           if (body && typeof body === 'object') {
             store.update((db) => updateDeviceFacts(db, device.id, body as Record<string, unknown>, Date.now()));
           }
