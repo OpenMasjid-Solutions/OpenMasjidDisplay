@@ -505,31 +505,24 @@ if [ -f "$BOOTCFG" ]; then
   # not optional.
   # Give the hardware video decoder enough memory to work with.
   #
-  # bcm2835-codec is the firmware-side decoder, so it draws on the GPU split rather than on system
-  # RAM. A Pi measured 76M, which is not enough to decode 1080p — and the failure is silent, in the
-  # sense that ffmpeg simply cannot open a decoder and says it could not find one. 128M is the
-  # documented minimum for 1080p and still leaves the board the great majority of its memory.
+  # Two settings that used to be written here are gone, and both were removed on evidence from a
+  # real Pi 4 rather than on a tidy-up.
   #
-  # KEPT, but the reasoning above is a Pi 3 measurement and this is now a Pi 4 file. Under the KMS
-  # driver a Pi 4 allocates decoder buffers from CMA rather than from this split, so the line may
-  # well do nothing at all — and on a 2GB board it is reserving 128M for a mechanism that might not
-  # use it. It stays because the two possible mistakes are not symmetric: keeping it wastes 6% of
-  # memory, while removing it on a wrong guess loses hardware H.264 decoding and the only symptom
-  # would be a slower picture nobody can explain. It is on the list of things to settle the first
-  # time there is a real Pi 4 to measure, and the agent already reports which decoder it got.
-  if ! grep -q '^gpu_mem=' "$BOOTCFG" 2>/dev/null; then
-    say 'reserving 128M for the video decoder (needed for hardware camera decoding)'
-    printf '
-# Added by OpenMasjidDisplay: the hardware H.264 decoder needs this to decode 1080p
-gpu_mem=128
-' >> "$BOOTCFG"
-    NEEDS_REBOOT=1
-  fi
-  if ! grep -q '^framebuffer_depth=32' "$BOOTCFG" 2>/dev/null; then
-    say 'asking for a 32-bit framebuffer, so gradients do not band'
-    printf '\n# Added by OpenMasjidDisplay: 32-bit colour, so gradients do not band\nframebuffer_depth=32\nframebuffer_ignore_alpha=1\n' >> "$BOOTCFG"
-    NEEDS_REBOOT=1
-  fi
+  # gpu_mem=128 was for the Pi 3, where bcm2835-codec drew its buffers from the firmware's GPU
+  # split and 76M was measured to be too little for 1080p. A Pi 4 under the KMS driver allocates
+  # from CMA instead, and — decisively — this app no longer uses the H.264 hardware decoder at all,
+  # because measurement showed it costs MORE processor than decoding in software and fails above
+  # 1080p anyway (see decode.ts). So the line reserved 128M of a 2GB board for a mechanism nothing
+  # here touches.
+  #
+  # framebuffer_depth=32 was asking for 32-bit colour so gradients would not band. It is ignored
+  # under KMS, and this is not inference: an install that wrote the line came up at 16bpp regardless
+  # — "framebuffer 1920x1080 @ 16bpp" straight out of the agent's own log on the board that had just
+  # been given it. Leaving a setting that demonstrably does nothing is worse than not having it,
+  # because the next person reads it as an explanation for the depth they are getting.
+  #
+  # 16bpp is therefore what a Pi 4 gives us, which is why the agent's ordered dithering and RGB565
+  # packing are still load-bearing and were NOT removed as Pi 3 leftovers.
   # Switch on the H.265 decoder, which is the whole reason for moving to a Pi 4.
   #
   # A Pi 4 has TWO video decoders and they are unrelated. H.264 goes to the old VideoCore block that

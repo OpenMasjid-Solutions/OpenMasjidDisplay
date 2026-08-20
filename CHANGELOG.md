@@ -41,6 +41,14 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- **Wi-Fi setup on a Raspberry Pi screen now works.** The screen reports the networks it can see
+  as part of its regular check-in, and those check-ins were being rejected by the server for being
+  too large — so the dashboard never learned the screen had Wi-Fi at all, and the Wi-Fi button
+  never appeared. Verified working on a Pi 4: switching the radio on, searching, and listing
+  networks all now come through.
+- Two boot settings are no longer written on a Pi 4, because neither did anything: one reserved
+  memory for a video decoder this app no longer uses, and the other asked for a colour depth the
+  Pi ignores.
 - **Screens were not reporting anything back to the dashboard.** Every check-in carrying a screen’s
   recent activity was too large for the server to accept, so it was thrown away — and the screen was
   told it had been accepted. That took the network details, the Wi-Fi results and the version number

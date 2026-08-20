@@ -469,13 +469,42 @@ test('the hardware video decoder is reachable by the agent', () => {
   assert.ok(!allows.some((a) => /\/dev\/video\d/.test(a)), 'do not hardcode a video node number');
 });
 
-test('the decoder is given enough GPU memory to decode 1080p', () => {
-  // The same Pi reported gpu=76M. bcm2835-codec is firmware-side, so it draws on the GPU split
-  // rather than system RAM, and 76M is not enough for 1080p — which presents as the decoder simply
-  // not being openable rather than as an error anybody can act on.
+test('the boot config carries nothing that provably does nothing', () => {
+  // This test used to REQUIRE gpu_mem=128, for a Pi 3 where bcm2835-codec drew its buffers from
+  // the firmware GPU split and 76M was measured to be too little for 1080p. Both halves of that
+  // reasoning are gone on a Pi 4:
+  //
+  //   * the H.264 hardware decoder is no longer used at all — measured to cost MORE processor than
+  //     software and to fail above 1080p (decode.ts) — so nothing draws on the split;
+  //   * framebuffer_depth=32 is ignored under KMS. Not inferred: an install that wrote the line
+  //     came up at 16bpp anyway, per the agent's own log on that board.
+  //
+  // So they are not written any more. A setting that does nothing is worse than an absent one,
+  // because it reads as an explanation for behaviour it is not causing.
+  // Comments stripped first. Asserting the ABSENCE of a string is the case where prose bites: the
+  // comment that records WHY a setting was removed contains the setting's name, so a naive match
+  // fails on the very explanation worth keeping. This is the third time today that shape has come
+  // up, which is why it is spelled out here rather than worked around silently.
   const tpl = installerTemplate() as string;
-  assert.ok(/gpu_mem=128/.test(tpl), 'the installer must raise the split');
-  assert.ok(/grep -q '\^gpu_mem=' /.test(tpl), 'and must not fight an explicit setting already there');
+  const code = tpl
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .join('\n');
+  assert.ok(!/gpu_mem=128/.test(code), 'gpu_mem is a Pi 3 setting and nothing here uses the split');
+  assert.ok(!/framebuffer_depth=32/.test(code), 'framebuffer_depth is ignored under KMS — measured');
+
+  // What IS still written, because it does something.
+  assert.ok(/hdmi_force_hotplug=1/.test(tpl), 'a Pi that boots before the TV still needs this');
+  assert.ok(tpl.includes('dtoverlay=rpivid-v4l2'), 'and the H.265 decoder is the point of the board');
+});
+
+test('16bpp is still handled, because a Pi 4 actually gives 16bpp', () => {
+  // The tempting cleanup after moving off the Pi 3 is to delete the RGB565 packing and the ordered
+  // dithering as legacy. That would have been a regression: a Pi 4 on vc4drmfb reports
+  // bits_per_pixel 16, confirmed on hardware, and framebuffer_depth=32 does not change it.
+  const fb = fs.readFileSync(path.resolve(__dirname, 'pi', 'framebuffer.ts'), 'utf8');
+  assert.match(fb, /BAYER/, 'the dither must survive the migration');
+  assert.match(fb, /565/, 'and so must the 16bpp packing');
 });
 
 test('re-running setup from the panel is fetched over the SAME verified channel', () => {
