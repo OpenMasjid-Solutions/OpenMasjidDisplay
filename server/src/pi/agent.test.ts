@@ -11,13 +11,13 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { parseGeometry, packFrame, Framebuffer } from './framebuffer';
 import { parseFbset } from './fbset';
 import { fitMode, blitCentered } from './raster';
 import { pickLanIp, deviceFacts } from './device';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, type AgentConfig } from './agentConfig';
 import { pairingSvg, messageSvg } from './pairing';
 
@@ -498,4 +498,34 @@ test('dithering a near-white pixel does not wrap it to black', () => {
   // The offset is added before quantising, so it has to be clamped.
   const out = packFrame(Uint8Array.from([255, 255, 255, 255]), { width: 1, height: 1, bpp: 16, stride: 2 });
   assert.deepEqual([...out], [0xff, 0xff]);
+});
+
+test('saving the config flushes it, and still merges and round-trips', () => {
+  // Durability, asserted on the source, because the failure it prevents cannot be provoked from a
+  // test: it needs a power cut between a rename and a page-cache flush. See the installer test of
+  // the same name for why that window matters on this device.
+  const src = fs
+    .readFileSync(path.resolve(__dirname, 'agentConfig.ts'), 'utf8')
+    .split('\r\n')
+    .join('\n');
+  const fn = src.slice(src.indexOf('export function saveConfig'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /fsyncSync/, 'the token must be flushed, not just renamed');
+  assert.ok(body.indexOf('fsyncSync') < body.indexOf('renameSync'), 'flush before rename');
+
+  // And the behaviour it must not have broken: merge keeps unknown keys, a missing token removes
+  // the key, and nothing is left in a temp file.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omd-cfg-'));
+  const file = path.join(dir, 'config.json');
+  try {
+    fs.writeFileSync(file, JSON.stringify({ deviceId: 'pi_1', deviceSecret: 's', token: 't', keepMe: 42 }));
+    saveConfig({ server: 'https://x', deviceId: 'pi_1', deviceSecret: 's' }, file);
+    const after = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    assert.equal(after.keepMe, 42, 'an unknown key must survive a save');
+    assert.equal(after.token, undefined, 'and a dropped token must be removed, not left behind');
+    assert.ok(fs.statSync(file).size > 0, 'the file must not be empty');
+    assert.ok(!fs.existsSync(`${file}.tmp`), 'no temp file may be left behind');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

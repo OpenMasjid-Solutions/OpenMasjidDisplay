@@ -453,8 +453,19 @@ cfg.server = process.env.SERVER;
 if (typeof cfg.deviceId !== "string" || !cfg.deviceId) cfg.deviceId = "pi_" + crypto.randomBytes(6).toString("hex");
 if (typeof cfg.deviceSecret !== "string" || !cfg.deviceSecret) cfg.deviceSecret = crypto.randomBytes(16).toString("base64url");
 const tmp = file + ".tmp";
-fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+// Flushed, not just renamed. Write-then-rename gives ordering; it does not put the bytes on the
+// card. On ext4 the rename can be journalled while the contents are still in the page cache, so a
+// power cut in that window atomically replaces a good config with an EMPTY one — and this file holds
+// the device identity. Caught doing exactly that to a Wi-Fi profile on a real Pi 4, which is a
+// cheaper thing to lose than this. The directory flush makes the rename itself durable too.
+var fd = fs.openSync(tmp, "w", 0o600);
+try { fs.writeFileSync(fd, JSON.stringify(cfg, null, 2) + "\n"); fs.fsyncSync(fd); }
+finally { fs.closeSync(fd); }
 fs.renameSync(tmp, file);
+try {
+  var dfd = fs.openSync(require("path").dirname(file), "r");
+  try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); }
+} catch (e) { /* some filesystems refuse this; the config is already written either way */ }
 process.stdout.write(cfg.deviceId + "\n");
 ' > /tmp/omd-device-id || die 'could not write the config'
 chmod 700 "$CONFDIR"
@@ -1037,8 +1048,25 @@ for req in "$SPOOL"/*; do
         #
         # The installer is ~60KB, fetched once per join attempt, over a LAN. Cheap enough.
         elif curl -fsS --interface wlan0 --max-time 12 $CURL_OPTS "$SERVER/pi.sh" -o /dev/null 2>/dev/null; then
+          # Force the credentials onto the card BEFORE calling this a success.
+          #
+          # NetworkManager writes the profile to /etc/NetworkManager/system-connections and returns.
+          # On ext4 in ordered-data mode the file's CREATION is journalled long before its contents
+          # are flushed, so a power cut in that window leaves a zero-byte .nmconnection — and NM then
+          # refuses it at next boot with "invalid connection: connection.type: property is missing".
+          # The screen comes back with no saved network and nobody knows why.
+          #
+          # That is not a rare accident for this appliance: a screen on a wall is switched off at the
+          # socket, so an unclean shutdown IS its normal shutdown. Observed exactly once and then
+          # never guessed at again — the file was 0 bytes, dmesg showed "orphan cleanup", and the
+          # credentials were simply gone.
+          #
+          # A whole-system sync rather than a targeted one: the profile's path depends on the network
+          # name, which can contain anything, and a join happens once at a human's request. There is
+          # no budget worth protecting here.
+          sync
           printf 'yes\n%s\n' "$ip4" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true
-          echo 'control: Wi-Fi joined and the display server is reachable over it'
+          echo 'control: Wi-Fi joined, verified, and saved to disk'
         else
           # Roll it back. Leaving a profile that half-works means the next boot may prefer it over
           # the cable and take the screen off the network for good.

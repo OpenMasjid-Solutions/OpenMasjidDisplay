@@ -778,3 +778,49 @@ test('the Wi-Fi reachability check uses a request the server actually answers', 
   assert.match(line, /-fsS/, 'it must still fail on an HTTP error, or it proves nothing');
   assert.match(line, /--max-time/, 'and be bounded, or a silent network hangs the join');
 });
+
+test('Wi-Fi credentials are flushed to disk before the join is called a success', () => {
+  // A screen on a wall is switched off at the socket, so an unclean shutdown is its NORMAL
+  // shutdown. NetworkManager writes the profile and returns; on ext4 in ordered-data mode the
+  // file's creation is journalled well before its contents reach the card, so a power cut in that
+  // window leaves a zero-byte .nmconnection. NM then refuses it at the next boot — "invalid
+  // connection: connection.type: property is missing" — and the saved network is simply gone.
+  //
+  // Observed on a real Pi 4 after a reboot: 0-byte profile, "orphan cleanup" in dmesg, credentials
+  // lost. So the sync is not defensive programming, it is the difference between a join that
+  // survives the way this device is actually turned off and one that does not.
+  const tpl = installerTemplate() as string;
+  const branch = tpl.slice(tpl.indexOf('wifi-join)'));
+  const join = branch.slice(0, branch.indexOf(';;'));
+
+  const code = join
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .join('\n');
+  assert.match(code, /^\s*sync$/m, 'the profile must be flushed before success is reported');
+
+  // And it must come BEFORE the success is written, or a power cut between the two reports a
+  // success for credentials that were never saved.
+  const syncAt = code.search(/^\s*sync$/m);
+  const okAt = code.indexOf("printf 'yes");
+  assert.ok(syncAt > 0 && okAt > 0, 'both the sync and the success write must exist');
+  assert.ok(syncAt < okAt, 'sync must precede the success verdict, not follow it');
+});
+
+test('the device identity is flushed to disk, not just renamed into place', () => {
+  // Write-then-rename gives ORDERING — nobody reads a half-written config — and says nothing about
+  // durability. On ext4 the rename can be journalled while the contents are still in the page
+  // cache, so a power cut in that window atomically replaces a good config with an empty one.
+  //
+  // This file holds the device id, secret and token. Losing it sends the screen back to showing a
+  // pairing code and somebody to the television to read it. The same mechanism was caught emptying
+  // a Wi-Fi profile on a real Pi 4 — 0 bytes, "orphan cleanup" in dmesg — and a screen on a wall is
+  // switched off at the socket, so that window is not rare, it is how this device normally stops.
+  const tpl = installerTemplate() as string;
+  const cfg = tpl.slice(tpl.indexOf('CONF="$CONF" node -e'), tpl.indexOf('> /tmp/omd-device-id'));
+  assert.match(cfg, /fsyncSync/, 'the config write must be flushed before the rename is trusted');
+  const fsyncAt = cfg.indexOf('fsyncSync');
+  const renameAt = cfg.indexOf('renameSync');
+  assert.ok(fsyncAt > 0 && renameAt > 0, 'both a flush and a rename must be present');
+  assert.ok(fsyncAt < renameAt, 'the flush must come BEFORE the rename, or it protects nothing');
+});

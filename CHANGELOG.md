@@ -41,6 +41,13 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- **A screen no longer forgets its Wi-Fi password when it loses power.** The password was being
+  handed to the system, which reported success before actually writing it to the memory card — so
+  switching the screen off at the socket in the following moments lost it, and the screen came back
+  with no saved network. It is now written to the card before the screen reports that it worked.
+- The same protection now covers the screen’s own identity. It was stored the same way, so the same
+  bad moment could have sent a working screen back to asking to be paired again — which would have
+  meant a trip to the television to read a new code off it.
 - **Joining a Wi-Fi network always failed, even when the network was fine.** Before keeping a new
   network the screen checks it can still reach this dashboard over it — a good check, asked the
   wrong way. The request it used was one the display server refuses, so the check failed every

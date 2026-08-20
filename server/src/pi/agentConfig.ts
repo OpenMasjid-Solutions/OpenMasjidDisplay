@@ -108,9 +108,43 @@ export function saveConfig(cfg: AgentConfig, file = CONFIG_PATH): void {
   // the old one behind — the one field where merging would be wrong.
   if (cfg.token === undefined) delete merged.token;
 
+  // Write, FLUSH, rename, flush the directory. All four steps, and the flushes are the point.
+  //
+  // Write-then-rename gives ordering: nobody ever reads a half-written config. It does NOT give
+  // durability. On ext4 in ordered-data mode the rename is journalled while the temp file's
+  // contents may still be sitting in the page cache, so a power cut in that window leaves a
+  // zero-length config.json — atomically replacing a good file with an empty one.
+  //
+  // That is not a theoretical window on this device. A screen on a wall is switched off at the
+  // socket, so an unclean shutdown is its NORMAL shutdown, and the same mechanism was caught
+  // destroying a Wi-Fi profile on a real Pi 4 — 0 bytes on disk, "orphan cleanup" in dmesg, the
+  // saved network simply gone. This file holds the device TOKEN, so the same accident costs
+  // somebody a walk to the television to read a new pairing code off it.
+  //
+  // The directory flush matters as much as the file one: without it the rename itself can be lost,
+  // and the config reverts to whatever it was before.
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  const body = `${JSON.stringify(merged, null, 2)}\n`;
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, body);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   fs.renameSync(tmp, file);
+  try {
+    const dir = fs.openSync(path.dirname(file), 'r');
+    try {
+      fs.fsyncSync(dir);
+    } finally {
+      fs.closeSync(dir);
+    }
+  } catch {
+    // Not every filesystem lets you fsync a directory. The config is already written and renamed
+    // by this point, so a refusal here costs durability of the rename and nothing else — far
+    // better than throwing away a save that has otherwise succeeded.
+  }
 }
 
 /** A device secret: 16 random bytes, url-safe. Not a password — nothing here derives it from
