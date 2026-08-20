@@ -1508,6 +1508,10 @@ export function createApi(deps: Deps) {
             // nothing — the agent ships from the same commit as the server, so one string
             // describes both.
             upToDate: !!d.agentVersion && d.agentVersion === appVersion(),
+            // How it is attached. Absent until the device has checked in with an agent new enough
+            // to report it, so the panel has to treat "unknown" as its own state rather than
+            // drawing a broken cable at every screen that has not upgraded yet.
+            net: d.net,
           })),
         });
       }

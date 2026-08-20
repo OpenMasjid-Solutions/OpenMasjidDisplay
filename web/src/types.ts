@@ -194,6 +194,23 @@ export interface PiDeviceInfo {
   /** the last lines the agent logged, as it saw them. Display text only. */
   recentLog?: string[];
   logAt?: string;
+  /** How the screen is attached to the network. Undefined — not 'none' — until the device has
+   *  checked in with an agent new enough to report it, which is a different thing from being
+   *  unplugged and has to be drawn differently. */
+  net?: PiDeviceNet;
+}
+
+export interface PiDeviceNet {
+  /** Ethernet wins when both are up, because the cable is what carries the traffic. */
+  link: 'ethernet' | 'wifi' | 'none';
+  /** The Wi-Fi network it is on. Empty unless link is 'wifi'. */
+  ssid: string;
+  /** 0-100. Zero unless link is 'wifi'. */
+  signal: number;
+  /** Whether the radio is switched on — distinct from whether there is a radio at all. */
+  radio: boolean;
+  /** Whether this device has Wi-Fi hardware. Wi-Fi is not offered for a screen without it. */
+  hasWifi: boolean;
 }
 
 export interface Settings {

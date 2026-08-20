@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useState, useEffect } from 'react';
 import { api } from '../api';
-import type { AppState, Tv, TvKind, ContentRef, TvStatus, PiDeviceInfo } from '../types';
+import type { AppState, Tv, TvKind, ContentRef, TvStatus, PiDeviceInfo, PiDeviceNet } from '../types';
 // The same helper the server tests, rather than a second copy of the rule living in the panel.
 import { installCommand } from '../../../server/src/pi/lanHost';
 import { contentOptions, ContentPicker, contentLabel } from '../content';
@@ -18,6 +18,9 @@ import {
   IconRefresh,
   IconPower,
   IconDownload,
+  IconWifi,
+  IconEthernet,
+  IconNoLink,
   MasjidMark,
   Spinner,
   copyText,
@@ -285,6 +288,7 @@ function ScreenCard({
           <span className={`status-dot${device?.online ? '' : ' status-dot--idle'}`} title={device?.online ? 'Checking in' : 'Not checking in'} />
           <span className="hint">Raspberry Pi</span>
           <span className="hint" style={{ fontFamily: 'monospace' }}>{device?.ip || 'address unknown'}</span>
+          <NetBadge net={device?.net} />
           <span className="hint muted">agent {device?.agentVersion || '?'}</span>
           {/* Whether it is current is a FACT about the screen, so it is stated here beside the
               version rather than hidden inside a button's label. The button stays usable either
@@ -411,6 +415,45 @@ function ScreenCard({
  * screen exists — a masjid with only decoder boxes should not be polling an endpoint about
  * hardware it does not have.
  */
+/**
+ * Whether this screen is on a cable or on Wi-Fi, in the smallest space that can say it honestly.
+ *
+ * Four states, not two. "Not reported" is its own case: a screen running an older agent has never
+ * sent this, and drawing a broken cable for it would report a fault that is not there. The signal
+ * percentage only appears on Wi-Fi, because on a cable it is a number about a radio that is not
+ * carrying anything.
+ */
+function NetBadge({ net }: { net?: PiDeviceNet }) {
+  if (!net) return null;
+  if (net.link === 'ethernet') {
+    return (
+      <span className="hint" title="Connected by cable" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+        <IconEthernet size={14} /> Cable
+      </span>
+    );
+  }
+  if (net.link === 'wifi') {
+    // Weak signal is worth colouring: it is the usual answer to "why does this screen keep
+    // freezing", and nobody thinks to look for it.
+    const weak = net.signal > 0 && net.signal < 35;
+    return (
+      <span
+        className="hint"
+        title={`On Wi-Fi${net.ssid ? ` — ${net.ssid}` : ''}${net.signal ? `, signal ${net.signal}%` : ''}${weak ? '. A weak signal is a common cause of a screen stuttering or dropping out.' : ''}`}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: weak ? 'var(--color-warn, #fbbf24)' : undefined }}
+      >
+        <IconWifi size={14} /> {net.ssid || 'Wi-Fi'}
+        {net.signal ? <span className="muted">{net.signal}%</span> : null}
+      </span>
+    );
+  }
+  return (
+    <span className="hint" title="This screen reports no network connection" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+      <IconNoLink size={14} /> No network
+    </span>
+  );
+}
+
 function PiDeviceFacts({ tvs, onLoaded }: { tvs: Tv[]; onLoaded: (m: Map<string, PiDeviceInfo>) => void }) {
   const anyPi = tvs.some((t) => t.kind === 'pi');
   useEffect(() => {

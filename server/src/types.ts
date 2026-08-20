@@ -350,6 +350,23 @@ export interface PiDevice {
   recentLog?: string[];
   /** when that log was collected, so the panel can say how stale it is */
   logAt?: string;
+  /** How this screen is attached to the network, as IT sees it. Self-reported and sanitised on
+   *  arrival like every other device fact — this is decoration for the panel, never a decision. */
+  net?: DeviceNet;
+}
+
+/** How a screen is attached to the network. Mirrors pi/network.ts, which is what fills it in. */
+export interface DeviceNet {
+  /** Ethernet wins when both are up, because a cable is what carries the traffic. */
+  link: 'ethernet' | 'wifi' | 'none';
+  /** The Wi-Fi network it is associated with, if any. */
+  ssid: string;
+  /** 0-100. */
+  signal: number;
+  /** Whether the radio is switched on — distinct from whether there IS a radio. */
+  radio: boolean;
+  /** Whether the device has Wi-Fi hardware at all. */
+  hasWifi: boolean;
 }
 
 export interface Tv {

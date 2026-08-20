@@ -12,6 +12,11 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Added
+- A Raspberry Pi screen now shows whether it is on a cable or on Wi-Fi, and which network. A
+  weak Wi-Fi signal is highlighted, because it is the usual reason a screen stutters or drops
+  out and it is not something anybody thinks to check.
+
 ### Fixed
 - The Update button on a Raspberry Pi screen did nothing at all. The screen accepted the
   request and reported it as done, but it could not work out the address to download from, so

@@ -35,6 +35,7 @@ import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
+import { netFacts } from './network';
 import { AssetCache } from './assetCache';
 import { RenderCadence, cadenceAdvice } from './cadence';
 import { renderDisplaySvg, activeAnnouncementImage } from '../render/svg';
@@ -356,14 +357,18 @@ function requestPrivileged(id: string, verb: 'update' | 'reboot' | 'reinstall', 
   }
 }
 
-/** Tell the server what this device is and what it has been saying. */
+/** Tell the server what this device is, how it is attached, and what it has been saying. */
 async function checkIn(cfg: AgentConfig, facts: DeviceFacts): Promise<void> {
+  // Gathered fresh on every check-in rather than once at startup: a cable being pulled out is
+  // exactly the event this exists to show, and it happens long after boot.
+  const net = await netFacts();
   await postJson(`${cfg.server}/pi/${cfg.token}/seen`, {
     hostname: facts.hostname,
     ip: facts.ip,
     model: facts.model,
     agentVersion: AGENT_VERSION,
     recentLog,
+    net,
   }).catch(() => ({ httpStatus: 0 }));
 }
 

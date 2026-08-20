@@ -25,7 +25,7 @@ import {
   PENDING_TTL_MS,
   PI_SEEN_TIMEOUT_MS,
   __resetDevicesForTests,
- queueCommand, pendingCommand, ackCommand, isPiCommand, PI_COMMAND_TTL_MS } from './piAgent';
+ queueCommand, pendingCommand, ackCommand, isPiCommand, PI_COMMAND_TTL_MS, normDeviceNet } from './piAgent';
 import type { DB, Settings, Tv } from './types';
 
 const NOW = new Date('2026-08-19T12:00:00Z').getTime();
@@ -381,4 +381,62 @@ test('only the known actions are accepted', () => {
   for (const no of ['rm -rf /', '', 'RESTART', 'wifi-set', 'shutdown', 'poweroff', null, 7]) {
     assert.equal(isPiCommand(no as unknown), false, String(no));
   }
+});
+
+test('a screen cannot report a network state the panel does not know how to draw', () => {
+  // Every field is device-chosen and every field ends up in a page, so none of it is copied
+  // through. An unrecognised link would render as an unknown icon; a signal that is not a number
+  // would end up as a CSS width.
+  assert.deepEqual(normDeviceNet({ link: 'carrier-pigeon', ssid: 'x', signal: 50, radio: true, hasWifi: true }), {
+    link: 'none',
+    ssid: '',
+    signal: 0,
+    radio: true,
+    hasWifi: true,
+  });
+
+  const wifi = normDeviceNet({ link: 'wifi', ssid: 'Masjid Guest', signal: 71.6, radio: true, hasWifi: true });
+  assert.equal(wifi?.link, 'wifi');
+  assert.equal(wifi?.ssid, 'Masjid Guest');
+  assert.equal(wifi?.signal, 72, 'rounded to a whole percent');
+
+  // Out of range in both directions, and not a number at all.
+  assert.equal(normDeviceNet({ link: 'wifi', signal: 999 })?.signal, 100);
+  assert.equal(normDeviceNet({ link: 'wifi', signal: -5 })?.signal, 0);
+  assert.equal(normDeviceNet({ link: 'wifi', signal: 'lots' })?.signal, 0);
+  assert.equal(normDeviceNet({ link: 'wifi', signal: NaN })?.signal, 0);
+});
+
+test('an SSID is never shown next to an ethernet icon', () => {
+  // The device reports both links; the panel shows one. Carrying the Wi-Fi name through while
+  // drawing a cable is a statement about the current connection that is not true, and it is the
+  // exact thing somebody reads before deciding whether they can unplug.
+  const n = normDeviceNet({ link: 'ethernet', ssid: 'Masjid Guest', signal: 80, radio: true, hasWifi: true });
+  assert.equal(n?.ssid, '');
+  assert.equal(n?.signal, 0);
+  // But that it HAS Wi-Fi, and that the radio is on, are still true and still worth knowing.
+  assert.equal(n?.radio, true);
+  assert.equal(n?.hasWifi, true);
+});
+
+test('a device on Wi-Fi has Wi-Fi, whatever else it claimed', () => {
+  assert.equal(normDeviceNet({ link: 'wifi', hasWifi: false })?.hasWifi, true);
+  assert.equal(normDeviceNet({ link: 'ethernet', hasWifi: false })?.hasWifi, false);
+});
+
+test('an agent that reports no network state leaves the last one alone', () => {
+  // Not the same as reporting "none": an older agent simply does not send the field, and blanking
+  // a screen's network on every check-in from it would make the panel flicker between states.
+  for (const nothing of [undefined, null, 'wifi', 42, [], [{ link: 'wifi' }]]) {
+    assert.equal(normDeviceNet(nothing as unknown), null, JSON.stringify(nothing) ?? 'undefined');
+  }
+  // An object with nothing useful in it is still an answer, and that answer is "not attached".
+  assert.deepEqual(normDeviceNet({}), { link: 'none', ssid: '', signal: 0, radio: false, hasWifi: false });
+});
+
+test('a long or hostile SSID is cut down and stripped like every other device fact', () => {
+  const n = normDeviceNet({ link: 'wifi', ssid: 'A'.repeat(200) });
+  assert.equal(n?.ssid.length, 32, 'an SSID cannot exceed 32 bytes, so anything longer is a lie');
+  // Control characters are what str() exists to remove; a newline in a name breaks the list layout.
+  assert.doesNotMatch(String(normDeviceNet({ link: 'wifi', ssid: 'a\nb\u0000c' })?.ssid), /[\n\u0000]/);
 });

@@ -72,6 +72,12 @@ export const IconSparkle = (p: IP) => <Svg {...p}><path d="M12 3l1.8 4.9L18.7 9.
 export const IconUser = (p: IP) => <Svg {...p}><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></Svg>;
 export const IconExpand = (p: IP) => <Svg {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></Svg>;
 export const IconDownload = (p: IP) => <Svg {...p}><path d="M12 3v12M7 11l5 5 5-5M4 20h16" /></Svg>;
+// How a screen is attached to the network. Two shapes that stay apart at 14px, which is the size
+// they are actually used at: expanding arcs against a hard-edged plug.
+export const IconWifi = (p: IP) => <Svg {...p}><path d="M5 12.5a10 10 0 0 1 14 0M8 16a6 6 0 0 1 8 0" /><circle cx="12" cy="19.5" r="1" /></Svg>;
+export const IconEthernet = (p: IP) => <Svg {...p}><rect x="6" y="10" width="12" height="9" rx="1.5" /><path d="M9.5 10V7.5h5V10M9 19v2M12 19v2M15 19v2" /></Svg>;
+// Not attached to anything — the same plug with the run of wire broken.
+export const IconNoLink = (p: IP) => <Svg {...p}><path d="M4 4l16 16" /><path d="M9 5h6M7 12h4M13 12h4" /></Svg>;
 
 /** OpenMasjid crescent + dome brand mark. Rendered as a CSS mask painted in
  *  `currentColor`, so it adapts to light/dark themes and stays crisp at any size. */

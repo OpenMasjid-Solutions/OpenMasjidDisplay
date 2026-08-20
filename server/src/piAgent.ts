@@ -33,7 +33,7 @@
  * pending row carrying self-reported display text.
  */
 import crypto from 'node:crypto';
-import type { DB, PiDevice, Timetable, Tv } from './types';
+import type { DB, DeviceNet, PiDevice, Timetable, Tv } from './types';
 import { resolveTv } from './scheduler';
 
 /** How many un-adopted devices may be remembered at once.
@@ -114,6 +114,8 @@ export interface EnrolInput {
   agentVersion?: unknown;
   /** the agent's own recent log lines, for the panel to show */
   recentLog?: unknown;
+  /** how the device is attached to the network, for the panel to draw an icon from */
+  net?: unknown;
 }
 
 export interface EnrolResult {
@@ -388,6 +390,34 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput, n
     device.recentLog = input.recentLog.slice(-80).map((l) => str(l, 300)).filter(Boolean);
     device.logAt = new Date(nowMs).toISOString();
   }
+
+  const net = normDeviceNet(input.net);
+  if (net) device.net = net;
+}
+
+/**
+ * Whatever the device claimed about its network, reduced to something safe to render.
+ *
+ * Every field is re-derived rather than copied: `link` has to be one of three known strings or the
+ * panel would render an unknown state, and `signal` has to be a real 0-100 integer or it ends up as
+ * a CSS width. Returns null for anything that is not an object, so an old agent that sends nothing
+ * simply leaves the last known state alone instead of blanking it.
+ */
+export function normDeviceNet(raw: unknown): DeviceNet | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const link = o.link === 'ethernet' || o.link === 'wifi' ? o.link : 'none';
+  const n = Number(o.signal);
+  return {
+    link,
+    // Only meaningful on Wi-Fi, and carrying a stale SSID next to an "ethernet" icon reads as a
+    // claim about the current link that is not true.
+    ssid: link === 'wifi' ? str(o.ssid, 32) : '',
+    signal: link === 'wifi' && Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 0,
+    radio: o.radio === true,
+    // A device on Wi-Fi self-evidently has Wi-Fi, whatever else it claimed.
+    hasWifi: o.hasWifi === true || link === 'wifi',
+  };
 }
 
 /** Test seam. */
