@@ -16,6 +16,7 @@ import {
   IconCopy,
   IconCheck,
   IconRefresh,
+  IconSparkle,
   IconPower,
   IconDownload,
   MasjidMark,
@@ -167,10 +168,11 @@ function ScreenCard({
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const [copiedPublic, setCopiedPublic] = useState(false);
-  const [sending, setSending] = useState<'' | 'restart' | 'update' | 'reboot' | 'reinstall'>('');
+  const [sending, setSending] = useState<'' | 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs'>('');
+  const [showLog, setShowLog] = useState(false);
 
   /** Queue an instruction for the Pi. It is not sent — the device collects it, so say so. */
-  const ask = async (deviceId: string, action: 'restart' | 'update' | 'reboot' | 'reinstall') => {
+  const ask = async (deviceId: string, action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs') => {
     setSending(action);
     try {
       await api.piCommand(deviceId, action);
@@ -179,7 +181,9 @@ function ScreenCard({
           ? 'Asked the screen to restart. It will go blank for a few seconds.'
           : action === 'reboot'
             ? 'Asked the Raspberry Pi to reboot. It will be back in about a minute.'
-            : action === 'reinstall'
+            : action === 'logs'
+              ? 'Asked the screen for its latest log.'
+              : action === 'reinstall'
               ? 'Asked the Pi to run setup again. This takes a few minutes and may need a reboot afterwards.'
             : 'Asked the screen to check for an update. It restarts itself if it finds one.',
       );
@@ -281,6 +285,39 @@ function ScreenCard({
         </button>
       )}
 
+      {showLog && device && (
+        <Modal
+          open
+          windowed
+          wide
+          onClose={() => setShowLog(false)}
+          title={`${tv.name} — what this screen is reporting`}
+          footer={<button className="btn" onClick={() => setShowLog(false)}>Close</button>}
+        >
+          <p className="hint" style={{ marginBlockEnd: '0.6rem' }}>
+            {device.logAt
+              ? `Collected ${new Date(device.logAt).toLocaleTimeString()}. The screen sends these every few minutes; asking refreshes it within a few seconds.`
+              : 'Nothing reported yet. A screen sends this shortly after it starts.'}
+          </p>
+          <pre
+            style={{
+              margin: 0,
+              maxHeight: '60vh',
+              overflow: 'auto',
+              fontSize: '0.78rem',
+              lineHeight: 1.5,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              background: 'var(--color-surface-2, rgba(0,0,0,0.25))',
+              padding: '0.7rem 0.8rem',
+              borderRadius: 'var(--radius-sm, 8px)',
+            }}
+          >
+            {device.recentLog?.length ? device.recentLog.join('\n') : 'No lines yet.'}
+          </pre>
+        </Modal>
+      )}
+
       {isPi ? (
         // What a person actually needs from a device on a shelf: is it alive, where is it, what is
         // it running — and the two things they will want to do to it. No link, because there is
@@ -293,21 +330,27 @@ function ScreenCard({
           <span style={{ flex: 1 }} />
           {/* Nothing can connect TO the Pi, so these are requests it collects on its own poll —
               within about five seconds. The wording says asked, never done. */}
+          {/* Says which of the two situations you are in, rather than offering a button that
+              might do nothing. The agent ships from the same commit as this server, so one version
+              string describes both sides. */}
           <button
             className="btn btn--ghost btn--sm"
-            disabled={!device || sending !== ''}
-            title="Ask this screen to check for a newer version now"
+            disabled={!device || sending !== '' || device.upToDate}
+            title={
+              device?.upToDate
+                ? `This screen is running ${device.agentVersion}, the same version as this server`
+                : 'Ask this screen to install the current version now'
+            }
             onClick={() => device && ask(device.id, 'update')}
           >
-            {sending === 'update' ? <Spinner /> : <IconDownload size={14} />} Update
-          </button>
-          <button
-            className="btn btn--ghost btn--sm"
-            disabled={!device || sending !== ''}
-            title="Ask this screen to restart its software"
-            onClick={() => device && ask(device.id, 'restart')}
-          >
-            {sending === 'restart' ? <Spinner /> : <IconRefresh size={14} />} Restart
+            {sending === 'update' ? (
+              <Spinner />
+            ) : device?.upToDate ? (
+              <IconCheck size={14} />
+            ) : (
+              <IconDownload size={14} />
+            )}{' '}
+            {device?.upToDate ? 'Up to date' : 'Update'}
           </button>
           {/* A full power cycle of the board, not just the software. Rate limited on the device
               to one every ten minutes, because a reboot loop takes a screen off the wall for good
@@ -330,6 +373,23 @@ function ScreenCard({
             onClick={() => device && ask(device.id, 'reinstall')}
           >
             {sending === 'reinstall' ? <Spinner /> : <IconDownload size={14} />} Re-run setup
+          </button>
+          {/* The agent keeps its own last eighty lines and sends them on check-in. Not journalctl —
+              reading that would need a privilege the agent does not have, and these are the lines
+              that actually say which camera it opened and why one failed. */}
+          <button
+            className="btn btn--ghost btn--sm"
+            disabled={!device || sending !== ''}
+            title="Show what this screen has been reporting"
+            onClick={() => {
+              if (!device) return;
+              setShowLog(true);
+              // Ask for a fresh one too: the device sends these every few minutes, and this cuts
+              // the wait to about five seconds. Nothing here depends on it arriving.
+              void ask(device.id, 'logs');
+            }}
+          >
+            <IconSparkle size={14} /> Logs
           </button>
         </div>
       ) : (

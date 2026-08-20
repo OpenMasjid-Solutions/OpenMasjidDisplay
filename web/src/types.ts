@@ -189,6 +189,11 @@ export interface PiDeviceInfo {
   tvId?: string;
   online: boolean;
   lastSeenAt: string;
+  /** true when this device already runs what the server would give it, so Update is a no-op */
+  upToDate?: boolean;
+  /** the last lines the agent logged, as it saw them. Display text only. */
+  recentLog?: string[];
+  logAt?: string;
 }
 
 export interface Settings {

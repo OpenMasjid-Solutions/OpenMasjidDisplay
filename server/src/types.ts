@@ -344,7 +344,12 @@ export interface PiDevice {
   tvId?: string;
   /** What this device should do next, left for it to collect on its own poll. Cleared as soon
    *  as it acknowledges — see ackCommand for why that must happen BEFORE it acts. */
-  command?: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall'; issuedAt: number };
+  command?: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs'; issuedAt: number };
+  /** The last lines the agent logged, as IT saw them — sent on check-in so the panel can show
+   *  what a screen is doing without anybody opening a shell on it. Display text only. */
+  recentLog?: string[];
+  /** when that log was collected, so the panel can say how stale it is */
+  logAt?: string;
 }
 
 export interface Tv {

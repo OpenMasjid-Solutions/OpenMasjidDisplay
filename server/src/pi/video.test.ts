@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, retryDelayMs, FF_PROTOCOLS } from './video';
+import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, cameraFailureText, retryDelayMs, FF_PROTOCOLS } from './video';
 import type { FbGeometry } from './framebuffer';
 
 const HD: FbGeometry = { width: 1920, height: 1080, bpp: 32, stride: 7680 };
@@ -253,4 +253,49 @@ test('a 16bpp screen converts via bgra, avoiding the unaccelerated path', () => 
   const vf32 = args('rtsp://c', HD)[args('rtsp://c', HD).indexOf('-vf') + 1];
   assert.ok(vf32.endsWith('format=bgra'), vf32);
   assert.ok(!vf32.includes('rgb565'), 'and must not convert twice for nothing');
+});
+
+
+test('only a line that states a FAILURE is put on the television', () => {
+  // Four separate times a swscaler performance note was shown to a congregation as the reason their
+  // camera was unavailable, the last one truncated to "terpolation for destination format
+  // 'rgb565le' not yet implemented". Blocklisting warnings kept losing to the truncation, because
+  // the tail is sliced to a fixed size and a fragment matches nothing.
+  //
+  // So the test is inverted: quote a line only if it STATES a failure. A truncated warning can be
+  // mistaken for an unknown line; it cannot be mistaken for one that says a connection was refused.
+  const generic = 'Could not play this camera. Its address or network may be wrong.';
+
+  for (const warning of [
+    "terpolation for destination format 'rgb565le' not yet implemented",
+    "[swscaler @ 0x1] full chroma interpolation for destination format 'rgb565le' not yet implemented",
+    '[swscaler @ 0x1] No accelerated colorspace conversion found from yuv420p to rgb565le.',
+  ]) {
+    assert.equal(cameraFailureText(warning, false), generic, `quoted a warning: ${warning.slice(0, 50)}`);
+  }
+
+  for (const real of [
+    '[rtsp @ 0x1] method DESCRIBE failed: 401 Unauthorized',
+    'Connection to tcp://192.168.1.100:7441 failed: Connection refused',
+    '[h264_v4l2m2m @ 0x1] Could not find a valid device',
+    'Server returned 404 Not Found',
+  ]) {
+    assert.equal(cameraFailureText(real, false), real, `lost a real error: ${real.slice(0, 50)}`);
+  }
+});
+
+test('the status-code pattern is word-bounded, or it matches rgb565le', () => {
+  // Found while testing the above: an unbounded 4dd/5dd matched the "565" inside "rgb565le", so the
+  // pattern meant to catch HTTP failures was quoting the exact warning the allowlist excludes.
+  assert.notEqual(
+    cameraFailureText("full chroma interpolation for destination format 'rgb565le' not yet implemented", false),
+    "full chroma interpolation for destination format 'rgb565le' not yet implemented",
+  );
+  assert.match(cameraFailureText('Server returned 503 Service Unavailable', false), /503/);
+});
+
+test('a sliced first line is discarded rather than classified', () => {
+  // It is a fragment; nothing true can be said about it.
+  const tail = "wscaler @ 0x1] something cut off\nConnection to tcp://cam:554 failed: Connection refused";
+  assert.match(cameraFailureText(tail, true), /Connection refused/);
 });

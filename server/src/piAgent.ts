@@ -112,6 +112,8 @@ export interface EnrolInput {
   ip?: unknown;
   model?: unknown;
   agentVersion?: unknown;
+  /** the agent's own recent log lines, for the panel to show */
+  recentLog?: unknown;
 }
 
 export interface EnrolResult {
@@ -367,7 +369,7 @@ export function deviceOnline(deviceId: string, nowMs: number): boolean {
  * Every field is self-reported by an authenticated but unprivileged device, so all of it is
  * sanitised and none of it is trusted for anything but display.
  */
-export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput): void {
+export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput, nowMs = Date.now()): void {
   const device = db.piDevices?.find((d) => d.id === deviceId);
   if (!device) return;
   const hostname = str(input.hostname, 64);
@@ -378,6 +380,14 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput): 
   if (ip) device.ip = ip;
   if (model) device.model = model;
   if (agentVersion) device.agentVersion = agentVersion;
+
+  // Bounded on BOTH axes and stripped of control characters, because every byte here was chosen by
+  // an unprivileged device and is going straight into a page. Eighty lines is what the agent keeps;
+  // anything longer means something other than our agent is talking to us.
+  if (Array.isArray(input.recentLog)) {
+    device.recentLog = input.recentLog.slice(-80).map((l) => str(l, 300)).filter(Boolean);
+    device.logAt = new Date(nowMs).toISOString();
+  }
 }
 
 /** Test seam. */
@@ -391,7 +401,7 @@ export function __resetDevicesForTests(): void {
 // its next state poll, at most five seconds later. That shapes everything here.
 
 /** Actions a Pi can be asked to perform from the panel. A closed set, checked on the way in. */
-export const PI_COMMANDS = ['restart', 'update', 'reboot', 'reinstall'] as const;
+export const PI_COMMANDS = ['restart', 'update', 'reboot', 'reinstall', 'logs'] as const;
 export type PiCommandAction = (typeof PI_COMMANDS)[number];
 
 /**

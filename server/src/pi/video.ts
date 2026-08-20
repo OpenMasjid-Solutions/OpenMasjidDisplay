@@ -185,7 +185,51 @@ export function videoArgs(
  * so it is never the cause either. Both crowded out the line that says what actually went wrong.
  */
 const NOISE =
-  /^\s*(Input #|Stream #|Metadata:|Duration:|encoder|frame=|Press \[q\]|built with|configuration:|lib[a-z]+ +[0-9]|\[swscaler|deprecated|Last message repeated|Guessed Channel)/i;
+  /^\s*(Input #|Stream #|Metadata:|Duration:|encoder|frame=|Press \[q\]|built with|configuration:|lib[a-z]+ +[0-9]|\[?swscaler|deprecated|Last message repeated|Guessed Channel)/i;
+
+/** Warnings recognised wherever they appear in a line, not only at its start — because the tail is
+ *  sliced to a fixed size and a warning can arrive with its opening bracket already cut off. */
+const NOISE_ANYWHERE =
+  /(no accelerated colorspace|chroma interpolation|terpolation for destination|not yet implemented|deprecated pixel format)/i;
+
+/**
+ * What an ffmpeg line has to look like before it is shown to a masjid as the reason a camera failed.
+ *
+ * This is an ALLOWLIST, and the inversion is the point. Blocklisting warnings was tried three times
+ * and defeated three times by the same thing: the stderr tail is sliced to a fixed size, so a
+ * warning arrives with its front cut off and no longer matches. The screen ended up reading
+ *
+ *     Camera unavailable
+ *     terpolation for destination format 'rgb565le' not yet implemented
+ *
+ * which is a fragment of a performance note. A truncated warning can always be mistaken for an
+ * unknown line; it can never be mistaken for a line that says a connection was refused. So the test
+ * is now "does this state a failure" rather than "is this one of the warnings I thought of".
+ *
+ * When nothing matches, the screen says something plain instead of quoting ffmpeg — see
+ * `cameraFailureText`. Less detail on the wall, and the full tail is still in the log.
+ */
+const ERROR_SHAPE =
+  // NOTE the word boundaries on the status codes. Without them, `4\d\d|5\d\d` matched the "565"
+  // inside "rgb565le" — so the very warning this allowlist exists to exclude was being quoted as an
+  // error by the pattern meant to catch HTTP failures.
+  /(connection (refused|timed out|reset)|failed|unauthorized|forbidden|not found|invalid|no route|unreachable|timed out|timeout|refused|denied|does not contain|could not|unable to|error|\b[45]\d\d\b)/i;
+
+/**
+ * The line to put on the television, or a plain sentence when nothing qualifies.
+ *
+ * Pure so the classification is testable, which matters: every wrong answer here has been visible
+ * to a congregation.
+ */
+export function cameraFailureText(tail: string, truncated: boolean): string {
+  const lines = tail.split('\n');
+  // A sliced first line is a fragment and cannot be classified — drop it outright.
+  if (truncated && lines.length > 1) lines.shift();
+  const hit = lines
+    .map((l) => l.trim())
+    .find((l) => l && !NOISE.test(l) && !NOISE_ANYWHERE.test(l) && ERROR_SHAPE.test(l));
+  return hit ? hit.slice(0, 300) : 'Could not play this camera. Its address or network may be wrong.';
+}
 
 /** Strip any user:pass@ from a URL before it can reach a log. Cameras are very often configured
  *  with credentials in the address, and the journal on a Pi is readable by anyone on the box. */
@@ -357,12 +401,9 @@ export class VideoPlayer {
     // already marked the session dead — and that earlier line is the one that says why.
     let tail = '';
     proc.stderr?.on('data', (b: Buffer) => {
+      const before = tail.length + String(b).length;
       tail = (tail + redactCreds(String(b))).slice(-800);
-      const first = tail
-        .split('\n')
-        .map((l) => l.trim())
-        .find((l) => l && !NOISE.test(l));
-      if (first) this.lastError = first.slice(0, 300);
+      this.lastError = cameraFailureText(tail, before > 800);
     });
 
     proc.on('exit', (code) => {

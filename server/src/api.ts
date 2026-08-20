@@ -524,7 +524,7 @@ export function createApi(deps: Deps) {
           // the agent version, which changes underneath us when a Pi updates itself.
           const body = await readBody(req, 2_000).catch(() => null);
           if (body && typeof body === 'object') {
-            store.update((db) => updateDeviceFacts(db, device.id, body as Record<string, unknown>));
+            store.update((db) => updateDeviceFacts(db, device.id, body as Record<string, unknown>, Date.now()));
           }
           return sendJson(res, 200, { ok: true, pollMs: PI_POLL_MS, agentVersion: appVersion() });
         }
@@ -1501,6 +1501,13 @@ export function createApi(deps: Deps) {
             tvId: d.tvId,
             online: deviceOnline(d.id, now),
             lastSeenAt: d.lastSeenAt,
+            recentLog: d.recentLog ?? [],
+            logAt: d.logAt,
+            // Whether this device is already running what this server would give it. The
+            // panel needs it to say 'Up to date' instead of offering an update that does
+            // nothing — the agent ships from the same commit as the server, so one string
+            // describes both.
+            upToDate: !!d.agentVersion && d.agentVersion === appVersion(),
           })),
         });
       }
@@ -1537,7 +1544,7 @@ export function createApi(deps: Deps) {
         if (!isPiCommand(body?.action)) return sendJson(res, 400, { error: 'Unknown action.' });
         let queued: ReturnType<typeof queueCommand> = null;
         store.update((db) => {
-          queued = queueCommand(db, piCmd[1], body!.action as 'restart' | 'update' | 'reboot' | 'reinstall', Date.now());
+          queued = queueCommand(db, piCmd[1], body!.action as 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs', Date.now());
         });
         if (!queued) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
         log.info(`queued "${(body as { action: string }).action}" for pi device ${piCmd[1]}`);

@@ -150,7 +150,7 @@ export const api = {
 
   /** Ask a Pi to do something. 202 means QUEUED, not done: the device is not reachable from here,
    *  it collects the instruction on its own poll within about five seconds. */
-  piCommand: (id: string, action: 'restart' | 'update' | 'reboot' | 'reinstall') =>
+  piCommand: (id: string, action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs') =>
     req<{ queued: boolean }>('POST', `/api/pi/${id}/command`, { action }),
 
   /** Forget a device: it goes back to showing a fresh pairing code. Its screen is kept. */

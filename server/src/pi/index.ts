@@ -69,10 +69,24 @@ const STALE_AFTER_MS = 90_000;
  *  day the screen was set up. */
 const CHECKIN_MS = 5 * 60_000;
 
+/**
+ * The last lines this agent logged, kept in memory and reported to the server.
+ *
+ * Deliberately OUR OWN lines rather than journalctl. Reading the journal would need a privilege the
+ * agent does not have and should not be given, and these are the lines that actually say what the
+ * screen is doing — which camera it opened, why one failed, what the framebuffer turned out to be.
+ * Small and bounded: a masjid screen runs for months and this must never grow.
+ */
+const RECENT_LOG_MAX = 80;
+const recentLog: string[] = [];
+
 const log = (...args: unknown[]): void => {
   // journalctl timestamps every line already, so this stays bare. No call site anywhere in this
   // file passes the token or the device secret to it, and none should: the journal on a masjid
   // Pi is readable by anyone who can reach the box.
+  const line = args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ');
+  recentLog.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
+  if (recentLog.length > RECENT_LOG_MAX) recentLog.shift();
   console.log('[openmasjid-screen]', ...args);
 };
 
@@ -93,7 +107,7 @@ interface PiStateWire {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
-  command?: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' } | null;
+  command?: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs' } | null;
 }
 
 // ── drawing ───────────────────────────────────────────────────────────────────
@@ -267,7 +281,11 @@ function rememberCommand(id: string): void {
  * bring the agent straight back. `update` does need root, so it is left as a request in a
  * directory a root-side unit is watching; see the installer.
  */
-async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' }): Promise<void> {
+async function runCommand(
+  cfg: AgentConfig,
+  cmd: { id: string; action: 'restart' | 'update' | 'reboot' | 'reinstall' | 'logs' },
+  live: Live,
+): Promise<void> {
   if (cmd.id === lastCommandId()) return; // already done; the ack simply never landed
 
   // Tell the server before doing anything, so a command cannot be collected twice.
@@ -295,6 +313,14 @@ async function runCommand(cfg: AgentConfig, cmd: { id: string; action: 'restart'
 
   if (cmd.action === 'reboot') {
     requestPrivileged(cmd.id, 'reboot', 'asked the system to reboot');
+    return;
+  }
+
+  if (cmd.action === 'logs') {
+    // The cheapest command there is: nothing privileged, nothing destructive. It simply cuts the
+    // five-minute wait so the panel gets a fresh log within seconds of being asked.
+    live.checkInNow = true;
+    log('sending recent log lines to the dashboard');
     return;
   }
 
@@ -328,6 +354,17 @@ function requestPrivileged(id: string, verb: 'update' | 'reboot' | 'reinstall', 
   } catch (e) {
     log(`could not ask for "${verb}":`, (e as Error).message);
   }
+}
+
+/** Tell the server what this device is and what it has been saying. */
+async function checkIn(cfg: AgentConfig, facts: DeviceFacts): Promise<void> {
+  await postJson(`${cfg.server}/pi/${cfg.token}/seen`, {
+    hostname: facts.hostname,
+    ip: facts.ip,
+    model: facts.model,
+    agentVersion: AGENT_VERSION,
+    recentLog,
+  }).catch(() => ({ httpStatus: 0 }));
 }
 
 // ── waiting to be adopted ─────────────────────────────────────────────────────
@@ -409,6 +446,8 @@ class Live {
   images = new Map<string, string>();
   fontFiles: string[] = [];
   forgotten = false;
+  /** set by a "logs" command so the check-in loop stops waiting and reports at once */
+  checkInNow = false;
 
   serverTime(): Date {
     return new Date(Date.now() + this.clockOffsetMs);
@@ -565,7 +604,7 @@ async function runAdopted(
       if (st.command) {
         // Deliberately awaited: a restart ends this loop, and there is nothing after it worth
         // racing.
-        await runCommand(cfg, st.command).catch((e: Error) => log('command failed:', e.message));
+        await runCommand(cfg, st.command, live).catch((e: Error) => log('command failed:', e.message));
       }
 
       await resolveAssets(live, cache, cfg.server).catch(() => {
@@ -582,13 +621,16 @@ async function runAdopted(
   // picked up an update and which have not.
   const checkin = async (): Promise<void> => {
     while (!live.forgotten) {
-      await postJson(`${cfg.server}/pi/${cfg.token}/seen`, {
-        hostname: facts.hostname,
-        ip: facts.ip,
-        model: facts.model,
-        agentVersion: AGENT_VERSION,
-      }).catch(() => ({ httpStatus: 0 }));
-      await sleep(CHECKIN_MS);
+      await checkIn(cfg, facts);
+      // A "logs" request is answered by checking in early rather than by anything privileged, so
+      // the wait is interruptible.
+      for (let i = 0; i < CHECKIN_MS / 1000 && !live.forgotten; i++) {
+        if (live.checkInNow) {
+          live.checkInNow = false;
+          break;
+        }
+        await sleep(1000);
+      }
     }
   };
 
