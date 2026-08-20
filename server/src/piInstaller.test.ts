@@ -12,6 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import { originFor, renderInstaller, installerTemplate } from './piInstaller';
@@ -160,7 +161,11 @@ test('the installer is POSIX sh, refuses to half-run, and never resets an adopte
 test('the agent does not run as root', () => {
   const tpl = installerTemplate() as string;
   assert.ok(/^User=\$SERVICE_USER$/m.test(tpl), 'the long-running agent must drop privileges');
-  assert.ok(/^SupplementaryGroups=video tty$/m.test(tpl), 'and hold only the groups it needs');
+  // `render` joined this list for hardware H.265: the Pi's stateless HEVC decoder is reached through
+  // /dev/dri/renderD128, which the video group does not cover. Still an exact match rather than a
+  // substring — this is the account's whole privilege surface, and a group added carelessly here is
+  // not something anybody would notice afterwards.
+  assert.ok(/^SupplementaryGroups=video render tty$/m.test(tpl), 'and hold only the groups it needs');
   assert.ok(/^Restart=always$/m.test(tpl), 'a masjid screen must come back on its own');
 });
 
@@ -582,4 +587,78 @@ test('a join is only reported as working once the SERVER has been reached over W
   assert.match(branch, /\$active" != "\$SSID/, 'it must confirm which network it actually joined');
   // And a failure has to undo itself, or a half-working profile outlives the attempt.
   assert.match(branch, /connection delete/, 'a failed join must remove the profile it created');
+});
+
+test('the board gate refuses a Pi 3 and lets a Pi 4 or newer through — run, not just read', () => {
+  // Asserting that the text is present would not catch the thing most likely to be wrong here: the
+  // sed expression. `[0-9]\+` is a GNU extension that works on Raspberry Pi OS and would never have
+  // failed visibly, and this script is deliberately POSIX sh for dash. So the expression is lifted
+  // out of the installer and actually executed.
+  const tpl = installerTemplate() as string;
+  const gate = /PI_GEN=\$\(printf '%s' "\$MODEL" \| sed -n '[^']+'\)/.exec(tpl);
+  assert.ok(gate, 'could not find the board gate — has it been renamed?');
+  assert.ok(!gate[0].includes('\+'), 'the sed expression must not use the GNU-only \+');
+
+  const script = [
+    'MODEL="$1"',
+    gate[0],
+    'if [ -n "$PI_GEN" ] && [ "$PI_GEN" -lt 4 ]; then echo REFUSED; else echo ALLOWED; fi',
+  ].join('\n');
+
+  const run = (model: string): string =>
+    execFileSync('sh', ['-c', script, 'sh', model], { encoding: 'utf8' }).trim();
+
+  for (const m of ['Raspberry Pi 3 Model B Plus Rev 1.3', 'Raspberry Pi 2 Model B Rev 1.1']) {
+    assert.equal(run(m), 'REFUSED', m);
+  }
+  for (const m of ['Raspberry Pi 4 Model B Rev 1.4', 'Raspberry Pi 5 Model B Rev 1.0', 'Raspberry Pi 10 Model B']) {
+    assert.equal(run(m), 'ALLOWED', m);
+  }
+  // An unrecognised board must NOT be refused: bricking a screen over a string comparison is worse
+  // than running on something slow, and a Zero or a Compute Module is a deliberate choice.
+  for (const m of ['', 'Raspberry Pi Zero 2 W', 'Raspberry Pi Compute Module 4', 'BananaPi M5']) {
+    assert.equal(run(m), 'ALLOWED', m || '(empty)');
+  }
+});
+
+test('the updater refuses an unsupported board instead of bricking a working screen', () => {
+  // The destructive way to end Pi 3 support is to let a Pi 3 download an agent it cannot run: it
+  // crashes, systemd restarts it every five seconds, and a masjid finds a black screen having
+  // touched nothing. The updater must bail BEFORE it fetches anything.
+  const tpl = installerTemplate() as string;
+  const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'), tpl.indexOf('chmod 700 "$PREFIX/update.sh"'));
+  assert.ok(upd.includes('PI_GEN='), 'the updater needs its own board gate');
+
+  const gateAt = upd.indexOf('PI_GEN=');
+  const fetchAt = upd.indexOf('curl -fsSL');
+  assert.ok(fetchAt > 0, 'could not find the download in update.sh');
+  assert.ok(gateAt < fetchAt, 'the board gate must come BEFORE the download, or it has already happened');
+  // And it exits 0, so the caller does not treat "not supported" as a failure worth retrying.
+  const branch = upd.slice(gateAt, fetchAt);
+  assert.match(branch, /exit 0/, 'refusing is a normal outcome, not an error');
+  assert.match(branch, /keeping the version already installed/, 'it must say the screen is being left alone');
+});
+
+test('the H.265 decoder is switched on, and reachable once it is', () => {
+  // A Pi 4 has two unrelated video decoders. H.264 uses the old VideoCore block; H.265 uses a
+  // dedicated unit (rpivid) that only appears as a device when its overlay is loaded. Miss either
+  // half — the overlay, or permission to open the DRM nodes the stateless decoder is driven through
+  // — and hardware HEVC silently does not happen, which is the one thing this migration is for.
+  const tpl = installerTemplate() as string;
+  // Matched as a substring, not anchored to a line: the line is written by a printf, so in THIS
+  // file it sits inside a single-quoted string after a literal \n rather than at a line start.
+  assert.ok(tpl.includes('dtoverlay=rpivid-v4l2'), 'without the overlay there is no /dev/video19');
+  // And it must be what gets appended, not merely mentioned in a comment.
+  assert.match(tpl, /printf '[^']*dtoverlay=rpivid-v4l2/, 'the overlay must actually be written to config.txt');
+  // Added only if absent, so re-running the installer does not grow config.txt.
+  assert.match(tpl, /grep -q '\^dtoverlay=rpivid-v4l2'/, 'the overlay must be added idempotently');
+  // And a boot-config change is useless until the Pi restarts, so it has to say so.
+  const block = tpl.slice(tpl.indexOf("grep -q '^dtoverlay=rpivid-v4l2'"));
+  assert.match(block.slice(0, 400), /NEEDS_REBOOT=1/, 'the overlay needs a reboot to take effect');
+
+  // The DRM class, not just the V4L2 class. char-video4linux is major 81 and the DRM nodes are 226,
+  // so the video4linux line alone leaves the HEVC path permitted at the file level and blocked by
+  // systemd — indistinguishable, from ffmpeg's side, from having no decoder.
+  assert.match(tpl, /^DeviceAllow=char-drm rw$/m, 'hardware H.265 opens /dev/dri/*');
+  assert.match(tpl, /^DeviceAllow=char-video4linux rw$/m, 'and hardware H.264 opens /dev/video*');
 });

@@ -107,9 +107,40 @@ wait_for_apt() {
 step 'Checking this device'
 [ "$(id -u)" = 0 ] || die "run this with sudo:  curl -fsSL $SERVER/pi.sh | sudo sh"
 command -v apt-get >/dev/null 2>&1 || die 'this installer expects Raspberry Pi OS or another Debian-based system'
-say "model:  $(tr -d '\0' < /proc/device-tree/model 2>/dev/null || uname -m)"
+MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || uname -m)
+say "model:  $MODEL"
 say "os:     $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -sr)"
 say "server: $SERVER"
+
+# ── the board this needs ─────────────────────────────────────────────────────
+#
+# A Pi 4 or newer, and the Pi 3 is refused rather than merely discouraged.
+#
+# It is refused because it could not do the job and no amount of software changed that. A Pi 3
+# decodes a modern camera in software at roughly half real time, and falling behind a live stream is
+# what makes a camera hang up — so the picture stuttered AND the connection dropped every half
+# minute, from one cause. Its H.264 hardware decoder will not open anything much above 1080p and it
+# has no HEVC decoder at all, which is the whole reason for moving.
+#
+# The generation is compared as a NUMBER, so a Pi 5 or a Pi 6 is accepted by a check written today.
+# Anything that does not identify itself as a numbered Raspberry Pi is allowed through: refusing an
+# unrecognised board on the strength of a string comparison would strand a screen for no reason, and
+# a Compute Module or a Zero is somebody's deliberate choice rather than a mistake to block.
+# `[0-9][0-9]*` rather than `[0-9]\+`: this script is deliberately POSIX sh for dash, and `\+` is a
+# GNU sed extension. It happens to work on Raspberry Pi OS, and it would have gone unnoticed there
+# forever — which is exactly why it is not worth relying on.
+PI_GEN=$(printf '%s' "$MODEL" | sed -n 's/^Raspberry Pi \([0-9][0-9]*\).*/\1/p')
+if [ -n "$PI_GEN" ] && [ "$PI_GEN" -lt 4 ]; then
+  printf '\n\033[31mThis board is not supported.\033[0m\n\n' >&2
+  printf '  %s\n\n' "$MODEL" >&2
+  printf '  OpenMasjidDisplay screens need a Raspberry Pi 4 or newer. Support for the Pi 3 has\n' >&2
+  printf '  ended: it cannot decode a modern camera fast enough to keep up with it, which made\n' >&2
+  printf '  the picture stutter and the camera drop the connection every half minute.\n\n' >&2
+  printf '  A Raspberry Pi 4 with 2GB is enough, and it decodes H.265 cameras in hardware.\n\n' >&2
+  printf '  A Pi 3 screen that is ALREADY set up keeps working and is left alone — it simply\n' >&2
+  printf '  stops receiving new versions. Nothing you do here will switch it off.\n\n' >&2
+  exit 1
+fi
 
 if [ ! -e /dev/fb0 ]; then
   # Not fatal. A Pi with no television attached at boot has no framebuffer, and the fix is a
@@ -421,7 +452,15 @@ if [ -f "$BOOTCFG" ]; then
   # bcm2835-codec is the firmware-side decoder, so it draws on the GPU split rather than on system
   # RAM. A Pi measured 76M, which is not enough to decode 1080p — and the failure is silent, in the
   # sense that ffmpeg simply cannot open a decoder and says it could not find one. 128M is the
-  # documented minimum for 1080p and still leaves a 1GB Pi 3 the great majority of its memory.
+  # documented minimum for 1080p and still leaves the board the great majority of its memory.
+  #
+  # KEPT, but the reasoning above is a Pi 3 measurement and this is now a Pi 4 file. Under the KMS
+  # driver a Pi 4 allocates decoder buffers from CMA rather than from this split, so the line may
+  # well do nothing at all — and on a 2GB board it is reserving 128M for a mechanism that might not
+  # use it. It stays because the two possible mistakes are not symmetric: keeping it wastes 6% of
+  # memory, while removing it on a wrong guess loses hardware H.264 decoding and the only symptom
+  # would be a slower picture nobody can explain. It is on the list of things to settle the first
+  # time there is a real Pi 4 to measure, and the agent already reports which decoder it got.
   if ! grep -q '^gpu_mem=' "$BOOTCFG" 2>/dev/null; then
     say 'reserving 128M for the video decoder (needed for hardware camera decoding)'
     printf '
@@ -433,6 +472,22 @@ gpu_mem=128
   if ! grep -q '^framebuffer_depth=32' "$BOOTCFG" 2>/dev/null; then
     say 'asking for a 32-bit framebuffer, so gradients do not band'
     printf '\n# Added by OpenMasjidDisplay: 32-bit colour, so gradients do not band\nframebuffer_depth=32\nframebuffer_ignore_alpha=1\n' >> "$BOOTCFG"
+    NEEDS_REBOOT=1
+  fi
+  # Switch on the H.265 decoder, which is the whole reason for moving to a Pi 4.
+  #
+  # A Pi 4 has TWO video decoders and they are unrelated. H.264 goes to the old VideoCore block that
+  # a Pi 3 also had. H.265 goes to a separate, dedicated unit called rpivid, and that one appears as
+  # /dev/video19 only when this overlay is loaded. Without the line there is no device, ffmpeg has
+  # nothing to hardware-decode HEVC with, and the picture silently falls back to software — which is
+  # the exact failure this migration exists to end.
+  #
+  # Harmless where it is already active: the grep keeps it from being added twice, and the overlay
+  # loading a device that is already there changes nothing. The agent reports whether /dev/video19
+  # actually turned up, so this is checkable afterwards rather than assumed.
+  if ! grep -q '^dtoverlay=rpivid-v4l2' "$BOOTCFG" 2>/dev/null; then
+    say 'enabling the H.265 hardware decoder'
+    printf '\n# Added by OpenMasjidDisplay: the dedicated H.265 decoder, as /dev/video19\ndtoverlay=rpivid-v4l2\n' >> "$BOOTCFG"
     NEEDS_REBOOT=1
   fi
 fi
@@ -494,7 +549,11 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 User=$SERVICE_USER
-SupplementaryGroups=video tty
+# The render group as well as video, and stated here rather than relied upon. The user is already added to
+# it by usermod above, and systemd does normally apply an account's own supplementary groups — but
+# hardware H.265 needs /dev/dri/renderD128, and "it depends how systemd resolves groups" is not a
+# thing to find out from a masjid reporting a slow picture. Naming it costs nothing.
+SupplementaryGroups=video render tty
 ExecStart=/usr/bin/node $PREFIX/agent.js
 # A masjid screen must come back on its own from anything: a crash, a pulled network cable, a
 # power cut. Always, with a short delay, and no start-limit that could ever leave it stopped.
@@ -537,6 +596,18 @@ DeviceAllow=/dev/tty0 rw
 # char-video4linux covers the codec nodes as a class, which is what is wanted here: the numbering
 # is not stable across kernels, and hardcoding video10 would break on the next one.
 DeviceAllow=char-video4linux rw
+# And the DRM nodes, which are a SEPARATE class and are what hardware H.265 needs.
+#
+# This is the same trap as the line above, one layer along. A Pi 4 decodes H.265 on a dedicated
+# stateless block that ffmpeg reaches with the drm hwaccel, and that path opens /dev/dri/card0 and
+# /dev/dri/renderD128 — character major 226, which char-video4linux (major 81) does not cover. So
+# without this line the H.265 decoder is present, enabled, and permitted at the file level, and
+# ffmpeg still cannot use it. That is exactly how /dev/video10 was lost on the Pi 3: an allowlist
+# silently missing one class, reported as "could not find a device" rather than as a refusal.
+#
+# char-drm as a class rather than the two paths, for the same reason: the node names are not
+# guaranteed and renderD128 in particular is numbered by probe order.
+DeviceAllow=char-drm rw
 Environment=NODE_ENV=production
 # How this device trusts its display server, decided at install time. Either a pinned certificate
 # (verification ON, against that one certificate) or — said loudly at the time — no verification,
@@ -583,6 +654,25 @@ if [ -z "$SERVER" ]; then
 fi
 
 [ -n "$SERVER" ] || { echo "no server configured; nothing to update from"; exit 0; }
+
+# A Pi 3 stops here, and stopping here is the whole point.
+#
+# Support for the Pi 3 has ended, but a Pi 3 already mounted behind a television is a working screen
+# showing correct prayer times, and the destructive way to end support would be to let it download an
+# agent built for a board it is not. It would then crash, systemd would restart it every five
+# seconds, and a masjid would find a black screen with nobody having touched anything.
+#
+# So the updater refuses instead: the screen keeps the version it has and keeps working, and simply
+# receives nothing new. That is exactly what "no longer supported" should cost somebody.
+MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)
+# `[0-9][0-9]*` rather than `[0-9]\+`: this script is deliberately POSIX sh for dash, and `\+` is a
+# GNU sed extension. It happens to work on Raspberry Pi OS, and it would have gone unnoticed there
+# forever — which is exactly why it is not worth relying on.
+PI_GEN=$(printf '%s' "$MODEL" | sed -n 's/^Raspberry Pi \([0-9][0-9]*\).*/\1/p')
+if [ -n "$PI_GEN" ] && [ "$PI_GEN" -lt 4 ]; then
+  echo "this board ($MODEL) is no longer supported; keeping the version already installed"
+  exit 0
+fi
 
 TMP="$PREFIX/agent.new.js"
 # shellcheck disable=SC2086

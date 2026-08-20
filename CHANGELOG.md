@@ -12,6 +12,18 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Changed
+- **Raspberry Pi screens now need a Pi 4 or newer.** A Pi 3 could not decode a modern camera fast
+  enough to keep up with it, which made the picture stutter and the camera drop the connection every
+  half minute — one fault with two symptoms, and nothing in software fixed it. A Pi 4 also decodes
+  H.265 cameras in hardware, which a Pi 3 cannot do at all.
+- **A Pi 3 screen already on a wall keeps working.** It stays on the version it has and stops
+  receiving new ones; it is never switched off or left blank. Setting up a NEW screen on a Pi 3 is
+  refused, and says why.
+- H.265 cameras are decoded by the Pi 4’s dedicated hardware decoder, and H.264 by its other one.
+  When a camera is too large for the hardware, the screen now says so in plain words with the
+  actual size in them, instead of quietly struggling.
+
 ### Added
 - **Set up Wi-Fi on a Raspberry Pi screen from the dashboard.** The screen reports which networks
   it can see, and you pick one and type the password without going near the Pi. Before it keeps
