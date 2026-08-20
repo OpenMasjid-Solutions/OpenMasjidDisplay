@@ -316,7 +316,21 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
     .filter(Boolean)
     .join(' ');
 
-  return (
+  /**
+   * Rendered into document.body, because `position: fixed` is not always fixed to the viewport.
+   *
+   * An ancestor with `transform`, `filter` or `backdrop-filter` becomes the containing block for
+   * fixed-position descendants — so `.modal-backdrop`'s `inset: 0` resolves against THAT element
+   * instead of the screen. Every card in this app is `.glass-raised`, which has a backdrop-filter,
+   * so a modal opened from inside a card was laid out inside the card: the dimming covered only the
+   * card, the dialog centred itself on the card rather than the page, and the bottom of it ran off
+   * the viewport.
+   *
+   * It went unnoticed for as long as it did because every other dialog is rendered from a page
+   * root, where the bug cannot show. The Wi-Fi panel is opened from a screen card, and showed it
+   * immediately.
+   */
+  return createPortal(
     <div className="modal-backdrop">
       <div
         ref={ref}
@@ -352,7 +366,8 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
         {windowed ? <div className="modal-body">{children}</div> : children}
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

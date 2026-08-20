@@ -41,6 +41,9 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- The Wi-Fi panel opens in the middle of the screen. It was appearing off to one side, dimming only
+  part of the page, running off the bottom, and being drawn over by the toolbar — all because a
+  dialog opened from a screen card was being positioned inside that card rather than on the page.
 - Dialogs that open as a window are now solid, instead of letting the page show through them. The
   Wi-Fi panel in particular was hard to read against the screens behind it. They also scroll
   properly now: the frame stays put and only the contents move, so a long list of networks no
