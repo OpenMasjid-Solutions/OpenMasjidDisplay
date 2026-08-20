@@ -13,6 +13,11 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **A Raspberry Pi screen no longer reports a speed warning as a broken camera.** It was showing a
+  note about colour conversion in place of the actual reason, which hid whatever had really gone
+  wrong.
+
+### Fixed
 - **A camera that drops now comes back straight away instead of taking longer each time.** A stream
   that played for half a minute and then dropped was being treated as if it had never worked, so
   each gap grew — one second, then two, then four, up to thirty. Anything that played for more

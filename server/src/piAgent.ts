@@ -379,3 +379,69 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput): 
 export function __resetDevicesForTests(): void {
   seen.clear();
 }
+
+// ── telling a device to do something, when nothing can connect to it ─────────
+//
+// The device only ever polls us, so a command is not sent — it is LEFT for the device to find on
+// its next state poll, at most five seconds later. That shapes everything here.
+
+/** Actions a Pi can be asked to perform from the panel. A closed set, checked on the way in. */
+export const PI_COMMANDS = ['restart', 'update'] as const;
+export type PiCommandAction = (typeof PI_COMMANDS)[number];
+
+/**
+ * How long a queued command stays valid.
+ *
+ * Short on purpose. A screen switched off at the wall on Tuesday must not come back on Friday and
+ * immediately act on something somebody clicked days ago — least of all restart itself in the
+ * middle of Jumuah. Two minutes is far longer than the five-second poll and far shorter than an
+ * outage anybody would notice.
+ */
+export const PI_COMMAND_TTL_MS = 120_000;
+
+export interface PiCommand {
+  /** unique per issue, so a device can tell a repeat from a new instruction */
+  id: string;
+  action: PiCommandAction;
+  issuedAt: number;
+}
+
+export function isPiCommand(v: unknown): v is PiCommandAction {
+  return typeof v === 'string' && (PI_COMMANDS as readonly string[]).includes(v);
+}
+
+/**
+ * Queue a command for an adopted device, replacing anything already waiting.
+ *
+ * Replacing rather than queueing is deliberate: these are not a work list, they are "what should
+ * this screen do next". Two clicks on Restart mean one restart, and a click on Update after a click
+ * on Restart means update.
+ */
+export function queueCommand(db: DB, deviceId: string, action: PiCommandAction, nowMs: number): PiCommand | null {
+  const device = db.piDevices?.find((d) => d.id === deviceId);
+  if (!device || !device.token) return null;
+  device.command = { id: `c_${crypto.randomBytes(6).toString('hex')}`, action, issuedAt: nowMs };
+  return device.command;
+}
+
+/** What this device should be told to do, if anything — expired commands are not mentioned. */
+export function pendingCommand(device: PiDevice, nowMs: number): { id: string; action: PiCommandAction } | null {
+  const c = device.command;
+  if (!c || nowMs - c.issuedAt > PI_COMMAND_TTL_MS) return null;
+  return { id: c.id, action: c.action };
+}
+
+/**
+ * The device has taken the instruction; stop offering it.
+ *
+ * Acknowledged BEFORE the device acts, not after, and that ordering is the whole safety property.
+ * `restart` and `update` both end the process that would have done the acknowledging, so a device
+ * that acted first would come back, poll, still be offered the same command, and act again —
+ * for ever, every five seconds, with `Restart=always` guaranteeing nothing ever stops it.
+ *
+ * The id is matched so a late ack from a previous command cannot clear a newer one.
+ */
+export function ackCommand(db: DB, deviceId: string, id: string): void {
+  const device = db.piDevices?.find((d) => d.id === deviceId);
+  if (device?.command && device.command.id === id) delete device.command;
+}

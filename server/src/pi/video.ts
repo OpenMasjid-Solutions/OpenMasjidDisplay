@@ -149,6 +149,21 @@ export function videoArgs(
   ];
 }
 
+/**
+ * Lines that are NOT the reason a camera failed.
+ *
+ * ffmpeg is chatty on stderr and most of it is progress or advice. Two lines in particular were
+ * being shown to a masjid as the reason their camera was unavailable. One:
+ *
+ *   [swscaler @ 0x...] No accelerated colorspace conversion found from yuv420p to rgb565le.
+ *
+ * which is a performance note, not a failure. The other is GnuTLS reporting that the session has
+ * been invalidated, which it emits only AFTER an earlier fatal error already killed the session —
+ * so it is never the cause either. Both crowded out the line that says what actually went wrong.
+ */
+const NOISE =
+  /^\s*(Input #|Stream #|Metadata:|Duration:|encoder|frame=|Press \[q\]|built with|configuration:|lib[a-z]+ +[0-9]|\[swscaler|deprecated|Last message repeated|Guessed Channel)/i;
+
 /** Strip any user:pass@ from a URL before it can reach a log. Cameras are very often configured
  *  with credentials in the address, and the journal on a Pi is readable by anyone on the box. */
 export function redactCreds(s: string): string {
@@ -320,7 +335,7 @@ export class VideoPlayer {
       const first = tail
         .split('\n')
         .map((l) => l.trim())
-        .find((l) => l && !/^\s*(Input #|Stream #|Metadata:|Duration:|encoder|frame=)/.test(l));
+        .find((l) => l && !NOISE.test(l));
       if (first) this.lastError = first.slice(0, 300);
     });
 

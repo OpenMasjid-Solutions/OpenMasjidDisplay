@@ -171,3 +171,26 @@ test('the timeout is passed before the input, or it applies to nothing', () => {
   // And a build with no such option must still produce a working command line.
   assert.ok(!videoArgs('rtsp://cam', HD, { hw: false, device: '/dev/fb0', timeoutFlag: null }).includes('-timeout'));
 });
+
+test('a performance warning is not reported as the reason a camera failed', () => {
+  // Shown on a real screen as "Camera unavailable — [swscaler] No accelerated colorspace
+  // conversion found from yuv420p to rgb565le". That is swscale saying the conversion has no fast
+  // path, which is a performance note; it is not why anything stopped.
+  const noise = [
+    '[swscaler @ 0x7f90249690] No accelerated colorspace conversion found from yuv420p to rgb565le.',
+    'frame=  102 fps= 25 q=-0.0 size=N/A time=00:00:04.08',
+    'Input #0, rtsp, from ...',
+    '  libavcodec 60. 31.102 / 60. 31.102',
+    'deprecated pixel format used, make sure you did set range correctly',
+  ];
+  const real = [
+    '[rtsp @ 0x1234] method DESCRIBE failed: 401 Unauthorized',
+    'Connection to tcp://192.168.1.100:7441 failed: Connection refused',
+    'Server returned 404 Not Found',
+  ];
+  // Mirrors the filter in video.ts — kept here so the classification is asserted, not assumed.
+  const NOISE =
+    /^\s*(Input #|Stream #|Metadata:|Duration:|encoder|frame=|Press \[q\]|built with|configuration:|lib[a-z]+ +[0-9]|\[swscaler|deprecated|Last message repeated|Guessed Channel)/i;
+  for (const l of noise) assert.ok(NOISE.test(l), `should be ignored: ${l.slice(0, 60)}`);
+  for (const l of real) assert.ok(!NOISE.test(l), `should be reported: ${l.slice(0, 60)}`);
+});
