@@ -31,7 +31,17 @@ test('every prayer icon renders something, at a few sizes', () => {
  *  outer circle exactly, erasing the crescent. Parsing the two circles back out of the path
  *  and checking containment catches both failure modes without a renderer in the loop. */
 test('the crescent moon\'s bite circle is fully inside its disc, at every size', () => {
-  for (const r of [3, 4.9, 12, 37.5, 90]) {
+  // A wide, dense sweep, not a handful of round numbers: the actual bug (0.88 + 0.12 = 1.00
+  // exactly, no margin) only failed at SOME sizes, because `toFixed(1)` rounding either helped
+  // or hurt depending on where the true value fell relative to the nearest tenth. A sparse list
+  // of "nice" sizes is exactly the kind of test that would have passed anyway.
+  //
+  // Floor of 2, not 0: every coordinate this file emits is rounded to one decimal place
+  // (`toFixed(1)`), and below r=2 that rounding is a large enough fraction of the whole icon
+  // that exact containment isn't achievable — nor does it matter, since no row ever draws this
+  // icon anywhere near that small (the smallest real one is roughly 3px). Below the floor is
+  // "this number is meaningless at this resolution", not a geometry bug.
+  for (let r = 2; r <= 200; r += 0.7) {
     const svg = prayerIcon('isha', 200, 150, r);
     const circles = [...svg.matchAll(/M([\d.-]+) ([\d.-]+) A([\d.-]+) [\d.-]+ 0 1 0/g)].map((m) => ({
       // A circle drawn as `M(x-r) y A r r 0 1 0 ...` — the start point is the LEFT edge,

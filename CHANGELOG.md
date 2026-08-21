@@ -12,6 +12,19 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Changed
+- **The Simple layout's prayer table now has a light gap between rows instead of one solid
+  block of colour**, the masjid logo has more room (a noticeably larger bounding box), the AM/PM
+  marker beside the clock is smaller, and the bar between the Hijri and Gregorian date is now a
+  bolder drawn shape rather than a thin "|" character, evenly spaced on both sides — it stayed
+  readable as a divider even at the date line's deliberately light font weight, and the first
+  version of the drawn bar positioned each date from an estimated text width, so an estimate
+  error on one side and not the other showed up as an uneven-looking gap right at the thing
+  meant to be a clean divider.
+- **Isha's crescent moon (Simple layout) redrawn larger and thinner** — it's now sized to fill
+  most of its own icon box rather than sharing it with a cloud, and cuts noticeably deeper so it
+  reads as an actual crescent rather than a circle with a small dent in it.
+
 ### Fixed
 - **The Simple layout's picker had landed in the wrong tab.** It was under General ->
   Screen & quality; every other visual choice for a timetable (theme, colours, background, logo,
