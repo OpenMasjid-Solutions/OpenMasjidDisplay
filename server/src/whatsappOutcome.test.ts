@@ -264,6 +264,34 @@ test('nothing outstanding means no request at all', async () => {
   }
 });
 
+test('a message is still asked about hours later, because expiry is the answer that matters', async () => {
+  // This was half an hour, and half an hour was long enough to lose an announcement for good.
+  //
+  // A message the gateway cannot send is marked `expired` by the platform eventually, and
+  // `expired` is the verdict that re-opens the retry. Stop asking before it arrives and the entry
+  // stays `queued` — which the dedupe reads as HANDLED, because a queued message is one still on
+  // its way. So the notice is never retried, never sent, and the log says "waiting" about it for
+  // ever. Nothing surfaces that. The platform keeps 500 outcomes per app for 24 hours, so the
+  // window is theirs to set and ours to match.
+  const h = harness({ status: () => ({ state: 'expired', reason: 'the gateway never came back' }) });
+  try {
+    h.store.update((db) => {
+      db.whatsappLog = [entry({ at: new Date(NOW - 6 * 60 * 60_000).toISOString() })];
+    });
+    await h.a.tick();
+    assert.deepEqual(h.asked, ['wa_1'], 'six hours on, the platform still has the answer');
+    assert.equal(h.log()[0].outcome, 'expired');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('the polling window matches what the platform will actually answer for', () => {
+  // Not a number picked here: 24 hours is OUTCOME_MAX_AGE_MS in the platform's own
+  // whatsapp-queue-store. Shorter loses verdicts; longer just asks about evicted ids.
+  assert.equal(WA_OUTCOME_WINDOW_MS, 24 * 60 * 60_000);
+});
+
 test('an entry too old to be worth asking about is left alone', async () => {
   const h = harness({ status: () => ({ state: 'sent' }) });
   try {

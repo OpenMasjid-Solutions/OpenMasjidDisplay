@@ -424,10 +424,13 @@ this file.
     expires, never a partial change.
 - **WhatsApp is queued, never sent.** `202 {queued:true}` means accepted for later delivery. The 202
   now carries an `id` and `/api/fabric/whatsapp/status/<id>` answers `queued`/`sent`/`failed`/
-  `expired` (OpenMasjidOS **0.51.1+**, advertised as `outcomes` — absent must read as false). Even
-  `sent` means "handed to WhatsApp": there is no delivery receipt anywhere and nothing may claim one.
-  **A verdict we could not obtain — a 404, a timeout, an older platform — is not a failure**; treating
-  it as one re-announces a change the group already has.
+  `expired` (OpenMasjidOS **0.51.1+**, advertised as `outcomes` — absent must read as false; per-app
+  history from **0.51.1-dev.8**). Even `sent` means "handed to WhatsApp": there is no delivery receipt
+  anywhere and nothing may claim one. **A verdict we could not obtain — a 404, a timeout, an older
+  platform — is not a failure**; treating it as one re-announces a change the group already has.
+  **Keep asking for as long as the platform will answer** (24h, `WA_OUTCOME_WINDOW_MS`): `expired` is
+  the verdict that re-opens a retry, and an entry left `queued` reads as *handled*, so giving up early
+  strands the announcement silently and for ever.
 - **The platform no longer paces us, so this app has to** (0.51.1 removed quiet hours, the caps, the
   cooldowns, the warm-up and the random gap). Ban risk still attaches to the masjid's *number*, it is
   shared by every app on the box, and a blocked number cannot be recovered. What holds here is
@@ -441,3 +444,11 @@ this file.
 - **Read `media`/`maxMediaBytes` from the platform before rendering a poster**, and never fall back to
   the caption alone: the caption is written to sit under an image and, delivered by itself, is an
   announcement with no timetable in it. Every media failure falls back to the full text notice.
+- **An alert that fires on an EXTERNAL failure needs its own floor.** The screen-offline alert is the
+  one of these this app has, and the shape is a decoder that FLAPS rather than one that dies: the
+  notified flag latches, so a screen that stays down is reported once, but every recovery re-arms it —
+  around 950 email-and-webhook pairs a day at a 90-second debounce. The platform gates on whether the
+  admin wants that alert type, not on how often it arrives, and the per-recipient cooldown that used
+  to absorb this class of thing was removed in 0.51.1. `ALERT_MIN_GAP_MS` in orchestrator.ts floors the
+  DOWN alert only — a recovery can only follow a down alert already sent, and suppressing one would
+  leave an admin believing a screen is dead. Delay such an alert, never drop it.

@@ -13,6 +13,16 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Changed
+- **An announcement that could not be delivered is no longer left saying “waiting” for ever.** The app
+  gave up asking OpenMasjidOS about a notice after half an hour, and a notice that OpenMasjidOS only
+  gives up on later would sit as “waiting” permanently — which the app read as “already handled”, so it
+  was never sent and never retried. It now asks for as long as OpenMasjidOS keeps the answer, which
+  is a day.
+- **A screen whose decoder keeps dropping in and out no longer floods your inbox.** A screen that goes
+  offline has always been reported once, but one that flapped sent an “offline” and a “back online”
+  every ninety seconds — around 950 pairs a day for a single screen. There is now at most one
+  “offline” per screen every half hour. A screen that is genuinely still down is still reported, just
+  a little later, and every “offline” you are told about still gets its “back online”.
 - **The WhatsApp log now says whether an announcement actually went out.** It used to say only that
   OpenMasjidOS had accepted it — which was all anyone knew, so a notice that never reached the group
   looked exactly like one still on its way. Each line now reads *waiting*, *sent*, *did not send* or

@@ -96,8 +96,12 @@ GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp/status/<id>
 ```
 
 **Minimum platform versions.** Sending needs OpenMasjidOS **0.51.0+**; the message id, the status
-lookup and a send queue that survives a restart need **0.51.1+**. Below that the `outcomes` field is
-simply absent, which — like `media` — must read as `false` rather than be assumed.
+lookup and a send queue that survives a restart need **0.51.1+**; a per-app outcome history (rather
+than one ring every app shared, where a single roster run evicted everybody else's records) needs
+**0.51.1-dev.8+**. Below any of those the `outcomes` field is simply absent, which — like `media` —
+must read as `false` rather than be assumed. A `404` from `/status/<id>` is **unknown**, never a
+delivery failure: it covers an unknown id, another app's id, an evicted record and a platform too old
+to have the endpoint.
 
 The rules that are not ours to bend:
 
@@ -112,9 +116,15 @@ The rules that are not ours to bend:
 - **`queued` is not `sent`.** A 202 is acceptance. There is no delivery receipt from WhatsApp, so
   even a `sent` verdict means "handed over", never "read". Nothing here blocks on it.
 - **Ask what became of it, once you can.** The 202 carries an `id`; `/status/<id>` answers
-  `queued` / `sent` / `failed` / `expired`, scoped to this app's own messages, holding no message
-  text and no recipient, and bounded to the platform's most recent 200 — so ask soon, not days later.
-  We store the id on the log entry and reconcile it on the announcer's own minute tick.
+  `queued` / `sent` / `failed` / `expired`, scoped to this app's own messages and holding no
+  message text and no recipient. The platform keeps **500 outcomes per app for 24 hours** (its own
+  `MAX_OUTCOMES_PER_SOURCE` / `OUTCOME_MAX_AGE_MS`) — per app since 0.51.1-dev.8, so no other app's
+  traffic can evict ours. We store the id on the log entry and reconcile it on the announcer's own
+  minute tick, **for as long as the platform will answer**: see WA_OUTCOME_WINDOW_MS for why
+  stopping early loses an announcement rather than merely losing a status.
+- **Status lookups are not sends.** Reads have their own counter (600/minute per app) separate from
+  the 120/minute that messaging a recipient costs, so polling cannot refuse a send or vice versa.
+  Our worst case is about two reads a minute, and none at all when nothing is outstanding.
 - **"Could not ask" is not "did not arrive".** A 404, a timeout, an older platform and an unreachable
   box all mean *no verdict*, and every one of them has to leave the entry alone. Collapsing them into
   a failure would re-announce a change the group already has, which is worse than not knowing.

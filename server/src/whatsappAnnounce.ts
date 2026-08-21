@@ -89,15 +89,28 @@ export const WA_RETRY_MS = 30 * 60_000;
 /**
  * How long to keep asking the platform what became of a queued message.
  *
- * The platform keeps only its most recent 200 outcomes, so an id that is not asked about
- * reasonably soon is simply forgotten — and with the platform's pacing removed, a message it
- * accepted goes out within seconds. Half an hour is therefore a very wide margin around the
- * normal case, and short enough that a stuck entry stops costing requests.
+ * **This is the platform's retention, and matching it is a correctness requirement rather than
+ * a courtesy.** It was half an hour, chosen when the outcome history was 200 records shared
+ * between every app and an unasked id was assumed to be evicted quickly. That was wrong in a
+ * way that fails silently and permanently:
  *
- * An entry we never get an answer for keeps its `queued` outcome for good. That is the honest
- * record: it was accepted, and nothing ever told us more.
+ * A message the gateway cannot send is eventually marked `expired` by the platform, and
+ * `expired` is the verdict that re-opens the retry. Stop asking before it arrives and the entry
+ * stays `queued` — which the dedupe reads as *handled*, because a queued message is one still
+ * on its way. So a notice that never went out would never be retried and never be sent, and the
+ * log would say "waiting" about it for ever. Half an hour was comfortably inside the window in
+ * which that could happen.
+ *
+ * The platform now keeps 500 outcomes per app for 24 hours
+ * (`MAX_OUTCOMES_PER_SOURCE` / `OUTCOME_MAX_AGE_MS` in its whatsapp-queue-store), no longer
+ * shared, so asking for as long as it will answer costs one request a minute while a single
+ * message is outstanding — against a read budget of 600 a minute — and buys the verdict.
+ *
+ * An entry we still never get an answer for keeps its `queued` outcome, and that is deliberate:
+ * "we could not learn" is not "it failed", and inventing a failure would re-announce a change
+ * the group may already have.
  */
-export const WA_OUTCOME_WINDOW_MS = 30 * 60_000;
+export const WA_OUTCOME_WINDOW_MS = 24 * 60 * 60_000;
 
 /** How many outcomes to ask about in one tick, so a backlog cannot become a burst. */
 export const WA_OUTCOME_PER_TICK = 5;

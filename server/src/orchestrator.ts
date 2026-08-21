@@ -45,9 +45,26 @@ export class Orchestrator {
   private applied = new Map<string, string>();
 
   /** Per-screen alert state for the offline/online notifications. */
-  private alerts = new Map<string, { downSince: number | null; offlineNotified: boolean }>();
+  private alerts = new Map<string, { downSince: number | null; offlineNotified: boolean; lastAlertAt: number }>();
   /** A screen must stop pulling its stream for this long before we call it offline. */
   private readonly OFFLINE_MS = 90_000;
+  /**
+   * And we will not tell the admin about the same screen more often than this.
+   *
+   * These alerts fire on an EXTERNAL failure rather than on anything a person did, which is the
+   * shape that has no natural bound. `offlineNotified` latches, so a screen that is simply down
+   * is reported once — but a decoder that flaps produces a down alert and a recovery alert every
+   * `OFFLINE_MS`, and at 90 seconds that is around 950 pairs a day, each one an email and a
+   * webhook. Nothing else limits it: the platform's alert route gates on the admin's on/off for
+   * the alert type, not on how often it arrives.
+   *
+   * The floor is on the DOWN alert only. A recovery is exempt because it can only ever follow a
+   * down alert we already sent, and suppressing it would leave the admin believing a screen is
+   * dead — so the bound is two alerts per screen per window, with every "down" still getting its
+   * matching "back online". Thirty minutes matches what the other OpenMasjid apps settled on for
+   * the same class of alert.
+   */
+  private readonly ALERT_MIN_GAP_MS = 30 * 60_000;
 
   constructor(
     private readonly store: Store,
@@ -311,7 +328,7 @@ export class Orchestrator {
     for (const { tv, pulling, off, stale, staleReason, litUp } of items) {
       let st = this.alerts.get(tv.id);
       if (!st) {
-        st = { downSince: null, offlineNotified: false };
+        st = { downSince: null, offlineNotified: false, lastAlertAt: 0 };
         this.alerts.set(tv.id, st);
       }
       const name = (tv.name || 'Screen').slice(0, 60);
@@ -322,15 +339,23 @@ export class Orchestrator {
         continue;
       }
       if (pulling) {
+        // Only ever after a down alert the admin actually received, and never floored — see
+        // ALERT_MIN_GAP_MS. It resets the floor, so the NEXT down alert is the one that waits.
         if (st.offlineNotified) {
           void this.notify({ title: 'Screen back online', text: `✅ "${name}" is showing its stream again.`, level: 'success' });
+          st.lastAlertAt = now;
         }
         st.downSince = null;
         st.offlineNotified = false;
       } else {
         if (st.downSince == null) st.downSince = now;
         if (now - st.downSince >= this.OFFLINE_MS && !st.offlineNotified) {
+          // Floored, and `offlineNotified` is deliberately NOT set when it is. A screen that is
+          // still down when the window expires is reported then — the alert is delayed, never
+          // dropped, which is the difference between pacing an alert and losing one.
+          if (now - st.lastAlertAt < this.ALERT_MIN_GAP_MS) continue;
           st.offlineNotified = true;
+          st.lastAlertAt = now;
           // Say the true thing. "Still lit up" is only accurate when a decoder really is
           // attached, and a wrong clock is a different problem from a frozen renderer with
           // a different remedy, so each gets its own wording.
