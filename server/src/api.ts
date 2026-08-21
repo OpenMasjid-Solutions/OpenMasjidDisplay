@@ -32,6 +32,8 @@ import {
 import {
   enrolDevice,
   updateDeviceFacts,
+  setDeviceJournal,
+  stripAnsi,
   queueCommand,
   ackCommand,
   isPiCommand,
@@ -518,6 +520,31 @@ export function createApi(deps: Deps) {
           const body = (await readBody(req, 1_000).catch(() => null)) as { id?: unknown } | null;
           const id = typeof body?.id === 'string' ? body.id : '';
           if (id) store.update((db) => ackCommand(db, device.id, id));
+          return sendJson(res, 200, { ok: true });
+        }
+
+        // The full journal, collected by root on the device and uploaded when asked for.
+        //
+        // Its OWN endpoint, not part of the check-in. A check-in is capped at 32KB and carries facts
+        // the dashboard needs constantly; a journal is up to 180KB and is wanted occasionally. Sharing
+        // the route would either crowd out the facts or push the cap up for every check-in — and the
+        // last time a cap and its payload disagreed, every check-in was discarded in silence for
+        // weeks. Keeping them apart means each cap can be sized for what it actually carries.
+        if (what === 'logs' && method === 'POST') {
+          // 256KB against the device's own 180KB bound. Deliberate slack: the device truncates to
+          // 180_000 BYTES of text and JSON-encoding a log inflates it — every backslash, quote and
+          // control character becomes two or six — so a cap equal to the device's bound would reject
+          // exactly the biggest and most interesting logs.
+          const LOGS_MAX_BYTES = 262_144;
+          const body = await readBody(req, LOGS_MAX_BYTES).catch((e: unknown) => e);
+          if (body instanceof Error) {
+            const tooBig = (body as { code?: string }).code === BODY_TOO_LARGE;
+            return sendJson(res, tooBig ? 413 : 400, { error: tooBig ? 'body too large' : 'bad request' });
+          }
+          const journal = typeof (body as { journal?: unknown })?.journal === 'string' ? (body as { journal: string }).journal : '';
+          if (!journal) return sendJson(res, 400, { error: 'no log in that request' });
+          store.update((db) => setDeviceJournal(db, device.id, journal, Date.now()));
+          log.info(`stored ${journal.length} bytes of log for pi device ${device.id}`);
           return sendJson(res, 200, { ok: true });
         }
 
@@ -1527,6 +1554,10 @@ export function createApi(deps: Deps) {
             // nothing — the agent ships from the same commit as the server, so one string
             // describes both.
             upToDate: !!d.agentVersion && d.agentVersion === appVersion(),
+            // The collected journal, ANSI-stripped here rather than in the browser so every
+            // consumer gets it readable. Absent until somebody asks for it.
+            journal: d.journal ? stripAnsi(d.journal) : undefined,
+            journalAt: d.journalAt,
             networks: d.networks ?? [],
             wifiResult: d.wifiResult,
             // Whether an install is in flight. The device is the authority on what it is running,

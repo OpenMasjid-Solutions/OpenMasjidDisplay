@@ -446,8 +446,19 @@ test('the dispatcher still executes nothing outside its closed set', () => {
   // Adding a verb is exactly when this stops being true by accident.
   const tpl = installerTemplate() as string;
   const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
-  const verbs = [...ctl.matchAll(/^\s{4}([a-z|]+)\)/gm)].map((m) => m[1]);
-  assert.deepEqual(verbs.sort(), ['reboot', 'reinstall', 'update'], `unexpected verbs: ${verbs.join(', ')}`);
+  // The character class MUST include the hyphen, and its absence made this test a no-op for half
+  // the dispatcher. `[a-z|]+` cannot match `wifi-on)`, so every verb added with a dash in its name
+  // was invisible here — the test went on passing while asserting a verb list that had not been
+  // true for days. Adding `logs`, which has no dash, is the only reason it was noticed.
+  //
+  // The list is spelled out in full deliberately. This is the whole set of things root will do at
+  // the agent's request, and making it tedious to extend is the point.
+  const verbs = [...ctl.matchAll(/^\s{4}([a-z|-]+)\)/gm)].map((m) => m[1]);
+  assert.deepEqual(
+    verbs.sort(),
+    ['logs', 'reboot', 'reinstall', 'update', 'wifi-forget', 'wifi-join', 'wifi-off', 'wifi-on', 'wifi-rescan'],
+    `unexpected verbs: ${verbs.join(', ')}`,
+  );
   const def = /\*\)([\s\S]*?);;/.exec(ctl)?.[1] ?? '';
   assert.ok(!/\$\(|`|eval|exec /.test(def), `the default branch runs something: ${def.trim()}`);
 });
@@ -823,4 +834,40 @@ test('the device identity is flushed to disk, not just renamed into place', () =
   const renameAt = cfg.indexOf('renameSync');
   assert.ok(fsyncAt > 0 && renameAt > 0, 'both a flush and a rename must be present');
   assert.ok(fsyncAt < renameAt, 'the flush must come BEFORE the rename, or it protects nothing');
+});
+
+test('the log collection asks journalctl for all three units, not a mix of filter types', () => {
+  // journalctl ORs repeated matches on the SAME field and ANDs across DIFFERENT fields. So
+  // `-u agent -u control -t omd-reinstall` asks for entries that are both in those units AND carry
+  // that syslog identifier — nothing is. Measured on a real Pi:
+  //
+  //   -u agent -u control              -> 39 lines
+  //   -t omd-reinstall                 -> 50 lines
+  //   -u agent -u control -t omd-...   ->  0 lines   <-- what this first shipped as
+  //   -u agent -u control -u omd-...   -> 50 lines
+  //
+  // The failure was a file containing "-- No entries --" and nothing else: a log collection that
+  // succeeds, reports a byte count, and returns emptiness.
+  const tpl = installerTemplate() as string;
+  const branch = tpl.slice(tpl.indexOf('    logs)'));
+  const code = branch
+    .slice(0, branch.indexOf(';;'))
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .join('\n');
+
+  assert.match(code, /journalctl/, 'the logs verb must collect the journal');
+  assert.ok(!/-t omd-reinstall/.test(code), 'mixing -t with -u ANDs the filters and returns nothing');
+  for (const unit of ['openmasjid-screen', 'openmasjid-screen-control', 'omd-reinstall']) {
+    assert.ok(code.includes(`-u ${unit}`), `${unit} must be matched by unit, not by identifier`);
+  }
+  // Bounded on BOTH axes: -n caps lines, tail -c caps bytes. One pathological line — a filter graph,
+  // a stack trace — can be enormous on its own, so a line cap alone would not save us.
+  assert.match(code, /-n \d+/, 'the line count must be bounded');
+  assert.match(code, /tail -c \d+/, 'and the byte count too');
+  // Credentials die on the device, before the file can leave it.
+  assert.match(code, /sed -E/, 'the credential scrub must run');
+  assert.match(code, /\*\*\*@/, 'and actually replace user:pass@');
+  // Handed to the agent, or the agent cannot read what root collected for it.
+  assert.match(code, /chown "\$AGENT_USER"/, 'the file must be handed to the agent user');
 });

@@ -32,6 +32,11 @@ CLAUDE.md § *The changelog has two audiences*.
   actual size in them, instead of quietly struggling.
 
 ### Added
+- **Read a Raspberry Pi screen’s log from the dashboard.** Behind the gear there is now a Log
+  section: ask for it and the screen sends back its full record — which camera it opened, why one
+  failed, what happened during setup, what the screen was asked to do and what it did. It can be
+  copied in one click to paste into an email. Any passwords are removed on the screen before it is
+  sent, and it always says how old it is.
 - **Set up Wi-Fi on a Raspberry Pi screen from the dashboard.** The screen reports which networks
   it can see, and you pick one and type the password without going near the Pi. Before it keeps
   the new network it checks that this dashboard is still reachable over it, and undoes the change
@@ -48,6 +53,7 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- Windows in the dashboard no longer stand in a pool of empty space when their contents are short.
 - **A screen no longer forgets its Wi-Fi password when it loses power.** The password was being
   handed to the system, which reported success before actually writing it to the memory card — so
   switching the screen off at the socket in the following moments lost it, and the screen came back

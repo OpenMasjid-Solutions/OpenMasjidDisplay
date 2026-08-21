@@ -610,3 +610,49 @@ export function ackCommand(db: DB, deviceId: string, id: string): void {
   const device = db.piDevices?.find((d) => d.id === deviceId);
   if (device?.command && device.command.id === id) delete device.command;
 }
+
+/**
+ * Store the journal a device collected for us.
+ *
+ * ONE bundle per device, overwritten. A history would be more useful for about a week and then be
+ * the largest thing in the store — this file is persisted to disk on a masjid's own volume, and a
+ * screen that is being debugged is a screen somebody is pressing the button on repeatedly.
+ *
+ * Bounded and stripped on arrival like every other device-supplied string. This one goes into a page
+ * and is the largest thing any device can send, so both matter: 200_000 characters is a little above
+ * the 180_000 BYTES the device caps itself at, so a legitimate maximum log survives, and anything
+ * beyond that is a device that is not ours.
+ *
+ * Control characters are removed EXCEPT newline and tab, which is the difference between a log and a
+ * wall of text. That is why this does not reuse `str()` — that strips every control character, which
+ * would turn eight hundred lines into one.
+ */
+export function setDeviceJournal(db: DB, deviceId: string, journal: string, nowMs: number): void {
+  const device = db.piDevices?.find((d) => d.id === deviceId);
+  if (!device) return;
+  // Keep the END, not the start: the useful part of a log is the most recent, and the device already
+  // sends the tail. Truncating from the front would silently discard what somebody is looking for.
+  const clipped = journal.length > 200_000 ? journal.slice(-200_000) : journal;
+  let out = '';
+  for (const ch of clipped) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c === 10 || c === 9) out += ch;
+    else if (c >= 32 && c !== 127) out += ch;
+    // else: dropped. ANSI escapes arrive as ESC (27) plus printable text, so the escape byte goes
+    // and its "[36m" tail would remain — see stripAnsi, which the panel applies for that reason.
+  }
+  device.journal = out;
+  device.journalAt = new Date(nowMs).toISOString();
+}
+
+/**
+ * Remove ANSI colour sequences.
+ *
+ * The installer deliberately colours its nine steps, so its output in the journal is full of
+ * `ESC[36m`. Dropping the escape byte alone leaves the `[36m` behind as literal text, which is
+ * worse than leaving it coloured — so the whole sequence goes, here, where it can be tested.
+ */
+export function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+}

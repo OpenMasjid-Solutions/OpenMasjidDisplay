@@ -552,7 +552,13 @@ h1, h2, h3, p { margin: 0; }
    base .modal scrolls as a whole while this one is a fixed-height window whose BODY
    scrolls under a pinned header. */
 .modal--window {
-  width: min(52rem, 94vw); height: min(78vh, 46rem); max-height: none;
+  width: min(52rem, 94vw);
+  /* max-height, NOT height. A fixed height leaves a window with short content standing in a pool of
+     its own empty background below the footer — which is what the Pi settings window did, since its
+     content is about half of 78vh. As a maximum it hugs short content and still becomes a fixed
+     frame with a scrolling body once there is more than fits, which is what the long "What's new"
+     release notes need. Both callers get what they want from the same rule. */
+  height: auto; max-height: min(78vh, 46rem);
   display: flex; flex-direction: column; overflow: hidden;
   /* Opaque, and this overrides .glass-raised deliberately — see --window-bg. Both the image
      AND the colour have to be reset, because .glass-raised paints a gradient on top of its

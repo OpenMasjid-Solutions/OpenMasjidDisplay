@@ -342,10 +342,19 @@ async function runCommand(
   }
 
   if (cmd.action === 'logs') {
-    // The cheapest command there is: nothing privileged, nothing destructive. It simply cuts the
-    // five-minute wait so the panel gets a fresh log within seconds of being asked.
+    // Asks ROOT for the journal, which is a change from what this used to do.
+    //
+    // It used to just cut the check-in wait so the panel got the agent's own eighty in-memory lines
+    // sooner. Those are what the AGENT chose to say, and they miss everything it is not the author
+    // of: the root dispatcher's decisions, the installer's nine steps, the ffmpeg exit the agent
+    // only summarises. That is the material somebody debugging a screen actually needs, and it lives
+    // in the journal, which the agent cannot read — it is not in systemd-journal, and putting it
+    // there would hand it every other unit on the machine.
+    //
+    // The early check-in is kept too: the recent lines are still worth having promptly, and the
+    // journal upload happens on the poll as soon as root has written it.
+    requestPrivileged(cmd.id, 'logs', 'collecting the full log for the dashboard');
     live.checkInNow = true;
-    log('sending recent log lines to the dashboard');
     return;
   }
 
@@ -409,6 +418,7 @@ type PrivilegedVerb =
   | 'update'
   | 'reboot'
   | 'reinstall'
+  | 'logs'
   | 'wifi-on'
   | 'wifi-off'
   | 'wifi-join'
@@ -425,6 +435,44 @@ function requestPrivileged(id: string, verb: PrivilegedVerb, said: string): void
     log(said);
   } catch (e) {
     log(`could not ask for "${verb}":`, (e as Error).message);
+  }
+}
+
+/** Where root leaves the journal it collected for us. */
+const JOURNAL_PATH = '/var/lib/openmasjid-screen/journal.txt';
+
+/**
+ * Send the journal root collected, and delete it once the server has it.
+ *
+ * Deleted only on SUCCESS, unlike the Wi-Fi verdict's read-and-delete: a log is worth retrying, and
+ * a failed upload that destroyed its own payload would leave somebody pressing the button again for
+ * a file that no longer exists. It is bounded on the device, so keeping it costs nothing.
+ *
+ * Sent to its own endpoint rather than on the check-in. A check-in is capped at 32KB and carries the
+ * facts the dashboard needs constantly; a log is up to 180KB and is wanted occasionally. Putting the
+ * log in that body would either crowd out the facts or force the cap up for everybody — and the last
+ * time a route cap and its payload disagreed, every check-in was silently discarded for weeks.
+ */
+async function sendJournal(cfg: AgentConfig): Promise<void> {
+  let text = '';
+  try {
+    if (!fs.existsSync(JOURNAL_PATH)) return;
+    text = fs.readFileSync(JOURNAL_PATH, 'utf8');
+  } catch {
+    return; // not readable yet; root may still be writing it
+  }
+  if (!text) return;
+  const res = await postJson<{ ok?: boolean }>(`${cfg.server}/pi/${cfg.token}/logs`, {
+    journal: text,
+  }).catch(() => ({ httpStatus: 0 }));
+  const status = (res as { httpStatus?: number }).httpStatus ?? 200;
+  if (status >= 200 && status < 300) {
+    try {
+      fs.unlinkSync(JOURNAL_PATH);
+    } catch {
+      /* it will simply be overwritten next time */
+    }
+    log(`sent ${text.length} bytes of log to the dashboard`);
   }
 }
 
@@ -682,6 +730,9 @@ async function runAdopted(
       // wait five minutes to find out whether their password was right is the difference between a
       // feature and a guessing game.
       if (fs.existsSync('/var/lib/openmasjid-screen/wifi-result')) live.checkInNow = true;
+      // And upload the journal as soon as root has finished writing one. Same reasoning: somebody
+      // has just pressed a button and is watching, so this cannot wait for the five-minute check-in.
+      if (fs.existsSync(JOURNAL_PATH)) await sendJournal(cfg);
 
       const st = await getJson<PiStateWire>(`${cfg.server}/pi/${cfg.token}/state`).catch((e: Error) => {
         log('state fetch failed:', e.message);

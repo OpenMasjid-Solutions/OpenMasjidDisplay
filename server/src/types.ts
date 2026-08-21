@@ -372,6 +372,11 @@ export interface PiDevice {
   /** When an install was last asked for from the panel. Used only to say "updating" while the
    *  device is busy doing it — the command is acknowledged within seconds, long before it finishes. */
   updateAskedAt?: number;
+  /** The full journal for this screen's own units, collected by root on the device when asked.
+   *  One bundle, overwritten each time — a history would become the largest thing in the store. */
+  journal?: string;
+  /** when that journal was collected, so the panel can say how stale it is */
+  journalAt?: string;
   /** The Wi-Fi networks this screen can see. Self-reported, for the panel to offer a choice. */
   networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
   /** What the device's root side reported about the last join. `ok: null` means it joined but

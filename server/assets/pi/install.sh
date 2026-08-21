@@ -933,6 +933,47 @@ for req in "$SPOOL"/*; do
         echo 'control: refusing to turn Wi-Fi off — there is no cable, so it is the only way back'
       fi
       ;;
+    logs)
+      # Collect the journal for OUR units, for somebody reading it in the dashboard.
+      #
+      # The agent already keeps its own last eighty lines in memory, and that is not the same thing:
+      # it holds what the agent chose to say, and misses everything the agent is not the author of —
+      # the root dispatcher's decisions, the installer's nine steps, and the ffmpeg exit that the
+      # agent only summarises. That is exactly the material somebody debugging a screen needs.
+      #
+      # It has to come through root because the agent is not in systemd-journal, and putting it there
+      # would hand it every OTHER unit's output on the machine as well. Collecting our three units
+      # here keeps the privilege where it already is.
+      #
+      # Bounded twice on purpose: -n caps the LINES, and tail -c caps the BYTES, because one
+      # pathological line (a filter graph, a stack trace) can be enormous on its own and a line cap
+      # alone would not save us.
+      # THREE -u flags, and not `-t` for the installer. Measured on a real Pi:
+      #
+      #   -u agent -u control              -> 39 lines
+      #   -t omd-reinstall                 -> 50 lines
+      #   -u agent -u control -t omd-...   ->  0 lines   <-- what this first shipped as
+      #   -u agent -u control -u omd-...   -> 50 lines
+      #
+      # journalctl ORs repeated matches on the SAME field and ANDs across different fields, so mixing
+      # `-u` with `-t` asks for entries that are both in those units and carry that identifier —
+      # nothing is. It produced a file containing the words "-- No entries --" and nothing else, which
+      # is the worst kind of wrong: a log collection that succeeds and returns emptiness.
+      #
+      # The installer's output is reachable by unit anyway: it runs under the transient
+      # omd-reinstall.service, so `-u omd-reinstall` catches what `logger -t omd-reinstall` wrote.
+      journalctl --no-pager --output=short-iso -n 800 \
+        -u openmasjid-screen -u openmasjid-screen-control -u omd-reinstall 2>/dev/null \
+        | sed -E 's#([a-z][a-z0-9+.-]*://)[^@[:space:]/]+@#\1***@#g' \
+        | tail -c 180000 > "$STATEDIR/journal.txt" 2>/dev/null || true
+      # The credential scrub above is belt-and-braces: the agent already redacts camera URLs before
+      # it logs them (redactCreds), and no code path logs a Wi-Fi passphrase or the device token. But
+      # this file is about to leave the device, so anything shaped like user:pass@ dies here rather
+      # than being trusted not to exist.
+      chown "$AGENT_USER" "$STATEDIR/journal.txt" 2>/dev/null || true
+      chmod 600 "$STATEDIR/journal.txt" 2>/dev/null || true
+      echo "control: collected $(wc -c < "$STATEDIR/journal.txt" 2>/dev/null || echo 0) bytes of log for the dashboard"
+      ;;
     wifi-rescan)
       # Reading the list NetworkManager already has needs no privilege and the agent does it for
       # itself. Asking for a FRESH scan is a polkit action ("wifi.scan"), which a headless daemon

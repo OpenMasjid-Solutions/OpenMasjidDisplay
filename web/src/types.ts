@@ -194,6 +194,10 @@ export interface PiDeviceInfo {
   /** the last lines the agent logged, as it saw them. Display text only. */
   recentLog?: string[];
   logAt?: string;
+  /** The full journal from the screen, collected when asked for. Already ANSI-stripped. */
+  journal?: string;
+  /** when it was collected, so the viewer can say how stale it is */
+  journalAt?: string;
   /** The Wi-Fi networks this screen can see, strongest first. */
   networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
   /** The outcome of the last join. `ok: null` = joined, but the server was not proven reachable. */

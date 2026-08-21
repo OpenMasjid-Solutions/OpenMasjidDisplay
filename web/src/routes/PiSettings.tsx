@@ -17,8 +17,24 @@
 import { useState } from 'react';
 import { api } from '../api';
 import type { PiDeviceInfo } from '../types';
-import { Modal, Spinner, IconDownload, IconPower, IconCheck, useToast } from '../ui';
+import { Modal, Spinner, IconDownload, IconPower, IconCheck, IconSparkle, IconCopy, copyText, useToast } from '../ui';
 import { WifiSection } from './WifiPanel';
+
+/**
+ * What to say about the log's age.
+ *
+ * Three states, and the middle one is the one that matters: between asking and the log arriving
+ * there is a real gap — the device collects it on its own poll — and saying nothing there is what
+ * made the Update button look broken twice. So the wait is named.
+ */
+function logStatus(device: { journalAt?: string; journal?: string }, askedAt: number): string {
+  const waiting = askedAt > 0 && (!device.journalAt || new Date(device.journalAt).getTime() < askedAt);
+  if (waiting) return 'waiting for the screen to send it…';
+  if (!device.journalAt) return 'not collected yet';
+  const mins = Math.round((Date.now() - new Date(device.journalAt).getTime()) / 60_000);
+  if (mins < 1) return 'collected just now';
+  return `collected ${mins} minute${mins === 1 ? '' : 's'} ago`;
+}
 
 /** How long after asking for an install we keep saying "installing" — see the card's own note. */
 const UPDATE_WINDOW_MS = 6 * 60_000;
@@ -36,20 +52,29 @@ export function PiSettings({
   onClose: () => void;
 }) {
   const toast = useToast();
-  const [sending, setSending] = useState<'' | 'reboot' | 'reinstall'>('');
+  const [sending, setSending] = useState<'' | 'reboot' | 'reinstall' | 'logs'>('');
+  const [showLog, setShowLog] = useState(false);
+  /** When we asked, so the viewer can say "waiting" instead of showing a stale log as current. */
+  const [askedAt, setAskedAt] = useState(0);
 
   const updating = !!device.updateAskedAt && Date.now() - device.updateAskedAt < UPDATE_WINDOW_MS && !device.upToDate;
 
   /** Queue an instruction. Nothing connects TO the Pi — it collects this on its own poll. */
-  const ask = async (action: 'reboot' | 'reinstall') => {
+  const ask = async (action: 'reboot' | 'reinstall' | 'logs') => {
     setSending(action);
     try {
       await api.piCommand(device.id, action);
       toast(
         action === 'reboot'
           ? 'Asked the Raspberry Pi to reboot. It will be back in about a minute.'
-          : 'Asked the screen to update. It takes a few minutes and restarts itself when it is done.',
+          : action === 'logs'
+            ? 'Asked the screen for its log. It arrives in a few seconds.'
+            : 'Asked the screen to update. It takes a few minutes and restarts itself when it is done.',
       );
+      if (action === 'logs') {
+        setAskedAt(Date.now());
+        setShowLog(true);
+      }
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not reach the display server.', 'error');
     } finally {
@@ -108,6 +133,58 @@ export function PiSettings({
           Network
         </h3>
         <WifiSection device={device} badge={badge} />
+      </section>
+
+      <section style={{ marginBlockEnd: '1.4rem' }}>
+        <h3 className="section-title-inline" style={{ marginBlockEnd: '0.6rem' }}>
+          Log
+        </h3>
+        <div className="row" style={{ gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn btn--ghost btn--sm" disabled={sending !== ''} onClick={() => void ask('logs')}>
+            {sending === 'logs' ? <Spinner /> : <IconSparkle size={14} />} {device.journal ? 'Refresh log' : 'Get the log'}
+          </button>
+          {device.journal && (
+            <>
+              <button className="btn btn--ghost btn--sm" onClick={() => setShowLog((v) => !v)}>
+                {showLog ? 'Hide' : 'Show'}
+              </button>
+              <button
+                className="btn btn--ghost btn--sm"
+                onClick={() => void copyText(device.journal ?? '').then(() => toast('Log copied.'))}
+                title="Copy the whole log, to paste into an email"
+              >
+                <IconCopy size={14} /> Copy
+              </button>
+            </>
+          )}
+          {/* Staleness stated, always. A log collected ten minutes ago read as current is worse than
+              no log: somebody debugs the wrong moment and concludes the fault has moved. */}
+          <span className="hint muted">{logStatus(device, askedAt)}</span>
+        </div>
+        {showLog && (
+          <pre
+            style={{
+              marginBlockStart: '0.7rem',
+              marginBlockEnd: 0,
+              maxHeight: '40vh',
+              overflow: 'auto',
+              fontSize: '0.74rem',
+              lineHeight: 1.5,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              background: 'var(--glass-bg-inset, rgba(0,0,0,0.25))',
+              padding: '0.7rem 0.8rem',
+              borderRadius: 'var(--radius-sm, 8px)',
+            }}
+          >
+            {device.journal || 'Nothing yet. The screen sends this when asked, within a few seconds.'}
+          </pre>
+        )}
+        <p className="hint muted" style={{ marginBlockStart: '0.5rem', lineHeight: 1.5 }}>
+          This is the screen&rsquo;s own record of what it has been doing — which camera it opened, why
+          one failed, what happened during setup. Any passwords in it are removed on the screen before
+          it is sent.
+        </p>
       </section>
 
       <section>
