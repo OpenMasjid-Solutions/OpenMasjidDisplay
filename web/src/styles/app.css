@@ -272,43 +272,46 @@ h1, h2, h3, p { margin: 0; }
 .modal-backdrop--full { padding: 0; }
 .modal-head { display: flex; align-items: center; gap: 0.75rem; margin-block-end: 1rem; }
 /* macOS-style window controls (editor / settings dialogs only) */
-/* Window controls, drawn the way the thing they are imitating draws them.
+/* macOS-style traffic lights.
  *
- * Three lights, 12px, 8px apart. It used to render TWO at 0.85rem — a red and a green with a gap
- * where the amber belongs — and two lights is what made it read as wrong rather than merely
- * different: the pattern is so familiar that a missing one is noticed before it is identified.
+ * Copied from OpenMasjidOS (packages/ui/src/styles/app.css) rather than reinvented, because these
+ * appear in both apps and the family is supposed to look like one thing. Two earlier attempts here
+ * were made up from memory and both read as wrong: first two lights instead of three, then three
+ * with the glyphs drawn permanently and the amber greyed out.
  *
- * macOS greys out a control that is unavailable rather than removing it, which is exactly the honest
- * answer here: a dialog has nothing to minimise. So the amber is present, grey, and not a button —
- * a span, so it is not focusable and does not promise anything.
- *
- * Pixels, not rem. These are a fixed piece of chrome imitating a fixed piece of chrome; scaling them
- * with the text is what made them look oversized next to the title. */
-.traffic { display: flex; gap: 8px; align-items: center; }
+ * The glyphs being hidden until the GROUP is hovered is the detail that matters most. It is what
+ * macOS does, and showing them always — which seemed more helpful — is what made the lights look
+ * cluttered and toy-like at this size. */
+.traffic { display: flex; gap: 0.5rem; align-items: center; flex-shrink: 0; }
 .tl {
-  width: 12px; height: 12px; border-radius: 50%; border: 0; padding: 0; flex: 0 0 auto;
-  /* The hairline is what stops a flat circle looking like a sticker. */
-  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.28);
-  transition: filter var(--dur-micro) ease;
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.25);
+  transition: filter var(--dur-micro) ease, transform var(--dur-micro) var(--ease-settle);
 }
-.tl--close { background: #ff5f57; cursor: pointer; }
-.tl--min { background: #4a5568; cursor: default; }
-.tl--max { background: #28c840; cursor: pointer; }
-button.tl:hover { filter: brightness(1.15); }
-button.tl:active { filter: brightness(0.92); }
-/* The glyph inside each light: × to close, − for the unavailable minimise, arrows to fill the
-   screen. Drawn at all times rather than only on hover — the point of them here is to say what the
-   button does, and a control that only explains itself once you are already on it has not helped. */
-.tl { display: inline-flex; align-items: center; justify-content: center; }
+.tl:hover { filter: brightness(1.12); transform: scale(1.1); }
+.tl--close { background: #ff5f57; }
+.tl--min { background: #febc2e; }
+.tl--max { background: #28c840; }
+/* The glyphs only appear when hovering the traffic-light group. */
 .tl svg {
-  width: 100%; height: 100%; display: block;
-  stroke: rgba(0, 0, 0, 0.55); stroke-width: 1.5; stroke-linecap: round; fill: none;
-  opacity: 0.7; transition: opacity var(--dur-micro) ease;
+  color: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity var(--dur-micro) ease;
 }
 .traffic:hover .tl svg { opacity: 1; }
-/* The greyed one never brightens, because nothing happens when you press it. */
-.tl--min svg { stroke: rgba(255, 255, 255, 0.35); opacity: 0.55; }
-.traffic:hover .tl--min svg { opacity: 0.55; }
+/* This app's dialogs have nowhere to minimise TO — OpenMasjidOS has a dock, and this does not. So
+   the amber keeps the family's colour and glyph and is a span rather than a button: not focusable,
+   no pointer, no promise. It is the one place this deliberately differs in behaviour rather than in
+   appearance. */
+span.tl--min { cursor: default; }
+span.tl--min:hover { filter: none; transform: none; }
 
 /* ── The Raspberry Pi settings window ──────────────────────────────────────────
    Its own classes rather than inline styles on every element. The sections had drifted to

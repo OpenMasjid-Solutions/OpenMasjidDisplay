@@ -80,6 +80,32 @@ export const IconEthernet = (p: IP) => <Svg {...p}><rect x="6" y="10" width="12"
 export const IconNoLink = (p: IP) => <Svg {...p}><path d="M4 4l16 16" /><path d="M9 5h6M7 12h4M13 12h4" /></Svg>;
 
 /**
+ * A glyph for a traffic light. Separate from `Svg` because the numbers are different and the
+ * difference is the whole point: at 8–9px inside a 0.82rem circle, the shared 1.8 stroke weight is
+ * invisible. OpenMasjidOS uses lucide at strokeWidth 3.5 here, so this does too.
+ *
+ * `currentColor` rather than a fixed fill, because the CSS sets the colour and the opacity on
+ * `.tl svg` — that is what makes the glyphs appear only when the group is hovered.
+ */
+function TlGlyph({ size, d }: { size: number; d: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={3.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={d} />
+    </svg>
+  );
+}
+
+/**
  * Signal strength as bars, the way every other device shows it.
  *
  * A percentage is precision nobody can use: "72%" and "85%" prompt a comparison that means nothing,
@@ -344,16 +370,15 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
         <div className={`modal-head${windowed ? ' modal-head--win' : ''}`}>
           {windowed ? (
             <>
-              {/* Three lights, because two is what made this look wrong. The amber is a SPAN, not a
-                  button: a dialog has nothing to minimise, and macOS greys an unavailable control
-                  rather than removing it. A span is not focusable and promises nothing, so the
-                  familiar shape is intact without inventing an action that does not exist. */}
+              {/* The glyph geometry is OpenMasjidOS's too: lucide X and Minus at 9px, Maximize2 at
+                  8px, all at stroke-width 3.5. The heavy stroke at a tiny size is what makes them
+                  legible inside a 0.82rem circle — a normal 1.8 weight disappears. */}
               <div className="traffic" role="group" aria-label="Window controls">
                 <button className="tl tl--close" onClick={onClose} aria-label="Close" title="Close">
-                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 4l4 4M8 4l-4 4" /></svg>
+                  <TlGlyph size={9} d="M18 6 6 18M6 6l12 12" />
                 </button>
-                <span className="tl tl--min" aria-hidden="true" title="Minimise is not available here">
-                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 6h5" /></svg>
+                <span className="tl tl--min" aria-hidden="true">
+                  <TlGlyph size={9} d="M5 12h14" />
                 </span>
                 <button
                   className="tl tl--max"
@@ -361,13 +386,7 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
                   aria-label={maximized ? 'Restore size' : 'Fullscreen'}
                   title={maximized ? 'Restore size' : 'Fullscreen'}
                 >
-                  {/* Two arrows out, or two arrows in once it is already full — the glyph says which
-                      way the button goes, which a single icon for both states cannot. */}
-                  {maximized ? (
-                    <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M7 5h3M7 5V2M5 7H2M5 7v3" /></svg>
-                  ) : (
-                    <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2h-2.5v2.5M7.5 10h2.5V7.5" /></svg>
-                  )}
+                  <TlGlyph size={8} d={maximized ? 'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7' : 'M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7'} />
                 </button>
               </div>
               <h2 className="modal-title">{title}</h2>

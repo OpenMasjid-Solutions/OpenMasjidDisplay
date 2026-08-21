@@ -63,8 +63,8 @@ CLAUDE.md § *The changelog has two audiences*.
   write, or a change of file ownership, onto any file on the device. Answers are now prepared
   somewhere the screen cannot reach and moved into place. No masjid is known to have been affected,
   and it required the screen software to already be compromised.
-- The window controls are drawn properly: three lights at the right size, each with its symbol, and
-  the greyed one shows that minimising is not available here.
+- The window controls now match the ones in OpenMasjidOS exactly — same size, same colours, and the
+  symbols appear when you hover them, as they do everywhere else in the family.
 - Fullscreen now fills the screen, instead of stopping just short of the edges.
 - Tidied the spacing and alignment in the Raspberry Pi settings window.
 - Windows in the dashboard no longer stand in a pool of empty space when their contents are short.
