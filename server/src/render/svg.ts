@@ -2648,19 +2648,21 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
 
   if (opts.announcement) {
     // Full screen — one layout for the normal timetable, a completely different one the
-    // moment a slideshow image is active — not the old sidebar composite, which squeezed a
-    // parking-alert card or a poster designed to be read on its own next to a shrunk
-    // timetable neither half did well.
+    // moment a slideshow image is active — not the old sidebar composite, which squeezed an
+    // announcement image designed to be read on its own next to a shrunk timetable neither
+    // half did well.
     //
-    // Contain-fit (meet), not cover-fit (slice): screens here are 16:9 almost always, but the
-    // IMAGES are not — a portrait Iqamah-change poster or an arbitrary uploaded photo is
-    // routinely a very different aspect ratio. Cover-fit scales the image up until it fills
-    // the frame and crops whatever doesn't fit, which for a poster far from 16:9 means a huge
-    // zoomed-in crop showing a fraction of the image — reported as the slideshow looking
-    // "huge" on real screens. Contain-fit always shows the WHOLE image, letterboxed against
-    // the scene/flat colour already painted behind it, which is the one thing this app can
-    // guarantee looks intentional rather than broken for an image of unknown proportions.
-    out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet"/>`);
+    // Cover-fit (slice): `announcements.images` is an admin's own upload — a flyer, a photo,
+    // whatever they picked — with no size or shape this app controls or can adapt to it, so
+    // there is no "fix the source" option the way there would be for something this app
+    // generates itself. A contain-fit pass was tried here, on the theory that showing the
+    // whole image beats cropping any of it; on a masjid's actual screen it did the opposite of
+    // what a wall display needs — an upload that isn't 16:9 (most aren't) shrank to a fraction
+    // of the screen, and its text went with it. Cover-fit crops whatever overflows, evenly
+    // from the centre outward, but keeps every slide filling the wall at full size — the
+    // trade-off a signage screen actually wants over a small, fully-intact image nobody at the
+    // back of the room can read.
+    out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`);
   } else {
     out.push(isSimple ? layoutSimple(area, m, ctx) : layoutReference(area, m, ctx));
   }
