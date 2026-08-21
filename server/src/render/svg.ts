@@ -327,6 +327,17 @@ export function activeTicker(tt: Timetable, now: Date): { text: string; prohibit
  *  SVG palette and used to be hardcoded white (invisible on the light theme's pale band).
  *  Returns a "#rrggbb" hex; the renderer converts it to ffmpeg's 0xRRGGBB form. */
 export function tickerTextColor(tt: Timetable): string {
+  // This is the ffmpeg drawtext colour for a LIVE video screen — a completely separate path
+  // from the SVG's own `p.text` (which `build()` already derives correctly for the "simple"
+  // layout's flat, admin-chosen background). Missing that here meant a video screen kept
+  // drawing the classic theme's light ticker text — fine on a dark scene, invisible on
+  // Simple's usual white page — while the browser/web-screen preview, which computes its
+  // colour from `build()`, looked correct. Same derivation as there, so the two can't drift.
+  if (tt.layout === 'simple') {
+    const raw = (tt.simpleBg || '').trim();
+    const bgHex = /^#?[0-9a-f]{6}$/i.test(raw) ? (raw.startsWith('#') ? raw : `#${raw}`) : '#ffffff';
+    return relLuminance(bgHex) > 0.6 ? '#1c2620' : '#f2f6f3';
+  }
   return getPalette(tt.themeId, tt.accent).text;
 }
 
