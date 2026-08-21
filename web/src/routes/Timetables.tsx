@@ -681,10 +681,9 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
         </div>
       </div>
 
-      {f.layout !== 'simple' && (
       <div className="card section">
         <h3 className="section-title">Theme & colours</h3>
-        <Field label="Theme colour" hint="A ready-made palette (dark is default). Or pick a custom accent colour below.">
+        <Field label="Theme colour" hint="Drives the accent colour throughout — the highlighted next-prayer row, the countdown ring (Classic), icons and the Jumu'ah bar. A ready-made palette (dark is default), or pick a custom accent colour below.">
           <div className="chips">
             {state.themes.map((th) => (
               <button
@@ -721,7 +720,8 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           </div>
         </Field>
 
-        <Field label="Text colour" hint="'Auto' keeps your theme's text and flips to dark on a light photo so it stays readable. Or force light/dark/custom.">
+        {f.layout !== 'simple' && (
+        <Field label="Text colour" hint="'Auto' keeps your theme's text and flips to dark on a light photo so it stays readable. Or force light/dark/custom. (The Simple layout always auto-contrasts against its own background colour — see Layout above.)">
           <div className="chips">
             <button type="button" className={`chip${!f.textColor ? ' is-active' : ''}`} onClick={() => set('textColor', '')} title="Pick the most readable colour automatically">
               <span className="chip-dot" style={{ background: 'linear-gradient(135deg,#f5f8ff 50%,#10161d 50%)' }} />
@@ -744,8 +744,8 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             {f.textColor && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('textColor', '')}>Auto contrast</button>}
           </div>
         </Field>
+        )}
       </div>
-      )}
 
       <div className="card section">
         <h3 className="section-title">Background & logo</h3>

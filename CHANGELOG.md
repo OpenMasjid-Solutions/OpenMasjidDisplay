@@ -27,6 +27,15 @@ CLAUDE.md § *The changelog has two audiences*.
   actual crescent. Rebuilt as a real boolean subtraction (the outer and bite circles genuinely
   intersect, each contributing one arc to a single closed shape), with proportions fitted from a
   real reference crescent-moon icon rather than guessed.
+- **Theme colour and Gold accent are available for the Simple layout too**, not just Classic —
+  they were already driving Simple's next-prayer highlight and icon colours under the hood, so
+  hiding the pickers just meant there was no way to change them. Text colour stays Classic-only,
+  since Simple always auto-contrasts against its own background colour instead.
+- **The scrolling ticker and the Iqamah-change reminder band had no visible background on the
+  Simple layout** — the strip's tint was a translucent wash of the page's own background colour,
+  which reads as a frosted strip over Classic's dark scene but is invisible (page-colour on
+  page-colour) on Simple's flat page. Both now get an actual tint there, the same idea as the
+  prayer-table's row bands.
 
 ### Fixed
 - **The Simple layout's picker had landed in the wrong tab.** It was under General ->
