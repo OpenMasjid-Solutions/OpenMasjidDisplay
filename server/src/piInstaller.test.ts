@@ -592,12 +592,16 @@ test('anything root writes back to the agent is left readable BY the agent', () 
   const tpl = installerTemplate() as string;
   const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
 
-  const writes = ctl.split('\n').filter((l) => l.includes('> "$RES"'));
-  assert.ok(writes.length >= 3, `expected the result file to be written on every outcome, saw ${writes.length}`);
+  // The property is unchanged — every outcome produces a file the agent can read — but the MECHANISM
+  // moved, because the original one was a root escalation. It wrote and chowned `$RES` directly, and
+  // `$RES` lives in a directory the agent owns, so the agent could substitute a symlink and have
+  // root write through it. Both now go through handover(), which stages under $PREFIX and renames.
+  const writes = ctl.split('\n').filter((l) => l.includes('> "$STAGE"'));
+  assert.ok(writes.length >= 3, `expected a result on every outcome, saw ${writes.length}`);
   for (const line of writes) {
     assert.ok(
-      line.includes('chown "$AGENT_USER" "$RES"'),
-      `a result written without handing it to the agent is one the agent cannot read:\n  ${line.trim()}`,
+      line.includes('handover "$STAGE" "$RES"'),
+      `a result written without being handed over is one the agent cannot read:\n  ${line.trim()}`,
     );
   }
   // And the user it is handed to has to be the one the service actually runs as.
@@ -869,5 +873,61 @@ test('the log collection asks journalctl for all three units, not a mix of filte
   assert.match(code, /sed -E/, 'the credential scrub must run');
   assert.match(code, /\*\*\*@/, 'and actually replace user:pass@');
   // Handed to the agent, or the agent cannot read what root collected for it.
-  assert.match(code, /chown "\$AGENT_USER"/, 'the file must be handed to the agent user');
+  // Handed over via handover() rather than chowned in place — the direct chown was a root
+  // escalation, because the destination sits in a directory the agent owns and chown follows a
+  // symlink. See the dedicated test for that.
+  assert.match(code, /handover "\$PREFIX\/\.journal\.stage" "\$STATEDIR\/journal\.txt"/, 'the log must be handed to the agent');
+});
+
+test('root never writes to, or chowns, a path the agent could have replaced with a symlink', () => {
+  // A ROOT ESCALATION, found by review and confirmed on a real Pi 4 before being fixed.
+  //
+  // $STATEDIR is owned by omdscreen so the agent can write in it — that is the point, it is how the
+  // spool works. But it means the agent can also replace any NAME in there with a symlink, and both
+  // of the obvious root operations follow one:
+  //
+  //   * `echo x > $STATEDIR/wifi-result` writes THROUGH the symlink to its target;
+  //   * `chown omdscreen $STATEDIR/wifi-result` changes the owner of the TARGET.
+  //
+  // Both verified on hardware. Since the journal is largely the agent's own log lines, the content
+  // is attacker-influenceable too — so a compromised agent could have root write chosen bytes into
+  // any file on the system, or hand itself ownership of one. That defeats the entire reason the
+  // agent is unprivileged.
+  //
+  // The fix is handover(): stage in $PREFIX (root-owned, agent cannot write there), set mode and
+  // owner on THAT path, then rename. rename(2) replaces the destination name rather than following
+  // a symlink at it.
+  const tpl = installerTemplate() as string;
+  const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  const code = ctl
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .join('\n');
+
+  // The helper exists and does the three steps in the only safe order.
+  assert.match(code, /^handover\(\) \{$/m, 'handover() must exist');
+  const fn = code.slice(code.indexOf('handover() {'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /chown "\$AGENT_USER" "\$_src"/, 'ownership is set on the STAGED file');
+  assert.match(body, /chmod 600 "\$_src"/, 'and so is the mode');
+  assert.match(body, /mv -f "\$_src" "\$_dst"/, 'then renamed into place');
+  assert.ok(body.indexOf('chown') < body.indexOf('mv -f'), 'chown must happen BEFORE the rename');
+
+  // And nothing anywhere else in the dispatcher writes or chowns a destination path directly.
+  for (const line of code.split('\n')) {
+    if (line.includes('handover(') || line.includes('_src') || line.includes('_dst')) continue;
+    assert.ok(
+      !/(chown|chmod)\s+[^|]*"\$(RES|STATEDIR\/[a-z.]+)"/.test(line),
+      `root must not chown a path the agent controls:\n  ${line.trim()}`,
+    );
+    assert.ok(
+      !/>\s*"\$(RES)"/.test(line) && !/>\s*"\$STATEDIR\//.test(line),
+      `root must not redirect into a path the agent controls:\n  ${line.trim()}`,
+    );
+  }
+
+  // Staging goes to the root-owned prefix, not anywhere the agent can reach.
+  for (const stage of ['$PREFIX/.journal.stage', '$PREFIX/.wifi.stage']) {
+    assert.ok(code.includes(stage), `${stage} must be staged under the root-owned prefix`);
+  }
 });

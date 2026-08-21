@@ -36,6 +36,7 @@ import { pairingSvg, messageSvg } from './pairing';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
 import { netFacts, scanNetworks } from './network';
+import { piStats } from './stats';
 import { AssetCache } from './assetCache';
 import { RenderCadence, cadenceAdvice } from './cadence';
 import { renderDisplaySvg, activeAnnouncementImage } from '../render/svg';
@@ -515,6 +516,8 @@ async function checkIn(cfg: AgentConfig, facts: DeviceFacts): Promise<void> {
     recentLog,
     net,
     networks,
+    // Cheap enough to send every time: three world-readable files, no privilege, no subprocess.
+    stats: piStats(),
     wifiResult: readWifiResult(),
   }).catch(() => ({ httpStatus: 0 }));
 }

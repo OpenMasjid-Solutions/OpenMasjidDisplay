@@ -258,14 +258,100 @@ h1, h2, h3, p { margin: 0; }
   animation: fade 0.18s ease both;
 }
 .modal { width: min(40rem, 100%); max-height: 90vh; overflow: auto; padding: 1.4rem; animation: pop 0.2s var(--ease-settle) both; }
-.modal--max { width: 96vw !important; max-width: 96vw; height: 92vh; }
+/* Fullscreen means fullscreen.
+   It used to be 96vw x 92vh, which is a window that has been made large — you can still see the
+   page around the edges, so it reads as "nearly" rather than as a mode. Filling the viewport
+   exactly, with the corners and the border dropped, is the difference. The backdrop loses its
+   padding at the same time (see .modal-backdrop--full), or the last 1rem of page stays visible
+   all the way round and undoes it. */
+.modal--max {
+  width: 100vw !important; max-width: 100vw;
+  height: 100vh; height: 100dvh; max-height: none;
+  border-radius: 0; border: 0;
+}
+.modal-backdrop--full { padding: 0; }
 .modal-head { display: flex; align-items: center; gap: 0.75rem; margin-block-end: 1rem; }
 /* macOS-style window controls (editor / settings dialogs only) */
-.traffic { display: flex; gap: 0.5rem; align-items: center; }
-.tl { width: 0.85rem; height: 0.85rem; border-radius: 50%; border: 0; padding: 0; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18); transition: filter var(--dur-micro) ease; }
-.tl--close { background: #ff5f57; }
-.tl--max { background: #28c840; }
-.tl:hover { filter: brightness(1.15); }
+/* Window controls, drawn the way the thing they are imitating draws them.
+ *
+ * Three lights, 12px, 8px apart. It used to render TWO at 0.85rem — a red and a green with a gap
+ * where the amber belongs — and two lights is what made it read as wrong rather than merely
+ * different: the pattern is so familiar that a missing one is noticed before it is identified.
+ *
+ * macOS greys out a control that is unavailable rather than removing it, which is exactly the honest
+ * answer here: a dialog has nothing to minimise. So the amber is present, grey, and not a button —
+ * a span, so it is not focusable and does not promise anything.
+ *
+ * Pixels, not rem. These are a fixed piece of chrome imitating a fixed piece of chrome; scaling them
+ * with the text is what made them look oversized next to the title. */
+.traffic { display: flex; gap: 8px; align-items: center; }
+.tl {
+  width: 12px; height: 12px; border-radius: 50%; border: 0; padding: 0; flex: 0 0 auto;
+  /* The hairline is what stops a flat circle looking like a sticker. */
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transition: filter var(--dur-micro) ease;
+}
+.tl--close { background: #ff5f57; cursor: pointer; }
+.tl--min { background: #4a5568; cursor: default; }
+.tl--max { background: #28c840; cursor: pointer; }
+button.tl:hover { filter: brightness(1.15); }
+button.tl:active { filter: brightness(0.92); }
+/* The glyph inside each light: × to close, − for the unavailable minimise, arrows to fill the
+   screen. Drawn at all times rather than only on hover — the point of them here is to say what the
+   button does, and a control that only explains itself once you are already on it has not helped. */
+.tl { display: inline-flex; align-items: center; justify-content: center; }
+.tl svg {
+  width: 100%; height: 100%; display: block;
+  stroke: rgba(0, 0, 0, 0.55); stroke-width: 1.5; stroke-linecap: round; fill: none;
+  opacity: 0.7; transition: opacity var(--dur-micro) ease;
+}
+.traffic:hover .tl svg { opacity: 1; }
+/* The greyed one never brightens, because nothing happens when you press it. */
+.tl--min svg { stroke: rgba(255, 255, 255, 0.35); opacity: 0.55; }
+.traffic:hover .tl--min svg { opacity: 0.55; }
+
+/* ── The Raspberry Pi settings window ──────────────────────────────────────────
+   Its own classes rather than inline styles on every element. The sections had drifted to
+   different vertical gaps and the rows to different alignments, which is most of what made the
+   window look untidy — nothing was wrong individually, they just did not agree with each other. */
+.pi-sec + .pi-sec { margin-block-start: 1.35rem; }
+.pi-sec__title {
+  font-family: var(--font-display); font-size: 1rem; font-weight: 600;
+  margin: 0 0 0.55rem; letter-spacing: -0.01em;
+}
+/* One row shape for everything: same gap, same baseline, wraps the same way. */
+.pi-row { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; }
+.pi-row + .pi-row { margin-block-start: 0.4rem; }
+/* Buttons in this window are all the same height, so a row of them reads as a row. */
+.pi-sec .btn--sm { min-height: 2rem; }
+.pi-note { margin-block-start: 0.55rem; margin-block-end: 0; line-height: 1.5; }
+/* A load readout: label, bar, figure. Fixed widths on the label and the bar so several of them in
+   a row line up instead of each sizing to its own text. */
+.pi-meter { display: inline-flex; align-items: center; gap: 0.4rem; }
+.pi-meter__label { font-size: 0.78rem; font-weight: 600; color: var(--color-ink-muted); min-width: 3.6rem; }
+.pi-meter__track {
+  width: 5.5rem; height: 0.4rem; border-radius: 999px; overflow: hidden;
+  background: var(--glass-bg-inset, rgba(0, 0, 0, 0.25));
+  box-shadow: inset 0 0 0 1px var(--glass-border, rgba(125, 200, 232, 0.14));
+}
+.pi-meter__fill { display: block; height: 100%; border-radius: 999px; transition: width 0.4s ease; }
+.pi-meter__text { font-variant-numeric: tabular-nums; }
+
+/* Terminal-flavoured, because that is what it is: a monospaced tail somebody is watching scroll. */
+.pi-log--term {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-height: 22rem;
+  background: rgba(0, 0, 0, 0.38);
+  /* Tabular figures so the ISO timestamps down the left edge form a straight column. */
+  font-variant-numeric: tabular-nums;
+}
+.pi-log {
+  margin-block: 0.6rem 0; max-height: 40vh; overflow: auto;
+  font-size: 0.74rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  background: var(--glass-bg-inset, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--glass-border, rgba(125, 200, 232, 0.14));
+  padding: 0.7rem 0.8rem; border-radius: var(--radius-sm, 8px);
+}
 .modal-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 700; letter-spacing: -0.01em; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 0.6rem; margin-block-start: 1.2rem; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
@@ -583,6 +669,13 @@ h1, h2, h3, p { margin: 0; }
 .modal--window .modal-foot { margin: 0; padding: 0.8rem 1.2rem; border-block-start: 1px solid var(--window-edge); background: var(--window-head); }
 .modal--window .modal-head { display: flex; align-items: flex-start; gap: 0.6rem; margin-block-end: 0.8rem; }
 .modal--window .modal-body { overflow-y: auto; min-height: 0; }
+/* A floor for the release notes ONLY, and it has to carry the .modal--window ancestor to outrank
+   the min-height: 0 above it. Their loaded content always overflows, but "Loading…" is one line —
+   and with the window now sized to its content that rendered a stub which jumped to full height the
+   moment the fetch resolved. The floor does NOT belong on .modal--window, because the Pi settings
+   window is a caller that is legitimately short: a screen with no Wi-Fi hardware renders one line,
+   and a shared floor would put that back in a pool of empty background. */
+.modal--window .wn-body { min-height: min(18rem, 40vh); }
 .card-head__main { min-width: 0; flex: 1; }
 .section-title-inline { font-family: var(--font-display); font-size: 1.05rem; font-weight: 600; }
 

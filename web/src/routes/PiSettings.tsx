@@ -14,7 +14,7 @@
  *
  * Only Pi screens get the gear. A decoder screen and a browser screen have nothing behind it.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { PiDeviceInfo } from '../types';
 import { Modal, Spinner, IconDownload, IconPower, IconCheck, IconSparkle, IconCopy, copyText, useToast } from '../ui';
@@ -34,6 +34,37 @@ function logStatus(device: { journalAt?: string; journal?: string }, askedAt: nu
   const mins = Math.round((Date.now() - new Date(device.journalAt).getTime()) / 60_000);
   if (mins < 1) return 'collected just now';
   return `collected ${mins} minute${mins === 1 ? '' : 's'} ago`;
+}
+
+/** "3d 4h", "2h 15m", "8m" — enough to answer "did it restart recently?" and no more. */
+function formatUptime(sec: number): string {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+/**
+ * A labelled bar. Over 100% is drawn full and coloured, rather than clamped silently — a board at
+ * 150% of its cores is the state somebody opened this window to find, and a bar that cannot show it
+ * is worse than a number.
+ */
+function Meter({ label, percent, text }: { label: string; percent: number; text: string }) {
+  const over = percent > 90;
+  return (
+    <span className="pi-meter" title={`${label}: ${text}`}>
+      <span className="pi-meter__label">{label}</span>
+      <span className="pi-meter__track">
+        <span
+          className="pi-meter__fill"
+          style={{ width: `${Math.min(100, percent)}%`, background: over ? 'var(--color-warn, #fbbf24)' : 'var(--color-primary)' }}
+        />
+      </span>
+      <span className="hint muted pi-meter__text">{text}</span>
+    </span>
+  );
 }
 
 /** How long after asking for an install we keep saying "installing" — see the card's own note. */
@@ -56,6 +87,9 @@ export function PiSettings({
   const [showLog, setShowLog] = useState(false);
   /** When we asked, so the viewer can say "waiting" instead of showing a stale log as current. */
   const [askedAt, setAskedAt] = useState(0);
+  /** Keep asking, so the log reads like a terminal rather than a snapshot. */
+  const [live, setLive] = useState(false);
+  const logRef = useRef<HTMLPreElement | null>(null);
 
   const updating = !!device.updateAskedAt && Date.now() - device.updateAskedAt < UPDATE_WINDOW_MS && !device.upToDate;
 
@@ -82,6 +116,36 @@ export function PiSettings({
     }
   };
 
+  /**
+   * While Live is on, re-ask every few seconds.
+   *
+   * This is a polling device: nothing can be pushed to it, and it collects instructions on its own
+   * loop. So "live" is honestly a fast repeat rather than a stream — the cadence below is a little
+   * slower than the device's own poll, because asking faster than it can answer only queues work.
+   *
+   * It stops when the window closes, because the effect is torn down with it. A timer that outlived
+   * the window would keep a masjid's screen collecting logs for nobody.
+   */
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => {
+      setAskedAt(Date.now());
+      void api.piCommand(device.id, 'logs').catch(() => {
+        /* a missed tick is not worth a toast every six seconds */
+      });
+    }, 6000);
+    return () => clearInterval(t);
+  }, [live, device.id]);
+
+  /** Follow the tail, the way a terminal does — but only when already at the bottom, so reading
+   *  back through it is not yanked away on the next tick. */
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || !showLog) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  }, [device.journal, showLog]);
+
   return (
     <Modal
       open
@@ -94,11 +158,9 @@ export function PiSettings({
         </button>
       }
     >
-      <section style={{ marginBlockEnd: '1.4rem' }}>
-        <h3 className="section-title-inline" style={{ marginBlockEnd: '0.6rem' }}>
-          This screen
-        </h3>
-        <div className="row" style={{ gap: '0.7rem', alignItems: 'center', flexWrap: 'wrap' }}>
+      <section className="pi-sec">
+        <h3 className="pi-sec__title">This screen</h3>
+        <div className="pi-row">
           <span
             className={`status-dot${device.online ? '' : ' status-dot--idle'}`}
             title={device.online ? 'Checking in' : 'Not checking in'}
@@ -109,7 +171,7 @@ export function PiSettings({
           </span>
           {badge}
         </div>
-        <div className="row" style={{ gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap', marginBlockStart: '0.4rem' }}>
+        <div className="pi-row">
           <span className="hint muted">agent {device.agentVersion || '?'}</span>
           {device.agentVersion ? (
             updating ? (
@@ -128,20 +190,45 @@ export function PiSettings({
         </div>
       </section>
 
-      <section style={{ marginBlockEnd: '1.4rem' }}>
-        <h3 className="section-title-inline" style={{ marginBlockEnd: '0.6rem' }}>
-          Network
-        </h3>
+      <section className="pi-sec">
+        <h3 className="pi-sec__title">Load</h3>
+        {device.stats ? (
+          <div className="pi-row">
+            <Meter label="CPU" percent={device.stats.cpuPercent} text={`${device.stats.cpuPercent}% of ${device.stats.cores} cores`} />
+            <Meter label="Memory" percent={device.stats.memPercent} text={`${device.stats.memUsedMb} of ${device.stats.memTotalMb} MB`} />
+            {device.stats.tempC > 0 && (
+              <span className="hint muted">{device.stats.tempC}&deg;C</span>
+            )}
+            <span className="hint muted">up {formatUptime(device.stats.uptimeSec)}</span>
+          </div>
+        ) : (
+          <p className="hint muted">Not reported yet — it arrives with the screen&rsquo;s next check-in.</p>
+        )}
+      </section>
+
+      <section className="pi-sec">
+        <h3 className="pi-sec__title">Network</h3>
         <WifiSection device={device} badge={badge} />
       </section>
 
-      <section style={{ marginBlockEnd: '1.4rem' }}>
-        <h3 className="section-title-inline" style={{ marginBlockEnd: '0.6rem' }}>
-          Log
-        </h3>
-        <div className="row" style={{ gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+      <section className="pi-sec">
+        <h3 className="pi-sec__title">Log</h3>
+        <div className="pi-row">
           <button className="btn btn--ghost btn--sm" disabled={sending !== ''} onClick={() => void ask('logs')}>
             {sending === 'logs' ? <Spinner /> : <IconSparkle size={14} />} {device.journal ? 'Refresh log' : 'Get the log'}
+          </button>
+          <button
+            className={`btn btn--sm${live ? ' btn--primary' : ' btn--ghost'}`}
+            onClick={() => {
+              setLive((v) => !v);
+              if (!live) {
+                setShowLog(true);
+                void ask('logs');
+              }
+            }}
+            title="Keep asking, so the log updates by itself"
+          >
+            {live ? 'Live · stop' : 'Live'}
           </button>
           {device.journal && (
             <>
@@ -162,36 +249,20 @@ export function PiSettings({
           <span className="hint muted">{logStatus(device, askedAt)}</span>
         </div>
         {showLog && (
-          <pre
-            style={{
-              marginBlockStart: '0.7rem',
-              marginBlockEnd: 0,
-              maxHeight: '40vh',
-              overflow: 'auto',
-              fontSize: '0.74rem',
-              lineHeight: 1.5,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              background: 'var(--glass-bg-inset, rgba(0,0,0,0.25))',
-              padding: '0.7rem 0.8rem',
-              borderRadius: 'var(--radius-sm, 8px)',
-            }}
-          >
+          <pre className="pi-log pi-log--term" ref={logRef}>
             {device.journal || 'Nothing yet. The screen sends this when asked, within a few seconds.'}
           </pre>
         )}
-        <p className="hint muted" style={{ marginBlockStart: '0.5rem', lineHeight: 1.5 }}>
+        <p className="hint muted pi-note">
           This is the screen&rsquo;s own record of what it has been doing — which camera it opened, why
           one failed, what happened during setup. Any passwords in it are removed on the screen before
           it is sent.
         </p>
       </section>
 
-      <section>
-        <h3 className="section-title-inline" style={{ marginBlockEnd: '0.6rem' }}>
-          Maintenance
-        </h3>
-        <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
+      <section className="pi-sec">
+        <h3 className="pi-sec__title">Maintenance</h3>
+        <div className="pi-row">
           {/* ONE update button. It runs the whole installer, so it replaces the agent AND re-applies
               the boot settings and the service unit — there used to be a separate "Re-run setup" for
               the latter, and choosing between them was impossible because both answers to "my screen
@@ -229,7 +300,7 @@ export function PiSettings({
             </span>
           )}
         </div>
-        <p className="hint muted" style={{ marginBlockStart: '0.5rem', lineHeight: 1.5 }}>
+        <p className="hint muted pi-note">
           Nothing here is sent to the screen directly — it collects instructions on its own, every few
           seconds. So these say <em>asked</em>, never <em>done</em>.
         </p>

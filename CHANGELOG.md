@@ -32,6 +32,10 @@ CLAUDE.md § *The changelog has two audiences*.
   actual size in them, instead of quietly struggling.
 
 ### Added
+- **A screen’s log can now be watched live, like a terminal.** Turn Live on and it keeps refreshing
+  by itself, following the newest lines. It reads as a monospaced tail with the timestamps lined up.
+- **Load, memory and temperature for each Raspberry Pi screen**, with bars, plus how long it has been
+  running. Useful for answering “is this screen struggling?” without going to look at it.
 - **Read a Raspberry Pi screen’s log from the dashboard.** Behind the gear there is now a Log
   section: ask for it and the screen sends back its full record — which camera it opened, why one
   failed, what happened during setup, what the screen was asked to do and what it did. It can be
@@ -53,6 +57,16 @@ CLAUDE.md § *The changelog has two audiences*.
   out and it is not something anybody thinks to check.
 
 ### Fixed
+- **Security: a screen could have been used to gain full control of its own Raspberry Pi.** When the
+  screen asked the system to do something privileged, the system wrote its answer into a folder the
+  screen itself owns — so a screen whose software had been tampered with could have redirected that
+  write, or a change of file ownership, onto any file on the device. Answers are now prepared
+  somewhere the screen cannot reach and moved into place. No masjid is known to have been affected,
+  and it required the screen software to already be compromised.
+- The window controls are drawn properly: three lights at the right size, each with its symbol, and
+  the greyed one shows that minimising is not available here.
+- Fullscreen now fills the screen, instead of stopping just short of the edges.
+- Tidied the spacing and alignment in the Raspberry Pi settings window.
 - Windows in the dashboard no longer stand in a pool of empty space when their contents are short.
 - **A screen no longer forgets its Wi-Fi password when it loses power.** The password was being
   handed to the system, which reported success before actually writing it to the memory card — so

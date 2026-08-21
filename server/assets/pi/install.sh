@@ -823,6 +823,31 @@ SPOOL=/var/lib/openmasjid-screen/control
 # reaches the dashboard and the file sits there for ever. Kept in step with SERVICE_USER above.
 AGENT_USER=omdscreen
 
+# Hand a file root produced to the agent, without ever touching a path the agent controls.
+#
+# $STATEDIR belongs to omdscreen, so the agent can replace any name inside it with a symlink.
+# Verified on a real Pi 4, both halves of it:
+#
+#   * a `>` redirect from root FOLLOWS such a symlink and writes through it;
+#   * `chown` follows it too, changing the owner of whatever it points at.
+#
+# So writing results straight into $STATEDIR let a compromised agent make root write
+# attacker-influenced content into any file on the system — and the content IS influenceable, since
+# the journal is largely the agent's own log lines — or change any file's owner to itself. That is a
+# root escalation reachable from the least privileged part of the design, which is precisely what the
+# spool architecture exists to prevent.
+#
+# So: stage in $PREFIX, which is root-owned and which the agent cannot write to; set the mode and
+# owner THERE, on a path nobody else can substitute; then rename into place. rename(2) replaces the
+# destination NAME rather than following a symlink sitting at it — also confirmed on the device.
+handover() {
+  _src="$1"
+  _dst="$2"
+  chown "$AGENT_USER" "$_src" 2>/dev/null || true
+  chmod 600 "$_src" 2>/dev/null || true
+  mv -f "$_src" "$_dst" 2>/dev/null || true
+}
+
 # The server address and the trust settings the installer worked out.
 #
 # This heredoc is QUOTED, so nothing in this file was substituted when it was written — $SERVER
@@ -965,14 +990,16 @@ for req in "$SPOOL"/*; do
       journalctl --no-pager --output=short-iso -n 800 \
         -u openmasjid-screen -u openmasjid-screen-control -u omd-reinstall 2>/dev/null \
         | sed -E 's#([a-z][a-z0-9+.-]*://)[^@[:space:]/]+@#\1***@#g' \
-        | tail -c 180000 > "$STATEDIR/journal.txt" 2>/dev/null || true
+        | tail -c 180000 > "$PREFIX/.journal.stage" 2>/dev/null || true
       # The credential scrub above is belt-and-braces: the agent already redacts camera URLs before
       # it logs them (redactCreds), and no code path logs a Wi-Fi passphrase or the device token. But
       # this file is about to leave the device, so anything shaped like user:pass@ dies here rather
       # than being trusted not to exist.
-      chown "$AGENT_USER" "$STATEDIR/journal.txt" 2>/dev/null || true
-      chmod 600 "$STATEDIR/journal.txt" 2>/dev/null || true
-      echo "control: collected $(wc -c < "$STATEDIR/journal.txt" 2>/dev/null || echo 0) bytes of log for the dashboard"
+      # Counted while it is still ours, then handed over. Reading a size back out of $STATEDIR
+      # afterwards would be reading a path the agent can have swapped.
+      _n=$(wc -c < "$PREFIX/.journal.stage" 2>/dev/null || echo 0)
+      handover "$PREFIX/.journal.stage" "$STATEDIR/journal.txt"
+      echo "control: collected $_n bytes of log for the dashboard"
       ;;
     wifi-rescan)
       # Reading the list NetworkManager already has needs no privilege and the agent does it for
@@ -1015,7 +1042,10 @@ for req in "$SPOOL"/*; do
       PSK=$(sed -n 2p "$REQ" 2>/dev/null | base64 -d 2>/dev/null || true)
       rm -f "$REQ"
 
-      fail() { printf 'no\n%s\n' "$1" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true; echo "control: Wi-Fi join failed: $1"; }
+      # Staged in a root-owned directory and renamed into place, never written straight into
+      # $STATEDIR — see handover() for the root escalation that closes.
+      STAGE="$PREFIX/.wifi.stage"
+      fail() { printf 'no\n%s\n' "$1" > "$STAGE"; handover "$STAGE" "$RES"; echo "control: Wi-Fi join failed: $1"; }
 
       # 1..32 bytes, and nothing that is not printable. A leading '-' is rejected outright: nmcli
       # would read it as an option, which is the argument-injection shape this repo already refuses
@@ -1073,7 +1103,7 @@ for req in "$SPOOL"/*; do
         elif [ -z "${SERVER:-}" ]; then
           # Nothing to prove reachability against. Report the address and say so plainly rather than
           # claiming a success that has not been tested.
-          printf 'unverified\n%s\n' "$ip4" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true
+          printf 'unverified\n%s\n' "$ip4" > "$STAGE"; handover "$STAGE" "$RES"
           echo 'control: joined Wi-Fi but there is no server address to test against'
         # A GET, not a HEAD, and that distinction was a real bug.
         #
@@ -1106,7 +1136,7 @@ for req in "$SPOOL"/*; do
           # name, which can contain anything, and a join happens once at a human's request. There is
           # no budget worth protecting here.
           sync
-          printf 'yes\n%s\n' "$ip4" > "$RES"; chown "$AGENT_USER" "$RES" 2>/dev/null || true; chmod 600 "$RES" 2>/dev/null || true
+          printf 'yes\n%s\n' "$ip4" > "$STAGE"; handover "$STAGE" "$RES"
           echo 'control: Wi-Fi joined, verified, and saved to disk'
         else
           # Roll it back. Leaving a profile that half-works means the next boot may prefer it over

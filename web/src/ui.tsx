@@ -331,7 +331,7 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
    * immediately.
    */
   return createPortal(
-    <div className="modal-backdrop">
+    <div className={`modal-backdrop${maximized ? ' modal-backdrop--full' : ''}`}>
       <div
         ref={ref}
         tabIndex={-1}
@@ -344,9 +344,31 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
         <div className={`modal-head${windowed ? ' modal-head--win' : ''}`}>
           {windowed ? (
             <>
+              {/* Three lights, because two is what made this look wrong. The amber is a SPAN, not a
+                  button: a dialog has nothing to minimise, and macOS greys an unavailable control
+                  rather than removing it. A span is not focusable and promises nothing, so the
+                  familiar shape is intact without inventing an action that does not exist. */}
               <div className="traffic" role="group" aria-label="Window controls">
-                <button className="tl tl--close" onClick={onClose} aria-label="Close" title="Close" />
-                <button className="tl tl--max" onClick={() => setMaximized((v) => !v)} aria-label={maximized ? 'Restore size' : 'Maximize'} title={maximized ? 'Restore size' : 'Maximize'} />
+                <button className="tl tl--close" onClick={onClose} aria-label="Close" title="Close">
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 4l4 4M8 4l-4 4" /></svg>
+                </button>
+                <span className="tl tl--min" aria-hidden="true" title="Minimise is not available here">
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 6h5" /></svg>
+                </span>
+                <button
+                  className="tl tl--max"
+                  onClick={() => setMaximized((v) => !v)}
+                  aria-label={maximized ? 'Restore size' : 'Fullscreen'}
+                  title={maximized ? 'Restore size' : 'Fullscreen'}
+                >
+                  {/* Two arrows out, or two arrows in once it is already full — the glyph says which
+                      way the button goes, which a single icon for both states cannot. */}
+                  {maximized ? (
+                    <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M7 5h3M7 5V2M5 7H2M5 7v3" /></svg>
+                  ) : (
+                    <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2h-2.5v2.5M7.5 10h2.5V7.5" /></svg>
+                  )}
+                </button>
               </div>
               <h2 className="modal-title">{title}</h2>
               <span className="spacer" />

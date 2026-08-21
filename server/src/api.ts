@@ -1559,6 +1559,8 @@ export function createApi(deps: Deps) {
             journal: d.journal ? stripAnsi(d.journal) : undefined,
             journalAt: d.journalAt,
             networks: d.networks ?? [],
+            stats: d.stats,
+            statsAt: d.statsAt,
             wifiResult: d.wifiResult,
             // Whether an install is in flight. The device is the authority on what it is running,
             // so this is only ever a hint that it is busy — the version changing is the real answer.

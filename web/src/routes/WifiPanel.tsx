@@ -59,7 +59,7 @@ export function WifiSection({ device, badge }: { device: PiDeviceInfo; badge: Re
         <p className="hint">This screen has no Wi-Fi, so there is nothing to set up here.</p>
       ) : (
         <>
-          <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockEnd: '0.9rem', flexWrap: 'wrap' }}>
+          <div className="pi-row" style={{ marginBlockEnd: '0.7rem' }}>
             {badge}
             <span className="hint muted" style={{ flex: 1, minWidth: '14rem' }}>
               {onCable
@@ -93,7 +93,7 @@ export function WifiSection({ device, badge }: { device: PiDeviceInfo; badge: Re
             </p>
           )}
 
-          <div className="row" style={{ gap: '0.5rem', marginBlockEnd: '1rem', flexWrap: 'wrap' }}>
+          <div className="pi-row" style={{ marginBlockEnd: '0.8rem' }}>
             <button className="btn btn--ghost btn--sm" disabled={!!busy} onClick={() => void send('wifi-on', undefined, 'Asked the screen to switch its Wi-Fi on.')}>
               {busy === 'wifi-on' ? <Spinner /> : <IconWifi size={14} />} Turn Wi-Fi on
             </button>
@@ -179,7 +179,7 @@ export function WifiSection({ device, badge }: { device: PiDeviceInfo; badge: Re
                   placeholder={openNetwork ? 'Not needed' : 'The Wi-Fi password'}
                 />
               </Field>
-              <div className="row" style={{ gap: '0.6rem', marginBlockStart: '0.7rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="pi-row" style={{ marginBlockStart: '0.6rem' }}>
                 <button
                   className="btn btn--primary btn--sm"
                   disabled={!!busy}

@@ -194,6 +194,13 @@ export interface PiDeviceInfo {
   /** the last lines the agent logged, as it saw them. Display text only. */
   recentLog?: string[];
   logAt?: string;
+  /** Load, memory and temperature, as the screen last reported them. */
+  stats?: {
+    load1: number; cores: number; cpuPercent: number;
+    memUsedMb: number; memTotalMb: number; memPercent: number;
+    tempC: number; uptimeSec: number;
+  };
+  statsAt?: string;
   /** The full journal from the screen, collected when asked for. Already ANSI-stripped. */
   journal?: string;
   /** when it was collected, so the viewer can say how stale it is */

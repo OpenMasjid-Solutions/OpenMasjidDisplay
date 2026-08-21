@@ -372,6 +372,13 @@ export interface PiDevice {
   /** When an install was last asked for from the panel. Used only to say "updating" while the
    *  device is busy doing it — the command is acknowledged within seconds, long before it finishes. */
   updateAskedAt?: number;
+  /** Load, memory and temperature, as the screen last reported them. */
+  stats?: {
+    load1: number; cores: number; cpuPercent: number;
+    memUsedMb: number; memTotalMb: number; memPercent: number;
+    tempC: number; uptimeSec: number;
+  };
+  statsAt?: string;
   /** The full journal for this screen's own units, collected by root on the device when asked.
    *  One bundle, overwritten each time — a history would become the largest thing in the store. */
   journal?: string;

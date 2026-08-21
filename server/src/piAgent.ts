@@ -118,6 +118,8 @@ export interface EnrolInput {
   net?: unknown;
   /** the Wi-Fi networks the device can currently see */
   networks?: unknown;
+  /** load, memory and temperature, for the dashboard readout */
+  stats?: unknown;
   /** what root reported about the last join it was asked to make */
   wifiResult?: unknown;
 }
@@ -397,6 +399,29 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput, n
 
   const net = normDeviceNet(input.net);
   if (net) device.net = net;
+
+  // Every field re-derived and clamped. A NaN here would end up as a CSS bar width, and a
+  // device-chosen number is not a number until it has been checked.
+  if (input.stats && typeof input.stats === 'object' && !Array.isArray(input.stats)) {
+    const o = input.stats as Record<string, unknown>;
+    const num = (v: unknown, max: number): number => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? Math.min(max, Math.round(n * 10) / 10) : 0;
+    };
+    device.stats = {
+      load1: num(o.load1, 999),
+      cores: Math.max(1, Math.round(num(o.cores, 256))),
+      // Deliberately allowed above 100: a board at 150% of its cores is the interesting case,
+      // and clamping it to 100 would hide exactly the state somebody opened this to see.
+      cpuPercent: num(o.cpuPercent, 10000),
+      memUsedMb: num(o.memUsedMb, 1_000_000),
+      memTotalMb: num(o.memTotalMb, 1_000_000),
+      memPercent: num(o.memPercent, 100),
+      tempC: num(o.tempC, 150),
+      uptimeSec: num(o.uptimeSec, 10 ** 9),
+    };
+    device.statsAt = new Date(nowMs).toISOString();
+  }
 
   // Bounded hard, and every field re-derived. This is a list chosen entirely by an unprivileged
   // device that goes straight into a page somebody clicks on. Thirty is far more networks than any
