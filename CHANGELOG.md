@@ -12,7 +12,29 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Changed
+- **The Simple layout's prayer table now has a light gap between rows instead of one solid
+  block of colour**, the masjid logo has more room (a noticeably larger bounding box), the AM/PM
+  marker beside the clock is smaller, and the bar between the Hijri and Gregorian date is now a
+  bolder drawn shape rather than a thin "|" character, evenly spaced on both sides — it stayed
+  readable as a divider even at the date line's deliberately light font weight, and the first
+  version of the drawn bar positioned each date from an estimated text width, so an estimate
+  error on one side and not the other showed up as an uneven-looking gap right at the thing
+  meant to be a clean divider.
+- **Isha's crescent moon (Simple layout) rebuilt as a true crescent shape.** Every earlier version
+  built it by subtracting a smaller circle fully contained inside a larger one, which structurally
+  can only ever produce a "circle with a dent" — no proportion within that approach reads as an
+  actual crescent. Rebuilt as a real boolean subtraction (the outer and bite circles genuinely
+  intersect, each contributing one arc to a single closed shape), with proportions fitted from a
+  real reference crescent-moon icon rather than guessed.
+
 ### Fixed
+- **The Simple layout's picker had landed in the wrong tab.** It was under General ->
+  Screen & quality; every other visual choice for a timetable (theme, colours, background, logo,
+  what's shown on screen) lives under Appearance, so that's where Layout belongs too — moved
+  there, with the Background colour picker beside it. Picking Simple now also hides the
+  Theme/colour and background-photo controls that layout doesn't use, instead of leaving them on
+  screen looking like they do something.
 - **Isha's crescent-moon row icon (Simple layout) was silently rendering as a plain disc, not a
   crescent.** The path shared one chord between two arcs of different radii; that chord happened
   to be exactly the outer circle's diameter, too long for the smaller radius to span, so SVG

@@ -1625,7 +1625,7 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   // Sizes only depend on the box width, so they can all be worked out up front —
   // which is what lets the whole block be centred vertically: the total height has
   // to be known before the first thing is drawn, not discovered as we go.
-  const ms = c.showLogo || c.showName ? clamp(b.w * 0.22, 34, 84) : 0;
+  const ms = c.showLogo || c.showName ? clamp(b.w * 0.3, 46, 110) : 0;
   let ns = 0;
   if (c.showName) {
     ns = clamp(b.w * 0.1, 18, 38);
@@ -1639,21 +1639,21 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
 
   const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
   let ts = clamp(b.w * 0.4, 46, 160);
-  const clockW = () => approxWidth(c.clock.time, ts) + (markStr ? ts * 0.1 + approxWidth(markStr, ts * 0.32) : 0);
+  const markSize = () => ts * 0.24; // smaller than before — AM/PM read as loud beside a thin clock face
+  const clockW = () => approxWidth(c.clock.time, ts) + (markStr ? ts * 0.1 + approxWidth(markStr, markSize()) : 0);
   if (clockW() > avail) ts *= avail / clockW();
   const clockH = ts * 1.12;
 
   const showDateLine = c.showDates && (!!c.hij || !!c.greg);
+  const showBar = showDateLine && !!c.hij && !!c.greg;
   let ds = clamp(b.w * 0.09, 20, 34); // a bit larger than a quiet caption — it sits right under the clock
-  // A tight separator, not padded with spaces: the combined Hijri+Gregorian string is long
-  // enough that it's usually what's shrinking `ds` to fit (the width check below), so every
-  // character spent on the separator is font-size the date doesn't get to use.
-  const dateLine = [c.hij, c.greg].filter(Boolean).join(' | ');
   if (showDateLine) {
     // Its own, nearly-full-width budget — it is the only thing on this line, unlike `avail`
     // (95% of the box) which is sized to leave the clock and sunrise/sunset row a margin too.
+    // The separator is a drawn bar (below), not a character; ds*0.7 stands in for its width
+    // (bar + the gap either side) at this ds, close enough for the fit check.
     const dateAvail = b.w * 0.99;
-    const dw = approxWidth(dateLine, ds);
+    const dw = approxWidth(c.hij, ds) + approxWidth(c.greg, ds) + (showBar ? ds * 0.7 : 0); // bar + both gaps, roughly
     if (dw > dateAvail) ds *= dateAvail / dw;
   }
   const dateH = showDateLine ? ds * 2 : 0;
@@ -1710,15 +1710,33 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   const clockX = cx - clockW() / 2;
   out.push(text(clockX, tBase, c.clock.time, { size: ts, fill: c.p.text, family: FONT_DISPLAY, weight: 400, anchor: 'start', letter: -ts * 0.01, blink: true }));
   const markX = clockX + approxWidth(c.clock.time, ts) + ts * 0.1;
-  const ss2 = ts * 0.32;
+  const ss2 = markSize();
   if (c.showSeconds) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
   if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
   y = tBase + ts * 0.3;
 
-  // One combined, centred date line (Hijri | Gregorian) rather than two stacked ones.
+  // One combined, centred date line (Hijri | Gregorian) rather than two stacked ones. The
+  // separator between them is a drawn bar, not a "|" glyph — a character at this weight (300,
+  // deliberately thin for the dates themselves) is too faint to read as a divider, so it's
+  // bolded by being a shape instead of relying on font weight.
   if (showDateLine) {
     y += ds * 1.2;
-    out.push(text(cx, y, dateLine, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
+    if (showBar) {
+      // Anchored against the bar itself (`end` on the left, `start` on the right) rather than
+      // positioned from `approxWidth` estimates on both sides — that measured the Hijri and
+      // Gregorian strings independently and any estimate error showed up as an uneven-looking
+      // gap around the bar, which is exactly the thing the eye catches on a divider. Anchoring
+      // to a fixed point either side of the bar makes that gap exact regardless of estimate
+      // error; only the whole line's centering (not the gap) can be off by a little now, which
+      // is far less noticeable.
+      const barW = ds * 0.18;
+      const barGap = ds * 0.26;
+      out.push(text(cx - barW / 2 - barGap, y, c.hij, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
+      out.push(rect(cx - barW / 2, y - ds * 0.8, barW, ds * 0.9, barW * 0.3, c.p.text));
+      out.push(text(cx + barW / 2 + barGap, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'start' }));
+    } else {
+      out.push(text(cx, y, c.hij || c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
+    }
     y += ds * 0.8;
   }
 
@@ -1770,24 +1788,44 @@ export function prayerIcon(key: string, cx: number, cy: number, r: number): stri
         rays(3, 30, 150, SUN)
       );
     case 'isha': {
-      // A crescent as two FULL circles (each just "two semicircle arcs", never a
-      // mismatched chord/radius) combined with fill-rule="evenodd": the smaller "bite"
-      // circle sits entirely inside the disc, so the overlap — which is all of it —
-      // is excluded, leaving exactly a crescent. The previous version tried to build
-      // the crescent from one path with two DIFFERENT arc radii sharing the same
-      // chord; that chord was exactly the outer circle's diameter, too long for the
-      // smaller radius to span, so SVG silently scaled it up to match — collapsing
-      // the "bite" into the same size as the disc and erasing the crescent (reported
-      // as "Isha lost its moon icon"). Two independent full circles have no such
-      // shared-chord constraint to get wrong.
-      const full = (x: number, y: number, rr: number) =>
-        `M${f(x - rr)} ${f(y)} A${f(rr)} ${f(rr)} 0 1 0 ${f(x + rr)} ${f(y)} A${f(rr)} ${f(rr)} 0 1 0 ${f(x - rr)} ${f(y)} Z`;
-      const biteR = r * 0.68;
-      const biteX = cx + r * 0.21;
-      const biteY = cy - r * 0.21;
+      // A crescent moon: a TRUE boolean subtraction (outer disc minus the overlapping
+      // "bite" circle), not two full circles combined with fill-rule="evenodd". That
+      // distinction is the whole story of getting this icon right across three attempts:
+      //
+      // 1st attempt: one path shared a single chord between an outer arc and a smaller-
+      //    radius bite arc. That chord was exactly the outer circle's diameter — too long
+      //    for the smaller radius to span — so SVG silently rescaled the bite arc to match
+      //    the outer one, erasing the crescent entirely ("Isha lost its moon icon").
+      // 2nd attempt: switched to evenodd-subtracting two independent FULL circles, which
+      //    is only valid when the bite circle is entirely CONTAINED in the outer one. That
+      //    constrains the bite to modest sizes/offsets, and every proportion still read as
+      //    "a circle with a dent" rather than an actual crescent ("still circular" /
+      //    "still closes") — full containment just can't produce the deep, sharp-horned cut
+      //    a real crescent has.
+      // 3rd attempt (this one): the outer and bite circles genuinely INTERSECT — the bite
+      //    is centered on the far side, only partially overlapping — and the crescent is
+      //    the region bounded by the outer circle's MAJOR arc (the long way around, away
+      //    from the bite) and the bite circle's MAJOR arc (the long way around too, which
+      //    is the one that dips back through the overlap — the minor arc bulges the wrong
+      //    way, outward, and doesn't cut anything). One closed path, no fill-rule trick,
+      //    and no containment constraint to violate at any size. Proportions (offset 0.33,
+      //    bite radius 0.84, both of the outer radius) are fitted from a real reference
+      //    crescent-moon icon, not guessed.
+      const moonR = r * 0.95;
+      const off = moonR * 0.33;
+      const biteR = moonR * 0.84;
+      // Horn points: where the two circles actually cross. Standard circle-circle
+      // intersection for two circles a distance `off` apart along one axis.
+      const aa = (moonR * moonR - biteR * biteR + off * off) / (2 * off);
+      const hh = Math.sqrt(Math.max(0, moonR * moonR - aa * aa));
+      const h1x = cx + aa;
+      const h1y = cy + hh;
+      const h2x = cx + aa;
+      const h2y = cy - hh;
       return (
-        `<path d="${full(cx, cy, r)} ${full(biteX, biteY, biteR)}" fill="${MOON}" fill-rule="evenodd"/>` +
-        `<circle cx="${f(cx - r * 0.55)}" cy="${f(cy - r * 0.55)}" r="${f(r * 0.15)}" fill="${MOON}"/>`
+        `<path d="M${f(h1x)} ${f(h1y)} ` +
+        `A${f(moonR)} ${f(moonR)} 0 1 1 ${f(h2x)} ${f(h2y)} ` +
+        `A${f(biteR)} ${f(biteR)} 0 1 0 ${f(h1x)} ${f(h1y)} Z" fill="${MOON}"/>`
       );
     }
     default: // jumu'ah: a small mosque dome + base + finial
@@ -1844,10 +1882,13 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   const bandBase = mixHex(c.p.bg, c.p.primary, c.p.light ? 0.06 : 0.1);
   const bandHighlight = mixHex(c.p.bg, c.p.primary, c.p.light ? 0.26 : 0.36);
 
+  // A light gap between rows: the band is inset top/bottom rather than drawn edge-to-edge,
+  // so a sliver of the page shows between rows instead of one solid block of colour.
+  const rowGap = clamp(rowH * 0.08, 2, 10);
   lines.forEach((line, i) => {
     const ry = listTop + i * rowH;
     const midY = ry + rowH * 0.64;
-    out.push(rect(b.x, ry, b.w, rowH, 0, line.highlight ? bandHighlight : bandBase));
+    out.push(rect(b.x, ry + rowGap / 2, b.w, rowH - rowGap, rowGap * 0.6, line.highlight ? bandHighlight : bandBase));
     out.push(prayerIcon(line.key, b.x + pad + iconR, ry + rowH / 2, iconR));
     const nameSize = clamp(rowH * 0.4, 16, 44);
     const timeSize = nameSize * TIME_SCALE;
