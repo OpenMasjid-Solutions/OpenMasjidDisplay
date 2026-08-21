@@ -1734,7 +1734,7 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
  *  sunset / crescent-moon / a small mosque dome for Jumu'ah, styled after the wall
  *  display this layout was modelled on. Plain shapes, fixed colours — a decoration,
  *  not something that needs to track the timetable's theme. */
-function prayerIcon(key: string, cx: number, cy: number, r: number): string {
+export function prayerIcon(key: string, cx: number, cy: number, r: number): string {
   const SUN = '#f4a93a';
   const CLOUD = '#9aa7ad';
   const MOON = '#6f8fae';
@@ -1769,11 +1769,27 @@ function prayerIcon(key: string, cx: number, cy: number, r: number): string {
         `<path d="M${f(cx - r)} ${f(cy)} A${f(r)} ${f(r)} 0 0 0 ${f(cx + r)} ${f(cy)}Z" fill="${SUN}"/>` +
         rays(3, 30, 150, SUN)
       );
-    case 'isha': // crescent moon with a small star
+    case 'isha': {
+      // A crescent as two FULL circles (each just "two semicircle arcs", never a
+      // mismatched chord/radius) combined with fill-rule="evenodd": the smaller "bite"
+      // circle sits entirely inside the disc, so the overlap — which is all of it —
+      // is excluded, leaving exactly a crescent. The previous version tried to build
+      // the crescent from one path with two DIFFERENT arc radii sharing the same
+      // chord; that chord was exactly the outer circle's diameter, too long for the
+      // smaller radius to span, so SVG silently scaled it up to match — collapsing
+      // the "bite" into the same size as the disc and erasing the crescent (reported
+      // as "Isha lost its moon icon"). Two independent full circles have no such
+      // shared-chord constraint to get wrong.
+      const full = (x: number, y: number, rr: number) =>
+        `M${f(x - rr)} ${f(y)} A${f(rr)} ${f(rr)} 0 1 0 ${f(x + rr)} ${f(y)} A${f(rr)} ${f(rr)} 0 1 0 ${f(x - rr)} ${f(y)} Z`;
+      const biteR = r * 0.68;
+      const biteX = cx + r * 0.21;
+      const biteY = cy - r * 0.21;
       return (
-        `<path d="M${f(cx + r * 0.4)} ${f(cy - r)} a${f(r)} ${f(r)} 0 1 0 0 ${f(r * 2)} a${f(r * 0.75)} ${f(r * 0.75)} 0 1 1 0 -${f(r * 2)}Z" fill="${MOON}"/>` +
+        `<path d="${full(cx, cy, r)} ${full(biteX, biteY, biteR)}" fill="${MOON}" fill-rule="evenodd"/>` +
         `<circle cx="${f(cx - r * 0.55)}" cy="${f(cy - r * 0.55)}" r="${f(r * 0.15)}" fill="${MOON}"/>`
       );
+    }
     default: // jumu'ah: a small mosque dome + base + finial
       return (
         `<path d="M${f(cx - r * 0.85)} ${f(cy + r * 0.7)} a${f(r * 0.85)} ${f(r * 0.85)} 0 0 1 ${f(r * 1.7)} 0Z" fill="${MOSQUE}"/>` +

@@ -12,6 +12,15 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- **Isha's crescent-moon row icon (Simple layout) was silently rendering as a plain disc, not a
+  crescent.** The path shared one chord between two arcs of different radii; that chord happened
+  to be exactly the outer circle's diameter, too long for the smaller radius to span, so SVG
+  quietly scaled the inner arc up to match instead of erroring — collapsing the "bite" that makes
+  it a crescent. Rebuilt as two independent full circles combined with fill-rule="evenodd", which
+  has no shared-chord constraint to get wrong, and added tests that check the geometry directly
+  (the same class of bug would fail loudly now instead of shipping unnoticed).
+
 ### Added
 - **A new "Simple" layout for the prayer timetable, picked per timetable under Screen & quality.**
   A plain flat page (no themed scene, no glass, no sun/moon) instead of the classic look: a
