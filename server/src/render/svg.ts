@@ -1634,7 +1634,7 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   }
   const headerH = c.showLogo && c.showName ? ms + ns * 1.5 : c.showLogo ? ms + b.h * 0.03 : c.showName ? ns * 1.5 : 0;
 
-  const ss = c.showSunrise ? clamp(b.w * 0.048, 11, 18) : 0;
+  const ss = c.showSunrise ? clamp(b.w * 0.038, 9, 14) : 0;
   const sunriseH = c.showSunrise ? ss * 2.1 : 0;
 
   const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
@@ -1644,11 +1644,17 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   const clockH = ts * 1.12;
 
   const showDateLine = c.showDates && (!!c.hij || !!c.greg);
-  let ds = clamp(b.w * 0.075, 17, 30); // a bit larger than a quiet caption — it sits right under the clock
-  const dateLine = [c.hij, c.greg].filter(Boolean).join('   |   ');
+  let ds = clamp(b.w * 0.09, 20, 34); // a bit larger than a quiet caption — it sits right under the clock
+  // A tight separator, not padded with spaces: the combined Hijri+Gregorian string is long
+  // enough that it's usually what's shrinking `ds` to fit (the width check below), so every
+  // character spent on the separator is font-size the date doesn't get to use.
+  const dateLine = [c.hij, c.greg].filter(Boolean).join(' | ');
   if (showDateLine) {
+    // Its own, nearly-full-width budget — it is the only thing on this line, unlike `avail`
+    // (95% of the box) which is sized to leave the clock and sunrise/sunset row a margin too.
+    const dateAvail = b.w * 0.99;
     const dw = approxWidth(dateLine, ds);
-    if (dw > avail) ds *= avail / dw;
+    if (dw > dateAvail) ds *= dateAvail / dw;
   }
   const dateH = showDateLine ? ds * 2 : 0;
 
@@ -1673,13 +1679,13 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   // left-aligned the way the rest of the app's cards are.
   if (c.showLogo && c.showName) {
     out.push(mark(cx - ms / 2, y, ms, c.p.primary, c.logo));
-    out.push(text(cx, y + ms + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 600, anchor: 'middle', editId: 'masjidName' }));
+    out.push(text(cx, y + ms + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 500, anchor: 'middle', editId: 'masjidName' }));
     y += headerH;
   } else if (c.showLogo) {
     out.push(mark(cx - ms / 2, y, ms, c.p.primary, c.logo));
     y += headerH;
   } else if (c.showName) {
-    out.push(text(cx, y + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 600, anchor: 'middle', editId: 'masjidName' }));
+    out.push(text(cx, y + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 500, anchor: 'middle', editId: 'masjidName' }));
     y += headerH;
   }
 
@@ -1691,9 +1697,9 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     const rowY = y + ss;
     const totalW = approxWidth(sunriseStr, ss) + gapW + approxWidth(sunsetStr, ss);
     let x = cx - totalW / 2;
-    out.push(text(x, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'start', letter: 0.6 }));
+    out.push(text(x, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'start', letter: 0.6 }));
     x += approxWidth(sunriseStr, ss) + gapW;
-    out.push(text(x, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'start', letter: 0.6 }));
+    out.push(text(x, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'start', letter: 0.6 }));
     y += sunriseH;
   }
 
@@ -1702,24 +1708,24 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   // this size, not shoutier.
   const tBase = y + ts * 0.82;
   const clockX = cx - clockW() / 2;
-  out.push(text(clockX, tBase, c.clock.time, { size: ts, fill: c.p.text, family: FONT_DISPLAY, weight: 500, anchor: 'start', letter: -ts * 0.01, blink: true }));
+  out.push(text(clockX, tBase, c.clock.time, { size: ts, fill: c.p.text, family: FONT_DISPLAY, weight: 400, anchor: 'start', letter: -ts * 0.01, blink: true }));
   const markX = clockX + approxWidth(c.clock.time, ts) + ts * 0.1;
   const ss2 = ts * 0.32;
-  if (c.showSeconds) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 500, anchor: 'start' }));
-  if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 500, anchor: 'start' }));
+  if (c.showSeconds) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
+  if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
   y = tBase + ts * 0.3;
 
   // One combined, centred date line (Hijri | Gregorian) rather than two stacked ones.
   if (showDateLine) {
     y += ds * 1.2;
-    out.push(text(cx, y, dateLine, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'middle' }));
+    out.push(text(cx, y, dateLine, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
     y += ds * 0.8;
   }
 
   // A plain, centred sentence instead of the ring: "Next Iqamah in 6hr 24min."
   if (c.showCountdown) {
     y += ls * 1.9;
-    out.push(text(cx, y, nextLine, { size: ls, fill: c.prohibited ? TICKER_RED : c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle' }));
+    out.push(text(cx, y, nextLine, { size: ls, fill: c.prohibited ? TICKER_RED : c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'middle' }));
   }
   return out.join('');
 }
@@ -1813,7 +1819,7 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   const rowH = listH / Math.max(1, lines.length);
   const colIq = b.x + b.w - pad;
   const colAd = b.x + b.w * 0.62;
-  const iconR = rowH * 0.22;
+  const iconR = rowH * 0.22 * 0.75; // 25% smaller than the first pass
   const nameX = b.x + pad + iconR * 2 + pad;
   // Every row gets the same faint green wash — barely a tint, just enough to read as
   // "this is the table" rather than bare background. The next (or currently active)
@@ -1830,9 +1836,12 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     const nameSize = clamp(rowH * 0.4, 16, 44);
     const timeSize = nameSize * TIME_SCALE;
     const mainColor = line.highlight ? c.p.primary : c.p.text;
-    out.push(text(nameX, midY, line.name, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 700 : 500, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
-    out.push(text(colAd, midY, fmtShort(line.t1, c.timeFormat), { size: timeSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'end' }));
-    out.push(text(colIq, midY, fmtShort(line.t2, c.timeFormat), { size: timeSize, fill: mainColor, family: FONT_DISPLAY, weight: line.highlight ? 700 : 500, anchor: 'end' }));
+    out.push(text(nameX, midY, line.name, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 600 : 400, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
+    // A one-Jumu'ah masjid has nothing to put in the Adhan slot (Jumu'ah has no separate
+    // Adhan/Iqamah — `t1`/`t2` are just its 1st/2nd time, if there are two), so that slot
+    // is skipped entirely rather than drawn as an empty "—" beside a single time.
+    if (line.t1 != null) out.push(text(colAd, midY, fmtShort(line.t1, c.timeFormat), { size: timeSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
+    out.push(text(colIq, midY, fmtShort(line.t2, c.timeFormat), { size: timeSize, fill: mainColor, family: FONT_DISPLAY, weight: line.highlight ? 600 : 400, anchor: 'end' }));
   });
   return out.join('');
 }

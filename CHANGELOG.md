@@ -19,9 +19,11 @@ CLAUDE.md § *The changelog has two audiences*.
   plain "Next Iqamah in 6hr 24min" sentence in place of the countdown ring — beside
   one wide prayer table with larger names and times, an icon per row, Jumu'ah folded in as its own
   last row, and the next prayer highlighted in green against a faint green wash on the rest.
-  Modelled on a real installed wall display. The page background is a colour you
-  pick (Appearance), with text that flips light/dark automatically to stay readable on it. The
-  classic design is unchanged and stays the default; this is an option, not a replacement.
+  A single Jumu'ah time gets one slot on that row; a second one appears (labelled "1/2") only
+  once a second Jumu'ah is actually configured. Modelled on a real installed wall display. The
+  page background is a colour you pick (Appearance), with text that flips light/dark automatically
+  to stay readable on it. The classic design is unchanged and stays the default; this is an
+  option, not a replacement.
 
 ### Changed
 - **The announcement slideshow (including incorrect-parking alerts) now fills the whole screen**
