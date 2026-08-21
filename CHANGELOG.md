@@ -13,6 +13,12 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **The Simple layout's picker had landed in the wrong tab.** It was under General ->
+  Screen & quality; every other visual choice for a timetable (theme, colours, background, logo,
+  what's shown on screen) lives under Appearance, so that's where Layout belongs too — moved
+  there, with the Background colour picker beside it. Picking Simple now also hides the
+  Theme/colour and background-photo controls that layout doesn't use, instead of leaving them on
+  screen looking like they do something.
 - **Isha's crescent-moon row icon (Simple layout) was silently rendering as a plain disc, not a
   crescent.** The path shared one chord between two arcs of different radii; that chord happened
   to be exactly the outer circle's diameter, too long for the smaller radius to span, so SVG
