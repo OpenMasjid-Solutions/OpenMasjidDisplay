@@ -1796,7 +1796,12 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   type Line = { key: string; name: string; t1: number | null; t2: number | null; highlight?: boolean };
   const lines: Line[] = m.rows
     .filter((r) => r.key !== 'sunrise')
-    .map((r) => ({ key: r.key, name: rowName(r, c.L).toUpperCase(), t1: r.adhan, t2: r.iqamah, highlight: !!r.active || !!r.next }));
+    // `r.active` means "the last prayer whose Adhan has passed" — a broad daytime window that
+    // stays true for Dhuhr all the way until Asr's Adhan, long after Dhuhr's own Iqamah has
+    // come and gone. Highlighting on that too was the bug: Dhuhr and Asr both lit up at once,
+    // because Dhuhr was still "active" while Asr had already become "next". Only `next` — the
+    // one row the countdown sentence above is actually counting down to — should highlight.
+    .map((r) => ({ key: r.key, name: rowName(r, c.L).toUpperCase(), t1: r.adhan, t2: r.iqamah, highlight: !!r.next }));
   if (m.jumuah.length) {
     const multi = m.jumuah.length > 1;
     lines.push({

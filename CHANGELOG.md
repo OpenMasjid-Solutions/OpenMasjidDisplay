@@ -18,8 +18,8 @@ CLAUDE.md § *The changelog has two audiences*.
   centred brand column — logo, masjid name, a sunrise/sunset line with small icons, a big clock,
   the date, and a plain "Next Iqamah in 6hr 24min" sentence in place of the countdown ring — beside
   one wide prayer table with larger names and times, an icon per row, Jumu'ah folded in as its own
-  last row, and the next (or currently active) prayer highlighted in green against a faint green
-  wash on the rest. Modelled on a real installed wall display. The page background is a colour you
+  last row, and the next prayer highlighted in green against a faint green wash on the rest.
+  Modelled on a real installed wall display. The page background is a colour you
   pick (Appearance), with text that flips light/dark automatically to stay readable on it. The
   classic design is unchanged and stays the default; this is an option, not a replacement.
 
