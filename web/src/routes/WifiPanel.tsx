@@ -23,20 +23,11 @@
 import { useState } from 'react';
 import { api } from '../api';
 import type { PiDeviceInfo } from '../types';
-import { Modal, Field, Spinner, SignalBars, IconWifi, IconRefresh, IconNoLink, IconTrash, IconCheck, useToast } from '../ui';
+import { Field, Spinner, SignalBars, IconWifi, IconRefresh, IconNoLink, IconTrash, IconCheck, useToast } from '../ui';
 
 type WifiAction = 'wifi-on' | 'wifi-off' | 'wifi-join' | 'wifi-forget' | 'wifi-rescan';
 
-export function WifiPanel({
-  device,
-  badge,
-  onClose,
-}: {
-  device: PiDeviceInfo;
-  /** the link indicator from the card, so this panel and the card cannot disagree */
-  badge: React.ReactNode;
-  onClose: () => void;
-}) {
+export function WifiSection({ device, badge }: { device: PiDeviceInfo; badge: React.ReactNode }) {
   const toast = useToast();
   const [chosen, setChosen] = useState('');
   const [psk, setPsk] = useState('');
@@ -63,17 +54,7 @@ export function WifiPanel({
   };
 
   return (
-    <Modal
-      open
-      windowed
-      onClose={onClose}
-      title={`Wi-Fi for ${device.hostname || 'this screen'}`}
-      footer={
-        <button className="btn" onClick={onClose}>
-          Close
-        </button>
-      }
-    >
+    <>
       {!net?.hasWifi ? (
         <p className="hint">This screen has no Wi-Fi, so there is nothing to set up here.</p>
       ) : (
@@ -221,6 +202,6 @@ export function WifiPanel({
           )}
         </>
       )}
-    </Modal>
+    </>
   );
 }

@@ -13,6 +13,13 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Changed
+- **A Raspberry Pi screen’s settings now live behind a gear on its card.** Update, Reboot and Wi-Fi
+  used to sit as four buttons on the card itself, which pushed what the screen is actually showing
+  down the page — and on a masjid with several screens made the list hard to read. The card now
+  shows one line: whether it is alive, its address, whether it is on a cable or Wi-Fi, and which
+  version it runs. Everything you can do to it is one click away, grouped and explained.
+
+### Changed
 - **Raspberry Pi screens now need a Pi 4 or newer.** A Pi 3 could not decode a modern camera fast
   enough to keep up with it, which made the picture stutter and the camera drop the connection every
   half minute — one fault with two symptoms, and nothing in software fixed it. A Pi 4 also decodes

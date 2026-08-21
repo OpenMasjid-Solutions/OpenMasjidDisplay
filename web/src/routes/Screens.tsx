@@ -6,7 +6,7 @@ import type { AppState, Tv, TvKind, ContentRef, TvStatus, PiDeviceInfo, PiDevice
 // The same helper the server tests, rather than a second copy of the rule living in the panel.
 import { installCommand } from '../../../server/src/pi/lanHost';
 import { contentOptions, ContentPicker, contentLabel } from '../content';
-import { WifiPanel } from './WifiPanel';
+import { PiSettings } from './PiSettings';
 import {
   Modal,
   Field,
@@ -17,8 +17,7 @@ import {
   IconCopy,
   IconCheck,
   IconRefresh,
-  IconPower,
-  IconDownload,
+  IconCog,
   IconWifi,
   IconEthernet,
   IconNoLink,
@@ -169,11 +168,9 @@ function ScreenCard({
   onDelete: () => void;
   onCopy: (url: string) => void;
 }) {
-  const toast = useToast();
   const [copied, setCopied] = useState(false);
   const [copiedPublic, setCopiedPublic] = useState(false);
-  const [sending, setSending] = useState<'' | 'reboot' | 'reinstall'>('');
-  const [showWifi, setShowWifi] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   /**
    * Is this screen installing right now?
@@ -189,22 +186,6 @@ function ScreenCard({
   const UPDATE_WINDOW_MS = 6 * 60_000;
   const updating = !!device?.updateAskedAt && Date.now() - device.updateAskedAt < UPDATE_WINDOW_MS && !device.upToDate;
 
-  /** Queue an instruction for the Pi. It is not sent — the device collects it, so say so. */
-  const ask = async (deviceId: string, action: 'reboot' | 'reinstall') => {
-    setSending(action);
-    try {
-      await api.piCommand(deviceId, action);
-      toast(
-        action === 'reboot'
-          ? 'Asked the Raspberry Pi to reboot. It will be back in about a minute.'
-          : 'Asked the screen to update. It takes a few minutes and restarts itself when it is done.',
-      );
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not reach the display server.', 'error');
-    } finally {
-      setSending('');
-    }
-  };
   const effective = status?.effective ?? tv.defaultContent;
   const ready = status?.streamReady ?? false;
   // The screen is lit and pulling, but its timetable stopped updating — the times on it
@@ -279,6 +260,16 @@ function ScreenCard({
           </div>
           {tv.room && <div className="screen-room">{tv.room}</div>}
         </div>
+        {isPi && (
+          <button
+            className="icon-btn"
+            aria-label="Raspberry Pi settings"
+            title="Update, reboot and Wi-Fi for this Raspberry Pi"
+            onClick={() => setShowSettings(true)}
+          >
+            <IconCog size={16} />
+          </button>
+        )}
         <button className="icon-btn" aria-label="Edit screen" onClick={onEdit}><IconEdit size={16} /></button>
         <button className="icon-btn" aria-label="Remove screen" onClick={onDelete}><IconTrash size={16} /></button>
       </div>
@@ -297,87 +288,53 @@ function ScreenCard({
         </button>
       )}
 
-      {showWifi && device && (
-        <WifiPanel device={device} badge={<NetBadge net={device.net} />} onClose={() => setShowWifi(false)} />
+      {showSettings && device && (
+        <PiSettings
+          device={device}
+          screenName={tv.name}
+          badge={<NetBadge net={device.net} />}
+          onClose={() => setShowSettings(false)}
+        />
       )}
 
       {isPi ? (
-        // What a person actually needs from a device on a shelf: is it alive, where is it, what is
-        // it running — and the two things they will want to do to it. No link, because there is
-        // nothing to connect to.
-        <div className="rtsp-box" style={{ justifyContent: 'flex-start', gap: '0.7rem', flexWrap: 'wrap' }}>
-          <span className={`status-dot${device?.online ? '' : ' status-dot--idle'}`} title={device?.online ? 'Checking in' : 'Not checking in'} />
+        // A status LINE, not a control panel. What somebody scanning a wall of cards wants is:
+        // alive, where, how attached, what version. Everything you can DO to the device moved
+        // behind the gear in the header — see PiSettings — because those are rare questions, and on
+        // a masjid with six screens four buttons per card crowded out the common one.
+        //
+        // No stream link, because there is nothing to connect to: a Pi draws the timetable itself
+        // and opens cameras itself, so the server never publishes a stream for it. This block used
+        // to fall through to the RTSP branch and print an rtsp:// URL that nothing served — worse
+        // than useless, because it invites somebody to test it, fail, and conclude the screen is
+        // broken when it is working perfectly.
+        <div className="rtsp-box" style={{ justifyContent: 'flex-start', gap: '0.6rem', flexWrap: 'wrap' }}>
+          <span
+            className={`status-dot${device?.online ? '' : ' status-dot--idle'}`}
+            title={device?.online ? 'Checking in' : 'Not checking in'}
+          />
           <span className="hint">Raspberry Pi</span>
           <span className="hint" style={{ fontFamily: 'monospace' }}>{device?.ip || 'address unknown'}</span>
           <NetBadge net={device?.net} />
+          <span style={{ flex: 1 }} />
           <span className="hint muted">agent {device?.agentVersion || '?'}</span>
-          {/* Whether it is current is a FACT about the screen, so it is stated here beside the
-              version rather than hidden inside a button's label. The button stays usable either
-              way: updating also re-applies the setup, and a matching version says nothing about
-              that. */}
+          {/* Whether it is current is a FACT about the screen, so it belongs beside the version
+              rather than inside a button's label. "installing" is its own state: a reinstall takes
+              over two minutes, and for all of that the version still reads as the old one — which
+              is indistinguishable from a button that did nothing, so it gets pressed again and the
+              device's own rate limit refuses the second press without a word. */}
           {device?.agentVersion ? (
             updating ? (
               <span className="hint" style={{ color: 'var(--color-warn, #fbbf24)' }}>· installing…</span>
             ) : (
-              <span className="hint" style={{ color: device.upToDate ? 'var(--color-ok, #4ade80)' : 'var(--color-warn, #fbbf24)' }}>
+              <span
+                className="hint"
+                style={{ color: device.upToDate ? 'var(--color-ok, #4ade80)' : 'var(--color-warn, #fbbf24)' }}
+              >
                 {device.upToDate ? '· up to date' : '· update available'}
               </span>
             )
           ) : null}
-          <span style={{ flex: 1 }} />
-          {/* ONE update button, not two.
-              It runs the full installer, which replaces the agent AND re-applies the service unit
-              and the boot settings. There used to be a separate "Re-run setup" for the second half,
-              and that split leaked how it works rather than describing a choice anybody wants to
-              make: both were correct answers to "my screen needs the newest thing", which made
-              picking between them impossible.
-              Nothing can connect TO the Pi, so this is a request it collects on its own poll. The
-              wording says asked, never done. */}
-          {/* While an install is in flight this says so, and it took a complaint to work out why
-              that matters. A reinstall on a Pi takes over two minutes — fetch, apt, npm, restart —
-              and for all of it the card showed the old version and "update available", which looks
-              exactly like a button that did nothing. So it gets pressed again, and the device's own
-              five-minute rate limit refuses the second press without a word. Saying "updating" is
-              the whole fix: the work was always happening. */}
-          <button
-            className="btn btn--ghost btn--sm"
-            disabled={!device || sending !== '' || updating}
-            title={
-              updating
-                ? 'This screen is installing now. It takes a few minutes and restarts itself when it is done.'
-                : device?.upToDate
-                  ? `Already running ${device.agentVersion}. Running this again re-applies its setup.`
-                  : 'Install the current version on this screen and re-apply its setup'
-            }
-            onClick={() => device && ask(device.id, 'reinstall')}
-          >
-            {sending === 'reinstall' || updating ? <Spinner /> : <IconDownload size={14} />}{' '}
-            {updating ? 'Updating…' : 'Update'}
-          </button>
-          {/* Only for a screen that HAS Wi-Fi. Offering it otherwise walks somebody through a flow
-              in which every step fails for a reason they cannot see. */}
-          {device?.net?.hasWifi && (
-            <button
-              className="btn btn--ghost btn--sm"
-              disabled={!device || sending !== ''}
-              title="Move this screen onto a Wi-Fi network"
-              onClick={() => setShowWifi(true)}
-            >
-              <IconWifi size={14} /> Wi-Fi
-            </button>
-          )}
-
-          {/* A full power cycle of the board, not just the software. Rate limited on the device
-              to one every ten minutes, because a reboot loop takes a screen off the wall for good
-              and nobody is watching it. */}
-          <button
-            className="btn btn--ghost btn--sm"
-            disabled={!device || sending !== ''}
-            title="Restart the whole Raspberry Pi. Use this if restarting the software did not help."
-            onClick={() => device && ask(device.id, 'reboot')}
-          >
-            {sending === 'reboot' ? <Spinner /> : <IconPower size={14} />} Reboot
-          </button>
         </div>
       ) : (
         <div className="rtsp-box">
