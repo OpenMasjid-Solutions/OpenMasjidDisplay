@@ -1454,12 +1454,20 @@ function jumuahBar(b: Box, m: Model, c: Ctx): string {
 /** A scrolling ticker strip along the bottom. The text is tiled and offset by the
  *  clock so it scrolls continuously; smoothness depends on the frame cadence (the
  *  renderer speeds up while a ticker is active). */
-function tickerBand(msg: string, now: Date, p: Palette, W: number, H: number, bandOnly: boolean, prohibited = false, scrollAt: { x: number; w: number } | null = null): string {
+function tickerBand(msg: string, now: Date, p: Palette, W: number, H: number, bandOnly: boolean, prohibited = false, scrollAt: { x: number; w: number } | null = null, isSimple = false): string {
   const { y, bandH, fs } = tickerLayout(W, H);
   const out: string[] = [];
   // A prohibited-time message scrolls in red, with a red top edge, so it reads clearly
   // as a warning over any theme (the ffmpeg drawtext uses the matching colour).
-  out.push(rect(0, y, W, bandH, 0, hexToRgba(p.bg, prohibited ? 0.72 : 0.6)));
+  //
+  // On the classic scene, a translucent wash of the (dark) background colour reads as a
+  // frosted strip. The "simple" layout's page has no scene to darken — its background IS
+  // the page colour — so that same wash is the page's own colour on top of itself: an
+  // invisible no-op, leaving nothing but bare text with a thin top line. Give it an actual
+  // tint (mixed toward the accent, like the prayer-table row bands) so the strip reads as
+  // its own band there too.
+  const backdrop = isSimple ? mixHex(p.bg, prohibited ? TICKER_RED : p.primary, prohibited ? 0.16 : (p.light ? 0.08 : 0.14)) : hexToRgba(p.bg, prohibited ? 0.72 : 0.6);
+  out.push(rect(0, y, W, bandH, 0, backdrop));
   out.push(rect(0, y, W, Math.max(1.5, bandH * 0.025), 0, prohibited ? TICKER_RED : hexToRgba(p.primary, 0.55)));
   if (!bandOnly) {
     // The still preview draws the scrolling text itself (the live video leaves this to
@@ -2666,11 +2674,11 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   //    Drawn last, over everything — including the slideshow image, so the reminder stays
   //    readable while announcement pictures are cycling.
   if (tickerText) {
-    out.push(tickerBand(tickerText, now, p, W, H, !!opts.tickerBandOnly, prohibitedTickerOn, tkScroll));
+    out.push(tickerBand(tickerText, now, p, W, H, !!opts.tickerBandOnly, prohibitedTickerOn, tkScroll, isSimple));
   } else if (iqNotice) {
     // No ticker to share with: paint the band ourselves so the reminder has the same strip
-    // a ticker would have occupied.
-    out.push(rect(0, split.y, W, split.bandH, 0, hexToRgba(p.bg, 0.6)));
+    // a ticker would have occupied. Same "simple has no scene to darken" fix as tickerBand.
+    out.push(rect(0, split.y, W, split.bandH, 0, isSimple ? mixHex(p.bg, p.primary, p.light ? 0.08 : 0.14) : hexToRgba(p.bg, 0.6)));
   }
   if (iqReserve > 0) {
     out.push(iqamahReminderPanel(iqNotice, split.fs, split.y, split.bandH, iqReserve));
