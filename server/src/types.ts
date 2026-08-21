@@ -359,10 +359,13 @@ export interface PiDevice {
       | 'wifi-off'
       | 'wifi-join'
       | 'wifi-forget'
-      | 'wifi-rescan';
+      | 'wifi-rescan'
+      | 'shell';
     issuedAt: number;
     /** Only for 'wifi-join', and deleted as soon as the device acknowledges the command. */
     wifi?: { ssid: string; psk: string };
+    /** Only for 'shell': one line for the device to run as its own unprivileged user. */
+    shell?: string;
   };
   /** The last lines the agent logged, as IT saw them — sent on check-in so the panel can show
    *  what a screen is doing without anybody opening a shell on it. Display text only. */
@@ -379,6 +382,12 @@ export interface PiDevice {
     tempC: number; uptimeSec: number;
   };
   statsAt?: string;
+  /** The answer to the last console command, overwritten each time.
+   *
+   *  One answer, not a transcript, for the same reason `journal` is one bundle: this file is
+   *  persisted on the masjid's own volume, and somebody debugging a screen types a lot of commands.
+   *  The scrollback belongs in the browser that is showing it, which is where it is kept. */
+  shellResult?: { id: string; cmd: string; out: string; code: number | null; ms: number; at: string };
   /** The full journal for this screen's own units, collected by root on the device when asked.
    *  One bundle, overwritten each time — a history would become the largest thing in the store. */
   journal?: string;

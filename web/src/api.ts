@@ -163,10 +163,18 @@ export const api = {
       | 'wifi-off'
       | 'wifi-join'
       | 'wifi-forget'
-      | 'wifi-rescan',
+      | 'wifi-rescan'
+      | 'shell',
     /** Only for 'wifi-join'. The passphrase is used once on the device and never logged. */
     wifi?: { ssid: string; psk: string },
-  ) => req<{ queued: boolean }>('POST', `/api/pi/${id}/command`, wifi ? { action, wifi } : { action }),
+    /** Only for 'shell'. One line, run on the screen as its own unprivileged user. */
+    shell?: string,
+  ) =>
+    req<{ queued: boolean }>(
+      'POST',
+      `/api/pi/${id}/command`,
+      wifi ? { action, wifi } : shell ? { action, shell } : { action },
+    ),
 
   /** Forget a device: it goes back to showing a fresh pairing code. Its screen is kept. */
   piForget: (id: string) => req<{ ok: boolean }>('POST', `/api/pi/${id}/forget`),

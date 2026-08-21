@@ -216,6 +216,9 @@ export interface PiDeviceInfo {
    *  checked in with an agent new enough to report it, which is a different thing from being
    *  unplugged and has to be drawn differently. */
   net?: PiDeviceNet;
+  /** The answer to the last console command. One answer, not a transcript — the scrollback is
+   *  kept in the browser showing it, because the store is a file on the masjid's own volume. */
+  shellResult?: { id: string; cmd: string; out: string; code: number | null; ms: number; at: string };
 }
 
 export interface PiDeviceNet {

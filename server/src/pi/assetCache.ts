@@ -30,6 +30,29 @@ export const MAX_ASSET_BYTES = 12 * 1024 * 1024;
 /** Long enough for a slow masjid uplink to deliver a few megabytes. */
 const FETCH_TIMEOUT_MS = 60_000;
 
+/**
+ * How long to wait before trying a failed asset again — doubling, from seconds to five minutes.
+ *
+ * It used to be a flat five minutes, and that number was chosen against the wrong failure. The one
+ * that matters is not "this URL is wrong", it is "the first fetch after a restart lost a race" —
+ * the network settling, the server still coming up, a Wi-Fi association half made. The background
+ * is the FIRST asset the agent asks for, so it is the one that eats that failure, and a flat five
+ * minutes meant the most visible thing on the screen was missing for five minutes while the logo
+ * and every announcement image (asked for after it, once the network was up) arrived at once. On a
+ * real device that read exactly as "the custom background does not work".
+ *
+ * Doubling gets both halves right: a transient failure costs seconds, and a genuinely wrong URL
+ * still settles into asking about as often as before.
+ */
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 5 * 60_000;
+
+/** How long to wait before attempt `tries` + 1. Exported because it is the whole of the fix: the
+ *  behaviour that mattered was a NUMBER, and a number is what a test can hold still. */
+export function retryDelayMs(tries: number): number {
+  return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, tries - 1), RETRY_MAX_MS);
+}
+
 export const CACHE_DIR = process.env.OMD_SCREEN_CACHE || '/var/lib/openmasjid-screen/cache';
 
 /** A filename derived from the URL. Hashed rather than sanitised: the URL contains this
@@ -41,12 +64,17 @@ function keyFor(url: string): string {
 export class AssetCache {
   /** url → data: URI, so a frame a second costs no disk reads either. */
   private memo = new Map<string, string>();
-  /** urls that failed, so a missing asset is not re-fetched every single frame. */
-  private failed = new Map<string, number>();
+  /** urls that failed, with how many times running — so a missing asset is not re-fetched every
+   *  single frame, and a transient failure is not punished for five minutes. */
+  private failed = new Map<string, { at: number; tries: number }>();
 
   constructor(
     private readonly dir: string = CACHE_DIR,
     private readonly fetchImpl: typeof fetch = fetch,
+    /** Told about every failure, because the alternative is what actually happened: a background
+     *  that never appeared, on a device nobody can open a console on, with not one line about it
+     *  in the journal the dashboard collects. */
+    private readonly onFail: (message: string) => void = () => {},
   ) {}
 
   private ensureDir(): boolean {
@@ -72,10 +100,11 @@ export class AssetCache {
       /* not cached yet */
     }
 
-    // Don't hammer a URL that has already failed. Five minutes is long enough that a restarted
-    // server is picked up soon, and short enough that a frame loop is not retrying constantly.
-    const failedAt = this.failed.get(url);
-    if (failedAt && Date.now() - failedAt < 5 * 60_000) return null;
+    // Don't hammer a URL that has already failed, but do come back to it quickly the first time.
+    const prev = this.failed.get(url);
+    if (prev) {
+      if (Date.now() - prev.at < retryDelayMs(prev.tries)) return null;
+    }
 
     try {
       const res = await this.fetchImpl(url, {
@@ -103,8 +132,15 @@ export class AssetCache {
       }
       this.failed.delete(url);
       return buf;
-    } catch {
-      this.failed.set(url, Date.now());
+    } catch (err) {
+      const tries = (prev?.tries ?? 0) + 1;
+      this.failed.set(url, { at: Date.now(), tries });
+      const wait = retryDelayMs(tries);
+      // The URL carries this device's token, so only the last part of it is named.
+      const what = url.slice(url.lastIndexOf('/') + 1);
+      this.onFail(
+        `could not fetch ${what} (attempt ${tries}): ${err instanceof Error ? err.message : String(err)} — retrying in ${Math.round(wait / 1000)}s`,
+      );
       return null;
     }
   }

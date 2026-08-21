@@ -348,6 +348,21 @@ span.tl--min:hover { filter: none; transform: none; }
   /* Tabular figures so the ISO timestamps down the left edge form a straight column. */
   font-variant-numeric: tabular-nums;
 }
+/* The console's own pane. Shorter than the journal viewer on purpose: the input under it has to
+   stay on screen while you read the answer, and a 22rem pane pushed it below the fold. */
+.pi-log--short { max-height: 13rem; min-height: 6rem; }
+/* Prompt, input, Run — one line, and the input takes whatever is left. Monospaced to match the pane
+   above it, because a command typed in a proportional face does not line up with its own echo. */
+.pi-console { margin-block-start: 0.5rem; flex-wrap: nowrap; }
+.pi-console__prompt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--color-primary); font-weight: 700; flex-shrink: 0;
+}
+.pi-console__input {
+  flex: 1 1 auto; min-width: 6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem; min-height: 2rem; padding-block: 0.3rem;
+}
 .pi-log {
   margin-block: 0.6rem 0; max-height: 40vh; overflow: auto;
   font-size: 0.74rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word;

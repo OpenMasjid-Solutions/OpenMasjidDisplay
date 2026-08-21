@@ -70,8 +70,49 @@ function Meter({ label, percent, text }: { label: string; percent: number; text:
 /** How long after asking for an install we keep saying "installing" — see the card's own note. */
 const UPDATE_WINDOW_MS = 6 * 60_000;
 
+/** How long to wait for a screen to answer a console command before saying so. Comfortably past
+ *  the device's own 20s kill and the poll that carries the answer, and comfortably inside the
+ *  120s life of a queued command — so "no answer" here means the screen, not the timing. */
+const CONSOLE_WAIT_MS = 45_000;
+
+/**
+ * Keep this window's copy of the device fresh, faster than the page behind it does.
+ *
+ * The Screens page polls every ten seconds, which is right for a wall of cards: it is the cadence
+ * the device checks in at. It is wrong for this window. "Live" logs were being ASKED for every six
+ * seconds and only ARRIVING every ten, so the tail moved in lurches and sometimes appeared to stop;
+ * and a console whose answer takes ten seconds to become visible is not a console.
+ *
+ * So the window polls its own row while it is open, and faster while something is actually pending.
+ * The slower rate for the idle case is not politeness — the row carries the whole collected journal,
+ * which is up to 180 KB, and re-fetching that twice a second to watch a static page is real traffic
+ * through a masjid's tunnel.
+ */
+function useLiveDevice(initial: PiDeviceInfo, everyMs: number): PiDeviceInfo {
+  const [fresh, setFresh] = useState<PiDeviceInfo | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api
+        .piDevices()
+        .then((r) => {
+          const d = r.devices.find((x) => x.id === initial.id);
+          // A failed poll must not blank the window: keep showing the last good answer.
+          if (alive && d) setFresh(d);
+        })
+        .catch(() => {});
+    void load();
+    const t = setInterval(() => void load(), everyMs);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [initial.id, everyMs]);
+  return fresh ?? initial;
+}
+
 export function PiSettings({
-  device,
+  device: initial,
   screenName,
   badge,
   onClose,
@@ -90,6 +131,27 @@ export function PiSettings({
   /** Keep asking, so the log reads like a terminal rather than a snapshot. */
   const [live, setLive] = useState(false);
   const logRef = useRef<HTMLPreElement | null>(null);
+
+  // ── the console ──
+  const [cmd, setCmd] = useState('');
+  /** The scrollback, kept HERE rather than on the server. The device answers one command at a time
+   *  and the store keeps one answer; the conversation only exists in the window having it. */
+  const [term, setTerm] = useState<string[]>([]);
+  const [running, setRunning] = useState(false);
+  const [history, setHistory] = useState<string[]>([]);
+  const [histIdx, setHistIdx] = useState(-1);
+  const termRef = useRef<HTMLPreElement | null>(null);
+  /**
+   * The answer id already shown.
+   *
+   * Seeded from whatever the row arrived with, which matters: the store holds the last answer for
+   * ever, so a window opened a week later would otherwise print a week-old command and its output
+   * as though it had just been run.
+   */
+  const shownRef = useRef<string | null>(null);
+  if (shownRef.current === null) shownRef.current = initial.shellResult?.id ?? '';
+
+  const device = useLiveDevice(initial, live || running ? 2000 : 8000);
 
   const updating = !!device.updateAskedAt && Date.now() - device.updateAskedAt < UPDATE_WINDOW_MS && !device.upToDate;
 
@@ -145,6 +207,61 @@ export function PiSettings({
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     if (atBottom) el.scrollTop = el.scrollHeight;
   }, [device.journal, showLog]);
+
+  /** An answer has arrived. Matched by id, not by "something changed": the row is re-fetched every
+   *  couple of seconds and the same answer would otherwise be printed on every poll. */
+  useEffect(() => {
+    const r = device.shellResult;
+    if (!r || !r.id || r.id === shownRef.current) return;
+    shownRef.current = r.id;
+    const took = r.ms >= 1000 ? `${(r.ms / 1000).toFixed(1)}s` : `${r.ms}ms`;
+    setTerm((t) => [...t, r.out, r.code === 0 ? `[${took}]` : `[exit ${r.code ?? '?'} · ${took}]`].slice(-400));
+    setRunning(false);
+  }, [device.shellResult]);
+
+  /** Say so when nothing comes back, rather than spinning for ever. A screen that is unplugged, or
+   *  one whose agent is too old to know what a console command is, both look like this. */
+  useEffect(() => {
+    if (!running) return;
+    const t = setTimeout(() => {
+      setRunning(false);
+      setTerm((prev) => [...prev, 'No answer from the screen. It may be offline, or running an agent too old for this.']);
+    }, CONSOLE_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [running]);
+
+  useEffect(() => {
+    const el = termRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [term]);
+
+  /** Send one line. It is queued, like everything else here — the screen collects it on its poll. */
+  const runCmd = async () => {
+    const line = cmd.trim();
+    if (!line || running) return;
+    setHistory((h) => [...h.filter((x) => x !== line), line].slice(-50));
+    setHistIdx(-1);
+    setCmd('');
+    setTerm((t) => [...t, `$ ${line}`].slice(-400));
+    setRunning(true);
+    try {
+      await api.piCommand(device.id, 'shell', undefined, line);
+    } catch (e) {
+      setRunning(false);
+      setTerm((t) => [...t, e instanceof Error ? e.message : 'Could not reach the display server.']);
+    }
+  };
+
+  /** Up and down through what has been typed, because a console without that is a form. */
+  const onConsoleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    if (!history.length) return;
+    e.preventDefault();
+    const next = e.key === 'ArrowUp' ? Math.min(history.length - 1, histIdx + 1) : histIdx - 1;
+    setHistIdx(next);
+    setCmd(next < 0 ? '' : history[history.length - 1 - next]);
+  };
 
   return (
     <Modal
@@ -257,6 +374,53 @@ export function PiSettings({
           This is the screen&rsquo;s own record of what it has been doing — which camera it opened, why
           one failed, what happened during setup. Any passwords in it are removed on the screen before
           it is sent.
+        </p>
+      </section>
+
+      <section className="pi-sec">
+        <h3 className="pi-sec__title">Console</h3>
+        <pre className="pi-log pi-log--term pi-log--short" ref={termRef}>
+          {term.length
+            ? term.join('\n')
+            : 'Runs one line on the screen and shows what it said. Try: free -m · vcgencmd measure_temp · nmcli device status'}
+        </pre>
+        <div className="pi-row pi-console">
+          <span className="pi-console__prompt" aria-hidden="true">
+            $
+          </span>
+          <input
+            className="input pi-console__input"
+            value={cmd}
+            onChange={(e) => setCmd(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void runCmd();
+              } else onConsoleKey(e);
+            }}
+            placeholder={running ? 'waiting for the screen…' : 'a command to run on this screen'}
+            aria-label="Command to run on this screen"
+            spellCheck={false}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            disabled={running}
+          />
+          <button className="btn btn--sm btn--primary" disabled={running || !cmd.trim()} onClick={() => void runCmd()}>
+            {running ? <Spinner /> : 'Run'}
+          </button>
+          {term.length > 0 && (
+            <button className="btn btn--ghost btn--sm" onClick={() => setTerm([])} title="Clear this window's scrollback">
+              Clear
+            </button>
+          )}
+        </div>
+        <p className="hint muted pi-note">
+          Commands run as the screen&rsquo;s own account, not as an administrator — so this can look at
+          almost anything and change almost nothing. There is no <code>sudo</code>, each command is
+          given 20 seconds, and only the first 10,000 characters of its output come back. Passwords
+          typed here travel to the screen and are shown back in this window; they are not written to
+          the screen&rsquo;s log.
         </p>
       </section>
 

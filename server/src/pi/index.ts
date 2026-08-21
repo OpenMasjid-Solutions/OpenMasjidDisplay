@@ -28,6 +28,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { Resvg } from '@resvg/resvg-js';
 import { Framebuffer, quietConsole, describeFramebuffer, FB_DEVICE, type FbGeometry } from './framebuffer';
 import { VideoPlayer } from './video';
@@ -39,7 +40,7 @@ import { netFacts, scanNetworks } from './network';
 import { piStats } from './stats';
 import { AssetCache } from './assetCache';
 import { RenderCadence, cadenceAdvice } from './cadence';
-import { renderDisplaySvg, activeAnnouncementImage } from '../render/svg';
+import { renderDisplaySvg, activeAnnouncementImage, frostedBackgroundSvg, dimsFor } from '../render/svg';
 import type { Timetable } from '../types';
 import {
   loadConfig,
@@ -130,9 +131,12 @@ interface PiStateWire {
       | 'wifi-off'
       | 'wifi-join'
       | 'wifi-forget'
-      | 'wifi-rescan';
+      | 'wifi-rescan'
+      | 'shell';
     /** Only ever present for 'wifi-join'. The password is used once and never logged. */
     wifi?: { ssid: string; psk: string };
+    /** Only ever present for 'shell'. One line, run as THIS user — see runShell. */
+    shell?: string;
   } | null;
 }
 
@@ -396,12 +400,122 @@ async function runCommand(
     return;
   }
 
+  if (cmd.action === 'shell') {
+    if (!cmd.shell) {
+      log('a console command arrived with nothing in it; ignoring it');
+      return;
+    }
+    // NOT logged. The panel shows the command back next to its answer, to the person who typed it;
+    // putting it in the agent's own log would copy it into the journal, which is uploaded, kept in
+    // the store and shown in a page — and the first thing anybody types into a console on a screen
+    // that cannot reach its Wi-Fi is an nmcli line with the masjid's passphrase in it.
+    log(`running a console command (${cmd.shell.length} characters)`);
+    const r = await runShell(cmd.shell);
+    live.shellResult = { id: cmd.id, cmd: cmd.shell, out: r.out, code: r.code, ms: r.ms };
+    // Answer now rather than at the next five-minute check-in: somebody is watching the window.
+    live.checkInNow = true;
+    // And expect another command shortly. Somebody with a console open is mid-conversation with the
+    // screen, and a five-second wait to deliver each line makes it unusable for the one job it has.
+    live.fastPollUntil = Date.now() + 60_000;
+    return;
+  }
+
   if (cmd.action === 'reinstall') {
     // Re-runs the whole installer, which is the only thing that can change the service unit, the
     // boot settings and the installed packages. Self-update replaces the agent file and nothing
     // else, so without this a fix in either of those needs somebody at a keyboard.
     requestPrivileged(cmd.id, 'reinstall', 'asked the installer to run again');
   }
+}
+
+/** The state directory when we can use it, otherwise the root.
+ *
+ *  spawn() throws synchronously on a cwd it cannot use, which would turn every console command into
+ *  "could not run that: EACCES" and point the blame at the command rather than at the directory. */
+function shellCwd(): string {
+  const dir = '/var/lib/openmasjid-screen';
+  try {
+    fs.accessSync(dir, fs.constants.R_OK | fs.constants.X_OK);
+    return dir;
+  } catch {
+    return '/';
+  }
+}
+
+/** How long a console command may run before it is killed, and how much of its output is kept.
+ *  Both are bounded because nobody is watching this device: a command that waits for input would
+ *  otherwise wait for ever, and one that prints a filesystem would fill a check-in. */
+const SHELL_TIMEOUT_MS = 20_000;
+const SHELL_MAX_OUT = 10_000;
+
+/**
+ * Run one line from the panel's console, and collect what it said.
+ *
+ * ## What this is allowed to be
+ *
+ * This is the one place the device does something it was not told the shape of in advance, so the
+ * boundary is worth stating precisely. It runs as `omdscreen`, the agent's own account, inside the
+ * agent's own unit — `NoNewPrivileges=yes`, `ProtectSystem=strict`, no write access to /opt, no
+ * capability to reboot the board, no sudo. Every root action this device can perform still goes
+ * through the control spool, whose verb set is closed and stays closed. So a console command can
+ * READ almost anything on the board and can run almost any tool, and it cannot become root, cannot
+ * rewrite the agent, and cannot reach anything the agent could not already reach.
+ *
+ * That is a real widening of what an admin can do to a screen, and it is deliberate: debugging a
+ * screen on a wall in another building otherwise means asking somebody to carry a keyboard to it.
+ *
+ * ## Why `sh -c` and not an argument list
+ *
+ * A console is only useful if a pipe is a pipe. Building an argv here would mean reimplementing a
+ * shell badly, and the thing an argv protects against — an attacker who controls part of a command
+ * line — is not the situation: the whole line comes from an authenticated admin in the panel, and
+ * a shell is what they asked for. Note the contrast with the media pipeline, where the URL comes
+ * from a config field and ffmpeg is therefore ALWAYS spawned as an array with no shell anywhere
+ * near it. Different threat, different rule.
+ */
+function runShell(cmd: string): Promise<{ out: string; code: number | null; ms: number }> {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    let out = '';
+    let done = false;
+    const finish = (code: number | null, note = ''): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const text = (out + note).slice(0, SHELL_MAX_OUT);
+      resolve({ out: text || '(no output)', code, ms: Date.now() - started });
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn('/bin/sh', ['-c', cmd], {
+        // Its own state directory, because it is the one place this user may write — with a fallback
+        // when it is not reachable at all; see shellCwd.
+        cwd: shellCwd(),
+        // A deliberately plain environment. The agent's own has the server address and nothing
+        // secret in it, but "nothing secret in it" is a property that has to be re-checked every
+        // time somebody adds a variable, and a console does not need it to be true.
+        env: { PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', HOME: '/var/lib/openmasjid-screen', TERM: 'dumb', LC_ALL: 'C' },
+        // No terminal, and stdin closed at once: a command that prompts gets EOF and gives up,
+        // rather than sitting there until the timeout with nobody able to answer it.
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (e) {
+      return resolve({ out: `could not run that: ${(e as Error).message}`, code: null, ms: Date.now() - started });
+    }
+    const take = (chunk: Buffer): void => {
+      if (out.length < SHELL_MAX_OUT) out += chunk.toString('utf8');
+    };
+    child.stdout?.on('data', take);
+    // Interleaved rather than labelled, because that is what a terminal shows and most tools say
+    // the useful half of what they say on stderr.
+    child.stderr?.on('data', take);
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(null, `\n[stopped after ${SHELL_TIMEOUT_MS / 1000}s]`);
+    }, SHELL_TIMEOUT_MS);
+    child.on('error', (e) => finish(null, `\n[could not run: ${e.message}]`));
+    child.on('close', (code) => finish(code));
+  });
 }
 
 /**
@@ -442,6 +556,11 @@ function requestPrivileged(id: string, verb: PrivilegedVerb, said: string): void
 /** Where root leaves the journal it collected for us. */
 const JOURNAL_PATH = '/var/lib/openmasjid-screen/journal.txt';
 
+/** Upload backoff for that file. Without it, a server that will not take the log is re-sent it on
+ *  every pass of the poll loop — a rejected 90 KB POST every few seconds, for ever. */
+let journalRetryAt = 0;
+let journalTries = 0;
+
 /**
  * Send the journal root collected, and delete it once the server has it.
  *
@@ -455,6 +574,7 @@ const JOURNAL_PATH = '/var/lib/openmasjid-screen/journal.txt';
  * time a route cap and its payload disagreed, every check-in was silently discarded for weeks.
  */
 async function sendJournal(cfg: AgentConfig): Promise<void> {
+  if (Date.now() < journalRetryAt) return;
   let text = '';
   try {
     if (!fs.existsSync(JOURNAL_PATH)) return;
@@ -473,8 +593,33 @@ async function sendJournal(cfg: AgentConfig): Promise<void> {
     } catch {
       /* it will simply be overwritten next time */
     }
+    journalTries = 0;
+    journalRetryAt = 0;
     log(`sent ${text.length} bytes of log to the dashboard`);
+    return;
   }
+
+  // It failed, and until now that was silent — which is how a server whose route did not exist
+  // could answer 401 to every upload for as long as the feature had been shipped, with nothing on
+  // the device and nothing in the dashboard to say so.
+  journalTries += 1;
+  // A 4xx is the server refusing THIS body, and it will refuse it identically for ever; anything
+  // else (a timeout, a rate limit, a 5xx, no network at all) is worth waiting out. So one is
+  // dropped with a reason and the other is retried, slower each time.
+  const refused = status >= 400 && status < 500 && status !== 408 && status !== 429;
+  if (refused) {
+    try {
+      fs.unlinkSync(JOURNAL_PATH);
+    } catch {
+      /* it will be overwritten by the next collection */
+    }
+    journalTries = 0;
+    journalRetryAt = 0;
+    log(`the display server refused a ${text.length}-byte log upload (HTTP ${status}); dropped it — ask for the log again once the server is up to date`);
+    return;
+  }
+  journalRetryAt = Date.now() + Math.min(5_000 * 2 ** (journalTries - 1), 5 * 60_000);
+  log(`log upload failed (HTTP ${status}); retrying in ${Math.round((journalRetryAt - Date.now()) / 1000)}s`);
 }
 
 /**
@@ -500,7 +645,12 @@ function readWifiResult(): { ok: boolean | null; detail: string } | undefined {
 }
 
 /** Tell the server what this device is, how it is attached, and what it has been saying. */
-async function checkIn(cfg: AgentConfig, facts: DeviceFacts): Promise<void> {
+async function checkIn(
+  cfg: AgentConfig,
+  facts: DeviceFacts,
+  /** the answer to a console command, if one is waiting to be carried */
+  shellResult?: { id: string; cmd: string; out: string; code: number | null; ms: number } | null,
+): Promise<void> {
   // Gathered fresh on every check-in rather than once at startup: a cable being pulled out is
   // exactly the event this exists to show, and it happens long after boot.
   const net = await netFacts();
@@ -519,6 +669,7 @@ async function checkIn(cfg: AgentConfig, facts: DeviceFacts): Promise<void> {
     // Cheap enough to send every time: three world-readable files, no privilege, no subprocess.
     stats: piStats(),
     wifiResult: readWifiResult(),
+    shellResult: shellResult ?? undefined,
   }).catch(() => ({ httpStatus: 0 }));
 }
 
@@ -603,6 +754,21 @@ class Live {
   forgotten = false;
   /** set by a "logs" command so the check-in loop stops waiting and reports at once */
   checkInNow = false;
+  /**
+   * The background, already frosted — and what it was frosted FROM, so a changed wallpaper cannot
+   * keep being drawn as the old one.
+   *
+   * Held here rather than in the AssetCache because it is not an asset: it is derived from one, at a
+   * size that depends on the timetable, and it is worthless the moment either changes. See
+   * frostOnce for the measurement that makes it worth holding at all.
+   */
+  frosted: string | null = null;
+  frostedSrc: string | null = null;
+  frostedDims = '';
+  /** the answer to the last console command, until a check-in has carried it */
+  shellResult: { id: string; cmd: string; out: string; code: number | null; ms: number } | null = null;
+  /** while this is in the future, poll faster — see the 'shell' branch of runCommand */
+  fastPollUntil = 0;
 
   serverTime(): Date {
     return new Date(Date.now() + this.clockOffsetMs);
@@ -639,6 +805,20 @@ async function resolveAssets(live: Live, cache: AssetCache, server: string): Pro
   for (const url of [...live.images.keys()]) if (!urls.includes(url)) live.images.delete(url);
   cache.prune([...urls, ...st.fonts.map((u) => absolute(u, server) ?? u)]);
 
+  // Once the background itself is in hand, blur it — see frostOnce. Skipped entirely by a screen
+  // with no custom background, which is most of them.
+  const bgUri = imageFor(live, st.assets.background);
+  if (bgUri && st.timetable) {
+    const { width, height } = dimsFor(st.timetable.orientation, st.timetable.quality);
+    frostOnce(live, bgUri, width, height);
+  } else if (!bgUri && live.frosted) {
+    // The wallpaper was removed. Drop it rather than hold a megabyte for a screen that is now
+    // drawing the themed scene.
+    live.frosted = null;
+    live.frostedSrc = null;
+    live.frostedDims = '';
+  }
+
   const fontUrls = st.fonts.map((u) => absolute(u, server)).filter((u): u is string => !!u);
   if (fontUrls.length && live.fontFiles.length !== fontUrls.length) {
     const files: string[] = [];
@@ -650,6 +830,45 @@ async function resolveAssets(live: Live, cache: AssetCache, server: string): Pro
       live.fontFiles = files;
       log(`fonts ready: ${files.length} face(s) from the display server`);
     }
+  }
+}
+
+/**
+ * Blur the background once, instead of once a frame.
+ *
+ * Measured with resvg on a Raspberry Pi 4, drawing a real masjid's 1080p timetable with its own
+ * wallpaper: 4764 ms a frame with the frost, 966 ms with the frost removed, 758 ms with no wallpaper
+ * at all. The blur is 3.8 seconds of every frame — and it is the same blur of the same photograph
+ * every time. The screen's cadence controller did exactly what it was built to do with that and
+ * slowed the redraw to once every five seconds, so a masjid that set a wallpaper got a clock that
+ * visibly lurched, with nothing in the panel to connect the two.
+ *
+ * So: rasterise the frosted layer here, on the POLL loop, and let every frame draw the result. It
+ * belongs on the poll loop rather than in drawFrame for two reasons — the draw loop's timing is what
+ * the cadence is measured from, and a one-off four-second frame would peg that measurement at the
+ * cost it is meant to be removing.
+ *
+ * Failure is not fatal: leave `frosted` null and the frame draws the unblurred original through the
+ * renderer's own filter, which is slow and correct rather than fast and wrong.
+ */
+function frostOnce(live: Live, bgUri: string, width: number, height: number): void {
+  const dims = `${width}x${height}`;
+  if (live.frosted && live.frostedSrc === bgUri && live.frostedDims === dims) return;
+  const t0 = Date.now();
+  try {
+    const png = new Resvg(frostedBackgroundSvg(bgUri, width, height), {
+      fitTo: { mode: 'width', value: width },
+    })
+      .render()
+      .asPng();
+    live.frosted = `data:image/png;base64,${png.toString('base64')}`;
+    live.frostedSrc = bgUri;
+    live.frostedDims = dims;
+    log(`frosted the background once in ${Date.now() - t0}ms; every frame after this skips that blur`);
+  } catch (e) {
+    live.frosted = null;
+    live.frostedSrc = null;
+    log('could not pre-blur the background; drawing it the slow way:', (e as Error).message);
   }
 }
 
@@ -690,8 +909,17 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
     ? (st.assets.announcements.find((u) => u.endsWith(encodeURIComponent(annFile))) ?? null)
     : null;
 
+  // The pre-blurred layer is used only when it was made from THIS background at THIS size. Either
+  // having just changed leaves it stale for one poll, and drawing a stale wallpaper is exactly the
+  // bug this whole area keeps producing — so the guard is on both, and the fallback is the correct
+  // slow path rather than the wrong fast one.
+  const bgUri = imageFor(live, st.assets.background);
+  const { width: fw, height: fh } = dimsFor(tt.orientation, tt.quality);
+  const preblurred = !!bgUri && !!live.frosted && live.frostedSrc === bgUri && live.frostedDims === `${fw}x${fh}`;
+
   const svg = renderDisplaySvg(tt, now, {
-    bg: imageFor(live, st.assets.background),
+    bg: preblurred ? live.frosted : bgUri,
+    bgPreblurred: preblurred,
     logo: imageFor(live, st.assets.logo),
     announcement: imageFor(live, annUrl),
     bgLight: st.bgLight,
@@ -775,7 +1003,10 @@ async function runAdopted(
       await resolveAssets(live, cache, cfg.server).catch(() => {
         /* a missing image draws the themed scene instead; the next poll tries again */
       });
-      await sleep(pollMs);
+      // A console open in the panel shortens the wait, for a minute at a time. Bounded, and only
+      // ever set by having just run something: a screen nobody is looking at is back to five
+      // seconds within a minute, so this cannot become a device that polls hard for ever.
+      await sleep(Date.now() < live.fastPollUntil ? Math.min(pollMs, 1200) : pollMs);
     }
   };
 
@@ -786,7 +1017,12 @@ async function runAdopted(
   // picked up an update and which have not.
   const checkin = async (): Promise<void> => {
     while (!live.forgotten) {
-      await checkIn(cfg, facts);
+      // Taken BEFORE the post and cleared after it: an answer must be handed over exactly once, and
+      // a second command answered while this one is in flight has to survive rather than be
+      // overwritten by clearing the field afterwards.
+      const answer = live.shellResult;
+      await checkIn(cfg, facts, answer);
+      if (answer && live.shellResult === answer) live.shellResult = null;
       // A "logs" request is answered by checking in early rather than by anything privileged, so
       // the wait is interruptible.
       for (let i = 0; i < CHECKIN_MS / 1000 && !live.forgotten; i++) {
@@ -946,7 +1182,10 @@ async function main(): Promise<void> {
     log(`minted a device identity: ${live.deviceId}`);
   }
 
-  const cache = new AssetCache();
+  // The failure hook is the point of passing anything here: a background that will not download
+  // used to be completely silent, so the only symptom was a screen showing the themed scene while
+  // the dashboard insisted a wallpaper was set.
+  const cache = new AssetCache(undefined, undefined, (m) => log('asset:', m));
 
   for (;;) {
     if (!live.token) {

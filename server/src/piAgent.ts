@@ -120,6 +120,8 @@ export interface EnrolInput {
   networks?: unknown;
   /** load, memory and temperature, for the dashboard readout */
   stats?: unknown;
+  /** the answer to a console command, if one was asked for since the last check-in */
+  shellResult?: unknown;
   /** what root reported about the last join it was asked to make */
   wifiResult?: unknown;
 }
@@ -278,7 +280,14 @@ export interface PiState {
   screenName: string;
   /** What the panel has asked this device to do, if anything. Collected on the device's own poll,
    *  because nothing can connect to it. */
-  command: { id: string; action: PiCommandAction } | null;
+  command: {
+    id: string;
+    action: PiCommandAction;
+    /** only for 'wifi-join' */
+    wifi?: { ssid: string; psk: string };
+    /** only for 'shell' */
+    shell?: string;
+  } | null;
 }
 
 const asset = (base: string, token: string, file: string) =>
@@ -442,6 +451,28 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput, n
       .filter((n) => n.ssid);
   }
 
+  // The answer to a console command. Re-derived field by field like everything else a device sends:
+  // `out` goes straight into a <pre> in the panel, and the cap here is what stops a command whose
+  // output is a gigabyte from being stored. The device caps itself too, and neither cap is the
+  // other's excuse.
+  if (input.shellResult && typeof input.shellResult === 'object' && !Array.isArray(input.shellResult)) {
+    const o = input.shellResult as Record<string, unknown>;
+    // typeof, not Number(): Number(null) is 0, and the device sends null for a command it had to
+    // kill — which would have recorded a timed-out command as having exited successfully.
+    const code = typeof o.code === 'number' && Number.isInteger(o.code) ? o.code : null;
+    const ms = Number(o.ms);
+    device.shellResult = {
+      id: str(o.id, 40),
+      cmd: str(o.cmd, SHELL_MAX_CMD),
+      // Newline and tab kept, colour sequences and everything else dropped — the same reasoning as
+      // the journal, and the same function, so the two cannot disagree about it.
+      out: keepLines(typeof o.out === 'string' ? o.out : '', SHELL_MAX_OUT),
+      code,
+      ms: Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : 0,
+      at: new Date(nowMs).toISOString(),
+    };
+  }
+
   if (input.wifiResult && typeof input.wifiResult === 'object') {
     const o = input.wifiResult as Record<string, unknown>;
     device.wifiResult = {
@@ -506,6 +537,14 @@ export const PI_COMMANDS = [
   'wifi-join',
   'wifi-forget',
   'wifi-rescan',
+  // One line, run by the AGENT as its own unprivileged user — deliberately NOT through the root
+  // control spool. That spool matches a verb out of a fixed set with a filter that keeps only
+  // lowercase letters and dashes, and its narrowness is the only thing making root's side of this
+  // device simple enough to reason about; a verb meaning "run this string" would end that property
+  // for every other verb too. So a console command gets exactly what the agent already has: no way
+  // past NoNewPrivileges, no write access to /opt, no ability to reboot the board. It is a window
+  // into the screen, not a way past its walls.
+  'shell',
 ] as const;
 export type PiCommandAction = (typeof PI_COMMANDS)[number];
 
@@ -526,6 +565,8 @@ export interface PiCommand {
   issuedAt: number;
   /** Only for 'wifi-join'. Held just long enough for the device to collect it — see queueCommand. */
   wifi?: { ssid: string; psk: string };
+  /** Only for 'shell'. The line to run, already validated. */
+  shell?: string;
 }
 
 export function isPiCommand(v: unknown): v is PiCommandAction {
@@ -545,6 +586,7 @@ export function queueCommand(
   action: PiCommandAction,
   nowMs: number,
   wifi?: { ssid: string; psk: string },
+  shell?: string,
 ): PiCommand | null {
   const device = db.piDevices?.find((d) => d.id === deviceId);
   if (!device || !device.token) return null;
@@ -566,6 +608,7 @@ export function queueCommand(
   // the click and the device's next poll, which it must: losing it would leave somebody wondering
   // why nothing happened. It is never logged, and never returned by any read endpoint.
   if (action === 'wifi-join' && wifi) device.command.wifi = wifi;
+  if (action === 'shell' && shell) device.command.shell = shell;
   return device.command;
 }
 
@@ -573,10 +616,12 @@ export function queueCommand(
 export function pendingCommand(
   device: PiDevice,
   nowMs: number,
-): { id: string; action: PiCommandAction; wifi?: { ssid: string; psk: string } } | null {
+): { id: string; action: PiCommandAction; wifi?: { ssid: string; psk: string }; shell?: string } | null {
   const c = device.command;
   if (!c || nowMs - c.issuedAt > PI_COMMAND_TTL_MS) return null;
-  return c.wifi ? { id: c.id, action: c.action, wifi: c.wifi } : { id: c.id, action: c.action };
+  if (c.wifi) return { id: c.id, action: c.action, wifi: c.wifi };
+  if (c.shell) return { id: c.id, action: c.action, shell: c.shell };
+  return { id: c.id, action: c.action };
 }
 
 /**
@@ -652,21 +697,64 @@ export function ackCommand(db: DB, deviceId: string, id: string): void {
  * wall of text. That is why this does not reuse `str()` — that strips every control character, which
  * would turn eight hundred lines into one.
  */
+/**
+ * Keep the END of a string, dropping colour sequences and control characters except newline and tab.
+ *
+ * Shared by the journal and the console answer because they are the same problem: device text that
+ * goes into a <pre>, where `str()`'s "strip every control character" would collapse eight hundred
+ * lines into one, and where the interesting end is the part a naive truncation throws away.
+ *
+ * The ORDER here is the whole of it, and it was wrong. Dropping control characters first removes the
+ * ESC byte and leaves its tail behind as literal text, so an installer step that printed a cyan
+ * heading was stored as "[36mStep 1[0m" — and `stripAnsi` on the way out could no longer match it,
+ * because the escape it looks for had already been eaten. The panel therefore showed exactly the
+ * litter the two functions existed together to prevent. Sequences go first, then characters.
+ */
+function keepLines(text: string, max: number): string {
+  const clean = stripAnsi(text);
+  const clipped = clean.length > max ? clean.slice(-max) : clean;
+  let out = '';
+  for (const ch of clipped) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c === 10 || c === 9 || (c >= 32 && c !== 127)) out += ch;
+  }
+  return out;
+}
+
+/** What a console command may be, and how much of its answer is kept. The device obeys both too. */
+export const SHELL_MAX_CMD = 400;
+export const SHELL_MAX_OUT = 10_000;
+
+/**
+ * One line for a screen to run, checked on the way in.
+ *
+ * Not an allowlist of commands, deliberately. An allowlist is the right shape for the ROOT verbs,
+ * where the set of things worth doing is small and known; a console exists precisely for the
+ * question nobody anticipated, and one that only ran commands somebody had thought of in advance
+ * would be the panel's existing buttons with more typing. What bounds this instead is WHO runs it:
+ * the agent's own unprivileged account, inside its own sandbox. See PI_COMMANDS.
+ *
+ * So the checks here are about shape, not permission: one line, bounded, and no control character
+ * that could split it into two commands somewhere further down.
+ */
+export function normShellCommand(raw: unknown): { cmd: string } | { error: string } {
+  if (typeof raw !== 'string') return { error: 'Type a command to run.' };
+  const cmd = raw.trim();
+  if (!cmd) return { error: 'Type a command to run.' };
+  if (cmd.length > SHELL_MAX_CMD) return { error: `Keep it under ${SHELL_MAX_CMD} characters.` };
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return { error: 'One line at a time — no line breaks.' };
+  }
+  return { cmd };
+}
+
 export function setDeviceJournal(db: DB, deviceId: string, journal: string, nowMs: number): void {
   const device = db.piDevices?.find((d) => d.id === deviceId);
   if (!device) return;
   // Keep the END, not the start: the useful part of a log is the most recent, and the device already
   // sends the tail. Truncating from the front would silently discard what somebody is looking for.
-  const clipped = journal.length > 200_000 ? journal.slice(-200_000) : journal;
-  let out = '';
-  for (const ch of clipped) {
-    const c = ch.codePointAt(0) ?? 0;
-    if (c === 10 || c === 9) out += ch;
-    else if (c >= 32 && c !== 127) out += ch;
-    // else: dropped. ANSI escapes arrive as ESC (27) plus printable text, so the escape byte goes
-    // and its "[36m" tail would remain — see stripAnsi, which the panel applies for that reason.
-  }
-  device.journal = out;
+  device.journal = keepLines(journal, 200_000);
   device.journalAt = new Date(nowMs).toISOString();
 }
 
@@ -678,6 +766,8 @@ export function setDeviceJournal(db: DB, deviceId: string, journal: string, nowM
  * worse than leaving it coloured — so the whole sequence goes, here, where it can be tested.
  */
 export function stripAnsi(s: string): string {
+  // `?` is in the class because private-mode sequences (`ESC[?25l`, hiding the cursor) are common in
+  // anything that draws progress, and one that slipped through would leave "[?25l" in the page.
   // eslint-disable-next-line no-control-regex
-  return s.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+  return s.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
 }

@@ -23,6 +23,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { readJsonBody, BODY_TOO_LARGE } from './httpio';
+import { SHELL_MAX_CMD, SHELL_MAX_OUT } from './piAgent';
 
 /** The cap the /seen route actually uses, read from the source so the test cannot go stale. */
 function seenCap(): number {
@@ -50,6 +51,10 @@ function maximalBody(): Record<string, unknown> {
     })),
     net: { link: 'wifi', ssid: 'n'.repeat(32), signal: 70, radio: true, hasWifi: true },
     wifiResult: { ok: true, detail: 'd'.repeat(200) },
+    // The answer to a console command rides the same check-in, and it is the second largest thing
+    // in it. Sized from the store's own caps rather than from a guess, for the same reason as the
+    // rest of this object: the cap and the payload have to be reasoned about together or they drift.
+    shellResult: { id: 'c_' + 'f'.repeat(38), cmd: 'c'.repeat(SHELL_MAX_CMD), out: 'o'.repeat(SHELL_MAX_OUT), code: 0, ms: 1234 },
   };
 }
 

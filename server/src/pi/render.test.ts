@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { intervalForRenderMs, RenderCadence, cadenceAdvice, MAX_DUTY, TARGET_INTERVAL_MS } from './cadence';
-import { AssetCache, MAX_ASSET_BYTES } from './assetCache';
+import { AssetCache, MAX_ASSET_BYTES, retryDelayMs } from './assetCache';
 
 // ── how often to draw ────────────────────────────────────────────────────────
 
@@ -174,6 +174,49 @@ test('a WebP is refused, because the renderer cannot decode one', async () => {
 test('an oversized asset cannot fill the SD card', async () => {
   const cache = new AssetCache(tmpdir(), okFetch(PNG_1PX, { 'content-length': String(MAX_ASSET_BYTES + 1) }));
   assert.equal(await cache.dataUri('http://s/huge.png'), null);
+});
+
+/**
+ * How long a failure costs, which is the difference between a bug and a wallpaper.
+ *
+ * This was a flat five minutes, and the number had been chosen against the wrong failure. The one
+ * that actually happens is not "this URL is wrong", it is "the first fetch after a restart lost a
+ * race" — the network still settling, the server still coming up, a Wi-Fi association half made.
+ *
+ * The background is the FIRST asset the agent asks for, so it is the one that eats that race, and
+ * a flat five minutes meant the most visible thing on the screen was missing for five minutes while
+ * the logo and every announcement image — asked for afterwards, once the network was up — arrived
+ * immediately. Measured on a real Pi 4: logo and three announcement images cached at 21:44, the
+ * background at 21:49, and in between, a screen showing the themed scene while the dashboard
+ * insisted a wallpaper was set. It read exactly as "the custom background does not work".
+ */
+test('a transient failure costs seconds, not minutes', () => {
+  assert.ok(retryDelayMs(1) <= 10_000, `first retry after ${retryDelayMs(1)}ms is too long to wait for a wallpaper`);
+  assert.ok(retryDelayMs(1) >= 1_000, 'and not so soon that it is a request per frame');
+});
+
+test('a URL that is genuinely wrong still settles down', () => {
+  // The other half: doubling has to end somewhere, or a screen left running for a week would be
+  // asking about a deleted image once an hour and then once a day.
+  assert.equal(retryDelayMs(2), retryDelayMs(1) * 2, 'it doubles');
+  assert.equal(retryDelayMs(20), retryDelayMs(21), 'and then it stops doubling');
+  assert.ok(retryDelayMs(99) <= 5 * 60_000, 'capped at the old flat interval, which was fine as a CEILING');
+});
+
+test('a failure is reported, because a background that never arrives said nothing at all', () => {
+  // The whole reason this took a framebuffer capture and a directory listing to diagnose: the
+  // fetch failed silently, so the journal the dashboard collects had not one line about it.
+  const said: string[] = [];
+  const cache = new AssetCache(tmpdir(), (async () => {
+    throw new Error('socket hang up');
+  }) as unknown as typeof fetch, (m) => said.push(m));
+  return cache.dataUri('http://s/pi/SECRETTOKEN/asset/bg.jpg').then(() => {
+    assert.equal(said.length, 1);
+    assert.match(said[0], /bg\.jpg/, 'it has to name which asset');
+    assert.match(said[0], /socket hang up/, 'and why');
+    assert.match(said[0], /retrying in/, 'and when it will try again');
+    assert.ok(!said[0].includes('SECRETTOKEN'), 'the device token has no business in a log line');
+  });
 });
 
 test('a failed fetch is not retried on every single frame', async () => {

@@ -12,6 +12,39 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- **A screen’s log button did nothing at all.** The screen collected its log and tried to send it,
+  and the display server answered every upload with “please sign in” — the address the screen posts
+  to was not on the list of addresses a screen is allowed to use, so the log was rejected as though
+  a stranger had sent it. Nothing said so at either end: the button looked like a feature that had
+  never been built. Fixed, and a screen now writes a line in its own log when an upload is refused
+  instead of silently retrying a 90 KB file every few seconds for ever.
+- **A custom background could go missing for five minutes after a screen restarted.** The background
+  is the first thing a screen fetches, so it is the one that absorbs any hiccup as the network comes
+  up — and a single failed attempt used to mean waiting five minutes before trying again, while the
+  logo and every announcement image (fetched afterwards, once the network was ready) arrived at once.
+  The screen showed its themed scene in the meantime, which looked exactly like the wallpaper being
+  ignored. A failed fetch is now retried within seconds, and says in the log which image failed and
+  why.
+- **A screen with a custom background redrew once every five seconds instead of once a second**, so
+  its clock visibly lurched and the countdown jumped. Blurring the wallpaper was costing nearly four
+  seconds of every single frame — the same blur of the same photograph, over and over. It is now done
+  once, when the wallpaper arrives. Measured on a Raspberry Pi 4 with a real masjid’s timetable: from
+  one redraw every five seconds to one every second, with no change to how it looks.
+- Coloured text in a collected log arrived as litter — `[36m` and `[0m` scattered through it — because
+  the colour codes were being half-removed. The log now reads cleanly.
+- A console command that had to be stopped for running too long is no longer recorded as having
+  succeeded.
+
+### Added
+- **A console for a Raspberry Pi screen**, behind the gear on its card. Type a command, see what the
+  screen said — for the times when a screen on a wall in another building is behaving oddly and the
+  buttons do not cover it. Commands run as the screen’s own limited account, not as an administrator,
+  so this can look at almost anything and change almost nothing; each one is given twenty seconds.
+  Up and down arrows walk back through what you have typed.
+- The Raspberry Pi window now refreshes itself several times faster than the page behind it, so a live
+  log actually moves and a console answer appears when it arrives rather than up to ten seconds later.
+
 ### Changed
 - **A Raspberry Pi screen’s settings now live behind a gear on its card.** Update, Reboot and Wi-Fi
   used to sit as four buttons on the card itself, which pushed what the screen is actually showing

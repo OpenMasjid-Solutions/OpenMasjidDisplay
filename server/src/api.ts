@@ -38,6 +38,7 @@ import {
   ackCommand,
   isPiCommand,
   normWifiJoin,
+  normShellCommand,
   type PiCommandAction,
   findDeviceByToken,
   findPendingByCode,
@@ -479,7 +480,7 @@ export function createApi(deps: Deps) {
       // it can only ever create a PENDING row. Content requires a token, and a token only
       // exists once an admin has typed the code shown on that screen.
       const piMatch =
-        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|command-ack|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(
+        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|logs|command-ack|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(
           pathname,
         );
       if (piMatch) {
@@ -561,7 +562,13 @@ export function createApi(deps: Deps) {
           //
           // The enrolment route next door already had twice this cap for a much thinner body, which
           // is the clearest sign 2,000 was never sized against anything.
-          const SEEN_MAX_BYTES = 32_000;
+          //
+          // 48_000 since the console: a command’s answer rides this check-in too, and the store keeps
+          // up to SHELL_MAX_OUT characters of output plus the command that produced it. The maximal
+          // body the store will accept measures about 38KB, and JSON-encoding inflates output that is
+          // full of tabs and quotes — so the cap is that, rounded up, and checkInSize.test.ts fails if
+          // the two ever pass each other again.
+          const SEEN_MAX_BYTES = 48_000;
           const body = await readBody(req, SEEN_MAX_BYTES).catch((e: unknown) => e);
           if (body instanceof Error) {
             // Say so, rather than answering 200 to something that was thrown away. An older agent
@@ -1558,6 +1565,10 @@ export function createApi(deps: Deps) {
             // consumer gets it readable. Absent until somebody asks for it.
             journal: d.journal ? stripAnsi(d.journal) : undefined,
             journalAt: d.journalAt,
+            // The answer to the last console command. ANSI-stripped for the same reason the journal
+            // is: plenty of commands colour their output, and a stray "[36m" in a <pre> reads as a
+            // fault in the tool rather than in the terminal showing it.
+            shellResult: d.shellResult ? { ...d.shellResult, out: stripAnsi(d.shellResult.out) } : undefined,
             networks: d.networks ?? [],
             stats: d.stats,
             statsAt: d.statsAt,
@@ -1603,7 +1614,7 @@ export function createApi(deps: Deps) {
       if (piCmd && method === 'POST') {
         // Room for a Wi-Fi passphrase now, so the cap is no longer 1KB.
         const body = (await readBody(req, 4_000).catch(() => null)) as
-          | { action?: unknown; wifi?: unknown }
+          | { action?: unknown; wifi?: unknown; shell?: unknown }
           | null;
         if (!isPiCommand(body?.action)) return sendJson(res, 400, { error: 'Unknown action.' });
         const action = body!.action as PiCommandAction;
@@ -1619,14 +1630,32 @@ export function createApi(deps: Deps) {
           wifi = parsed;
         }
 
+        // A console command. Shape-checked here so somebody typing gets told immediately; what
+        // BOUNDS it is that the device runs it as its own unprivileged user and never through the
+        // root spool — see PI_COMMANDS.
+        let shell: string | undefined;
+        if (action === 'shell') {
+          const parsed = normShellCommand(body!.shell);
+          if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
+          shell = parsed.cmd;
+        }
+
         let queued: ReturnType<typeof queueCommand> = null;
         store.update((db) => {
-          queued = queueCommand(db, piCmd[1], action, Date.now(), wifi);
+          queued = queueCommand(db, piCmd[1], action, Date.now(), wifi, shell);
         });
         if (!queued) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
         // The network NAME is fine in a log — it is broadcast on the air. The passphrase never is,
         // and there is no branch here that could put it in one.
-        log.info(`queued "${action}"${wifi ? ` for network "${wifi.ssid}"` : ''} for pi device ${piCmd[1]}`);
+        //
+        // Neither is the console command, and that one is a judgement rather than an absolute: it is
+        // text an admin typed, and the first thing anybody types into a console on a screen that
+        // cannot reach its Wi-Fi is an nmcli line with a passphrase in it. Its LENGTH says as much
+        // as the server's own log needs to; the command itself comes back in the answer, where the
+        // person who typed it is the one reading.
+        log.info(
+          `queued "${action}"${wifi ? ` for network "${wifi.ssid}"` : ''}${shell ? ` (${shell.length} characters)` : ''} for pi device ${piCmd[1]}`,
+        );
         return sendJson(res, 202, { queued: true });
       }
 
