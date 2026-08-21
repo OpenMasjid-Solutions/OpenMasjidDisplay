@@ -2647,12 +2647,20 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   };
 
   if (opts.announcement) {
-    // Full screen, edge to edge (cover-fit, so an odd-aspect upload never letterboxes) —
-    // not the old sidebar composite, which squeezed a parking-alert card or a poster
-    // designed to be read on its own next to a shrunk timetable neither half did well.
-    // The reminder/ticker band below still draws OVER this, same as over the normal
-    // layout — an Iqāmah-change notice must survive the slideshow, not hide behind it.
-    out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`);
+    // Full screen — one layout for the normal timetable, a completely different one the
+    // moment a slideshow image is active — not the old sidebar composite, which squeezed a
+    // parking-alert card or a poster designed to be read on its own next to a shrunk
+    // timetable neither half did well.
+    //
+    // Contain-fit (meet), not cover-fit (slice): screens here are 16:9 almost always, but the
+    // IMAGES are not — a portrait Iqamah-change poster or an arbitrary uploaded photo is
+    // routinely a very different aspect ratio. Cover-fit scales the image up until it fills
+    // the frame and crops whatever doesn't fit, which for a poster far from 16:9 means a huge
+    // zoomed-in crop showing a fraction of the image — reported as the slideshow looking
+    // "huge" on real screens. Contain-fit always shows the WHOLE image, letterboxed against
+    // the scene/flat colour already painted behind it, which is the one thing this app can
+    // guarantee looks intentional rather than broken for an image of unknown proportions.
+    out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet"/>`);
   } else {
     out.push(isSimple ? layoutSimple(area, m, ctx) : layoutReference(area, m, ctx));
   }
