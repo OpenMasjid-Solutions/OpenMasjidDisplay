@@ -13,13 +13,15 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
-- **The full-screen announcement slideshow looked "huge" on real screens.** It was cover-fit
-  (scale up until the image fills the frame, cropping whatever doesn't fit), which is fine when
-  the image and the screen share an aspect ratio and looks like a broken zoom otherwise —
-  screens here are 16:9 almost always, but the images (a portrait Iqamah-change poster,
-  an arbitrary uploaded photo) routinely aren't. Switched to contain-fit: the whole image always
-  shows, letterboxed against the scene/flat colour already behind it, rather than an
-  unpredictable crop of an unknown fraction of it.
+- **The full-screen announcement slideshow — settled on cover-fit, filling the wall.**
+  `announcements.images` is an admin's own upload (a flyer, a photo), with no size or shape
+  this app controls, so there is no "fix the source" option the way there would be for
+  something this app generates itself. A contain-fit pass (show the whole image, letterboxed)
+  was tried in between, on the theory that showing all of an image beats cropping any of it —
+  on a real screen it did the opposite of what a wall display needs: an upload that isn't 16:9
+  (most aren't) shrank to a fraction of the screen, and its text went with it. Cover-fit crops
+  whatever overflows, evenly from the centre, but every slide fills the wall at full size —
+  which for something meant to be read from across a room is the trade-off that matters.
 
 ### Changed
 - **The Simple layout's prayer table now has a light gap between rows instead of one solid
