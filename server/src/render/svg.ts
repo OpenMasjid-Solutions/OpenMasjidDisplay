@@ -1788,33 +1788,45 @@ export function prayerIcon(key: string, cx: number, cy: number, r: number): stri
         rays(3, 30, 150, SUN)
       );
     case 'isha': {
-      // A crescent moon, alone (no cloud) — filling most of the icon's own box.
+      // A crescent moon: a TRUE boolean subtraction (outer disc minus the overlapping
+      // "bite" circle), not two full circles combined with fill-rule="evenodd". That
+      // distinction is the whole story of getting this icon right across three attempts:
       //
-      // Built as two FULL circles (each just "two semicircle arcs", never a mismatched
-      // chord/radius) combined with fill-rule="evenodd": the smaller "bite" circle sits
-      // entirely inside the disc, so the overlap — which is all of it — is excluded,
-      // leaving exactly a crescent. An earlier version built it from one path with two
-      // DIFFERENT arc radii sharing the same chord; that chord was exactly the outer
-      // circle's diameter, too long for the smaller radius to span, so SVG silently scaled
-      // it up to match — collapsing the bite into the same size as the disc and erasing
-      // the crescent entirely (reported as "Isha lost its moon icon"). Getting the
-      // crescent to actually read as a crescent (not a dented circle) needed the bite
-      // LARGE relative to the disc (0.88x here) — the offset alone barely matters once the
-      // bite is already most of the disc's size; it's how much gets removed that counts.
-      const full = (x: number, y: number, rr: number) =>
-        `M${f(x - rr)} ${f(y)} A${f(rr)} ${f(rr)} 0 1 0 ${f(x + rr)} ${f(y)} A${f(rr)} ${f(rr)} 0 1 0 ${f(x - rr)} ${f(y)} Z`;
+      // 1st attempt: one path shared a single chord between an outer arc and a smaller-
+      //    radius bite arc. That chord was exactly the outer circle's diameter — too long
+      //    for the smaller radius to span — so SVG silently rescaled the bite arc to match
+      //    the outer one, erasing the crescent entirely ("Isha lost its moon icon").
+      // 2nd attempt: switched to evenodd-subtracting two independent FULL circles, which
+      //    is only valid when the bite circle is entirely CONTAINED in the outer one. That
+      //    constrains the bite to modest sizes/offsets, and every proportion still read as
+      //    "a circle with a dent" rather than an actual crescent ("still circular" /
+      //    "still closes") — full containment just can't produce the deep, sharp-horned cut
+      //    a real crescent has.
+      // 3rd attempt (this one): the outer and bite circles genuinely INTERSECT — the bite
+      //    is centered on the far side, only partially overlapping — and the crescent is
+      //    the region bounded by the outer circle's MAJOR arc (the long way around, away
+      //    from the bite) and the bite circle's MAJOR arc (the long way around too, which
+      //    is the one that dips back through the overlap — the minor arc bulges the wrong
+      //    way, outward, and doesn't cut anything). One closed path, no fill-rule trick,
+      //    and no containment constraint to violate at any size. Proportions (offset 0.33,
+      //    bite radius 0.84, both of the outer radius) are fitted from a real reference
+      //    crescent-moon icon, not guessed.
       const moonR = r * 0.95;
-      // 0.85 + 0.10 = 0.95, a real 5%-of-moonR margin inside the disc — the previous version
-      // used 0.88 + 0.12 = 1.00 EXACTLY, no margin at all, so `toFixed(1)` rounding pushed the
-      // bite fractionally outside the disc at some sizes and the geometry test caught it
-      // (a real containment failure, not just a lint nit). Do the sum-to-one arithmetic before
-      // touching either number again.
-      const biteR = moonR * 0.85;
-      const ux = Math.SQRT1_2;
-      const uy = -Math.SQRT1_2;
-      const biteX = cx + ux * moonR * 0.1;
-      const biteY = cy + uy * moonR * 0.1;
-      return `<path d="${full(cx, cy, moonR)} ${full(biteX, biteY, biteR)}" fill="${MOON}" fill-rule="evenodd"/>`;
+      const off = moonR * 0.33;
+      const biteR = moonR * 0.84;
+      // Horn points: where the two circles actually cross. Standard circle-circle
+      // intersection for two circles a distance `off` apart along one axis.
+      const aa = (moonR * moonR - biteR * biteR + off * off) / (2 * off);
+      const hh = Math.sqrt(Math.max(0, moonR * moonR - aa * aa));
+      const h1x = cx + aa;
+      const h1y = cy + hh;
+      const h2x = cx + aa;
+      const h2y = cy - hh;
+      return (
+        `<path d="M${f(h1x)} ${f(h1y)} ` +
+        `A${f(moonR)} ${f(moonR)} 0 1 1 ${f(h2x)} ${f(h2y)} ` +
+        `A${f(biteR)} ${f(biteR)} 0 1 0 ${f(h1x)} ${f(h1y)} Z" fill="${MOON}"/>`
+      );
     }
     default: // jumu'ah: a small mosque dome + base + finial
       return (
