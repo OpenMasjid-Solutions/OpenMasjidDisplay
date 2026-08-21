@@ -12,6 +12,17 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Changed
+- **The WhatsApp log now says whether an announcement actually went out.** It used to say only that
+  OpenMasjidOS had accepted it — which was all anyone knew, so a notice that never reached the group
+  looked exactly like one still on its way. Each line now reads *waiting*, *sent*, *did not send* or
+  *expired*, with OpenMasjidOS’s own explanation when something went wrong, and a notice that failed
+  is tried again. Needs OpenMasjidOS 0.51.1 or newer; on an older one the line stays “waiting”, which
+  is the honest answer.
+- If a notice is reported as failed, the app now retries it instead of assuming it arrived. The wait
+  before each retry starts from when the failure was reported, so a temporary problem no longer uses
+  up all the attempts in a couple of minutes.
+
 ### Fixed
 - **A screen’s log button did nothing at all.** The screen collected its log and tried to send it,
   and the display server answered every upload with “please sign in” — the address the screen posts

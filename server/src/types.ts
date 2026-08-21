@@ -498,10 +498,27 @@ export interface WhatsAppLogEntry {
   recipient: string;
   /** the date the announced change takes effect, "YYYY-MM-DD" */
   effectiveFrom: string;
-  outcome: 'queued' | 'failed';
+  /**
+   * Where this message got to.
+   *
+   * `queued` is the platform accepting it and nothing more. `sent` means the platform has
+   * since told us it went to WhatsApp — still not a delivery receipt, because WhatsApp gives
+   * none. `failed` and `expired` are the platform's verdicts, and both mean it did not go.
+   *
+   * A `queued` entry only ever moves on when the platform is asked (see whatsappMessageStatus);
+   * on an older platform, or one that has forgotten the id, it stays `queued` for good, which
+   * is the honest record of what we actually know.
+   */
+  outcome: 'queued' | 'sent' | 'failed' | 'expired';
+  /** the platform's message id, so what became of it can be asked later. Absent on a platform
+   *  older than 0.51.1, and on entries written before this app could store it. */
+  id?: string;
+  /** when the platform's verdict was recorded, ISO — so the panel can distinguish "waiting"
+   *  from "asked, and this is the answer". */
+  settledAt?: string;
   /** true when the poster image went with it, false/absent when only the text did */
   asImage?: boolean;
-  /** why the platform refused; never contains the message */
+  /** why the platform refused, or why it later failed; never contains the message */
   error?: string;
   /** true when an admin pressed "Send now" rather than the schedule firing */
   manual?: boolean;

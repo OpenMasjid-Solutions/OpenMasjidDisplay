@@ -432,25 +432,50 @@ function WhatsAppPanel({ state, refetch }: Props) {
   );
 }
 
-/** What we handed to the platform's queue. Event, group and time only — never the message,
- *  which is a rule worth keeping unconditional rather than re-argued per message. */
+/**
+ * What became of each notice. Event, group and time only — never the message, which is a rule
+ * worth keeping unconditional rather than re-argued per message.
+ *
+ * Four states, and the distinction that matters to whoever is reading this is between "waiting"
+ * and "it did not go". A notice the platform later failed used to be indistinguishable from one
+ * still on its way, which is precisely why an image that never arrived was so hard to chase.
+ */
+const WA_STATE: Record<WhatsAppLogEntry['outcome'], { mark: string; colour: string; word: string; title: string }> = {
+  sent: { mark: '✓', colour: 'var(--color-success)', word: 'sent', title: 'The platform handed this to WhatsApp. WhatsApp gives no delivery receipt, so this is not proof it was read.' },
+  queued: { mark: '·', colour: 'var(--color-ink-muted)', word: 'waiting', title: 'Accepted by OpenMasjidOS and not sent yet — usually a few seconds. It stays "waiting" if your OpenMasjidOS is too old to be asked (0.51.1 and up can answer).' },
+  failed: { mark: '✗', colour: 'var(--color-danger)', word: 'did not send', title: 'OpenMasjidOS could not send this. It will be tried again automatically a few times.' },
+  expired: { mark: '✗', colour: 'var(--color-danger)', word: 'expired', title: 'OpenMasjidOS gave up on this one before it could be sent.' },
+};
+
 function WhatsAppLog({ entries, groups, fallbackLabel }: { entries: WhatsAppLogEntry[]; groups: { id: string; label: string }[]; fallbackLabel: string }) {
   const name = (id: string) => groups.find((g) => g.id === id)?.label || fallbackLabel || id;
   return (
     <div style={{ marginBlockStart: '1.2rem' }}>
-      <div className="label" style={{ marginBlockEnd: '0.4rem' }}>Recently queued</div>
+      <div className="label" style={{ marginBlockEnd: '0.4rem' }}>Recent announcements</div>
       <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: '0.35rem' }}>
         {entries.map((e, i) => (
           <li key={`${e.at}-${i}`} className="hint" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'baseline' }}>
-            <span style={{ color: e.outcome === 'queued' ? 'var(--color-success)' : 'var(--color-danger)' }}>
-              {e.outcome === 'queued' ? '✓' : '✗'}
-            </span>
-            <span>{new Date(e.at).toLocaleString()}</span>
-            <span className="muted">·</span>
-            <span>Iqāmah change from {e.effectiveFrom}</span>
-            <span className="muted">·</span>
-            <span>{name(e.recipient)}</span>
-            <span className="muted">· {e.asImage ? 'image' : 'text'}</span>
+            {/* An outcome this app has never written — a store restored from a newer build —
+                falls back to "waiting" rather than rendering an empty box. */}
+            {(() => {
+              const s = WA_STATE[e.outcome] ?? WA_STATE.queued;
+              return (
+                <>
+                  <span style={{ color: s.colour }} title={s.title}>
+                    {s.mark}
+                  </span>
+                  <span>{new Date(e.at).toLocaleString()}</span>
+                  <span className="muted">·</span>
+                  <span>Iqāmah change from {e.effectiveFrom}</span>
+                  <span className="muted">·</span>
+                  <span>{name(e.recipient)}</span>
+                  <span className="muted">· {e.asImage ? 'image' : 'text'}</span>
+                  <span style={{ color: s.colour }} title={s.title}>
+                    · {s.word}
+                  </span>
+                </>
+              );
+            })()}
             {e.manual && <span className="muted">· sent by hand</span>}
             {e.error && <span style={{ color: 'var(--color-danger)' }}>· {e.error}</span>}
           </li>

@@ -26,8 +26,8 @@ const NOW = new Date('2026-08-15T15:00:00Z').getTime();
 const GROUP = '120363012345678901@g.us';
 /** Stands in for a rendered poster — the bytes never reach a decoder here. */
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
-const CAN_SEND: WhatsAppAvailability = { available: true, reason: 'ready', media: true, maxMediaBytes: 2_097_152 };
-const NO_MEDIA: WhatsAppAvailability = { available: true, reason: 'ready', media: false, maxMediaBytes: 0 };
+const CAN_SEND: WhatsAppAvailability = { available: true, reason: 'ready', media: true, maxMediaBytes: 2_097_152, outcomes: true };
+const NO_MEDIA: WhatsAppAvailability = { available: true, reason: 'ready', media: false, maxMediaBytes: 0, outcomes: false };
 
 interface Sent {
   group: string;

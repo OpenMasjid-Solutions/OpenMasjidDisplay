@@ -122,14 +122,14 @@ const json = (body: unknown, status = 200) =>
 
 test('a ready platform is reported as available', async () => {
   await withFetch(() => json({ available: true, reason: 'ready' }), async () => {
-    assert.deepEqual(await fabric.whatsappAvailability(), { available: true, reason: 'ready', media: false, maxMediaBytes: 0 });
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: true, reason: 'ready', media: false, maxMediaBytes: 0, outcomes: false });
   });
 });
 
 test('each not-ready reason survives the round trip intact', async () => {
   for (const reason of ['not-configured', 'not-linked', 'unreachable'] as const) {
     await withFetch(() => json({ available: false, reason }), async () => {
-      assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason, media: false, maxMediaBytes: 0 });
+      assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason, media: false, maxMediaBytes: 0, outcomes: false });
     });
   }
 });
@@ -138,7 +138,7 @@ test('a 403 is "not allowed", not "unreachable"', async () => {
   // The platform refusing us (no `whatsapp: true` in the manifest it knows about) needs the
   // admin to update this app there — nothing like the fix for a gateway that is down.
   await withFetch(() => json({ available: false, reason: 'not-allowed' }, 403), async () => {
-    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'not-allowed', media: false, maxMediaBytes: 0 });
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'not-allowed', media: false, maxMediaBytes: 0, outcomes: false });
   });
 });
 
@@ -146,7 +146,7 @@ test('an unrecognised reason word never reaches the UI as-is', async () => {
   // Nothing from the platform is trusted as typed: a word we have no sentence for would
   // otherwise render as a blank explanation.
   await withFetch(() => json({ available: true, reason: 'something-new' }), async () => {
-    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'unreachable', media: false, maxMediaBytes: 0 });
+    assert.deepEqual(await fabric.whatsappAvailability(), { available: false, reason: 'unreachable', media: false, maxMediaBytes: 0, outcomes: false });
   });
 });
 

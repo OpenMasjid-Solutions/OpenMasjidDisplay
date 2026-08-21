@@ -255,7 +255,12 @@ export interface WhatsAppLogEntry {
   /** the group JID — an id, never a name or a body */
   recipient: string;
   effectiveFrom: string;
-  outcome: 'queued' | 'failed';
+  /** `queued` is the platform accepting it; `sent` is the platform saying it went to WhatsApp
+   *  (not a delivery receipt — WhatsApp gives none); `failed` and `expired` both mean it did
+   *  not go. An entry stays `queued` when the platform is too old to be asked. */
+  outcome: 'queued' | 'sent' | 'failed' | 'expired';
+  /** when the platform's verdict was recorded */
+  settledAt?: string;
   /** the poster image went too, rather than text alone */
   asImage?: boolean;
   error?: string;

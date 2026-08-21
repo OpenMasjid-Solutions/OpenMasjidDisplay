@@ -422,11 +422,22 @@ this file.
   - **Nothing is written before `save`.** The exchange can end without us (idle, turn cap, an exit
     word, a new `!` command) and we are never told, so a half-answered flow must leave a draft that
     expires, never a partial change.
-- **WhatsApp is queued, never sent.** `202 {queued:true}` means accepted for later delivery; there is
-  no delivery receipt and nothing may claim one. The platform owns the pacing (one queue shared by
-  every app) because ban risk attaches to the masjid's *number* — never build a second path around
-  it. Nothing auth-critical may ever go this way. Message bodies, captions and image bytes are never
-  logged; the app's own log keeps event + group id + timestamp + the change's date.
+- **WhatsApp is queued, never sent.** `202 {queued:true}` means accepted for later delivery. The 202
+  now carries an `id` and `/api/fabric/whatsapp/status/<id>` answers `queued`/`sent`/`failed`/
+  `expired` (OpenMasjidOS **0.51.1+**, advertised as `outcomes` — absent must read as false). Even
+  `sent` means "handed to WhatsApp": there is no delivery receipt anywhere and nothing may claim one.
+  **A verdict we could not obtain — a 404, a timeout, an older platform — is not a failure**; treating
+  it as one re-announces a change the group already has.
+- **The platform no longer paces us, so this app has to** (0.51.1 removed quiet hours, the caps, the
+  cooldowns, the warm-up and the random gap). Ban risk still attaches to the masjid's *number*, it is
+  shared by every app on the box, and a blocked number cannot be recovered. What holds here is
+  structural and must stay that way: **one approved group and never a per-person send**, one message
+  per Iqamah change deduped through the persisted log (where `sent` counts as handled exactly as
+  `queued` does, or a confirmed message becomes a duplicate), five attempts thirty minutes apart timed
+  from the *verdict*, one post in flight, and **no retry around a 202**. Never add a loop over a
+  roster. Nothing auth-critical may ever go this way. Message bodies, captions and image bytes are
+  never logged; the app's own log keeps event + group id + timestamp + the change's date + the
+  platform's id.
 - **Read `media`/`maxMediaBytes` from the platform before rendering a poster**, and never fall back to
   the caption alone: the caption is written to sit under an image and, delivered by itself, is an
   announcement with no timetable in it. Every media failure falls back to the full text notice.

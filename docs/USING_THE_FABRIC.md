@@ -86,22 +86,38 @@ approved. Three calls, all server→server with the app secret, all failing soft
 (`server/src/fabric.ts`):
 
 ```
-GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → { available, reason, media, maxMediaBytes }
+GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → { available, reason, media, maxMediaBytes, outcomes }
 GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp/groups  → { groups: [{ id, label }] }
-POST ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → 202 { queued: true }
+POST ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → 202 { queued: true, id }
      { "group": "…@g.us", "text": "…",
        "media": { "data": "<base64>", "mimeType": "image/png", "filename": "…" } }
+GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp/status/<id>
+                                                        → { id, state, reason?, at, target }
 ```
+
+**Minimum platform versions.** Sending needs OpenMasjidOS **0.51.0+**; the message id, the status
+lookup and a send queue that survives a restart need **0.51.1+**. Below that the `outcomes` field is
+simply absent, which — like `media` — must read as `false` rather than be assumed.
 
 The rules that are not ours to bend:
 
 - **We never touch the gateway.** No URL, no API key, no session, no idea which number is linked.
-  The platform runs **one paced queue** shared by every installed app — randomised gaps, typing
-  indicators, per-recipient cooldowns, rolling caps, quiet hours — because ban risk attaches to the
-  masjid's *number*, not to whichever app had something to say. It only works because no app can go
-  around it.
-- **`queued` is not `sent`.** Delivery is seconds to minutes away and hours inside quiet hours. There
-  is no delivery receipt. Nothing here blocks on it and nothing tells an admin a message arrived.
+  The platform holds all of it, and one queue shared by every installed app, because ban risk
+  attaches to the masjid's *number* rather than to whichever app had something to say.
+- **The pacing is gone, and that moves the responsibility here** (0.51.1). Quiet hours, the hourly
+  and daily caps, the per-recipient and per-group cooldowns, the warm-up ramp and the random gap
+  between messages have all been removed; a typing indicator sized to the message is the only pause
+  left. The platform used to refuse to send too much. It does not any more, so **nothing but this app
+  bounds what this app sends** — see the note below on what actually bounds it.
+- **`queued` is not `sent`.** A 202 is acceptance. There is no delivery receipt from WhatsApp, so
+  even a `sent` verdict means "handed over", never "read". Nothing here blocks on it.
+- **Ask what became of it, once you can.** The 202 carries an `id`; `/status/<id>` answers
+  `queued` / `sent` / `failed` / `expired`, scoped to this app's own messages, holding no message
+  text and no recipient, and bounded to the platform's most recent 200 — so ask soon, not days later.
+  We store the id on the log entry and reconcile it on the announcer's own minute tick.
+- **"Could not ask" is not "did not arrive".** A 404, a timeout, an older platform and an unreachable
+  box all mean *no verdict*, and every one of them has to leave the entry alone. Collapsing them into
+  a failure would re-announce a change the group already has, which is worse than not knowing.
 - **Nothing auth-critical, ever.** No login codes, no password resets, no OTPs — WhatsApp is an
   unofficial client and the number can be restricted overnight. Those go by email.
 - **Ask before offering the feature.** `reason` is one of `ready` / `not-configured` / `not-linked` /
@@ -130,13 +146,35 @@ times or tense. `renderPool.announce()` takes that model rather than re-detectin
 download button's ("next change, else the most recent past one"), which **skips a change taking effect
 today** — exactly the case the announcer exists to catch.
 
-A 202 still is not delivery, and now less so: the platform validates mime, size, caption length and its
-queue depth while our request is open, but a gateway-side failure lands in *its* log, not our response.
-Nothing here reports a poster as published.
+A 202 still is not delivery: the platform validates mime, size, caption length and its queue depth
+while our request is open — those refusals reach us as a `400` with a sentence worth showing an admin
+— but what happens after that used to be invisible. It is not any more: the `id` is stored and the
+verdict is written back onto the log entry, so a poster that never made it says so instead of reading
+as "queued" forever. Nothing anywhere reports a poster as *published*.
+
+**A failed image is never downgraded to its caption.** That rule is the platform's too, now: a media
+send that fails comes back `failed`, not as a half-success with the caption alone. Our fallbacks all
+happen *before* sending — no capability, a render that threw, over `maxMediaBytes` — and each one
+sends the **full** text notice.
 
 Which event goes out, to whom, and how early is **our** setting, not the platform's: its alerts matrix
 has no WhatsApp column for apps, because those rows route to the admin's one number and our messages
 are for the congregation.
+
+**What bounds this app's sending, now that the platform's caps are gone.** All of it is structural
+rather than a limiter bolted on, which is the point — there is no code path here that can loop:
+
+- **One approved group, never a person.** This app has no per-recipient send at all: it posts to the
+  one group an admin approved. One message reaching a whole congregation is the safe shape, and it is
+  the only shape available here.
+- **One message per change.** The dedupe key is group + the change's effective date, read back out of
+  the persisted log, and a `sent` verdict counts as handled just as `queued` does — so a confirmed
+  message cannot become a duplicate.
+- **Five attempts, thirty minutes apart**, and the wait runs from *the verdict*, not from when the
+  message was queued. A permanent refusal stops rather than retrying forever.
+- **One post in flight**, shared by the timer and the admin's "Send now" button.
+- **No retry around a 202.** A queued message is queued; asking again would duplicate it. The only
+  thing that retries is a message the platform said did not go.
 
 ### 7. Admin commands (implemented — keep it)
 
