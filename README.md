@@ -39,8 +39,8 @@ point a cheap RTSP-to-HDMI decoder box at **once** — then you decide, from you
 each screen shows. No app on the TV, no browser to babysit, nothing to log into at the screen.
 
 <div align="center">
-<img src="screenshots/1.svg" width="49%" alt="Prayer timetable display" />
-<img src="screenshots/3.svg" width="49%" alt="Control panel" />
+<img src="screenshots/1.png" width="49%" alt="A prayer timetable on a masjid screen, photographed from the Raspberry Pi driving it" />
+<img src="screenshots/3.png" width="49%" alt="The control panel, showing three screens and what each is displaying" />
 </div>
 
 ## What it does

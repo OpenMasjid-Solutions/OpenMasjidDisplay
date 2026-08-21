@@ -17,7 +17,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { PiDeviceInfo } from '../types';
-import { Modal, Spinner, IconDownload, IconPower, IconCheck, IconSparkle, IconCopy, copyText, useToast } from '../ui';
+import { Modal, Spinner, IconDownload, IconPower, IconCheck, IconSparkle, IconCopy, IconTerminal, copyText, useToast } from '../ui';
 import { WifiSection } from './WifiPanel';
 
 /**
@@ -133,6 +133,7 @@ export function PiSettings({
   const logRef = useRef<HTMLPreElement | null>(null);
 
   // ── the console ──
+  const [consoleOpen, setConsoleOpen] = useState(false);
   const [cmd, setCmd] = useState('');
   /** The scrollback, kept HERE rather than on the server. The device answers one command at a time
    *  and the store keeps one answer; the conversation only exists in the window having it. */
@@ -379,48 +380,22 @@ export function PiSettings({
 
       <section className="pi-sec">
         <h3 className="pi-sec__title">Console</h3>
-        <pre className="pi-log pi-log--term pi-log--short" ref={termRef}>
-          {term.length
-            ? term.join('\n')
-            : 'Runs one line on the screen and shows what it said. Try: free -m · vcgencmd measure_temp · nmcli device status'}
-        </pre>
-        <div className="pi-row pi-console">
-          <span className="pi-console__prompt" aria-hidden="true">
-            $
-          </span>
-          <input
-            className="input pi-console__input"
-            value={cmd}
-            onChange={(e) => setCmd(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                void runCmd();
-              } else onConsoleKey(e);
-            }}
-            placeholder={running ? 'waiting for the screen…' : 'a command to run on this screen'}
-            aria-label="Command to run on this screen"
-            spellCheck={false}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            disabled={running}
-          />
-          <button className="btn btn--sm btn--primary" disabled={running || !cmd.trim()} onClick={() => void runCmd()}>
-            {running ? <Spinner /> : 'Run'}
+        <div className="pi-row">
+          <button className="btn btn--ghost btn--sm" onClick={() => setConsoleOpen(true)}>
+            <IconTerminal size={14} /> Open console
           </button>
-          {term.length > 0 && (
-            <button className="btn btn--ghost btn--sm" onClick={() => setTerm([])} title="Clear this window's scrollback">
-              Clear
-            </button>
+          {term.length > 0 && !consoleOpen && (
+            <span className="hint muted">{term.filter((l) => l.startsWith('$ ')).length} command(s) this session</span>
           )}
         </div>
         <p className="hint muted pi-note">
-          Commands run as the screen&rsquo;s own account, not as an administrator — so this can look at
-          almost anything and change almost nothing. There is no <code>sudo</code>, each command is
-          given 20 seconds, and only the first 10,000 characters of its output come back. Passwords
-          typed here travel to the screen and are shown back in this window; they are not written to
-          the screen&rsquo;s log.
+          Runs one line on the screen and shows what it said — for when a screen is behaving oddly and
+          the buttons above do not cover it. It opens in its own window you can drag aside and keep
+          open while you work here. Commands run as the screen&rsquo;s own account, not as an
+          administrator, so this can look at almost anything and change almost nothing: there is no
+          <code>sudo</code>, each command is given 20 seconds, and only the first 10,000 characters of
+          its output come back. A password typed there travels to the screen and is shown back in the
+          window; it is never written to the screen&rsquo;s log.
         </p>
       </section>
 
@@ -469,6 +444,70 @@ export function PiSettings({
           seconds. So these say <em>asked</em>, never <em>done</em>.
         </p>
       </section>
+
+      {/* Its own window, floating over this one rather than replacing a section of it: the whole
+          reason to open a console on a screen is to try something and then look at the rest of the
+          screen's state, and a panel that pushed Maintenance off the bottom made that a scroll each
+          way. Being draggable is what makes the two usable together.
+
+          Kept mounted inside this window, so the scrollback lives exactly as long as the settings
+          window does — close the settings and the console goes with it. */}
+      {consoleOpen && (
+        <Modal
+          open
+          floating
+          term
+          wide
+          title={`${screenName} — console`}
+          onClose={() => setConsoleOpen(false)}
+        >
+          <pre className="pi-log pi-log--term" ref={termRef}>
+            {term.length
+              ? term.join('\n')
+              : 'Runs one line on the screen and shows what it said.\n\nTry:  free -m\n      vcgencmd measure_temp\n      nmcli device status\n      ffmpeg -hide_banner -decoders | grep v4l2'}
+          </pre>
+          <div className="pi-row pi-console">
+            <span className="pi-console__prompt" aria-hidden="true">
+              $
+            </span>
+            <input
+              className="input pi-console__input"
+              value={cmd}
+              onChange={(e) => setCmd(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void runCmd();
+                } else onConsoleKey(e);
+              }}
+              placeholder={running ? 'waiting for the screen…' : 'a command to run on this screen'}
+              aria-label="Command to run on this screen"
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              disabled={running}
+              // The window is opened to type in. Modal's own focus handling steps aside when
+              // something inside has already claimed focus — see the note there.
+              autoFocus
+            />
+            <button className="btn btn--sm btn--primary" disabled={running || !cmd.trim()} onClick={() => void runCmd()}>
+              {running ? <Spinner /> : 'Run'}
+            </button>
+            {term.length > 0 && (
+              <button className="btn btn--ghost btn--sm" onClick={() => setTerm([])} title="Clear the scrollback">
+                Clear
+              </button>
+            )}
+          </div>
+          {/* One line. A terminal window is mostly terminal, and the full explanation is already in
+              the Console section of the settings window this opened from. */}
+          <p className="hint muted pi-note">
+            Runs as the screen&rsquo;s own account — no <code>sudo</code>. 20 seconds and 10,000
+            characters per command.
+          </p>
+        </Modal>
+      )}
     </Modal>
   );
 }

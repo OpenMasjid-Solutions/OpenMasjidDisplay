@@ -36,6 +36,19 @@ CLAUDE.md § *The changelog has two audiences*.
 - A console command that had to be stopped for running too long is no longer recorded as having
   succeeded.
 
+### Changed
+- **The console is now a window of its own**, opened by a button rather than sitting in the middle of
+  the settings panel. Drag it by its title bar, put it fullscreen by double-clicking that bar, or
+  collapse it to the bar with the amber button — so you can try something on a screen and still read
+  the rest of that screen’s state behind it.
+- The screenshots in the project’s own README are now photographs of a real masjid screen and a real
+  control panel, instead of drawings of what they used to look like.
+
+### Fixed
+- Making a Raspberry Pi window fullscreen only made it slightly bigger — the page stayed visible
+  above and below it.
+- Pressing Escape with the console open closed the settings window behind it as well as the console.
+
 ### Added
 - **A console for a Raspberry Pi screen**, behind the gear on its card. Type a command, see what the
   screen said — for the times when a screen on a wall in another building is behaving oddly and the

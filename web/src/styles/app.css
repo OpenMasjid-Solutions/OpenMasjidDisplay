@@ -694,6 +694,52 @@ span.tl--min:hover { filter: none; transform: none; }
    window is a caller that is legitimately short: a screen with no Wi-Fi hardware renders one line,
    and a shared floor would put that back in a pool of empty background. */
 .modal--window .wn-body { min-height: min(18rem, 40vh); }
+
+/* ── Floating windows ───────────────────────────────────────────────────────
+   A window that is not a modal sheet: nothing dimmed behind it, dragged by its title bar, and the
+   page still there beside it. The geometry is OpenMasjidOS's (packages/ui/src/styles/app.css
+   .win-pos / .win-pos--center), because these two apps are one family and its windows already
+   behave the way a window should — centred until you move it, and never draggable off an edge.
+
+   Above .modal-backdrop's z-index (100) on purpose: this window opens FROM the settings window and
+   has to sit over it, while leaving it reachable underneath. */
+.win-pos { position: fixed; top: 0; left: 0; z-index: 120; }
+.win-pos--center { left: 50%; top: 7vh; transform: translateX(-50%); }
+.modal-head--drag { cursor: grab; user-select: none; -webkit-user-select: none; }
+.modal-head--drag:active { cursor: grabbing; }
+
+/* Fullscreen, for a WINDOWED dialog.
+   These two lines are not redundant with .modal--max. Both classes are always present together, and
+   .modal--window is defined later in this file — so its `height: auto` and its `max-height` were
+   overriding .modal--max's, and a maximized window came out 78vh tall with the page showing above
+   and below it. It looked like fullscreen not working rather than like a cascade problem, which is
+   why it survived being "fixed" once already. Named with both classes so it outranks either. */
+.modal--window.modal--max { height: 100vh; height: 100dvh; max-height: none; }
+
+/* Minimized: the title bar and nothing else, still draggable, still on top. OpenMasjidOS sends a
+   minimized window to its dock; there is no dock here, so it collapses in place — which is the only
+   version of "minimize" that cannot lose the window. */
+/* Two classes, so this cannot lose a specificity tie to .modal--term .modal-body below —
+   which it did: both were 0,2,0 and the terminal rule came later, so a minimized console kept
+   its body and simply looked like the button had missed. */
+.modal--window.modal--collapsed .modal-body,
+.modal--window.modal--collapsed .modal-foot { display: none; }
+.modal--collapsed { height: auto !important; max-height: none; }
+
+/* A terminal window is sized by the window, not by its transcript: the pane fills whatever height
+   there is and scrolls inside it, so dragging the window bigger or going fullscreen gives you more
+   scrollback rather than more empty space. `:not(.modal--max)` so fullscreen still wins. */
+.modal--window.modal--term:not(.modal--max):not(.modal--collapsed) { height: min(76vh, 42rem); }
+/* The body has to STRETCH, not just be a column. .modal--window is a flex column with a fixed
+   height here, and .modal-body has no flex-grow of its own — so the body sized itself to its
+   content and left the rest of the window as empty background below the note. Measured in a real
+   browser: a 672px window with a 280px body. */
+.modal--term .modal-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.modal--term .pi-log--term { flex: 1 1 auto; max-height: none; min-height: 7rem; margin-block: 0; }
+.modal--term .pi-console { margin-block-start: 0.6rem; }
+/* The window is wide enough that a command's output does not wrap every other line. Matches
+   OpenMasjidOS's .win--wide. */
+.modal--window.modal--wide { width: min(60rem, 96vw); }
 .card-head__main { min-width: 0; flex: 1; }
 .section-title-inline { font-family: var(--font-display); font-size: 1.05rem; font-weight: 600; }
 
