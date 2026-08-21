@@ -69,6 +69,7 @@ export interface Timetable {
   quality: Quality;
   layout: TimetableLayout;
   layoutCarousel: boolean;
+  simpleBg: string;
   masjidName: string;
   location: string;
   latitude: number | null;

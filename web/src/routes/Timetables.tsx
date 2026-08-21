@@ -128,7 +128,7 @@ function toForm(tt: Timetable | null, state: AppState): Form {
   }
   return {
     id: '', name: 'New timetable', themeId: 'emerald', accent: undefined, textColor: '',
-    orientation: 'landscape', quality: state.settings.defaultQuality, layout: 'centered', layoutCarousel: false,
+    orientation: 'landscape', quality: state.settings.defaultQuality, layout: 'centered', layoutCarousel: false, simpleBg: '',
     masjidName: state.timetables[0]?.masjidName ?? 'Our Masjid',
     location: '',
     latitude: '', longitude: '',
@@ -492,12 +492,21 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           </Field>
         </div>
         <div className="grid2">
-          <Field label="Layout" hint="Classic is the default design. Simple drops the inline Arabic gloss and the countdown ring for a plain sentence, so the prayer names and times can run larger — built for reading from across a room.">
+          <Field label="Layout" hint="Classic is the themed design (glass panels, the countdown ring, a scene behind everything). Simple is a plain flat page — a logo/clock/date column beside one banded prayer table, modelled on a real wall display — with larger prayer names and times and no inline Arabic gloss.">
             <select className="select" value={f.layout === 'simple' ? 'simple' : 'centered'} onChange={(e) => set('layout', e.target.value as Form['layout'])}>
               <option value="centered">Classic</option>
-              <option value="simple">Simple (larger text)</option>
+              <option value="simple">Simple (flat, larger text)</option>
             </select>
           </Field>
+          {f.layout === 'simple' && (
+            <Field label="Background colour" hint="The Simple layout's flat page colour. Text switches automatically between light and dark to stay readable on whatever you pick.">
+              <div className="row" style={{ gap: '0.6rem', alignItems: 'center' }}>
+                <input type="color" className="color-input" value={f.simpleBg || '#ffffff'} onChange={(e) => set('simpleBg', e.target.value)} />
+                <span className="hint">{f.simpleBg ? f.simpleBg : 'White (default)'}</span>
+                {f.simpleBg && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('simpleBg', '')}>Reset to white</button>}
+              </div>
+            </Field>
+          )}
         </div>
         <div className="grid2">
           <Field label="Bitrate — 720p (kbps)" hint="Video quality at 720p. Higher = sharper but heavier on the network. Blank = default (4000).">

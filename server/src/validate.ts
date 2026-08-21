@@ -280,6 +280,11 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
   const textColor = /^#?[0-9a-fA-F]{6}$/.test(tcRaw)
     ? (tcRaw.startsWith('#') ? tcRaw : `#${tcRaw}`).toLowerCase()
     : '';
+  // "simple" layout's flat page background: '' = white. Falls back to base like the others.
+  const sbgRaw = (o.simpleBg === undefined ? base?.simpleBg ?? '' : str(o.simpleBg, '', 7)).trim();
+  const simpleBg = /^#?[0-9a-fA-F]{6}$/.test(sbgRaw)
+    ? (sbgRaw.startsWith('#') ? sbgRaw : `#${sbgRaw}`).toLowerCase()
+    : '';
   const jumuahIn = Array.isArray(o.jumuah) ? o.jumuah : base?.jumuah ?? ['13:30'];
   const jumuah = jumuahIn.slice(0, 8).map((x) => hhmmOrNull(x)).filter((x): x is string => x != null);
   return {
@@ -294,6 +299,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     quality: oneOf(o.quality, ['720p', '1080p'] as const, oneOf(base?.quality, ['720p', '1080p'] as const, '1080p')) as Quality,
     layout: oneOf(o.layout, ['centered', 'clockTop', 'split', 'simple'] as const, base?.layout ?? 'centered'),
     layoutCarousel: o.layoutCarousel === undefined ? base?.layoutCarousel ?? false : bool(o.layoutCarousel, false),
+    simpleBg,
     masjidName: str(o.masjidName, base?.masjidName ?? 'Our Masjid', 80) || 'Our Masjid',
     location: str(o.location, base?.location ?? '', 80),
     latitude: o.latitude === undefined ? base?.latitude ?? null : geoOrNull(o.latitude, -90, 90),
