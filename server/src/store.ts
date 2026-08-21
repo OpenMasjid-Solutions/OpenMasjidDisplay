@@ -70,6 +70,7 @@ function seededTimetable(): Timetable {
     quality: s.quality,
     layout: 'centered',
     layoutCarousel: false,
+    simpleBg: '',
     masjidName: s.masjidName || 'Our Masjid',
     location: '',
     latitude: Number.isFinite(lat) && Math.abs(lat) <= 90 ? lat : null,

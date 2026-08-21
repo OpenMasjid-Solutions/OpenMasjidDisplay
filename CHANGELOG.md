@@ -12,7 +12,34 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- **Isha's crescent-moon row icon (Simple layout) was silently rendering as a plain disc, not a
+  crescent.** The path shared one chord between two arcs of different radii; that chord happened
+  to be exactly the outer circle's diameter, too long for the smaller radius to span, so SVG
+  quietly scaled the inner arc up to match instead of erroring — collapsing the "bite" that makes
+  it a crescent. Rebuilt as two independent full circles combined with fill-rule="evenodd", which
+  has no shared-chord constraint to get wrong, and added tests that check the geometry directly
+  (the same class of bug would fail loudly now instead of shipping unnoticed).
+
+### Added
+- **A new "Simple" layout for the prayer timetable, picked per timetable under Screen & quality.**
+  A plain flat page (no themed scene, no glass, no sun/moon) instead of the classic look: a
+  centred brand column — logo, masjid name, a sunrise/sunset line, a big clock, the date, and a
+  plain "Next Iqamah in 6hr 24min" sentence in place of the countdown ring — beside
+  one wide prayer table with larger names and times, an icon per row, Jumu'ah folded in as its own
+  last row, and the next prayer highlighted in green against a faint green wash on the rest.
+  A single Jumu'ah time gets one slot on that row; a second one appears (labelled "1/2") only
+  once a second Jumu'ah is actually configured. Modelled on a real installed wall display. The
+  page background is a colour you pick (Appearance), with text that flips light/dark automatically
+  to stay readable on it. The classic design is unchanged and stays the default; this is an
+  option, not a replacement.
+
 ### Changed
+- **The announcement slideshow (including incorrect-parking alerts) now fills the whole screen**
+  instead of squeezing into a sidebar next to a shrunk timetable. A parking-alert card or an
+  uploaded poster is designed to be read on its own; sharing the screen with a half-size prayer
+  table did neither one any favours. The Iqamah-change reminder and ticker still draw on top, same
+  as before, so a pending change still doesn't hide behind a slide.
 - **An announcement that could not be delivered is no longer left saying “waiting” for ever.** The app
   gave up asking OpenMasjidOS about a notice after half an hour, and a notice that OpenMasjidOS only
   gives up on later would sit as “waiting” permanently — which the app read as “already handled”, so it

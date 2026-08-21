@@ -10,8 +10,11 @@
 
 export type Quality = '720p' | '1080p';
 export type Orientation = 'landscape' | 'portrait';
-/** Arrangement preset for the on-screen layout (see render/svg.ts). */
-export type TimetableLayout = 'centered' | 'clockTop' | 'split';
+/** Arrangement preset for the on-screen layout (see render/svg.ts). `centered`/`clockTop`/
+ *  `split` all draw the same "reference" design (see the v0.37.0 consolidation) and are kept
+ *  only so existing stored timetables keep rendering unchanged; `simple` is the real second
+ *  option — fewer elements, larger prayer names and times, for reading from across a room. */
+export type TimetableLayout = 'centered' | 'clockTop' | 'split' | 'simple';
 export type Lang = 'en' | 'ar' | 'ur';
 export type CalcMethod = 'MWL' | 'ISNA' | 'Egypt' | 'Makkah' | 'Karachi' | 'Custom';
 export type AsrMadhab = 'Standard' | 'Hanafi';
@@ -196,6 +199,10 @@ export interface Timetable {
   layout: TimetableLayout;
   /** rotate through the layouts over the day to avoid screen burn-in */
   layoutCarousel: boolean;
+  /** flat page background colour (hex) for the `simple` layout only — that layout has no
+   *  themed scene/glass, just this colour with the text auto-flipped light/dark to read on
+   *  it. '' = white, matching the plain wall-mounted displays it was modelled on. */
+  simpleBg: string;
   masjidName: string;
   /** optional location line under the name (e.g. "Lansdale, Pennsylvania"); '' hides it */
   location: string;
