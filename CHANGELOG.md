@@ -15,8 +15,8 @@ CLAUDE.md § *The changelog has two audiences*.
 ### Added
 - **A new "Simple" layout for the prayer timetable, picked per timetable under Screen & quality.**
   A plain flat page (no themed scene, no glass, no sun/moon) instead of the classic look: a
-  centred brand column — logo, masjid name, a sunrise/sunset line with small icons, a big clock,
-  the date, and a plain "Next Iqamah in 6hr 24min" sentence in place of the countdown ring — beside
+  centred brand column — logo, masjid name, a sunrise/sunset line, a big clock, the date, and a
+  plain "Next Iqamah in 6hr 24min" sentence in place of the countdown ring — beside
   one wide prayer table with larger names and times, an icon per row, Jumu'ah folded in as its own
   last row, and the next prayer highlighted in green against a faint green wash on the rest.
   Modelled on a real installed wall display. The page background is a colour you

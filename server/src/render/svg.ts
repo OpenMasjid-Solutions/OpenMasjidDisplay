@@ -1683,21 +1683,17 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     y += headerH;
   }
 
-  // Sunrise and sunset as one centred line, each with a small icon.
+  // Sunrise and sunset as one centred line — plain text, no icons.
   if (c.showSunrise) {
-    const ir = ss * 0.55;
     const sunriseStr = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}`;
     const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
-    const chip1W = ir * 2.3 + approxWidth(sunriseStr, ss);
-    const chip2W = ir * 2.3 + approxWidth(sunsetStr, ss);
     const gapW = ss * 2.4;
     const rowY = y + ss;
-    let x = cx - (chip1W + gapW + chip2W) / 2;
-    out.push(prayerIcon('fajr', x + ir, rowY - ss * 0.32, ir));
-    out.push(text(x + ir * 2.3, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'start', letter: 0.6 }));
-    x += chip1W + gapW;
-    out.push(prayerIcon('maghrib', x + ir, rowY - ss * 0.32, ir));
-    out.push(text(x + ir * 2.3, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'start', letter: 0.6 }));
+    const totalW = approxWidth(sunriseStr, ss) + gapW + approxWidth(sunsetStr, ss);
+    let x = cx - totalW / 2;
+    out.push(text(x, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'start', letter: 0.6 }));
+    x += approxWidth(sunriseStr, ss) + gapW;
+    out.push(text(x, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'start', letter: 0.6 }));
     y += sunriseH;
   }
 
