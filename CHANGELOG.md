@@ -12,6 +12,15 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- **The full-screen announcement slideshow looked "huge" on real screens.** It was cover-fit
+  (scale up until the image fills the frame, cropping whatever doesn't fit), which is fine when
+  the image and the screen share an aspect ratio and looks like a broken zoom otherwise —
+  screens here are 16:9 almost always, but the images (a portrait Iqamah-change poster,
+  an arbitrary uploaded photo) routinely aren't. Switched to contain-fit: the whole image always
+  shows, letterboxed against the scene/flat colour already behind it, rather than an
+  unpredictable crop of an unknown fraction of it.
+
 ### Changed
 - **The Simple layout's prayer table now has a light gap between rows instead of one solid
   block of colour**, the masjid logo has more room (a noticeably larger bounding box), the AM/PM
