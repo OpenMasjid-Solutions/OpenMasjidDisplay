@@ -4,7 +4,7 @@
 
 export type Quality = '720p' | '1080p';
 export type Orientation = 'landscape' | 'portrait';
-export type TimetableLayout = 'centered' | 'clockTop' | 'split';
+export type TimetableLayout = 'centered' | 'clockTop' | 'split' | 'simple';
 export type Lang = 'en' | 'ar' | 'ur';
 export type CalcMethod = 'MWL' | 'ISNA' | 'Egypt' | 'Makkah' | 'Karachi' | 'Custom';
 export type AsrMadhab = 'Standard' | 'Hanafi';

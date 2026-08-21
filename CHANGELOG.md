@@ -12,7 +12,19 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Added
+- **A new "Simple" layout for the prayer timetable, picked per timetable under Screen & quality.**
+  It drops the inline Arabic name beside each prayer and replaces the next-prayer countdown ring
+  with one plain sentence ("Next Iqamah in 6hr 24min"), which frees enough room for the prayer
+  names and times to run noticeably larger — built for reading the times from across a room. The
+  existing design is unchanged and stays the default; this is an option, not a replacement.
+
 ### Changed
+- **The announcement slideshow (including incorrect-parking alerts) now fills the whole screen**
+  instead of squeezing into a sidebar next to a shrunk timetable. A parking-alert card or an
+  uploaded poster is designed to be read on its own; sharing the screen with a half-size prayer
+  table did neither one any favours. The Iqamah-change reminder and ticker still draw on top, same
+  as before, so a pending change still doesn't hide behind a slide.
 - **An announcement that could not be delivered is no longer left saying “waiting” for ever.** The app
   gave up asking OpenMasjidOS about a notice after half an hour, and a notice that OpenMasjidOS only
   gives up on later would sit as “waiting” permanently — which the app read as “already handled”, so it

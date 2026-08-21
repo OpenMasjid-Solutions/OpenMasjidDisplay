@@ -492,6 +492,14 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           </Field>
         </div>
         <div className="grid2">
+          <Field label="Layout" hint="Classic is the default design. Simple drops the inline Arabic gloss and the countdown ring for a plain sentence, so the prayer names and times can run larger — built for reading from across a room.">
+            <select className="select" value={f.layout === 'simple' ? 'simple' : 'centered'} onChange={(e) => set('layout', e.target.value as Form['layout'])}>
+              <option value="centered">Classic</option>
+              <option value="simple">Simple (larger text)</option>
+            </select>
+          </Field>
+        </div>
+        <div className="grid2">
           <Field label="Bitrate — 720p (kbps)" hint="Video quality at 720p. Higher = sharper but heavier on the network. Blank = default (4000).">
             <input className="input" type="number" min={500} max={20000} step={250} placeholder="4000" value={f.bitrate720 ?? ''} onChange={(e) => set('bitrate720', e.target.value === '' ? undefined : Number(e.target.value))} />
           </Field>

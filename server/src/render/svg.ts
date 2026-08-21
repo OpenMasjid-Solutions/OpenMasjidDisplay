@@ -1125,6 +1125,7 @@ interface Ctx {
   showName: boolean;
   showDates: boolean;
   showCountdown: boolean;
+  showSunrise: boolean;
   /** Active zawāl (pre-Dhuhr) prohibited-to-pray window — the ring reframes itself as a
    *  "Prohibited time" notice counting down to when prayer is allowed again (Dhuhr). */
   prohibited?: boolean;
@@ -1582,36 +1583,143 @@ function layoutReference(a: Box, m: Model, c: Ctx): string {
   return out.join('');
 }
 
-/** Announcement (slideshow) layout. Landscape: the full portrait column on the LEFT
- *  (brand, clock+ring, table, Jumu'ah) with the cycling image filling the RIGHT.
- *  Portrait: the image on top with the clock + ring side by side beneath it. */
-function announcementView(a: Box, m: Model, c: Ctx, image: string): string {
+/**
+ * The "simple" layout: a narrower brand column (logo/name, sunrise+sunset, the big
+ * clock, the date, and a plain "next prayer in…" line replacing the countdown ring)
+ * on the left, and one wide prayer table on the right — full names and two right-
+ * aligned time columns (Adhan, Iqāmah), no inline Arabic gloss competing for the row's
+ * width. Fewer things on screen, each one bigger — built for reading the times from
+ * across a room, not for admiring up close. Portrait falls back to the reference
+ * layout's stack for now; this pass only reshapes the landscape arrangement a masjid
+ * actually mounts on a TV.
+ */
+function layoutSimple(a: Box, m: Model, c: Ctx): string {
+  if (a.w < a.h) return portraitStack(a, m, c);
   const out: string[] = [];
-  const gap = Math.min(a.w, a.h) * 0.02;
+  const gap = Math.min(a.w, a.h) * 0.022;
+  const jbH = m.jumuah.length ? clamp(a.h * 0.11, 42, 110) : 0;
+  const bodyBottom = a.y + a.h - (jbH ? jbH + gap : 0);
+  const leftFrac = 0.32;
+  const leftW = (a.w - gap) * leftFrac;
+  out.push(brandColumn({ x: a.x, y: a.y, w: leftW, h: bodyBottom - a.y }, m, c));
+  const rightX = a.x + leftW + gap;
+  out.push(simpleTable({ x: rightX, y: a.y, w: a.x + a.w - rightX, h: bodyBottom - a.y }, m, c));
+  if (jbH) out.push(jumuahBar({ x: a.x, y: a.y + a.h - jbH, w: a.w, h: jbH }, m, c));
+  return out.join('');
+}
 
-  function drawImage(x: number, y: number, w: number, h: number): void {
-    const r = clamp(Math.min(w, h) * 0.03, 10, 28);
-    out.push(glass(x, y, w, h, r, { raised: true }));
-    out.push(`<clipPath id="annclip"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${r.toFixed(1)}" ry="${r.toFixed(1)}"/></clipPath>`);
-    out.push(`<image href="${image}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" clip-path="url(#annclip)"/>`);
+/** Left column for the "simple" layout: brand, a small sunrise/sunset line, the big
+ *  clock, one combined date line, and a plain sentence for the next prayer/Iqāmah —
+ *  no ring, no arc math, just the number someone glancing up actually wants. */
+function brandColumn(b: Box, m: Model, c: Ctx): string {
+  const out: string[] = [];
+  out.push(glass(b.x, b.y, b.w, b.h, clamp(Math.min(b.w, b.h) * 0.05, 12, 30), { raised: true }));
+  const pad = b.w * 0.09;
+  const avail = b.w - 2 * pad;
+  let y = b.y + pad;
+
+  if (c.showLogo || c.showName) {
+    const ms = clamp(b.w * 0.17, 30, 68);
+    let nameX = b.x + pad;
+    if (c.showLogo) {
+      out.push(mark(b.x + pad, y, ms, c.p.primary, c.logo));
+      nameX = b.x + pad + ms + b.w * 0.05;
+    }
+    if (c.showName) {
+      let ns = clamp(b.w * 0.095, 16, 36);
+      const nameAvail = b.x + b.w - pad - nameX;
+      const nw = approxWidth(c.masjidName, ns);
+      if (nw > nameAvail) ns = Math.max(12, ns * (nameAvail / nw));
+      out.push(text(nameX, y + ms * 0.66, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 700, anchor: 'start', editId: 'masjidName' }));
+    }
+    y += ms + pad * 0.7;
   }
 
-  if (a.w >= a.h) {
-    // Landscape: the whole portrait layout as a left column, image fills the right.
-    const colW = clamp(a.w * 0.4, 360, 900);
-    out.push(portraitStack({ x: a.x, y: a.y, w: colW, h: a.h }, m, c));
-    const ix = a.x + colW + gap;
-    drawImage(ix, a.y, a.x + a.w - ix, a.h);
-    return out.join('');
+  if (c.showSunrise) {
+    const ss = clamp(b.w * 0.045, 11, 18);
+    const sunLine = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}   ·   ${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
+    out.push(text(b.x + pad, y + ss, sunLine, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
+    y += ss * 1.9;
   }
-  // Portrait: image on top, clock + ring side by side beneath.
-  const rowH = clamp(a.h * 0.3, 150, 340);
-  const imgH = a.h - rowH - gap;
-  drawImage(a.x, a.y, a.w, imgH);
-  const by = a.y + imgH + gap;
-  const half = (a.w - gap) / 2;
-  out.push(panelClock({ x: a.x, y: by, w: half, h: rowH }, c, 'start'));
-  out.push(panelRing({ x: a.x + half + gap, y: by, w: half, h: rowH }, c));
+
+  // The big clock.
+  const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
+  let ts = clamp(b.w * 0.36, 40, 140);
+  const fitClock = () => approxWidth(c.clock.time, ts) + (markStr ? ts * 0.1 + approxWidth(markStr, ts * 0.32) : 0);
+  if (fitClock() > avail) ts *= avail / fitClock();
+  const tBase = y + ts * 0.8;
+  out.push(text(b.x + pad, tBase, c.clock.time, { size: ts, fill: c.p.text, family: FONT_DISPLAY, weight: 700, anchor: 'start', letter: -ts * 0.01, blink: true }));
+  const markX = b.x + pad + approxWidth(c.clock.time, ts) + ts * 0.1;
+  const ss2 = ts * 0.32;
+  if (c.showSeconds) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
+  if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
+  y = tBase + ts * 0.26;
+
+  // One combined date line (Hijri · Gregorian) rather than two stacked ones — a single
+  // smaller, quieter fact under the clock instead of its own block.
+  if (c.showDates && (c.hij || c.greg)) {
+    let ds = clamp(b.w * 0.05, 12, 21);
+    const dateLine = [c.hij, c.greg].filter(Boolean).join('   ·   ');
+    const dw = approxWidth(dateLine, ds);
+    if (dw > avail) ds *= avail / dw;
+    y += ds * 1.1;
+    out.push(text(b.x + pad, y, dateLine, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, anchor: 'start' }));
+    y += ds * 0.6;
+  }
+
+  // A plain sentence instead of the ring: "Iqamah in 6hr 24min."
+  if (c.showCountdown) {
+    const sec = Math.max(0, c.remainingSec);
+    const h = Math.floor(sec / 3600);
+    const mm = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const amount = sec < 60 ? `${s} sec` : h > 0 ? `${h}hr ${mm}min` : `${mm}min`;
+    const word = c.eventWord.charAt(0) + c.eventWord.slice(1).toLowerCase();
+    const line = c.prohibited ? `Prohibited time — ${word.toLowerCase()} in ${amount}` : `Next ${word} in ${amount}`;
+    let ls = clamp(b.w * 0.052, 14, 24);
+    const lw = approxWidth(line, ls);
+    if (lw > avail) ls *= avail / lw;
+    y += ls * 1.7;
+    out.push(text(b.x + pad, y, line, { size: ls, fill: c.prohibited ? TICKER_RED : c.p.primarySoft, family: FONT_SANS, weight: 700, anchor: 'start' }));
+  }
+  return out.join('');
+}
+
+/** The prayer table for the "simple" layout: PRAYER TIMES header, then one row per
+ *  prayer — name on the left, Adhan and Iqāmah right-aligned in two columns. No inline
+ *  Arabic gloss and no Sunrise row (it moved to the brand column) — both existed to
+ *  carry information, not to be read quickly from a distance, which is the one job
+ *  this table has. Alternating row bands (like the reference photo this was built
+ *  from) replace the header's underline as the thing that separates rows for the eye. */
+function simpleTable(b: Box, m: Model, c: Ctx): string {
+  const out: string[] = [];
+  out.push(glass(b.x, b.y, b.w, b.h, clamp(Math.min(b.w, b.h) * 0.04, 12, 30), { raised: true }));
+  const pad = b.w * 0.035;
+  const titleSize = clamp(b.h * 0.04, 14, 24);
+  out.push(text(b.x + b.w / 2, b.y + pad + titleSize, (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES', { size: titleSize, fill: c.p.textDim, weight: 700, anchor: 'middle', letter: 4 }));
+
+  const rows = m.rows.filter((r) => r.key !== 'sunrise');
+  const listTop = b.y + pad + titleSize * 2.3;
+  const listH = b.y + b.h - pad - listTop;
+  const rowH = listH / Math.max(1, rows.length);
+  const colIq = b.x + b.w - pad;
+  const colAd = b.x + b.w * 0.6;
+
+  rows.forEach((row, i) => {
+    const ry = listTop + i * rowH;
+    const midY = ry + rowH * 0.66;
+    if (i % 2 === 1) out.push(rect(b.x + pad * 0.4, ry + rowH * 0.04, b.w - pad * 0.8, rowH * 0.92, rowH * 0.16, hexToRgba(c.p.text, 0.05)));
+    if (row.active) {
+      out.push(rect(b.x + pad * 0.4, ry + rowH * 0.08, b.w - pad * 0.8, rowH * 0.84, rowH * 0.22, hexToRgba(c.p.primary, 0.16)));
+      out.push(rect(b.x + pad * 0.4, ry + rowH * 0.08, Math.max(3, b.w * 0.006), rowH * 0.84, 1.5, c.p.primary));
+    }
+    const nameColor = row.active ? c.p.primarySoft : row.next ? c.p.goldSoft : c.p.text;
+    const nameSize = clamp(rowH * 0.44, 16, 46);
+    const timeSize = nameSize * TIME_SCALE;
+    out.push(text(b.x + pad, midY, rowName(row, c.L), { size: nameSize, fill: nameColor, family: FONT_SANS, weight: 700, anchor: 'start', letter: 0.3, editId: `label.${row.label}` }));
+    out.push(text(colAd, midY, fmtShort(row.adhan, c.timeFormat), { size: timeSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'end' }));
+    out.push(text(colIq, midY, fmtShort(row.iqamah, c.timeFormat), { size: timeSize, fill: c.p.primarySoft, family: FONT_DISPLAY, weight: 700, anchor: 'end' }));
+  });
   return out.join('');
 }
 
@@ -2328,15 +2436,20 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     showName: tt.showName !== false,
     showDates: tt.showDates,
     showCountdown: tt.showCountdown,
+    showSunrise: tt.showSunrise,
     prohibited: prohibitedRing,
     flash: Math.floor(now.getTime() / 1000) % 2 === 0,
   };
 
   if (opts.announcement) {
-    // Slideshow: the timetable becomes a left sidebar, the image fills the right.
-    out.push(announcementView(area, m, ctx, opts.announcement));
+    // Full screen, edge to edge (cover-fit, so an odd-aspect upload never letterboxes) —
+    // not the old sidebar composite, which squeezed a parking-alert card or a poster
+    // designed to be read on its own next to a shrunk timetable neither half did well.
+    // The reminder/ticker band below still draws OVER this, same as over the normal
+    // layout — an Iqāmah-change notice must survive the slideshow, not hide behind it.
+    out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`);
   } else {
-    out.push(layoutReference(area, m, ctx));
+    out.push(tt.layout === 'simple' ? layoutSimple(area, m, ctx) : layoutReference(area, m, ctx));
   }
 
   // ── Footer (hidden whenever the bottom band is showing — they share that strip) ──

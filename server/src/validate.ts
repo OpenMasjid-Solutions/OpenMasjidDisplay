@@ -292,7 +292,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     orientation: oneOf(o.orientation, ['landscape', 'portrait'] as const, base?.orientation ?? 'landscape') as Orientation,
     // Coerce the fallback too, so a timetable saved at the now-removed 4K downgrades to 1080p.
     quality: oneOf(o.quality, ['720p', '1080p'] as const, oneOf(base?.quality, ['720p', '1080p'] as const, '1080p')) as Quality,
-    layout: oneOf(o.layout, ['centered', 'clockTop', 'split'] as const, base?.layout ?? 'centered'),
+    layout: oneOf(o.layout, ['centered', 'clockTop', 'split', 'simple'] as const, base?.layout ?? 'centered'),
     layoutCarousel: o.layoutCarousel === undefined ? base?.layoutCarousel ?? false : bool(o.layoutCarousel, false),
     masjidName: str(o.masjidName, base?.masjidName ?? 'Our Masjid', 80) || 'Our Masjid',
     location: str(o.location, base?.location ?? '', 80),
