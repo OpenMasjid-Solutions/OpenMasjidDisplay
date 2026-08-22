@@ -780,3 +780,25 @@ span.tl--min:hover { filter: none; transform: none; }
   font-size: 0.86em; padding: 0.05rem 0.3rem; border-radius: 5px;
   background: var(--glass-bg-inset); color: var(--color-ink);
 }
+
+/* A small field, for the settings that sit inline in a .pi-row next to their own label. The full
+   .input is sized for a form column and looks wrong beside a 2rem button — it made every row in the
+   Pi window a different height, which is the same untidiness .pi-sec set out to fix. */
+.input--sm {
+  min-height: 2rem;
+  padding-block: 0.2rem;
+  padding-inline: 0.45rem;
+  font-size: 0.85rem;
+}
+/* A picture the screen sent of itself. Full width and its own aspect ratio: the point of it is to
+   read the times off it, so it must not be a thumbnail. Bordered because it is a photograph of a
+   dark screen sitting on a dark panel, and without one the edges are invisible. */
+.pi-shot {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-block-start: 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.5rem);
+  background: #000;
+}

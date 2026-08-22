@@ -220,6 +220,31 @@ export interface PiDeviceInfo {
   /** The answer to the last console command. One answer, not a transcript — the scrollback is
    *  kept in the browser showing it, because the store is a file on the masjid's own volume. */
   shellResult?: { id: string; cmd: string; out: string; code: number | null; ms: number; at: string };
+  /** Whether the screen's OUTPUT is off, as the DEVICE reads it — not as we last commanded it. A
+   *  television somebody unplugged and a nightly schedule that fired both have to show correctly. */
+  displayOff?: boolean;
+  /** Turn the output off overnight. Enforced on the device from its own clock, so it still happens
+   *  on a night the masjid's internet is down. */
+  displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
+  /** And reboot nightly, by the same mechanism. */
+  rebootSchedule?: { enabled: boolean; at: string };
+  /** How the television is mounted, and how much of the edge it crops. Applied to each frame by the
+   *  agent, so a change shows up on the next one — no reboot, and nothing written to the card. */
+  displayTransform?: { rotate: 0 | 90 | 180 | 270; overscan: number };
+  /** The screen's own timezone, as its system has it. A wrong one makes every prayer time on the
+   *  wall wrong, confidently, which is why the panel shows it rather than assuming. */
+  timezone?: string;
+  /** The forced HDMI mode from the device's own boot config, or 'auto'. Reported BY the device,
+   *  because an unconfirmed one puts itself back and the panel has to show what is true after that. */
+  videoMode?: string;
+  /** True while a forced mode is provisional: the screen reverts it in a few minutes unless
+   *  somebody confirms the picture is fine. */
+  videoModePending?: boolean;
+  /** What the screen last said about a mode change, including that it was reverted. */
+  videoModeResult?: string;
+  /** When the screen last sent a picture of itself. The picture is fetched separately; this is what
+   *  says whether the one we would fetch is the one we just asked for. */
+  screenshotAt?: string;
 }
 
 export interface PiDeviceNet {

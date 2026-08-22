@@ -12,6 +12,30 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Added
+- **The whole Raspberry Pi is now managed from the dashboard.** Behind the gear on a Pi screen’s
+  card there are four new groups of controls, and between them they cover the things that used to
+  need somebody standing at the screen with a keyboard:
+  - **Turn the television off, and off overnight.** A screen can be put to sleep on demand, or told
+    to go dark at a time each night and come back in the morning. The screen keeps its own clock and
+    does this itself, so it still happens on a night the masjid’s internet is down — and it stops
+    drawing and stops decoding any camera while it is dark, so the board idles instead of running
+    warm all night for nobody.
+  - **See what a screen is actually showing.** One button and a picture comes back, read straight
+    out of the screen’s own video memory. It is the only answer to “is that screen really showing
+    today’s times?” that does not depend on the screen agreeing that it is.
+  - **The board’s own settings: timezone, name on the network, system updates, nightly reboot.** The
+    timezone is the one that matters — a screen on the wrong zone shows every prayer time an hour
+    out with nothing anywhere saying so, and until now only whoever wrote the SD card could fix it.
+  - **How the screen is mounted.** Rotation for a television turned on its side, and a “shrink by”
+    setting for one that crops the edges off and takes your bottom row of times with them. Both are
+    done in the picture itself, so they show up on the next frame — no reboot, and nothing that can
+    leave a screen black.
+- **Forcing a screen’s resolution, safely.** For a television that negotiates a bad mode. This is
+  the only setting here that has to change the card’s boot settings and reboot, so it is the only
+  one that could leave a screen dark — and it asks you afterwards whether you can see the picture.
+  If you cannot, the screen puts the old resolution back by itself within a few minutes.
+
 ### Changed
 - **A screen’s log is now a screen report, and it answers the question you opened it with.** It used
   to be 800 lines of the screen narrating itself. It now starts with the facts: the model, the OS,

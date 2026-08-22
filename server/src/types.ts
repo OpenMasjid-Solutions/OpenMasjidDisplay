@@ -375,7 +375,15 @@ export interface PiDevice {
       | 'wifi-forget'
       | 'wifi-rescan'
       | 'shell'
-      | 'shell-session';
+      | 'shell-session'
+      | 'display-off'
+      | 'display-on'
+      | 'set-timezone'
+      | 'set-hostname'
+      | 'os-update'
+      | 'screenshot'
+      | 'set-video-mode'
+      | 'keep-video-mode';
     issuedAt: number;
     /** Only for 'wifi-join', and deleted as soon as the device acknowledges the command. */
     wifi?: { ssid: string; psk: string };
@@ -384,6 +392,9 @@ export interface PiDevice {
     /** Only for 'shell-session': where the device should dial in, and the one-time secret it must
      *  present. Same life as the Wi-Fi passphrase — gone the moment the device acknowledges. */
     shellSession?: { id: string; secret: string; rows: number; cols: number };
+    /** Only for 'set-timezone' / 'set-hostname' / 'set-video-mode'. Validated on the way in, and
+     *  again by root on the device — which is the check that matters. */
+    text?: string;
   };
   /** The last lines the agent logged, as IT saw them — sent on check-in so the panel can show
    *  what a screen is doing without anybody opening a shell on it. Display text only. */
@@ -393,6 +404,61 @@ export interface PiDevice {
   /** When an install was last asked for from the panel. Used only to say "updating" while the
    *  device is busy doing it — the command is acknowledged within seconds, long before it finishes. */
   updateAskedAt?: number;
+  /**
+   * Whether the screen's OUTPUT is currently off — the DPMS state of its HDMI connector, as the
+   * device reads it rather than as we last commanded it. A masjid that pulls the plug on a
+   * television, or a schedule that fired while the panel was closed, both have to show correctly.
+   */
+  displayOff?: boolean;
+  /**
+   * Turn the output off overnight. Held here rather than on the timetable because it belongs to the
+   * SCREEN — two screens on one timetable can keep different hours — and enforced by the agent from
+   * its own clock, so a masjid whose internet drops at midnight still gets its screens back at Fajr.
+   */
+  displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
+  /**
+   * How this television is mounted, and how much of the picture it crops.
+   *
+   * Applied by the agent to each FRAME rather than written into the boot config: display_rotate
+   * and the overscan_* options belong to the legacy firmware display stack and do nothing under
+   * the KMS driver this installer configures, and a boot-config change costs a reboot and can leave
+   * a screen black. The agent owns every pixel it writes, so it can simply turn the picture — see
+   * pi/raster.ts. rotate is clockwise degrees; overscan is percent per edge, 0-15.
+   */
+  displayTransform?: { rotate: 0 | 90 | 180 | 270; overscan: number };
+  /**
+   * Reboot this screen nightly.
+   *
+   * A blunt instrument, and it is here because it is the one that works: a board that has been up
+   * for eleven months with a slow leak somewhere in a camera pipeline is fixed by a reboot at 3am
+   * and by nothing anybody wants to debug from another city. Enforced by the agent from its own
+   * clock, so it happens whether or not the internet does.
+   */
+  rebootSchedule?: { enabled: boolean; at: string };
+  /**
+   * The forced HDMI mode from the device's own kernel command line, or 'auto'.
+   *
+   * Reported BY the device rather than remembered from what was asked, because a mode nobody
+   * confirmed reverts itself on the device — see the video-revert unit in the installer — and the
+   * panel has to show what is true after that, not what somebody once pressed.
+   */
+  videoMode?: string;
+  /** True while a forced mode is provisional: it goes back on its own in a few minutes unless
+   *  somebody confirms the picture is fine. */
+  videoModePending?: boolean;
+  /** What root last said about a mode change, including that it was reverted. */
+  videoModeResult?: string;
+  /** The screen's own idea of its timezone and hostname, so the panel shows what IS, not what was
+   *  asked for. Both are settings an admin can also change from the console or the card. */
+  timezone?: string;
+  /**
+   * When the screen last sent a picture of itself.
+   *
+   * The timestamp only — the image is a file under /data/screenshots named after this device, for
+   * the reasons in piScreenshot.ts. This field is what the panel renders ("taken 4 seconds ago")
+   * and how it knows the picture it is about to fetch is the one it asked for.
+   */
+  screenshotAt?: string;
   /** Load, memory and temperature, as the screen last reported them. */
   stats?: {
     load1: number; cores: number; cpuPercent: number;

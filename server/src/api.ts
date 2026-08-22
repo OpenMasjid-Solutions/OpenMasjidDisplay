@@ -40,6 +40,11 @@ import {
   isPiCommand,
   normWifiJoin,
   normShellCommand,
+  normTimezone,
+  normHostname,
+  normTimeOfDay,
+  normDisplayTransform,
+  normVideoMode,
   type PiCommandAction,
   findDeviceByToken,
   findPendingByCode,
@@ -50,6 +55,7 @@ import {
   PI_POLL_MS,
   deviceOnline,
 } from './piAgent';
+import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
 import {
   findByToken,
   webScreenState,
@@ -481,7 +487,7 @@ export function createApi(deps: Deps) {
       // it can only ever create a PENDING row. Content requires a token, and a token only
       // exists once an admin has typed the code shown on that screen.
       const piMatch =
-        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|logs|command-ack|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(
+        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|logs|screenshot|command-ack|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(
           pathname,
         );
       if (piMatch) {
@@ -547,6 +553,32 @@ export function createApi(deps: Deps) {
           if (!journal) return sendJson(res, 400, { error: 'no log in that request' });
           store.update((db) => setDeviceJournal(db, device.id, journal, Date.now()));
           log.info(`stored ${journal.length} bytes of log for pi device ${device.id}`);
+          return sendJson(res, 200, { ok: true });
+        }
+
+        // A picture of what this screen is showing. Its own endpoint for the same reason the journal
+        // has one, and the cap is DERIVED from what the store will keep rather than picked: base64
+        // inflates by a third, so the body cap is the file cap plus that plus room for the JSON
+        // around it. The two limits disagreeing is exactly how every check-in was silently dropped.
+        if (what === 'screenshot' && method === 'POST') {
+          const body = await readBody(req, Math.round(SCREENSHOT_MAX_BYTES * 1.4) + 1_000).catch((e: unknown) => e);
+          if (body instanceof Error) {
+            const tooBig = (body as { code?: string }).code === BODY_TOO_LARGE;
+            return sendJson(res, tooBig ? 413 : 400, { error: tooBig ? 'body too large' : 'bad request' });
+          }
+          const b64 = typeof (body as { png?: unknown })?.png === 'string' ? (body as { png: string }).png : '';
+          if (!b64) return sendJson(res, 400, { error: 'no picture in that request' });
+          // Node's 'base64' decoder IGNORES anything that is not a base64 character rather than
+          // failing, so there is nothing to catch here — the bytes are checked for a PNG signature
+          // in saveScreenshot instead, because this file is served back to a browser as image/png
+          // and has to actually be one.
+          if (!saveScreenshot(device.id, Buffer.from(b64, 'base64'))) {
+            return sendJson(res, 400, { error: 'that was not a usable picture' });
+          }
+          store.update((db) => {
+            const d = (db.piDevices ?? []).find((x) => x.id === device.id);
+            if (d) d.screenshotAt = new Date().toISOString();
+          });
           return sendJson(res, 200, { ok: true });
         }
 
@@ -1574,6 +1606,20 @@ export function createApi(deps: Deps) {
             stats: d.stats,
             statsAt: d.statsAt,
             wifiResult: d.wifiResult,
+            // The screen's own account of itself, not what was last asked for — see PiDevice.
+            displayOff: d.displayOff,
+            displaySchedule: d.displaySchedule,
+            displayTransform: d.displayTransform,
+            rebootSchedule: d.rebootSchedule,
+            // What the DEVICE's own boot config says, and whether a change to it is still
+            // provisional — see PiDevice.videoMode.
+            videoMode: d.videoMode,
+            videoModePending: d.videoModePending,
+            videoModeResult: d.videoModeResult,
+            timezone: d.timezone,
+            // The timestamp only. The picture is fetched separately, and this is what tells the
+            // panel whether the one it would fetch is the one it just asked for.
+            screenshotAt: d.screenshotAt,
             // Whether an install is in flight. The device is the authority on what it is running,
             // so this is only ever a hint that it is busy — the version changing is the real answer.
             updateAskedAt: d.updateAskedAt,
@@ -1615,7 +1661,7 @@ export function createApi(deps: Deps) {
       if (piCmd && method === 'POST') {
         // Room for a Wi-Fi passphrase now, so the cap is no longer 1KB.
         const body = (await readBody(req, 4_000).catch(() => null)) as
-          | { action?: unknown; wifi?: unknown; shell?: unknown }
+          | { action?: unknown; wifi?: unknown; shell?: unknown; text?: unknown }
           | null;
         if (!isPiCommand(body?.action)) return sendJson(res, 400, { error: 'Unknown action.' });
         const action = body!.action as PiCommandAction;
@@ -1641,9 +1687,24 @@ export function createApi(deps: Deps) {
           shell = parsed.cmd;
         }
 
+        // A timezone or a hostname. Checked here so somebody typing one is told at once — but the
+        // check that PROTECTS the device is root's on the device, which also requires the zone to
+        // exist in /usr/share/zoneinfo. This side of a network cannot know that.
+        let text: string | undefined;
+        if (action === 'set-timezone' || action === 'set-hostname' || action === 'set-video-mode') {
+          const parsed =
+            action === 'set-timezone'
+              ? normTimezone(body!.text)
+              : action === 'set-hostname'
+                ? normHostname(body!.text)
+                : normVideoMode(body!.text);
+          if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
+          text = parsed.text;
+        }
+
         let queued: ReturnType<typeof queueCommand> = null;
         store.update((db) => {
-          queued = queueCommand(db, piCmd[1], action, Date.now(), wifi, shell);
+          queued = queueCommand(db, piCmd[1], action, Date.now(), wifi, shell, undefined, text);
         });
         if (!queued) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
         // The network NAME is fine in a log — it is broadcast on the air. The passphrase never is,
@@ -1655,7 +1716,7 @@ export function createApi(deps: Deps) {
         // as the server's own log needs to; the command itself comes back in the answer, where the
         // person who typed it is the one reading.
         log.info(
-          `queued "${action}"${wifi ? ` for network "${wifi.ssid}"` : ''}${shell ? ` (${shell.length} characters)` : ''} for pi device ${piCmd[1]}`,
+          `queued "${action}"${wifi ? ` for network "${wifi.ssid}"` : ''}${text ? ` ("${text}")` : ''}${shell ? ` (${shell.length} characters)` : ''} for pi device ${piCmd[1]}`,
         );
         return sendJson(res, 202, { queued: true });
       }
@@ -1672,14 +1733,18 @@ export function createApi(deps: Deps) {
          const body = (await readBody(req, 1_000).catch(() => null)) as { rows?: unknown; cols?: unknown } | null;
          const device = (store.db.piDevices ?? []).find((d) => d.id === piShellOpen[1]);
          if (!device || !device.token) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
-         const { id, secret } = openShellSession(device.id, body?.rows, body?.cols);
+         // rows/cols come back CLAMPED from openShellSession and are passed on as they are. They
+         // used to be written here as a literal 24x80 while the browser's measured size was clamped
+         // and then discarded, so every session ran 80 columns wide inside a window three times
+         // that and wrapped in the middle of the terminal.
+         const { id, secret, rows, cols } = openShellSession(device.id, body?.rows, body?.cols);
          let queued: ReturnType<typeof queueCommand> = null;
          store.update((db) => {
            queued = queueCommand(db, device.id, 'shell-session', Date.now(), undefined, undefined, {
              id,
              secret,
-             rows: 24,
-             cols: 80,
+             rows,
+             cols,
            });
          });
          if (!queued) {
@@ -1690,10 +1755,117 @@ export function createApi(deps: Deps) {
          return sendJson(res, 202, { id, claimMs: SHELL_CLAIM_MS });
        }
 
+      /**
+       * When this screen should turn its own output off overnight.
+       *
+       * Stored, not sent: it rides the device's ordinary state poll and the AGENT acts on it from
+       * its own clock. So a masjid whose internet drops at 23:00 still gets a dark screen at
+       * midnight and a lit one at Fajr — see PiState.displaySchedule.
+       */
+      const piSchedule = /^\/api\/pi\/([\w-]+)\/display-schedule$/.exec(pathname);
+      if (piSchedule && method === 'PUT') {
+        const body = (await readBody(req, 1_000).catch(() => null)) as
+          | { enabled?: unknown; offAt?: unknown; onAt?: unknown }
+          | null;
+        if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+        const offAt = normTimeOfDay(body.offAt);
+        const onAt = normTimeOfDay(body.onAt);
+        // Refused rather than defaulted: a schedule that silently became 00:00-00:00 would look
+        // saved in the panel and turn a masjid's screens off at a time nobody chose.
+        if (body.enabled === true && (!offAt || !onAt)) {
+          return sendJson(res, 400, { error: 'Give both times as HH:MM, in 24-hour form.' });
+        }
+        let found = false;
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piSchedule[1]);
+          if (!d) return;
+          found = true;
+          d.displaySchedule = { enabled: body.enabled === true, offAt, onAt };
+        });
+        if (!found) return sendJson(res, 404, { error: 'No such screen.' });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      /**
+       * Reboot this screen every night at a fixed time.
+       *
+       * Same mechanism as the display schedule and for the same reason: carried on the state poll
+       * and acted on by the agent from its own clock, so it still happens on the night a masjid's
+       * internet is down — which is exactly the night somebody wants a wedged board to recover.
+       */
+      const piReboot = /^\/api\/pi\/([\w-]+)\/reboot-schedule$/.exec(pathname);
+      if (piReboot && method === 'PUT') {
+        const body = (await readBody(req, 1_000).catch(() => null)) as { enabled?: unknown; at?: unknown } | null;
+        if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+        const at = normTimeOfDay(body.at);
+        if (body.enabled === true && !at) {
+          return sendJson(res, 400, { error: 'Give the time as HH:MM, in 24-hour form.' });
+        }
+        let found = false;
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piReboot[1]);
+          if (!d) return;
+          found = true;
+          d.rebootSchedule = { enabled: body.enabled === true, at };
+        });
+        if (!found) return sendJson(res, 404, { error: 'No such screen.' });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      /**
+       * How this television is mounted, and how much of the edge it crops.
+       *
+       * Stored and carried on the state poll, exactly like the schedule — the agent applies it to
+       * the next frame it draws. No reboot, and nothing written to the boot partition: see
+       * PiDevice.displayTransform for why the documented firmware options are not the answer here.
+       */
+      const piTransform = /^\/api\/pi\/([\w-]+)\/display-transform$/.exec(pathname);
+      if (piTransform && method === 'PUT') {
+        const body = await readBody(req, 1_000).catch(() => null);
+        if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+        const t = normDisplayTransform(body);
+        let found = false;
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piTransform[1]);
+          if (!d) return;
+          found = true;
+          d.displayTransform = t;
+        });
+        if (!found) return sendJson(res, 404, { error: 'No such screen.' });
+        return sendJson(res, 200, { ok: true, displayTransform: t });
+      }
+
+      /**
+       * The last picture a screen sent of itself.
+       *
+       * Behind the admin session like everything else under /api — a frame of a masjid's screen is
+       * not sensitive the way a shell is, but it is the inside of somebody's building and there is
+       * no reason for it to be public. Never cached: the whole point of it is that it is current.
+       */
+      const piShot = /^\/api\/pi\/([\w-]+)\/screenshot$/.exec(pathname);
+      if (piShot && method === 'GET') {
+        const png = readScreenshot(piShot[1]);
+        if (!png) {
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('No picture yet.');
+          return;
+        }
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'content-type': 'image/png',
+          'content-length': String(png.length),
+          'cache-control': 'no-store',
+        });
+        res.end(png);
+        return;
+      }
+
       const piForget = /^\/api\/pi\/([\w-]+)\/forget$/.exec(pathname);
       if (piForget && method === 'POST') {
-        // A screen being handed to somebody else must not still have a live shell on it.
+        // A screen being handed to somebody else must not still have a live shell on it — nor leave
+        // a picture of the inside of the building it used to be in.
         closeShellSessionsFor(piForget[1], 'the screen was forgotten');
+        removeScreenshot(piForget[1]);
         store.update((db) => {
           const d = (db.piDevices ?? []).find((x) => x.id === piForget[1]);
           if (d) {

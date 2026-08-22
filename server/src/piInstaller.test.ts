@@ -456,7 +456,24 @@ test('the dispatcher still executes nothing outside its closed set', () => {
   const verbs = [...ctl.matchAll(/^\s{4}([a-z|-]+)\)/gm)].map((m) => m[1]);
   assert.deepEqual(
     verbs.sort(),
-    ['logs', 'reboot', 'reinstall', 'update', 'wifi-forget', 'wifi-join', 'wifi-off', 'wifi-on', 'wifi-rescan'],
+    [
+      // display-off and display-on share one arm, so they appear as the alternation the case uses.
+      'display-off|display-on',
+      'keep-video-mode',
+      'logs',
+      'os-update',
+      'reboot',
+      'reinstall',
+      'set-hostname',
+      'set-timezone',
+      'set-video-mode',
+      'update',
+      'wifi-forget',
+      'wifi-join',
+      'wifi-off',
+      'wifi-on',
+      'wifi-rescan',
+    ],
     `unexpected verbs: ${verbs.join(', ')}`,
   );
   const def = /\*\)([\s\S]*?);;/.exec(ctl)?.[1] ?? '';

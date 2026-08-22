@@ -20,6 +20,8 @@ import type { PiDeviceInfo } from '../types';
 import { Modal, Spinner, IconDownload, IconPower, IconCheck, IconSparkle, IconCopy, IconTerminal, copyText, useToast } from '../ui';
 import { WifiSection } from './WifiPanel';
 import { PiTerminal } from './PiTerminal';
+import { PiDisplaySection } from './PiDisplayPanel';
+import { PiSystemSection } from './PiSystemPanel';
 
 /**
  * What to say about the log's age.
@@ -337,6 +339,10 @@ export function PiSettings({
         <h3 className="pi-sec__title">Network</h3>
         <WifiSection device={device} badge={badge} />
       </section>
+
+      <PiDisplaySection device={device} />
+
+      <PiSystemSection device={device} />
 
       <section className="pi-sec">
         <h3 className="pi-sec__title">Log</h3>

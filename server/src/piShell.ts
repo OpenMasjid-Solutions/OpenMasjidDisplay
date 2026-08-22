@@ -102,7 +102,11 @@ function clampSize(rows: unknown, cols: unknown): { rows: number; cols: number }
  * thinks is live, and making them wait ten minutes for the idle timer to notice would be answered
  * by reloading the page — which is this call. One shell per screen is the invariant that matters.
  */
-export function openShellSession(deviceId: string, rows: unknown, cols: unknown): { id: string; secret: string } {
+export function openShellSession(
+  deviceId: string,
+  rows: unknown,
+  cols: unknown,
+): { id: string; secret: string; rows: number; cols: number } {
   for (const s of sessions.values()) {
     if (s.deviceId === deviceId) closeShellSession(s.id, 'replaced by a new session');
   }
@@ -119,7 +123,9 @@ export function openShellSession(deviceId: string, rows: unknown, cols: unknown)
   };
   sessions.set(s.id, s);
   log.info(`terminal session opened for pi device ${deviceId}`);
-  return { id: s.id, secret: s.secret };
+  // The CLAMPED size goes back with it, so the caller cannot hand the device an unbounded one and
+  // cannot accidentally hand it a different one from the session it belongs to.
+  return { id: s.id, secret: s.secret, rows: s.rows, cols: s.cols };
 }
 
 /** What to hand the device on its next state poll, if it has a session waiting to be claimed. */

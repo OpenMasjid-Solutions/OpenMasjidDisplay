@@ -124,6 +124,16 @@ export interface EnrolInput {
   shellResult?: unknown;
   /** what root reported about the last join it was asked to make */
   wifiResult?: unknown;
+  /** whether the device believes its own display output is currently off */
+  displayOff?: unknown;
+  /** the forced HDMI mode on this device's kernel command line, or 'auto' */
+  videoMode?: unknown;
+  /** true while a forced mode is waiting to be confirmed or reverted */
+  videoModePending?: unknown;
+  /** what root said about the last mode change, if anything */
+  videoModeResult?: unknown;
+  /** the timezone the device's system is actually set to */
+  timezone?: unknown;
 }
 
 export interface EnrolResult {
@@ -278,6 +288,20 @@ export interface PiState {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
+  /**
+   * When to turn the screen's output off overnight, for the AGENT to enforce from its own clock.
+   *
+   * Sent as a schedule rather than acted on here by sending a command at midnight, because the
+   * point of a masjid's screen going dark overnight is that it keeps happening when the internet
+   * does not. A device that has not heard from us in three hours still knows what time to go dark.
+   */
+  displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
+  /** How the television is mounted and how much of the edge it eats. Applied to the frame by the
+   *  agent, so it takes effect on the next one and needs no reboot — see pi/raster.ts. */
+  displayTransform?: { rotate: 0 | 90 | 180 | 270; overscan: number };
+  /** Reboot this screen every night at a fixed time. Enforced by the agent from its own clock, for
+   *  the same reason the display schedule is. */
+  rebootSchedule?: { enabled: boolean; at: string };
   /** What the panel has asked this device to do, if anything. Collected on the device's own poll,
    *  because nothing can connect to it. */
   command: {
@@ -289,6 +313,8 @@ export interface PiState {
     shell?: string;
     /** only for 'shell-session' */
     shellSession?: { id: string; secret: string; rows: number; cols: number };
+    /** only for 'set-timezone' / 'set-hostname' */
+    text?: string;
   } | null;
 }
 
@@ -330,6 +356,12 @@ export function piState(
       clockSuspect: opts.clockSuspect,
       pollMs: PI_POLL_MS,
       screenName: '',
+      // Carried even for an unassigned screen: an idle Pi showing the "not assigned" card is still
+      // a lit television at 2am, and its schedule should still be honoured — and a sideways screen
+      // showing a pairing code should show it sideways too.
+      displaySchedule: device.displaySchedule,
+      displayTransform: device.displayTransform,
+      rebootSchedule: device.rebootSchedule,
       command: pendingCommand(device, nowMs),
     };
   }
@@ -358,6 +390,9 @@ export function piState(
     clockSuspect: opts.clockSuspect,
     pollMs: PI_POLL_MS,
     screenName: tv.name,
+    displaySchedule: device.displaySchedule,
+    displayTransform: device.displayTransform,
+    rebootSchedule: device.rebootSchedule,
     command: pendingCommand(device, nowMs),
   };
 }
@@ -475,6 +510,26 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput, n
     };
   }
 
+  // What the DEVICE believes about its own output, which is not the same as what was last asked
+  // for: a schedule may have fired since, or somebody may have used the remote. `=== true` /
+  // `=== false` rather than a cast, so an older agent that sends nothing leaves the last known
+  // state alone instead of asserting the screen is on.
+  if (input.displayOff === true || input.displayOff === false) device.displayOff = input.displayOff;
+
+  const tz = str(input.timezone, 64);
+  if (tz) device.timezone = tz;
+
+  // The display mode as the DEVICE's own boot config has it, plus whether one is still provisional.
+  // `=== true`/`=== false` on the flag rather than a cast: an older agent that reports nothing must
+  // leave the last known state alone, not assert that nothing is pending.
+  const vm = str(input.videoMode, 24);
+  if (vm) device.videoMode = vm;
+  if (input.videoModePending === true || input.videoModePending === false) {
+    device.videoModePending = input.videoModePending;
+  }
+  const vmr = str(input.videoModeResult, 200);
+  if (vmr) device.videoModeResult = vmr;
+
   if (input.wifiResult && typeof input.wifiResult === 'object') {
     const o = input.wifiResult as Record<string, unknown>;
     device.wifiResult = {
@@ -539,6 +594,27 @@ export const PI_COMMANDS = [
   'wifi-join',
   'wifi-forget',
   'wifi-rescan',
+  // Turning the screen's OUTPUT off, so a masjid is not lighting a television at 2am. Root, because
+  // the framebuffer's blank control is root-owned — and note that `vcgencmd display_power`, which
+  // every guide reaches for, is a no-op on a Pi 4 under KMS. Measured; see the installer.
+  'display-off',
+  'display-on',
+  // The settings that drift and cause faults nothing else explains. A wrong timezone makes every
+  // prayer time on the wall wrong, which is why it is here rather than left to whoever set the
+  // card up.
+  'set-timezone',
+  'set-hostname',
+  // Debian packages, not this app — 'update' and 'reinstall' already cover the app.
+  'os-update',
+  // FORCING the HDMI mode, for a television that negotiates a bad one. The only setting on this
+  // device that needs the boot partition and a reboot — and the only one that can leave a screen
+  // black, which is why it reverts itself unless somebody confirms the picture is fine. Rotation
+  // and overscan are NOT here: the agent turns its own pixels, so those need neither.
+  'set-video-mode',
+  'keep-video-mode',
+  // A picture of what the screen is showing right now. The only one of these that needs NO
+  // privilege: the agent is already in the video group, because drawing is its job.
+  'screenshot',
   // A full interactive terminal, dialled OUT by the device to a session the panel minted — see
   // piShell.ts. Same account and same sandbox as 'shell'; the difference is that the bytes flow
   // both ways over a socket the DEVICE opened, so a keystroke does not wait for the next poll.
@@ -576,6 +652,78 @@ export interface PiCommand {
   /** Only for 'shell-session': where to dial in, and the one-time secret to present. Held on the
    *  command exactly as long as a Wi-Fi passphrase is — until the device acknowledges it. */
   shellSession?: { id: string; secret: string; rows: number; cols: number };
+  /** Only for 'set-timezone' / 'set-hostname'. One short validated string; root re-checks it. */
+  text?: string;
+}
+
+/**
+ * An IANA timezone name, checked here so somebody typing one is told at once.
+ *
+ * The check that MATTERS is root's on the device — it also requires the zone to exist in
+ * /usr/share/zoneinfo, which is what makes a character filter sufficient rather than merely narrow.
+ * This one exists so the panel can refuse "Americas/New_York" without a two-minute round trip.
+ */
+export function normTimezone(raw: unknown): { text: string } | { error: string } {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text) return { error: 'Choose a timezone.' };
+  if (text.length > 64) return { error: 'That is not a timezone name.' };
+  if (!/^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+){0,2}$/.test(text)) return { error: 'That is not a timezone name.' };
+  return { text };
+}
+
+/**
+ * A hostname: one DNS label, RFC 1123.
+ *
+ * Lower-cased, deliberately. Linux accepts mixed case and then everything that compares hostnames
+ * disagrees about it, so a masjid naming a screen "MainHall" gets one that is sometimes mainhall.
+ */
+export function normHostname(raw: unknown): { text: string } | { error: string } {
+  const text = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!text) return { error: 'Type a name for this screen.' };
+  if (text.length > 63) return { error: 'A name can be at most 63 characters.' };
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(text)) {
+    return { error: 'Use letters, digits and hyphens only, starting and ending with a letter or digit.' };
+  }
+  return { text };
+}
+
+/**
+ * How a screen is mounted, from whatever the panel sent.
+ *
+ * Both fields are re-derived rather than trusted: `rotate` has to be one of exactly four values
+ * because the rotation is index arithmetic that only holds for those, and `overscan` becomes a
+ * render target size — an unbounded one would ask resvg for a frame of nonsense, and a negative one
+ * would grow the picture past the screen.
+ */
+export function normDisplayTransform(raw: unknown): { rotate: 0 | 90 | 180 | 270; overscan: number } {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const r = Number(o.rotate);
+  const rotate = r === 90 || r === 180 || r === 270 ? (r as 90 | 180 | 270) : 0;
+  const p = Number(o.overscan);
+  const overscan = Number.isFinite(p) && p > 0 ? Math.min(15, Math.round(p)) : 0;
+  return { rotate, overscan };
+}
+
+/**
+ * A forced HDMI mode: 'auto', 'WIDTHxHEIGHT', or 'WIDTHxHEIGHT@RATE'.
+ *
+ * Checked here so somebody typing one is told at once, and checked AGAIN by root on the device —
+ * this string ends up on the kernel command line, so the device's own filter is the one that
+ * matters and it is deliberately not this one.
+ */
+export function normVideoMode(raw: unknown): { text: string } | { error: string } {
+  const text = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!text) return { error: 'Choose a resolution.' };
+  if (text === 'auto') return { text };
+  const m = /^(\d{3,4})x(\d{3,4})(?:@(\d{2}))?$/.exec(text);
+  if (!m) return { error: 'Give it as 1920x1080, or 1920x1080@60.' };
+  return { text };
+}
+
+/** 'HH:MM', 24-hour. Used by the nightly screen-off schedule. */
+export function normTimeOfDay(raw: unknown, fallback = ''): string {
+  const v = typeof raw === 'string' ? raw.trim() : '';
+  return /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(v) ? v : fallback;
 }
 
 export function isPiCommand(v: unknown): v is PiCommandAction {
@@ -597,6 +745,7 @@ export function queueCommand(
   wifi?: { ssid: string; psk: string },
   shell?: string,
   shellSession?: { id: string; secret: string; rows: number; cols: number },
+  text?: string,
 ): PiCommand | null {
   const device = db.piDevices?.find((d) => d.id === deviceId);
   if (!device || !device.token) return null;
@@ -623,6 +772,9 @@ export function queueCommand(
   // the Wi-Fi passphrase beside it: written to the store because the device may poll after a
   // restart, deleted the instant it acknowledges, and never returned by any read endpoint.
   if (action === 'shell-session' && shellSession) device.command.shellSession = shellSession;
+  if (text && (action === 'set-timezone' || action === 'set-hostname' || action === 'set-video-mode')) {
+    device.command.text = text;
+  }
   return device.command;
 }
 
@@ -636,12 +788,14 @@ export function pendingCommand(
   wifi?: { ssid: string; psk: string };
   shell?: string;
   shellSession?: { id: string; secret: string; rows: number; cols: number };
+  text?: string;
 } | null {
   const c = device.command;
   if (!c || nowMs - c.issuedAt > PI_COMMAND_TTL_MS) return null;
   if (c.wifi) return { id: c.id, action: c.action, wifi: c.wifi };
   if (c.shell) return { id: c.id, action: c.action, shell: c.shell };
   if (c.shellSession) return { id: c.id, action: c.action, shellSession: c.shellSession };
+  if (c.text) return { id: c.id, action: c.action, text: c.text };
   return { id: c.id, action: c.action };
 }
 

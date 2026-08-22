@@ -23,6 +23,7 @@
  * tested against each layout rather than against whatever monitor happens to be plugged in.
  */
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import { readFbset } from './fbset';
 
 /** Where the kernel publishes the framebuffer's layout. */
@@ -372,5 +373,112 @@ export function quietConsole(): void {
     fs.writeFileSync(`${SYS}/blank`, '0');
   } catch {
     /* already awake */
+  }
+}
+// ── reading the screen back ──────────────────────────────────────────────────
+
+/** Why the last screenshot failed, for the caller to log. Kept here because the encoder must not
+ *  depend on the agent's logger — pi/framebuffer.ts is the layer below it. */
+let lastError = '';
+
+/** The reason the last framebufferPng() returned null. */
+export function framebufferPngError(): string {
+  return lastError;
+}
+
+/**
+ * A PNG of exactly what is on the screen right now.
+ *
+ * Built here rather than shelled out to a tool, because the tools that do this (`fbgrab`, `raspi2png`)
+ * are not on the image and adding a package to every screen for a debugging convenience is a poor
+ * trade. Node has zlib, the framebuffer is a byte array, and PNG's simplest form is a header, one
+ * deflate stream and a CRC — about forty lines.
+ *
+ * The 16bpp case is the real one: this board's framebuffer is RGB565 (measured — `bits_per_pixel:
+ * 16`), so the channels are unpacked and scaled rather than copied. A 32bpp board is handled too
+ * because the same agent is meant to survive a different one.
+ */
+export function framebufferPng(): Buffer | null {
+  try {
+    // The SAME geometry the drawing path uses, rather than a second reading of sysfs next to it.
+    // Two readers of the same three files drift, and this one had already drifted: it went straight
+    // to sysfs, which cannot separate the visible size from the virtual one — the exact distinction
+    // that once had a picture composed at twice the television's width. It also meant the function
+    // could only ever run on a real Pi, while everything else here honours OMD_SCREEN_FB* and can be
+    // exercised against a captured framebuffer.
+    const geo = readGeometry();
+    if (!geo) return null;
+    const { width: w, height: h, bpp, stride } = geo;
+    if (!w || !h || !bpp) return null;
+    const fb = fs.readFileSync(FB_DEVICE);
+    const bytes = bpp / 8;
+
+    // One filter byte per row (0 = None) then RGB triples: the layout PNG's simplest encoding wants.
+    const raw = Buffer.alloc((w * 3 + 1) * h);
+    let o = 0;
+    for (let y = 0; y < h; y++) {
+      raw[o++] = 0;
+      const base = y * stride;
+      for (let x = 0; x < w; x++) {
+        let r: number;
+        let g: number;
+        let b: number;
+        if (bpp === 16) {
+          const v = fb.readUInt16LE(base + x * 2);
+          r = (((v >> 11) & 31) * 255) / 31;
+          g = (((v >> 5) & 63) * 255) / 63;
+          b = ((v & 31) * 255) / 31;
+        } else {
+          const p = base + x * bytes;
+          b = fb[p];
+          g = fb[p + 1];
+          r = fb[p + 2];
+        }
+        raw[o++] = r | 0;
+        raw[o++] = g | 0;
+        raw[o++] = b | 0;
+      }
+    }
+
+    let table: number[] | null = null;
+    const crc32 = (buf: Buffer): number => {
+      if (!table) {
+        table = [];
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+          table[n] = c >>> 0;
+        }
+      }
+      let c = 0xffffffff;
+      for (const byte of buf) c = table[(c ^ byte) & 255] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const chunk = (type: string, data: Buffer): Buffer => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(data.length);
+      const t = Buffer.from(type, 'latin1');
+      const crc = Buffer.alloc(4);
+      crc.writeUInt32BE(crc32(Buffer.concat([t, data])));
+      return Buffer.concat([len, t, data, crc]);
+    };
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(w, 0);
+    ihdr.writeUInt32BE(h, 4);
+    ihdr[8] = 8; // bit depth
+    ihdr[9] = 2; // truecolour
+    return Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk('IHDR', ihdr),
+      // Level 6: a 1080p screenshot of a timetable compresses to a few hundred KB, and level 9 buys
+      // a few percent for noticeably more time on a board that has a screen to keep drawing.
+      chunk('IDAT', zlib.deflateSync(raw, { level: 6 })),
+      chunk('IEND', Buffer.alloc(0)),
+    ]);
+  } catch (e) {
+    // Swallowed rather than thrown: the caller is a screenshot request, and a board that cannot
+    // be photographed must still keep drawing. The reason reaches the log through the caller.
+    lastError = (e as Error).message;
+    return null;
   }
 }

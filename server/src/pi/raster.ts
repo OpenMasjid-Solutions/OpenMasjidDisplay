@@ -71,3 +71,101 @@ export function blitCentered(
   }
   return out;
 }
+
+/**
+ * A rotated copy of an RGBA frame.
+ *
+ * ## Why this is in software and not in the boot config
+ *
+ * Turning a television on its side is the commonest thing a masjid asks for — a portrait timetable
+ * in a corridor — and every guide answers it with `display_rotate=1` in `config.txt`. That option
+ * belongs to the legacy firmware display stack and does nothing at all under `vc4-kms-v3d`, which
+ * is what this installer configures. The KMS answer is a `video=…,rotate=90` on the kernel command
+ * line, which works, and costs a reboot, a boot-partition edit, and a black screen if it is wrong.
+ *
+ * None of that is necessary here. This agent owns every pixel it puts on the screen: it renders an
+ * SVG to RGBA and writes the bytes into `/dev/fb0` itself. So the rotation is four lines of index
+ * arithmetic on a buffer we already have in hand — it takes effect on the next frame, needs no
+ * reboot, cannot leave a screen black, and works the same on a board where the firmware options do
+ * nothing.
+ *
+ * Cost, since this runs once a second forever: a 1920×1080 rotation is 2 million 4-byte reads at a
+ * stride the cache dislikes. That is real but small beside rasterising the SVG in the first place,
+ * which is tens of milliseconds. The 180° case is a straight reversal and much cheaper, so it is
+ * kept separate rather than folded into the general one.
+ *
+ * `deg` is a clockwise rotation OF THE PICTURE: 90 moves the top of the picture to the right-hand
+ * edge. Note that this is the opposite of how the television is mounted, and it is easy to get
+ * backwards — a set physically turned clockwise needs the picture turned anticlockwise to come back
+ * upright, so that mounting is 270 here, not 90. The panel names the mountings and stores these
+ * numbers; the same convention as ffmpeg's `transpose` and the kernel's `video=…,rotate=`, which is
+ * why the camera path can use the matching transpose value directly.
+ */
+export function rotateRgba(
+  src: Uint8Array,
+  w: number,
+  h: number,
+  deg: 0 | 90 | 180 | 270,
+): { pixels: Uint8Array; width: number; height: number } {
+  if (deg === 0 || w <= 0 || h <= 0) return { pixels: src, width: w, height: h };
+
+  if (deg === 180) {
+    // Every pixel maps to the one the same distance from the other end, so this is one pass
+    // forwards and one backwards over the same buffer — no transposed stride at all.
+    const out = new Uint8Array(w * h * 4);
+    const n = w * h;
+    for (let i = 0; i < n; i++) {
+      const s = i * 4;
+      const d = (n - 1 - i) * 4;
+      out[d] = src[s];
+      out[d + 1] = src[s + 1];
+      out[d + 2] = src[s + 2];
+      out[d + 3] = src[s + 3];
+    }
+    return { pixels: out, width: w, height: h };
+  }
+
+  // The other two swap the axes, so the output is h × w.
+  const out = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const s = (y * w + x) * 4;
+      // 90 clockwise: the pixel at (x, y) lands at (h - 1 - y, x) in an h-wide frame.
+      // 270 clockwise is the same map run the other way.
+      const dx = deg === 90 ? h - 1 - y : y;
+      const dy = deg === 90 ? x : w - 1 - x;
+      const d = (dy * h + dx) * 4;
+      out[d] = src[s];
+      out[d + 1] = src[s + 1];
+      out[d + 2] = src[s + 2];
+      out[d + 3] = src[s + 3];
+    }
+  }
+  return { pixels: out, width: h, height: w };
+}
+
+/**
+ * The box to draw into after allowing for overscan.
+ *
+ * A television that crops its input — old sets do it by default, and many still ship with it on —
+ * eats the outermost few percent of the picture. On a photograph nobody notices; on a timetable it
+ * takes the last row of times off the bottom, which is the one somebody is standing there to read.
+ *
+ * The firmware's `overscan_left`/`disable_overscan` options are the documented cure and, like
+ * `display_rotate`, they belong to the legacy display stack. This does it in the frame instead:
+ * render smaller and centre it, so the black margin absorbs whatever the set crops. It is the same
+ * arithmetic as letterboxing, which `blitCentered` already does — the only new part is choosing a
+ * target smaller than the screen.
+ *
+ * `percent` is per EDGE, so 5 takes five percent off each side and leaves ninety in the middle. It
+ * is clamped to 0-15: beyond that the picture is small enough that the fix is the television's own
+ * settings, and an unbounded value could shrink a screen to nothing.
+ */
+export function overscanBox(w: number, h: number, percent: unknown): { width: number; height: number } {
+  const p = Number(percent);
+  const pct = Number.isFinite(p) && p > 0 ? Math.min(15, p) : 0;
+  if (!pct) return { width: w, height: h };
+  const keep = 1 - (pct * 2) / 100;
+  // Floor, then guard: a rounding that produced 0 would ask resvg for a zero-width render.
+  return { width: Math.max(16, Math.floor(w * keep)), height: Math.max(16, Math.floor(h * keep)) };
+}

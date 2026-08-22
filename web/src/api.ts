@@ -164,16 +164,45 @@ export const api = {
       | 'wifi-join'
       | 'wifi-forget'
       | 'wifi-rescan'
-      | 'shell',
+      | 'shell'
+      | 'display-off'
+      | 'display-on'
+      | 'os-update'
+      | 'screenshot'
+      | 'set-timezone'
+      | 'set-hostname'
+      | 'set-video-mode'
+      | 'keep-video-mode',
     /** Only for 'wifi-join'. The passphrase is used once on the device and never logged. */
     wifi?: { ssid: string; psk: string },
     /** Only for 'shell'. One line, run on the screen as its own unprivileged user. */
     shell?: string,
+    /** Only for 'set-timezone' / 'set-hostname' / 'set-video-mode'. Checked here for a quick answer
+     *  and again by root on the device, which is the check that actually protects it. */
+    text?: string,
   ) =>
     req<{ queued: boolean }>(
       'POST',
       `/api/pi/${id}/command`,
-      wifi ? { action, wifi } : shell ? { action, shell } : { action },
+      wifi ? { action, wifi } : shell ? { action, shell } : text ? { action, text } : { action },
+    ),
+
+  /** When this screen turns its own output off overnight. Stored and carried on the device's poll —
+   *  the device acts on it from its own clock, so it works with the internet down. */
+  piDisplaySchedule: (id: string, s: { enabled: boolean; offAt: string; onAt: string }) =>
+    req<{ ok: boolean }>('PUT', `/api/pi/${id}/display-schedule`, s),
+
+  /** And when it reboots itself, by the same mechanism. */
+  piRebootSchedule: (id: string, s: { enabled: boolean; at: string }) =>
+    req<{ ok: boolean }>('PUT', `/api/pi/${id}/reboot-schedule`, s),
+
+  /** How the television is mounted and how much of the edge it eats. Takes effect on the screen's
+   *  next frame — the agent turns its own pixels, so this needs no reboot. */
+  piDisplayTransform: (id: string, t: { rotate: number; overscan: number }) =>
+    req<{ ok: boolean; displayTransform: { rotate: 0 | 90 | 180 | 270; overscan: number } }>(
+      'PUT',
+      `/api/pi/${id}/display-transform`,
+      t,
     ),
 
   /**

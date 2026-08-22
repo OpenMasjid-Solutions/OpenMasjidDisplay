@@ -958,6 +958,166 @@ for req in "$SPOOL"/*; do
         echo 'control: refusing to turn Wi-Fi off — there is no cable, so it is the only way back'
       fi
       ;;
+    display-off|display-on)
+      # Turn the screen's OUTPUT off, so a masjid is not lighting a television at 2am.
+      #
+      # `vcgencmd display_power 0` is what every guide says and it is a NO-OP on this board.
+      # Measured on a Pi 4 with `dtoverlay=vc4-kms-v3d`, which is what the installer sets:
+      #
+      #   vcgencmd display_power 0   ->  power=1  dpms=On    (nothing happened)
+      #   echo 1 > fb0/blank         ->  power=1  dpms=Off   (the display slept)
+      #
+      # vcgencmd talks to the legacy firmware display stack; under KMS the kernel owns the
+      # connector and the framebuffer's blank knob is what reaches it. So this writes the knob,
+      # and reads DPMS back rather than vcgencmd, because DPMS is the thing that tracked reality.
+      #
+      # Also measured: the blank SURVIVES the agent drawing. It writes a frame to /dev/fb0 every
+      # second and the display stayed asleep for the whole test — so this does not need the agent
+      # to stop, though it does stop anyway to save the work (see the agent's own draw loop).
+      _want=0
+      [ "$action" = display-off ] && _want=1
+      if [ -w /sys/class/graphics/fb0/blank ]; then
+        echo "$_want" > /sys/class/graphics/fb0/blank 2>/dev/null || true
+        # Settle, then report what actually happened rather than what was asked for.
+        sleep 1
+        _dpms=$(cat /sys/class/drm/card*-HDMI-A-1/dpms 2>/dev/null | head -1)
+        echo "control: display ${action#display-} requested; connector is now ${_dpms:-unknown}"
+      else
+        echo "control: cannot reach the framebuffer blank control on this board"
+      fi
+      ;;
+
+    set-video-mode)
+      # FORCE the HDMI mode, for a television that negotiates a bad one.
+      #
+      # The only setting here that needs the boot partition and a reboot, and it is worth saying
+      # why the alternatives were not taken. `hdmi_group`/`hdmi_mode` in config.txt belong to the
+      # legacy firmware display stack; this image sets `disable_fw_kms_setup=1` and the KMS driver
+      # owns the connector, so they do nothing — measured on this very board, where
+      # `framebuffer_depth=32` sits in config.txt and the framebuffer is 16bpp regardless. Rotation
+      # and overscan escape all of this because the agent draws the pixels itself and can simply
+      # turn them; a MODE is negotiated by the kernel before any of our code runs, so the kernel
+      # command line is the only place to say it.
+      #
+      # Which makes this the one change that can leave a masjid looking at a black television. So it
+      # is reversible without anyone visiting: the old command line is kept, a marker is left, and a
+      # boot-time timer puts it all back unless somebody says the picture is fine. See
+      # omd-video-revert.service.
+      _vmreq=$STATEDIR/video-mode-request
+      _vm=$(head -c 32 "$_vmreq" 2>/dev/null | tr -d '\n\r' || true)
+      rm -f "$_vmreq"
+      _cmdline=/boot/firmware/cmdline.txt
+      [ -f "$_cmdline" ] || _cmdline=/boot/cmdline.txt
+      if [ -f "$STATEDIR/video-mode-pending" ]; then
+        # Refused, not queued. A second change while the first is unconfirmed would back up the
+        # ALREADY-CHANGED command line, and the revert would then restore a mode nobody wanted.
+        echo 'control: a display mode is already waiting to be confirmed; confirm or wait for it to revert first'
+      elif [ ! -f "$_cmdline" ]; then
+        echo 'control: cannot find the kernel command line on this board'
+      else
+        case "$_vm" in
+          auto|[0-9][0-9][0-9]x[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]x[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]x[0-9][0-9][0-9][0-9]|\
+[0-9][0-9][0-9]x[0-9][0-9][0-9]@[0-9][0-9]|[0-9][0-9][0-9][0-9]x[0-9][0-9][0-9]@[0-9][0-9]|[0-9][0-9][0-9][0-9]x[0-9][0-9][0-9][0-9]@[0-9][0-9]) ;;
+          *) _vm='' ;;
+        esac
+        if [ -z "$_vm" ]; then
+          echo 'control: refusing a display mode that is not WIDTHxHEIGHT or WIDTHxHEIGHT@RATE'
+        else
+          cp -f "$_cmdline" "$_cmdline.omd-bak"
+          # One line, whatever else is on it: strip any video= we put there before, then add ours.
+          # sed rather than an editor because this file is one line by definition and a stray
+          # newline in it stops the board booting.
+          _new=$(tr -d '\n' < "$_cmdline" | sed 's/ *video=HDMI-A-1:[^ ]*//g')
+          [ "$_vm" = auto ] || _new="$_new video=HDMI-A-1:$_vm"
+          printf '%s\n' "$_new" > "$_cmdline"
+          # Staged in $PREFIX and renamed in, never redirected into $STATEDIR — the agent owns that
+          # directory and could leave a symlink at this name, which a root redirect would follow.
+          # Exactly the escalation handover() exists to close, and the same reasoning applies to a
+          # marker file as to a result file.
+          printf '%s\n' "$_vm" > "$PREFIX/.video-mode-pending"
+          handover "$PREFIX/.video-mode-pending" "$STATEDIR/video-mode-pending"
+          systemctl enable omd-video-revert.timer >/dev/null 2>&1 || true
+          echo "control: display mode set to $_vm; rebooting, and reverting in four minutes unless it is confirmed"
+          # Detached for the same reason the reinstall is: this dispatcher's own cgroup goes down
+          # with it, and a reboot started inside it can be killed before it takes.
+          systemd-run --collect --quiet --on-active=3 /sbin/reboot >/dev/null 2>&1 || reboot
+        fi
+      fi
+      ;;
+
+    keep-video-mode)
+      # Somebody has looked at the screen and it is fine. Drop the marker and stand the timer down.
+      rm -f "$STATEDIR/video-mode-pending"
+      systemctl disable omd-video-revert.timer >/dev/null 2>&1 || true
+      echo 'control: keeping the display mode'
+      ;;
+
+    set-timezone)
+      # The single most consequential setting on a prayer-times screen: get it wrong and every time
+      # on the wall is wrong, confidently. Validated HERE as well as in the panel, because this is
+      # the side that runs the command.
+      _tzreq=$STATEDIR/tz-request
+      _tz=$(head -c 128 "$_tzreq" 2>/dev/null | tr -d '\n\r' || true)
+      rm -f "$_tzreq"
+      # An IANA name and nothing else: letters, digits, and the few separators they use. No spaces,
+      # no dots that could climb, nothing shell-special — this string reaches a command line.
+      case "$_tz" in
+        ''|*[!A-Za-z0-9_/+-]*|/*|*/) echo "control: refusing a timezone that is not a plain IANA name"; ;;
+        *..*) echo "control: refusing a timezone containing .." ;;
+        *)
+          # And it has to be one this system actually has, which is the check that makes the
+          # character filter above sufficient rather than merely narrow.
+          if [ -f "/usr/share/zoneinfo/$_tz" ]; then
+            timedatectl set-timezone "$_tz" 2>/dev/null && echo "control: timezone set to $_tz" || echo "control: could not set the timezone"
+          else
+            echo "control: this system has no timezone called $_tz"
+          fi
+          ;;
+      esac
+      ;;
+
+    set-hostname)
+      # Cosmetic on its own, but it is what a masjid sees in their router and in this panel, and a
+      # hall full of screens all called "raspberry" is unmanageable.
+      _hnreq=$STATEDIR/hostname-request
+      _hn=$(head -c 64 "$_hnreq" 2>/dev/null | tr -d '\n\r' || true)
+      rm -f "$_hnreq"
+      # RFC 1123: letters, digits and hyphens, not starting or ending with one.
+      case "$_hn" in
+        ''|*[!a-z0-9-]*|-*|*-) echo "control: refusing a hostname that is not a plain DNS label" ;;
+        *)
+          if hostnamectl set-hostname "$_hn" 2>/dev/null; then
+            # /etc/hosts has to follow, or sudo and anything else resolving the local name stalls
+            # for a DNS timeout on every call.
+            if grep -qE '^127\.0\.1\.1' /etc/hosts 2>/dev/null; then
+              sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$_hn/" /etc/hosts 2>/dev/null || true
+            else
+              printf '127.0.1.1\t%s\n' "$_hn" >> /etc/hosts 2>/dev/null || true
+            fi
+            echo "control: hostname set to $_hn"
+          else
+            echo "control: could not set the hostname"
+          fi
+          ;;
+      esac
+      ;;
+
+    os-update)
+      # Debian packages, not this app — `update` and `reinstall` already cover the app.
+      #
+      # Detached through systemd-run for the same reason the reinstall is: this takes minutes, and
+      # anything started from the dispatcher dies with it (Type=oneshot plus the default
+      # KillMode=control-group takes the whole cgroup down). Output goes to the journal, which the
+      # screen report now surfaces, so somebody can see how it went without being here for it.
+      if systemd-run --collect --quiet --unit=omd-os-update \
+        --description='OpenMasjidDisplay: apt upgrade' \
+        /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get -y -o Dpkg::Options::=--force-confold upgrade' 2>/dev/null; then
+        echo "control: started an OS package upgrade in the background"
+      else
+        echo "control: could not start the OS upgrade (is one already running?)"
+      fi
+      ;;
+
     logs)
       # Collect a SCREEN REPORT, not a log dump.
       #
@@ -1022,6 +1182,32 @@ for req in "$SPOOL"/*; do
       free -m 2>/dev/null | sed -n '1,2p' >> "$PREFIX/.journal.stage"
       df -h / 2>/dev/null | sed -n '1,2p' >> "$PREFIX/.journal.stage"
       _kv 'framebuffer' "$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null) @ $(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null)bpp"
+
+      _sec 'Display'
+      # Added because "the screen is flickering" came up twice, and answering it took an SSH session
+      # both times. These are the facts that separate the three causes: the Pi not drawing (frames),
+      # the HDMI link renegotiating (hotplug events, mode), and everything downstream of the socket —
+      # a capture device, a KVM, a cable, the television — which shows up here as *nothing wrong*.
+      for _c in /sys/class/drm/card*-HDMI-A-*; do
+        [ -e "$_c" ] || continue
+        _kv "$(basename "$_c")" "$(cat "$_c/status" 2>/dev/null) / $(cat "$_c/enabled" 2>/dev/null) / dpms=$(cat "$_c/dpms" 2>/dev/null)"
+        _m=$(cat "$_c/modes" 2>/dev/null | head -1)
+        [ -n "$_m" ] && _kv '  preferred mode' "$_m"
+      done
+      _kv 'fb blank' "$(cat /sys/class/graphics/fb0/blank 2>/dev/null)"
+      # A link that is renegotiating logs every time. A stable one logs at boot and never again, so a
+      # count is enough to tell them apart without reading the whole kernel log.
+      _kv 'hotplug events' "$(journalctl -k -b --no-pager -q 2>/dev/null | grep -ciE 'hdmi.*(hotplug|connected|disconnected)|drm.*hotplug')"
+      # Is the agent actually putting frames on it? Two reads a second apart: if these differ the Pi
+      # is drawing, whatever the television is doing.
+      _h1=$(dd if=/dev/fb0 bs=4096 count=64 skip=200 2>/dev/null | cksum | cut -d' ' -f1)
+      sleep 1
+      _h2=$(dd if=/dev/fb0 bs=4096 count=64 skip=200 2>/dev/null | cksum | cut -d' ' -f1)
+      if [ "$_h1" != "$_h2" ]; then
+        _kv 'frames' 'the framebuffer changed within a second — this Pi IS drawing'
+      else
+        _kv 'frames' 'no change in one second — expected only if the screen is off or idle'
+      fi
 
       _sec 'Services'
       for _u in openmasjid-screen openmasjid-screen-control.path; do
@@ -1249,6 +1435,71 @@ for req in "$SPOOL"/*; do
 done
 CTL
 chmod 700 "$PREFIX/control.sh"
+
+# ── putting a bad display mode back ─────────────────────────────────────────
+#
+# A forced HDMI mode is the one change on this device that can leave a television black, and a
+# black television cannot be used to undo it. So the change is provisional: set-video-mode leaves a
+# marker and enables this timer, and four minutes into the NEXT boot this runs. If the marker is
+# still there — nobody confirmed, because nobody could see anything — the old kernel command line
+# goes back and the board reboots again. If it is gone, this simply stands itself down.
+#
+# Four minutes because it has to be longer than a boot plus the agent's first poll plus somebody
+# noticing, and shorter than anybody's patience with a dark screen in a prayer hall.
+cat > "$PREFIX/video-revert.sh" <<'REV'
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+set -eu
+PREFIX=/opt/openmasjid-screen
+STATEDIR=/var/lib/openmasjid-screen
+CMDLINE=/boot/firmware/cmdline.txt
+[ -f "$CMDLINE" ] || CMDLINE=/boot/cmdline.txt
+if [ ! -f "$STATEDIR/video-mode-pending" ]; then
+  # Confirmed, or never set. Either way this must not fire again.
+  systemctl disable omd-video-revert.timer >/dev/null 2>&1 || true
+  exit 0
+fi
+rm -f "$STATEDIR/video-mode-pending"
+systemctl disable omd-video-revert.timer >/dev/null 2>&1 || true
+if [ -f "$CMDLINE.omd-bak" ]; then
+  cp -f "$CMDLINE.omd-bak" "$CMDLINE"
+  # Left where the agent can read it, so the panel can say what happened rather than just showing a
+  # screen that rebooted for no visible reason. Staged and renamed, not redirected: $STATEDIR is the
+  # agent's, and a root redirect into a name it controls follows a symlink left there. This script
+  # runs standalone so it carries its own two lines of handover rather than sharing the dispatcher's.
+  printf 'the display mode was not confirmed, so the previous one was put back\n' > "$PREFIX/.video-mode-result"
+  chown omdscreen "$PREFIX/.video-mode-result" 2>/dev/null || true
+  chmod 600 "$PREFIX/.video-mode-result" 2>/dev/null || true
+  mv -f "$PREFIX/.video-mode-result" "$STATEDIR/video-mode-result" 2>/dev/null || true
+  reboot
+fi
+REV
+chmod 700 "$PREFIX/video-revert.sh"
+
+cat > /etc/systemd/system/omd-video-revert.service <<'UNIT'
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=OpenMasjidDisplay: put an unconfirmed display mode back
+
+[Service]
+Type=oneshot
+ExecStart=/opt/openmasjid-screen/video-revert.sh
+UNIT
+
+cat > /etc/systemd/system/omd-video-revert.timer <<'UNIT'
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=OpenMasjidDisplay: check an unconfirmed display mode
+
+[Timer]
+OnBootSec=4min
+# Not Persistent: this is about THIS boot. A missed run from a boot that happened while the board
+# was off is meaningless, and replaying it would revert a mode somebody confirmed weeks ago.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+UNIT
 
 cat > /etc/systemd/system/openmasjid-screen-control.service <<'UNIT'
 # SPDX-License-Identifier: AGPL-3.0-only

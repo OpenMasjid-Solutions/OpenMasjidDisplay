@@ -31,11 +31,19 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import WebSocket from 'ws';
 import { Resvg } from '@resvg/resvg-js';
-import { Framebuffer, quietConsole, describeFramebuffer, FB_DEVICE, type FbGeometry } from './framebuffer';
+import {
+  Framebuffer,
+  quietConsole,
+  describeFramebuffer,
+  framebufferPng,
+  framebufferPngError,
+  FB_DEVICE,
+  type FbGeometry,
+} from './framebuffer';
 import { VideoPlayer } from './video';
 import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
-import { fitMode, blitCentered } from './raster';
+import { fitMode, blitCentered, rotateRgba, overscanBox } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
 import { netFacts, scanNetworks } from './network';
 import { piStats } from './stats';
@@ -120,6 +128,14 @@ interface PiStateWire {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
+  /** Turn the output off overnight, enforced by the agent from its own clock — see
+   *  applyDisplaySchedule for why it is not the panel that sends the command at the moment. */
+  displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
+  /** And reboot nightly, for the same reason and by the same mechanism. */
+  rebootSchedule?: { enabled: boolean; at: string };
+  /** How the television is mounted, and how much of the edge it crops. Applied to the frame, so a
+   *  change takes effect on the next one — see raster.ts. */
+  displayTransform?: { rotate?: number; overscan?: number };
   command?: {
     id: string;
     action:
@@ -134,13 +150,23 @@ interface PiStateWire {
       | 'wifi-forget'
       | 'wifi-rescan'
       | 'shell'
-      | 'shell-session';
+      | 'shell-session'
+      | 'display-off'
+      | 'display-on'
+      | 'set-timezone'
+      | 'set-hostname'
+      | 'os-update'
+      | 'screenshot'
+      | 'set-video-mode'
+      | 'keep-video-mode';
     /** Only ever present for 'wifi-join'. The password is used once and never logged. */
     wifi?: { ssid: string; psk: string };
     /** Only ever present for 'shell'. One line, run as THIS user — see runShell. */
     shell?: string;
     /** Only ever present for 'shell-session'. Where to dial in, and the one-time secret. */
     shellSession?: { id: string; secret: string; rows: number; cols: number };
+    /** Only ever present for 'set-timezone' / 'set-hostname'. Root validates it again. */
+    text?: string;
   } | null;
 }
 
@@ -157,6 +183,14 @@ class Screen {
   private constructor(
     private readonly fb: Framebuffer,
     readonly geo: FbGeometry,
+    /**
+     * How this television is mounted and how much of the picture it eats.
+     *
+     * Mutable, and set from the state poll rather than passed in: the framebuffer is opened once at
+     * startup and these are per-screen settings an admin can change while it is running. Both are
+     * applied to the FRAME, not to the boot config — see raster.ts for why that is not a shortcut.
+     */
+    public transform: { rotate: 0 | 90 | 180 | 270; overscan: number } = { rotate: 0, overscan: 0 },
   ) {}
 
   static open(): Screen | null {
@@ -193,9 +227,17 @@ class Screen {
       const srcW = m ? Number(m[1]) : 1920;
       const srcH = m ? Number(m[2]) : 1080;
 
+      // The box the picture is allowed to fill, and which way round it is. For a quarter turn the
+      // target is the framebuffer's dimensions SWAPPED, because the frame is rasterised the way it
+      // will be seen and then turned into the framebuffer's shape.
+      const box = overscanBox(this.geo.width, this.geo.height, this.transform.overscan);
+      const quarter = this.transform.rotate === 90 || this.transform.rotate === 270;
+      const fitW = quarter ? box.height : box.width;
+      const fitH = quarter ? box.width : box.height;
+
       const t0 = process.hrtime.bigint();
       const img = new Resvg(svg, {
-        fitTo: fitMode(srcW, srcH, this.geo.width, this.geo.height),
+        fitTo: fitMode(srcW, srcH, fitW, fitH),
         font: fontFiles.length
           ? {
               // The server's own curated faces, fetched from it. NOT the system fonts: resvg
@@ -215,7 +257,12 @@ class Screen {
       }).render();
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
-      const frame = blitCentered(img.pixels, img.width, img.height, this.geo.width, this.geo.height);
+      // Rotated after rasterising and before blitting: resvg has no concept of the framebuffer's
+      // orientation, and blitCentered's letterboxing is what turns "a portrait picture" into "a
+      // portrait picture centred in a landscape framebuffer with black down both sides" — which is
+      // exactly what a television turned on its side needs to be sent.
+      const rot = rotateRgba(img.pixels, img.width, img.height, this.transform.rotate);
+      const frame = blitCentered(rot.pixels, rot.width, rot.height, this.geo.width, this.geo.height);
       return this.fb.draw(frame) ? ms : null;
     } catch (e) {
       log('could not draw a frame:', (e as Error).message);
@@ -404,6 +451,79 @@ async function runCommand(
     return;
   }
 
+  // The screen's own output. Root, because the framebuffer's blank control is root-owned.
+  if (cmd.action === 'display-off' || cmd.action === 'display-on') {
+    requestPrivileged(cmd.id, cmd.action, `asked the system to turn the screen ${cmd.action === 'display-off' ? 'off' : 'on'}`);
+    // Report the result promptly: somebody just pressed a button and is watching the panel.
+    live.checkInNow = true;
+    return;
+  }
+
+  // Confirming a provisional display mode. No payload: the marker root left is the whole state.
+  if (cmd.action === 'keep-video-mode') {
+    requestPrivileged(cmd.id, 'keep-video-mode', 'confirmed the display mode, so it will not revert');
+    live.checkInNow = true;
+    return;
+  }
+
+  // Forcing one. Same payload shape as the timezone: the verb cannot carry it, because the
+  // dispatcher reads a verb through a filter that keeps only lowercase letters and dashes.
+  if (cmd.action === 'set-video-mode') {
+    if (!cmd.text) {
+      log('a set-video-mode arrived with no mode; ignoring it');
+      return;
+    }
+    try {
+      const dir = '/var/lib/openmasjid-screen';
+      fs.writeFileSync(`${dir}/.video-mode-request`, `${cmd.text}\n`, { mode: 0o600 });
+      fs.renameSync(`${dir}/.video-mode-request`, `${dir}/video-mode-request`);
+    } catch (e) {
+      log('could not leave the display mode for the system:', (e as Error).message);
+      return;
+    }
+    // This one reboots the board, so there is no point waiting for a check-in that will not happen.
+    requestPrivileged(cmd.id, 'set-video-mode', `asked the system to set the display mode to "${cmd.text}" and reboot`);
+    return;
+  }
+
+  if (cmd.action === 'os-update') {
+    requestPrivileged(cmd.id, 'os-update', 'asked the system to install operating-system updates');
+    return;
+  }
+
+  // Both of these carry a short string, which cannot travel in the spool file: the dispatcher reads
+  // a verb as `head -c 32 | tr -dc 'a-z-'`, which would turn "America/New_York" into
+  // "americanewyork". Same shape as a Wi-Fi join — the payload goes beside the verb, and root
+  // validates it itself rather than trusting this side.
+  if (cmd.action === 'set-timezone' || cmd.action === 'set-hostname') {
+    if (!cmd.text) {
+      log(`a ${cmd.action} arrived with nothing to set; ignoring it`);
+      return;
+    }
+    const file = cmd.action === 'set-timezone' ? 'tz-request' : 'hostname-request';
+    try {
+      const dir = '/var/lib/openmasjid-screen';
+      // Written and renamed BEFORE the verb, so the dispatcher can never wake on a request whose
+      // payload has not landed.
+      fs.writeFileSync(`${dir}/.${file}`, `${cmd.text}
+`, { mode: 0o600 });
+      fs.renameSync(`${dir}/.${file}`, `${dir}/${file}`);
+    } catch (e) {
+      log(`could not leave the ${cmd.action} details for the system:`, (e as Error).message);
+      return;
+    }
+    requestPrivileged(cmd.id, cmd.action, `asked the system to set ${cmd.action === 'set-timezone' ? 'the timezone' : 'the hostname'} to "${cmd.text}"`);
+    live.checkInNow = true;
+    return;
+  }
+
+  // No privilege at all: the agent is already in the video group, because drawing is its job.
+  if (cmd.action === 'screenshot') {
+    log('taking a screenshot for the dashboard');
+    await sendScreenshot(cfg);
+    return;
+  }
+
   if (cmd.action === 'shell-session') {
     if (!cmd.shellSession?.id || !cmd.shellSession.secret) {
       log('a terminal session arrived with nothing to dial into; ignoring it');
@@ -440,6 +560,144 @@ async function runCommand(
     // boot settings and the installed packages. Self-update replaces the agent file and nothing
     // else, so without this a fix in either of those needs somebody at a keyboard.
     requestPrivileged(cmd.id, 'reinstall', 'asked the installer to run again');
+  }
+}
+
+/** This device's timezone as the system holds it, so the panel can show what IS rather than what
+ *  was last asked for. /etc/timezone is one line and present on Debian; the symlink is the fallback
+ *  for an image that has only that. */
+function readTimezone(): string {
+  try {
+    const tz = fs.readFileSync('/etc/timezone', 'utf8').trim();
+    if (tz) return tz;
+  } catch {
+    /* fall through */
+  }
+  try {
+    const link = fs.readlinkSync('/etc/localtime');
+    // Split rather than match: the path is /usr/share/zoneinfo/<Area>/<City>, and everything after
+    // the marker IS the zone name — which is also true of the two-level ones like America/Argentina.
+    const at = link.indexOf('zoneinfo/');
+    if (at >= 0) return link.slice(at + 'zoneinfo/'.length);
+  } catch {
+    /* no idea, then */
+  }
+  return '';
+}
+
+/** Where this board's kernel command line lives. /boot/firmware since Bookworm; the older path is
+ *  the fallback, and the agent has to cope with both because a masjid's card may be either. */
+function cmdlinePath(): string {
+  for (const p of ['/boot/firmware/cmdline.txt', '/boot/cmdline.txt']) {
+    try {
+      if (fs.statSync(p).isFile()) return p;
+    } catch {
+      /* try the other */
+    }
+  }
+  return '';
+}
+
+/**
+ * The forced HDMI mode on this device, or 'auto' when there is none.
+ *
+ * Read from the boot config rather than remembered from what the panel asked for, because a mode
+ * nobody confirmed puts itself back — see the video-revert unit in the installer. After that has
+ * happened the only truthful answer is the one written on the card.
+ */
+function readVideoMode(): string {
+  const file = cmdlinePath();
+  if (!file) return '';
+  try {
+    const line = fs.readFileSync(file, 'utf8');
+    const at = line.indexOf('video=HDMI-A-1:');
+    if (at < 0) return 'auto';
+    const rest = line.slice(at + 'video=HDMI-A-1:'.length);
+    // The command line is space-separated, so the mode ends at the first space or end of line.
+    return rest.split(/\s/)[0].trim() || 'auto';
+  } catch {
+    return '';
+  }
+}
+
+/** What root left about the last mode change, read once and deleted — the same read-and-delete as
+ *  the Wi-Fi verdict, because it is a one-off answer to a one-off question. */
+function readVideoModeResult(): string | undefined {
+  const file = '/var/lib/openmasjid-screen/video-mode-result';
+  try {
+    const text = fs.readFileSync(file, 'utf8').trim().slice(0, 200);
+    fs.unlinkSync(file);
+    return text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Where the display's own power state can be read: the DPMS of the HDMI connector the kernel owns.
+ *
+ *  Read from DRM rather than from `vcgencmd display_power`, which reports 1 whatever the state is on
+ *  a Pi 4 under KMS — measured, along with the fact that the framebuffer's blank control is what
+ *  actually reaches the connector. See the display verbs in the installer. */
+function displayIsOff(): boolean {
+  try {
+    for (const card of fs.readdirSync('/sys/class/drm')) {
+      if (!/-HDMI-A-\d+$/.test(card)) continue;
+      const dir = `/sys/class/drm/${card}`;
+      // Only the connector that is actually plugged in has an opinion worth reporting.
+      if (fs.readFileSync(`${dir}/status`, 'utf8').trim() !== 'connected') continue;
+      return fs.readFileSync(`${dir}/dpms`, 'utf8').trim().toLowerCase() !== 'on';
+    }
+  } catch {
+    /* no DRM, or a board that reports none of this */
+  }
+  return false;
+}
+
+/** Send a screenshot to the dashboard. Its own route, for the same reason the journal has one: it is
+ *  a few hundred kilobytes and wanted occasionally, and sharing the check-in would force that cap up
+ *  for every screen on every poll. */
+async function sendScreenshot(cfg: AgentConfig): Promise<void> {
+  const png = framebufferPng();
+  if (!png) {
+    log('could not read the framebuffer for a screenshot:', framebufferPngError() || 'no reason given');
+    return;
+  }
+  const res = await postJson<{ ok?: boolean }>(`${cfg.server}/pi/${cfg.token}/screenshot`, {
+    png: png.toString('base64'),
+  }).catch(() => ({ httpStatus: 0 }));
+  const status = (res as { httpStatus?: number }).httpStatus ?? 200;
+  if (status >= 200 && status < 300) log(`sent a ${Math.round(png.length / 1024)} KB screenshot to the dashboard`);
+  else log(`the display server would not take a screenshot (HTTP ${status})`);
+}
+
+/**
+ * Turn the display off and on to the schedule, from the device's OWN clock.
+ *
+ * Enforced here rather than by the panel sending a command at the right moment, because the point of
+ * a masjid's screen going dark at midnight is that it happens whether or not the internet does. The
+ * agent already has the server's time to correct its own by, so it needs nothing at the moment it
+ * acts.
+ *
+ * It acts on TRANSITIONS only — the minute the schedule names — never continuously. That is what
+ * lets somebody turn a screen on by hand during its off hours and have it stay on until the next
+ * boundary, instead of fighting a loop that switches it off again a second later.
+ */
+function applyDisplaySchedule(live: Live): void {
+  const sch = live.state?.displaySchedule;
+  const reb = live.state?.rebootSchedule;
+  if (!sch?.enabled && !reb?.enabled) return;
+  const now = live.serverTime();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  // ONE minute guard for both schedules, so a minute is acted on once whichever of them named it.
+  if (hhmm === live.lastScheduleMinute) return;
+  live.lastScheduleMinute = hhmm;
+  if (sch?.enabled && sch.offAt && sch.onAt) {
+    if (hhmm === sch.offAt) requestPrivileged(`sch_${hhmm.replace(':', '')}off`, 'display-off', 'switching the screen off for the night');
+    else if (hhmm === sch.onAt) requestPrivileged(`sch_${hhmm.replace(':', '')}on`, 'display-on', 'switching the screen back on');
+  }
+  // Last, so a board scheduled to reboot at the same minute it goes dark does the dark part first.
+  if (reb?.enabled && reb.at && hhmm === reb.at) {
+    requestPrivileged(`sch_${hhmm.replace(':', '')}reboot`, 'reboot', 'rebooting on the nightly schedule');
   }
 }
 
@@ -671,6 +929,15 @@ function runShell(cmd: string): Promise<{ out: string; code: number | null; ms: 
  * anything derived from the network.
  */
 type PrivilegedVerb =
+  // 'screenshot' is deliberately absent: the agent reads the framebuffer itself, because it is
+  // already in the video group. Nothing that can be done unprivileged belongs in this list.
+  | 'display-off'
+  | 'display-on'
+  | 'set-timezone'
+  | 'set-hostname'
+  | 'os-update'
+  | 'set-video-mode'
+  | 'keep-video-mode'
   | 'update'
   | 'reboot'
   | 'reinstall'
@@ -809,6 +1076,15 @@ async function checkIn(
     networks,
     // Cheap enough to send every time: three world-readable files, no privilege, no subprocess.
     stats: piStats(),
+    displayOff: displayIsOff(),
+    videoMode: readVideoMode(),
+    // A provisional mode: root left this marker and will put the old one back in a few minutes
+    // unless somebody confirms. The panel needs it to know to ask.
+    videoModePending: fs.existsSync('/var/lib/openmasjid-screen/video-mode-pending'),
+    videoModeResult: readVideoModeResult(),
+    // What the device believes, not what the panel asked for: a television somebody unplugged and a
+    // schedule that fired while nobody was looking both have to show correctly.
+    timezone: process.env.TZ || readTimezone(),
     wifiResult: readWifiResult(),
     shellResult: shellResult ?? undefined,
   }).catch(() => ({ httpStatus: 0 }));
@@ -910,6 +1186,9 @@ class Live {
   shellResult: { id: string; cmd: string; out: string; code: number | null; ms: number } | null = null;
   /** while this is in the future, poll faster — see the 'shell' branch of runCommand */
   fastPollUntil = 0;
+  /** the last HH:MM the display schedule was evaluated for, so a boundary fires once and not on
+   *  every poll inside that minute — see applyDisplaySchedule */
+  lastScheduleMinute = '';
 
   serverTime(): Date {
     return new Date(Date.now() + this.clockOffsetMs);
@@ -1096,6 +1375,13 @@ async function runAdopted(
   const poll = async (): Promise<void> => {
     let pollMs = POLL_MS;
     while (!live.forgotten) {
+      // Off and on to the schedule, from this device's OWN clock.
+      //
+      // First in the loop, and deliberately BEFORE the state fetch — everything below this line is
+      // skipped when the server cannot be reached, and a screen going dark overnight is the one
+      // thing that must not depend on that. The schedule and the clock offset are both from the
+      // last successful poll, which is all it needs.
+      applyDisplaySchedule(live);
       // Has root left an answer about a Wi-Fi join? Checked here, on the poll, rather than waiting
       // for the next check-in — those are five minutes apart, and somebody who has just pressed
       // Connect is watching the dashboard now. A stat every few seconds is nothing; making them
@@ -1125,6 +1411,15 @@ async function runAdopted(
 
       const first = !live.state;
       live.state = st;
+      // Re-read every poll rather than only on change: it costs nothing, and it means a screen that
+      // was mounted sideways picks the setting up on its next poll with no restart.
+      if (screen) {
+        const r = Number(st.displayTransform?.rotate);
+        screen.transform = {
+          rotate: r === 90 || r === 180 || r === 270 ? r : 0,
+          overscan: Number(st.displayTransform?.overscan) || 0,
+        };
+      }
       live.clockOffsetMs = st.serverNow - Date.now();
       live.lastPollOk = Date.now();
       pollMs = typeof st.pollMs === 'number' && st.pollMs >= 1000 ? st.pollMs : POLL_MS;
@@ -1182,6 +1477,18 @@ async function runAdopted(
   // ── the drawing loop ──
   const draw = async (): Promise<void> => {
     while (!live.forgotten) {
+      // Nothing to draw while the output is asleep.
+      //
+      // Not required for correctness — the blank survives us writing frames, measured on the
+      // hardware — but a screen that is off between midnight and Fajr has no reason to spend a
+      // Pi's CPU rendering 1080p SVG into a framebuffer nobody can see. Stopping the camera
+      // matters more than the drawing does: that is a continuous H.264 decode, and it is the
+      // difference between a board idling overnight and one running warm all night for nothing.
+      if (displayIsOff()) {
+        player.stop();
+        await sleep(5000);
+        continue;
+      }
       if (!live.state) {
         screen?.show(messageSvg('Connecting…', `Waiting for ${cfg.server}`));
         await sleep(2000);
@@ -1201,7 +1508,7 @@ async function runAdopted(
       // ffmpeg draws straight to the framebuffer; anything we painted would be a flicker over it.
       const stream = live.state.stream;
       if (stream && screen) {
-        player.play(stream.url, screen.geo);
+        player.play(stream.url, screen.geo, screen.transform.rotate);
         const st = player.status();
         if (st.playing) {
           cameraDownSince = 0;

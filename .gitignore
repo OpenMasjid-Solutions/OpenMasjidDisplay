@@ -16,3 +16,13 @@ server/assets/pi/agent.js
 # survive are ones whose run failed part-way — and those are exactly the ones that get
 # committed by accident. Three have.
 .*.mjs
+
+# Output from probing a real Raspberry Pi over ssh — captured framebuffers, journal dumps, the
+# throwaway script that fetched them. Same reasoning as the patch scripts above: they are debugging
+# residue that is only ever left behind when something went wrong mid-investigation, which is
+# exactly when nobody is looking at `git status` carefully.
+.fb*
+.pi.sh
+.pish.txt
+.logsres.txt
+.st.json
