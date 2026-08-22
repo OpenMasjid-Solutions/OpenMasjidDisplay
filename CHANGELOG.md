@@ -13,6 +13,14 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **The scrolling ticker was invisible on a real screen with the Simple layout (white
+  background), even though it looked correct in the browser/web-screen preview.** The ticker's
+  moving text on a live video screen is drawn by ffmpeg, not the SVG — a separate colour
+  computation (`tickerTextColor`) that never learned about Simple's flat, admin-chosen
+  background. It kept returning the classic theme's light text colour regardless of layout,
+  which is fine on a dark scene and invisible (white-on-white) on Simple's usual white page.
+  Now derives the same way `build()` already does for the SVG, so a video screen and the
+  preview can't disagree about it again.
 - **The full-screen announcement slideshow — settled on cover-fit, filling the wall.**
   `announcements.images` is an admin's own upload (a flyer, a photo), with no size or shape
   this app controls, so there is no "fix the source" option the way there would be for
