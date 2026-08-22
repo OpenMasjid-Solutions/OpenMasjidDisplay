@@ -603,6 +603,12 @@ span.tl--min:hover { filter: none; transform: none; }
 .vol-card { width: min(22rem, 100%); padding: 1.6rem; }
 .vol-wrap { width: 100%; max-width: 34rem; margin-inline: auto; padding: 0.75rem 0.9rem 3rem; position: relative; z-index: 1; }
 .vol-head { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 0.5rem; padding-block: 0.85rem; }
+.vol-tabs { display: flex; gap: 0.3rem; }
+.vol-tab { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.75rem; border: 0; border-radius: 999px; font: inherit; font-weight: 600; font-size: 0.9rem; cursor: pointer; background: var(--color-surface-hover); color: var(--color-ink-muted); }
+.vol-tab.is-active { background: var(--color-primary-subtle); color: var(--color-primary); }
+.vol-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.vol-chip { padding: 0.35rem 0.7rem; border: 0; border-radius: 999px; font: inherit; font-size: 0.85rem; cursor: pointer; background: var(--color-surface-hover); color: var(--color-ink-muted); box-shadow: inset 0 0 0 1px var(--color-border); }
+.vol-chip.is-active { background: var(--color-primary-subtle); color: var(--color-primary); box-shadow: inset 0 0 0 1px var(--color-primary); }
 .vol-list { display: flex; flex-direction: column; gap: 0.7rem; }
 .vol-tv { overflow: hidden; }
 .vol-tv__head { display: flex; align-items: center; gap: 0.7rem; width: 100%; padding: 0.95rem 1rem; border: 0; background: transparent; color: var(--color-ink); cursor: pointer; text-align: start; }

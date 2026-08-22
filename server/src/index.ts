@@ -17,6 +17,7 @@ import { MediaMtxServer } from './mediamtxServer';
 import { notify } from './fabric';
 import { WhatsAppAnnouncer } from './whatsappAnnounce';
 import { FabricCommands } from './fabricCommands';
+import { regenerateReportFrames } from './render/reportFrames';
 
 const log = makeLog('main');
 
@@ -114,6 +115,9 @@ async function main(): Promise<void> {
   setInterval(() => void orchestrator.reconcile(), 15000);
 
   whatsapp.start();
+
+  // Build the incorrect-parking alert frames from any existing volunteer reports.
+  regenerateReportFrames(store);
 
   const shutdown = () => {
     log.info('shutting down');

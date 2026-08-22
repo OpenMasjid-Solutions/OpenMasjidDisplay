@@ -153,6 +153,7 @@ function freshDB(): DB {
     sources: [],
     tvs: [],
     schedules: [],
+    reports: [],
   };
 }
 

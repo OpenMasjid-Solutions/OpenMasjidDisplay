@@ -21,7 +21,7 @@ import { parentPort } from 'node:worker_threads';
 import { Resvg } from '@resvg/resvg-js';
 import { renderDisplaySvg, activeAnnouncementImage, nextIqamahChange, lastIqamahChange } from './svg';
 import { renderAnnounceSvg, posterModel, POSTER_W, type PosterModel } from './announce';
-import { backgroundDataUri, logoDataUri, announcementDataUri } from './background';
+import { backgroundDataUri, logoDataUri, announcementDataUri, listParkingFrames } from './background';
 import { fontOptions } from './fonts';
 import { getPalette } from './theme';
 import type { Timetable } from '../types';
@@ -234,7 +234,10 @@ port.on('message', (msg: Req) => {
     // raw RGBA for the video pipeline. During an announcement slideshow phase the
     // timetable becomes a left sidebar and the (sharp) image fills the right.
     const { bg, logo } = assets(tt);
-    const annFile = activeAnnouncementImage(tt, now);
+    // Incorrect-parking alert frames rotate whenever reports target this timetable —
+    // no per-timetable toggle; filing a report on the volunteer page is the opt-in.
+    const reportFrames = listParkingFrames(tt.id);
+    const annFile = activeAnnouncementImage(tt, now, reportFrames);
     const announcement = annFile ? announcementDataUri(annFile) : null;
     // tickerBandOnly: paint just the strip — ffmpeg overlays the moving text smoothly.
     const svg = renderDisplaySvg(tt, now, { bg, logo, announcement, tickerBandOnly: true, bgLight: bgIsLight(tt, bg), autoAccent: bgAccent(tt, bg) });
