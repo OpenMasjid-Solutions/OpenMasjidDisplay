@@ -12,6 +12,14 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Added
+- **Volunteers can report a car parked incorrectly, right from the mobile volunteer page —
+  no separate app needed.** The Report tab lets a volunteer pick a plate/description,
+  location, reason, up to 4 photos, and which display(s) to show it on (or all of them).
+  The report shows as a full-screen red alert card that rotates into that screen's slideshow
+  automatically — filing the report is the only opt-in, there's no separate toggle to
+  remember. A volunteer can remove a report once the car has moved.
+
 ### Fixed
 - **The scrolling ticker was invisible on a real screen with the Simple layout (white
   background), even though it looked correct in the browser/web-screen preview.** The ticker's
