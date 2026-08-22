@@ -568,6 +568,28 @@ export interface AdminAccount {
   createdAt: string;
 }
 
+/** An incorrect-parking report, filed by a volunteer on the volunteer page. Each
+ *  report becomes a full-screen red alert card that rotates in the announcement
+ *  slideshow of the timetable(s) it targets (['*'] = every timetable). Its optional
+ *  photo is stored under /data/uploads as `<id>.report.<ext>`. */
+export interface ParkingReport {
+  id: string;
+  /** license plate (may be empty if only a description is given) */
+  plate: string;
+  /** the car — colour, make, model */
+  description: string;
+  /** where it is */
+  location: string;
+  /** why it's being reported */
+  reason: string;
+  /** uploaded photo filenames under /data/uploads (0..several); the card renders one
+   *  frame per photo so the slideshow scrolls through them */
+  images: string[];
+  /** timetable ids to show this on; ['*'] = all timetables */
+  targets: string[];
+  createdAt: string;
+}
+
 export interface DB {
   version: number;
   /** null until first-run setup creates the admin. */
@@ -585,6 +607,8 @@ export interface DB {
    *  "already announced" record, which is why it is persisted rather than in-memory:
    *  a restart must not re-post a change the group has already been told about. */
   whatsappLog?: WhatsAppLogEntry[];
+  /** incorrect-parking reports filed on the volunteer page (rotated as alert cards) */
+  reports?: ParkingReport[];
 }
 
 /** Live status for one screen, pushed to the UI over WebSocket. */

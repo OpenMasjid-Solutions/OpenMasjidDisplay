@@ -268,21 +268,35 @@ function inDailyWindow(nowMin: number, start: string, end: string): boolean {
 
 /** Which announcement image (if any) should be the backdrop right now. The display
  *  alternates: `everySeconds` of normal timetable, then `forSeconds` of cycling
- *  images (each `imageSeconds`), within the daily window. Stateless — derived from
- *  the clock so every screen/worker agrees. Returns the image filename or null. */
-export function activeAnnouncementImage(tt: Timetable, now: Date): string | null {
+ *  images (each `imageSeconds`). Stateless — derived from the clock so every
+ *  screen/worker agrees. Returns the image filename or null.
+ *
+ *  Two sources feed the rotation:
+ *   - the admin's uploaded slideshow images (only when the slideshow is enabled, and
+ *     honoring its daily window), and
+ *   - `reportFrames`: incorrect-parking alert cards, one per active volunteer report
+ *     targeting this timetable. These rotate WHENEVER present — filing a report is
+ *     the opt-in — independent of the image slideshow and its window. */
+export function activeAnnouncementImage(tt: Timetable, now: Date, reportFrames: string[] = []): string | null {
   const a = tt.announcements;
-  if (!a || !a.enabled || !a.images || a.images.length === 0) return null;
+  const images = a?.enabled && a.images ? [...a.images] : [];
+  const pool = [...images, ...reportFrames];
+  if (pool.length === 0) return null;
   const parts = localParts(now, tt.timezone || undefined);
-  if (!inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
-  const every = Math.max(1, Math.floor(a.everySeconds));
-  const forS = Math.max(1, Math.floor(a.forSeconds));
-  const imgS = Math.max(1, Math.floor(a.imageSeconds));
+  // Uploaded images respect the slideshow's daily window; alerts ignore it. So when
+  // there are no alerts, apply the window; when alerts are present, always rotate.
+  if (reportFrames.length === 0 && a && !inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
+  const every = Math.max(1, Math.floor(a?.everySeconds ?? 25));
+  const imgS = Math.max(1, Math.floor(a?.imageSeconds ?? 8));
+  // The "show" window must be long enough to cycle EVERY frame at least once, or a
+  // multi-photo report only ever shows its first photo before flipping back to the
+  // timetable. So stretch it to cover the whole pool when needed.
+  const forS = Math.max(Math.max(1, Math.floor(a?.forSeconds ?? 20)), pool.length * imgS);
   const cycle = every + forS;
   const phase = ((Math.floor(now.getTime() / 1000) % cycle) + cycle) % cycle;
   if (phase < every) return null; // showing the normal timetable
-  const idx = Math.floor((phase - every) / imgS) % a.images.length;
-  return a.images[idx] ?? null;
+  const idx = Math.floor((phase - every) / imgS) % pool.length;
+  return pool[idx] ?? null;
 }
 
 // Separator between ticker messages. Uses non-breaking spaces ( ) because SVG
@@ -2673,6 +2687,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     // from the centre outward, but keeps every slide filling the wall at full size — the
     // trade-off a signage screen actually wants over a small, fully-intact image nobody at the
     // back of the room can read.
+    //
+    // This also covers incorrect-parking alert cards from the volunteer page — they render
+    // as full-bleed 1920×1080 frames (see reportCard.ts) precisely so they fill the wall the
+    // same way, with no separate sidebar composite or glass panel needed.
     out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`);
   } else {
     out.push(isSimple ? layoutSimple(area, m, ctx) : layoutReference(area, m, ctx));

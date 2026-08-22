@@ -214,6 +214,28 @@ export interface VolunteerData {
   tvs: VolunteerTv[];
   options: { timetables: { id: string; name: string }[]; sources: { id: string; name: string; type: string }[] };
 }
+export interface VolunteerReport {
+  id: string;
+  plate: string;
+  description: string;
+  location: string;
+  reason: string;
+  imageCount: number;
+  targets: string[];
+  createdAt: string;
+}
+export interface VolunteerReportsData {
+  reports: VolunteerReport[];
+  timetables: { id: string; name: string }[];
+}
+export interface NewReport {
+  plate: string;
+  description: string;
+  location: string;
+  reason: string;
+  images: string[];
+  targets: string[];
+}
 // Volunteer calls are prefixed with the app's base path (injected as window.__OMD_BASE__ when
 // the page is served under the OS tunnel at /<appId>/volunteer), so "/api/volunteer/…" resolves
 // under that same prefix. Empty on the LAN / volunteer port, so it's a no-op there.
@@ -225,4 +247,8 @@ export const volApi = {
   tvs: () => req<VolunteerData>('GET', `${VOL_BASE}/api/volunteer/tvs`),
   set: (id: string, content: ContentRef) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/tvs/${id}/set`, { content }),
   resume: (id: string) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/tvs/${id}/resume`),
+  reports: () => req<VolunteerReportsData>('GET', `${VOL_BASE}/api/volunteer/reports`),
+  addReport: (body: NewReport) => req<{ report: VolunteerReport }>('POST', `${VOL_BASE}/api/volunteer/reports`, body),
+  removeReport: (id: string) => req<{ ok: boolean }>('DELETE', `${VOL_BASE}/api/volunteer/reports/${id}`),
+  reportImageUrl: (id: string) => `${VOL_BASE}/api/volunteer/reports/${id}/image`,
 };
