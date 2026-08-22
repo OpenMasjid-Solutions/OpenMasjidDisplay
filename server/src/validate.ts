@@ -33,6 +33,7 @@ import type {
   AdhanPopup,
   TimetableWidget,
   WhatsAppSettings,
+  TimetableLayout,
 } from './types';
 
 type Obj = Record<string, unknown>;
@@ -42,6 +43,22 @@ function str(v: unknown, def = '', max = 2000): string {
   if (v == null) return def;
   return String(v).slice(0, max);
 }
+/**
+ * The on-screen design, migrating the three names this field used to hold.
+ *
+ * 'centered' | 'clockTop' | 'split' were arrangements of one look, collapsed into a single design
+ * in v0.37.0 and drawn identically ever since. Plain validation cannot rename them: `oneOf` falls
+ * back to the BASE value, and for an existing timetable the base IS the stale string — it would
+ * validate 'centered' into 'centered' for ever, and a picker offering only Modern and Simple would
+ * then look broken on every timetable a masjid already had. All three become 'modern', which is
+ * the design they were already being drawn as.
+ */
+export function normLayout(v: unknown, base?: unknown): TimetableLayout {
+  if (v === 'simple' || v === 'modern') return v;
+  if (base === 'simple' || base === 'modern') return base;
+  return 'modern';
+}
+
 function oneOf<T extends string>(v: unknown, list: readonly T[], def: T): T {
   return (list as readonly string[]).includes(String(v)) ? (v as T) : def;
 }
@@ -297,7 +314,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     orientation: oneOf(o.orientation, ['landscape', 'portrait'] as const, base?.orientation ?? 'landscape') as Orientation,
     // Coerce the fallback too, so a timetable saved at the now-removed 4K downgrades to 1080p.
     quality: oneOf(o.quality, ['720p', '1080p'] as const, oneOf(base?.quality, ['720p', '1080p'] as const, '1080p')) as Quality,
-    layout: oneOf(o.layout, ['centered', 'clockTop', 'split', 'simple'] as const, base?.layout ?? 'centered'),
+    layout: normLayout(o.layout, base?.layout),
     layoutCarousel: o.layoutCarousel === undefined ? base?.layoutCarousel ?? false : bool(o.layoutCarousel, false),
     simpleBg,
     masjidName: str(o.masjidName, base?.masjidName ?? 'Our Masjid', 80) || 'Our Masjid',

@@ -128,7 +128,7 @@ function toForm(tt: Timetable | null, state: AppState): Form {
   }
   return {
     id: '', name: 'New timetable', themeId: 'emerald', accent: undefined, textColor: '',
-    orientation: 'landscape', quality: state.settings.defaultQuality, layout: 'centered', layoutCarousel: false, simpleBg: '',
+    orientation: 'landscape', quality: state.settings.defaultQuality, layout: 'modern', layoutCarousel: false, simpleBg: '',
     masjidName: state.timetables[0]?.masjidName ?? 'Our Masjid',
     location: '',
     latitude: '', longitude: '',
@@ -169,7 +169,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   // The screens rotate the layout every 5 min when "Rotate layouts" is on; in the
   // editor we can't wait 5 min, so cycle the preview through the three layouts
   // quickly so you can see what it'll do. (The live display still uses the 15-min clock.)
-  const CAROUSEL_LAYOUTS: TimetableLayout[] = ['centered', 'clockTop', 'split'];
+  const CAROUSEL_LAYOUTS: TimetableLayout[] = ['modern', 'simple'];
   const [demoIdx, setDemoIdx] = useState(0);
   useEffect(() => {
     if (!f.layoutCarousel) return;
@@ -663,9 +663,9 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       <div className="card section">
         <h3 className="section-title">Layout</h3>
         <div className="grid2">
-          <Field label="Layout" hint="Classic is the themed design (glass panels, the countdown ring, a scene behind everything). Simple is a plain flat page — a logo/clock/date column beside one banded prayer table, modelled on a real wall display — with larger prayer names and times and no inline Arabic gloss.">
-            <select className="select" value={f.layout === 'simple' ? 'simple' : 'centered'} onChange={(e) => set('layout', e.target.value as Form['layout'])}>
-              <option value="centered">Classic</option>
+          <Field label="Layout" hint="Modern is the themed design (glass panels, the countdown ring, a scene behind everything) and is the default. Simple is a plain flat page — a logo/clock/date column beside one banded prayer table, modelled on a real wall display — with larger prayer names and times and no inline Arabic gloss.">
+            <select className="select" value={f.layout === 'simple' ? 'simple' : 'modern'} onChange={(e) => set('layout', e.target.value as Form['layout'])}>
+              <option value="modern">Modern (default)</option>
               <option value="simple">Simple (flat, larger text)</option>
             </select>
           </Field>

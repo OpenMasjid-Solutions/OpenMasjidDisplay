@@ -12,6 +12,19 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Changed
+- **The two screen designs are now called Modern and Simple, and Modern is the default.** Modern is
+  the themed design you already had — glass panels, the countdown ring, the scene behind everything
+  — and it was previously listed as “Classic”. Nothing about it has changed and no screen needs
+  touching: a timetable set to any of the older layout names is simply shown as Modern.
+- **The Simple layout has a lot more colour.** Its prayer table now has a coloured heading bar,
+  alternating bands instead of one flat wash, and every Iqamah time in your theme colour rather
+  than plain black — the Iqamah is the time people are actually reading. Jumu’ah is picked out in
+  gold so it does not read as one of the day’s five, and the “Next Adhan in” line beside the clock
+  takes the theme colour too (red while prayer is prohibited). All of it follows your accent
+  colour, and the text on the coloured bar switches between light and dark to stay readable on
+  whatever colour you pick.
+
 ### Added
 - **Volunteers can report a car parked incorrectly, right from the mobile volunteer page —
   no separate app needed.** The Report tab lets a volunteer pick a plate/description,

@@ -10,11 +10,18 @@
 
 export type Quality = '720p' | '1080p';
 export type Orientation = 'landscape' | 'portrait';
-/** Arrangement preset for the on-screen layout (see render/svg.ts). `centered`/`clockTop`/
- *  `split` all draw the same "reference" design (see the v0.37.0 consolidation) and are kept
- *  only so existing stored timetables keep rendering unchanged; `simple` is the real second
- *  option — fewer elements, larger prayer names and times, for reading from across a room. */
-export type TimetableLayout = 'centered' | 'clockTop' | 'split' | 'simple';
+/**
+ * Which on-screen design a timetable draws with (see render/svg.ts).
+ *
+ * `modern` is the themed design — glass panels, the countdown ring, a scene behind everything.
+ * `simple` is the flat page modelled on a real installed wall display.
+ *
+ * It used to be `centered | clockTop | split | simple`, where the first three were arrangements of
+ * one look that v0.37.0 collapsed into a single design. They drew identical pixels for thirty
+ * releases and were kept only so stored timetables still rendered; `modern` is that same design
+ * under the name it has always deserved, and normLayout migrates all three onto it.
+ */
+export type TimetableLayout = 'modern' | 'simple';
 export type Lang = 'en' | 'ar' | 'ur';
 export type CalcMethod = 'MWL' | 'ISNA' | 'Egypt' | 'Makkah' | 'Karachi' | 'Custom';
 export type AsrMadhab = 'Standard' | 'Hanafi';

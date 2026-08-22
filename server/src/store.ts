@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from './config';
 import { makeLog } from './logger';
+import { normLayout } from './validate';
 import type {
   DB,
   Timetable,
@@ -68,7 +69,7 @@ function seededTimetable(): Timetable {
     themeId: 'emerald',
     orientation: 'landscape',
     quality: s.quality,
-    layout: 'centered',
+    layout: 'modern',
     layoutCarousel: false,
     simpleBg: '',
     masjidName: s.masjidName || 'Our Masjid',
@@ -109,7 +110,9 @@ function seededTimetable(): Timetable {
 function migrateTimetable(t: Timetable): Timetable {
   return {
     ...t,
-    layout: t.layout ?? 'centered',
+    // Through normLayout, so a store written before v0.70 — where this held 'centered',
+    // 'clockTop' or 'split' — comes back as a design that still exists.
+    layout: normLayout(t.layout),
     layoutCarousel: t.layoutCarousel ?? false,
     textColor: t.textColor ?? '',
     showCountdown: t.showCountdown ?? true,

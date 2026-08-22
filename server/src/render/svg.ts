@@ -8,7 +8,7 @@
  * (or the masjid's own background image, gently frosted), a live **sun or moon**
  * that arcs across the sky by the real time of day and casts its glow onto the
  * translucent glass panels (top sheen + hairline borders), emerald/cyan primary
- * and a gold accent. Three arrangement presets (centered / clockTop / split) and
+ * and a gold accent. Two designs — Modern (this file's themed look) and Simple — and
  * per-element toggles are honoured; a carousel option rotates the layout over the
  * day to avoid screen burn-in. No sacred/Arabic text appears in decorative chrome.
  */
@@ -1698,6 +1698,9 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   const amount = sec < 60 ? `${s} sec` : h > 0 ? `${h}hr ${mm}min` : `${mm}min`;
   const word = c.eventWord.charAt(0) + c.eventWord.slice(1).toLowerCase();
   const nextLine = c.prohibited ? `Prohibited time — ${word.toLowerCase()} in ${amount}` : `Next ${word} in ${amount}`;
+  // The one sentence on the page that changes every minute, so it earns the accent — red while
+  // prayer is prohibited, which is the same signal the other layout's ring gives.
+  const nextFill = c.prohibited ? TICKER_RED : c.p.primary;
   let ls = clamp(b.w * 0.058, 15, 26);
   if (c.showCountdown) {
     const lw = approxWidth(nextLine, ls);
@@ -1776,7 +1779,7 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   // A plain, centred sentence instead of the ring: "Next Iqamah in 6hr 24min."
   if (c.showCountdown) {
     y += ls * 1.9;
-    out.push(text(cx, y, nextLine, { size: ls, fill: c.prohibited ? TICKER_RED : c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'middle' }));
+    out.push(text(cx, y, nextLine, { size: ls, fill: nextFill, family: FONT_SANS, weight: 500, anchor: 'middle' }));
   }
   return out.join('');
 }
@@ -1880,7 +1883,22 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   const out: string[] = [];
   const pad = b.w * 0.03;
   const titleSize = clamp(b.h * 0.038, 14, 24);
-  out.push(text(b.x + b.w / 2, b.y + titleSize * 1.4, (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES', { size: titleSize, fill: c.p.textDim, weight: 700, anchor: 'middle', letter: 4 }));
+  // A filled band rather than dim text on the page. The flat look is the point of this layout,
+  // but "PRAYER TIMES" floating in grey was the one element carrying no colour at all, and a
+  // headed table is what the wall displays this is modelled on actually do.
+  const titleH = titleSize * 2.1;
+  out.push(rect(b.x, b.y, b.w, titleH, titleH * 0.22, c.p.primary));
+  out.push(
+    text(b.x + b.w / 2, b.y + titleH * 0.66, (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES', {
+      size: titleSize,
+      // Same rule, same numbers as the page-colour flip above: the primary is a colour input an
+      // admin can set to anything, so the text on it has to be chosen rather than assumed.
+      fill: relLuminance(c.p.primary) > 0.6 ? '#1c2620' : '#f2f6f3',
+      weight: 700,
+      anchor: 'middle',
+      letter: 4,
+    }),
+  );
 
   type Line = { key: string; name: string; t1: number | null; t2: number | null; highlight?: boolean };
   const lines: Line[] = m.rows
@@ -1913,7 +1931,17 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   // prayer gets a noticeably stronger one, plus its own text in the accent colour, so
   // it reads as "this one" at a glance from across the room.
   const bandBase = mixHex(c.p.bg, c.p.primary, c.p.light ? 0.06 : 0.1);
+  // Alternating, so the table reads as bands of colour rather than one flat wash. The step is
+  // small on a light page and larger on a dark one, matching how bandBase already scales.
+  const bandAlt = mixHex(c.p.bg, c.p.primary, c.p.light ? 0.13 : 0.2);
   const bandHighlight = mixHex(c.p.bg, c.p.primary, c.p.light ? 0.26 : 0.36);
+  // Jumu'ah is not one of the day's five, and colouring it as the gold accent says so without a
+  // second strip. It is the theme's own gold, so it follows a custom accent like everything else.
+  // A gold BAND only on a light page. Gold over dark navy comes out olive at every alpha and with
+  // either gold in the palette — the blue channel wins — and it reads as a stain, not an accent.
+  // On a dark page the gold Iqamah time below carries the distinction on its own, which it does
+  // well: one amber number in a column of cyan ones is unmistakable.
+  const bandJumuah = c.p.light ? mixHex(c.p.bg, c.p.gold, 0.16) : bandAlt;
 
   // A light gap between rows: the band is inset top/bottom rather than drawn edge-to-edge,
   // so a sliver of the page shows between rows instead of one solid block of colour.
@@ -1921,17 +1949,22 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   lines.forEach((line, i) => {
     const ry = listTop + i * rowH;
     const midY = ry + rowH * 0.64;
-    out.push(rect(b.x, ry + rowGap / 2, b.w, rowH - rowGap, rowGap * 0.6, line.highlight ? bandHighlight : bandBase));
+    const band = line.highlight ? bandHighlight : line.key === 'jumuah' ? bandJumuah : i % 2 === 0 ? bandBase : bandAlt;
+    out.push(rect(b.x, ry + rowGap / 2, b.w, rowH - rowGap, rowGap * 0.6, band));
     out.push(prayerIcon(line.key, b.x + pad + iconR, ry + rowH / 2, iconR));
     const nameSize = clamp(rowH * 0.4, 16, 44);
     const timeSize = nameSize * TIME_SCALE;
     const mainColor = line.highlight ? c.p.primary : c.p.text;
+    // The Iqāmah is the number people are actually reading — it is when the jamā'ah starts — so
+    // it takes the accent on every row, not only the highlighted one. Jumu'ah takes the gold, to
+    // match its band. Adhan stays quiet: two coloured columns would compete.
+    const iqColor = line.highlight ? c.p.primary : line.key === 'jumuah' ? c.p.gold : mixHex(c.p.text, c.p.primary, 0.72);
     out.push(text(nameX, midY, line.name, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 600 : 400, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
     // A one-Jumu'ah masjid has nothing to put in the Adhan slot (Jumu'ah has no separate
     // Adhan/Iqamah — `t1`/`t2` are just its 1st/2nd time, if there are two), so that slot
     // is skipped entirely rather than drawn as an empty "—" beside a single time.
     if (line.t1 != null) out.push(text(colAd, midY, fmtShort(line.t1, c.timeFormat), { size: timeSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
-    out.push(text(colIq, midY, fmtShort(line.t2, c.timeFormat), { size: timeSize, fill: mainColor, family: FONT_DISPLAY, weight: line.highlight ? 600 : 400, anchor: 'end' }));
+    out.push(text(colIq, midY, fmtShort(line.t2, c.timeFormat), { size: timeSize, fill: iqColor, family: FONT_DISPLAY, weight: line.highlight ? 600 : 500, anchor: 'end' }));
   });
   return out.join('');
 }
@@ -2452,7 +2485,11 @@ export interface RenderOpts {
   sink?: { hotspots: Hotspot[] };
 }
 
-// Burn-in rotation: Centered → Spotlight (id clockTop) → Split, every 5 min.
+// NOTE: `layoutCarousel` is stored and validated but nothing reads it — the burn-in rotation it
+// named was removed with the three arrangement presets in v0.37.0, and there is no switch for it in
+// the editor either. Left as it is rather than quietly given new behaviour: alternating two designs
+// this different every five minutes is a decision for a masjid to ask for, not one to inherit from
+// a dead field.
 
 /**
  * The background layer on its own: the photograph, cropped as the scene crops it, frosted.
