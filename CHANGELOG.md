@@ -12,6 +12,14 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- **The calculation-method line no longer sits on top of your announcement pictures.** While a
+  slideshow image was showing, the small grey footnote at the bottom of the screen (“Custom 18° /
+  15° · Asr: Hanafi”, or your own footer line) was still drawn across it — over the poster’s own
+  address bar, looking like a watermark. It is now hidden while a picture is up, and the strip it
+  was using goes back to the picture. A scrolling ticker and the red “Iqamah times are changing”
+  reminder still show over a slideshow, which is deliberate: those are about today.
+
 ### Changed
 - **The two screen designs are now called Modern and Simple, and Modern is the default.** Modern is
   the themed design you already had — glass panels, the countdown ring, the scene behind everything

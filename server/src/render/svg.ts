@@ -2678,7 +2678,12 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   const tkSep = iqNotice ? split.sep : null;
   const tkScroll = iqNotice ? split.scroll : null;
   const bandShown = !!tickerText || !!iqNotice;
-  const bottomCore = bandShown ? split.bandH : tt.showFooter ? clamp(H * 0.05, 24, 60) : P;
+  // An announcement fills the screen with the masjid's OWN artwork — which has its own footer, its
+  // own type and its own idea of where the bottom edge is. Our calculation-method footnote drawn
+  // across it is a watermark on somebody else's poster, so it is suppressed, and the strip it would
+  // have reserved goes back to the image instead of becoming an empty band under it.
+  const announcing = !!opts.announcement;
+  const bottomCore = bandShown ? split.bandH : tt.showFooter && !announcing ? clamp(H * 0.05, 24, 60) : P;
   const area: Box = { x: P, y: P, w: W - 2 * P, h: H - P - bottomCore };
   const ctx: Ctx = {
     p,
@@ -2738,7 +2743,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   //    scrolling ticker always did, and now the Iqāmah-change reminder does too. Keying this
   //    on `tickerText` alone left the footnote drawn straight over the red reminder whenever
   //    a masjid had no ticker configured.
-  if (tt.showFooter && !bandShown) {
+  // Not over an announcement — see `announcing`. The bottom BAND is different and deliberately
+  // still draws over the image: a red "Iqāmah times are changing" reminder is this app speaking
+  // about today, and it has to be visible whatever the slideshow is showing.
+  if (tt.showFooter && !bandShown && !announcing) {
     const methodNote =
       tt.method === 'Custom'
         ? `Custom ${tt.fajrAngle ?? 18}° / ${tt.ishaAngle ?? 17}° · Asr: ${tt.asrMadhab}`
