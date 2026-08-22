@@ -377,6 +377,11 @@ export function quietConsole(): void {
 }
 // ── reading the screen back ──────────────────────────────────────────────────
 
+/** One step of a 5-bit and a 6-bit channel, as 0-255. The grid an RGB565 framebuffer's colours
+ *  already sit on — see the shrink in framebufferPng. */
+const R5 = 255 / 31;
+const G6 = 255 / 63;
+
 /** Why the last screenshot failed, for the caller to log. Kept here because the encoder must not
  *  depend on the agent's logger — pi/framebuffer.ts is the layer below it. */
 let lastError = '';
@@ -398,7 +403,7 @@ export function framebufferPngError(): string {
  * 16`), so the channels are unpacked and scaled rather than copied. A 32bpp board is handled too
  * because the same agent is meant to survive a different one.
  */
-export function framebufferPng(): Buffer | null {
+export function framebufferPng(shrink = 1): Buffer | null {
   try {
     // The SAME geometry the drawing path uses, rather than a second reading of sysfs next to it.
     // Two readers of the same three files drift, and this one had already drifted: it went straight
@@ -408,35 +413,79 @@ export function framebufferPng(): Buffer | null {
     // exercised against a captured framebuffer.
     const geo = readGeometry();
     if (!geo) return null;
-    const { width: w, height: h, bpp, stride } = geo;
-    if (!w || !h || !bpp) return null;
+    const { width: fw, height: fh, bpp, stride } = geo;
+    if (!fw || !fh || !bpp) return null;
     const fb = fs.readFileSync(FB_DEVICE);
+
+    /**
+     * How many framebuffer pixels go into one output pixel, per axis.
+     *
+     * A live preview sends one of these a second for as long as somebody watches, from a Pi, through
+     * a masjid's tunnel — so the size of a frame is the whole feasibility of the feature. Measured on
+     * a real 1080p timetable off a real board:
+     *
+     *   full size                     513 KB   143 ms
+     *   2x, box-averaged              404 KB    75 ms
+     *   2x, nearest-neighbour         125 KB    48 ms
+     *   2x, averaged then re-quantised 139 KB   57 ms
+     *
+     * The averaged row is the surprise, and it is why this is written the way it is. A quarter of the
+     * pixels saved only a fifth of the bytes, because this framebuffer is RGB565 written with an
+     * ORDERED DITHER (see packFrame): averaging 2x2 blocks of a dither pattern manufactures colours
+     * that were never in the source, and deflate cannot find the repetition any more.
+     *
+     * So the average is kept — it is visibly better than nearest-neighbour on the small Arabic and
+     * the footnote line — and the result is put back onto the 5/6/5 grid the source already lived on.
+     * That costs 14 KB against sampling and buys back three quarters of the file.
+     */
+    const step = Math.max(1, Math.min(4, Math.floor(shrink)));
+    const w = Math.floor(fw / step);
+    const h = Math.floor(fh / step);
+    if (!w || !h) return null;
     const bytes = bpp / 8;
 
     // One filter byte per row (0 = None) then RGB triples: the layout PNG's simplest encoding wants.
     const raw = Buffer.alloc((w * 3 + 1) * h);
+    const cells = step * step;
     let o = 0;
     for (let y = 0; y < h; y++) {
       raw[o++] = 0;
-      const base = y * stride;
       for (let x = 0; x < w; x++) {
-        let r: number;
-        let g: number;
-        let b: number;
-        if (bpp === 16) {
-          const v = fb.readUInt16LE(base + x * 2);
-          r = (((v >> 11) & 31) * 255) / 31;
-          g = (((v >> 5) & 63) * 255) / 63;
-          b = ((v & 31) * 255) / 31;
-        } else {
-          const p = base + x * bytes;
-          b = fb[p];
-          g = fb[p + 1];
-          r = fb[p + 2];
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        for (let sy = 0; sy < step; sy++) {
+          const base = (y * step + sy) * stride;
+          for (let sx = 0; sx < step; sx++) {
+            const px = x * step + sx;
+            if (bpp === 16) {
+              const v = fb.readUInt16LE(base + px * 2);
+              r += (((v >> 11) & 31) * 255) / 31;
+              g += (((v >> 5) & 63) * 255) / 63;
+              b += ((v & 31) * 255) / 31;
+            } else {
+              const p = base + px * bytes;
+              b += fb[p];
+              g += fb[p + 1];
+              r += fb[p + 2];
+            }
+          }
         }
-        raw[o++] = r | 0;
-        raw[o++] = g | 0;
-        raw[o++] = b | 0;
+        // Averaged, then snapped back onto the source's own colour grid — see the note above the
+        // step. Only for a 16bpp source, because that is where the dither is: a 32bpp framebuffer has
+        // no dither to fight and re-quantising it would throw away colour for nothing.
+        if (bpp === 16) {
+          // The exact step of each channel's grid, not a rounded decimal: 5 bits of red and blue,
+          // 6 of green. `| 0` because a Buffer store truncates a float anyway and relying on that
+          // silently is how a one-level shift gets in.
+          raw[o++] = (Math.round(r / cells / R5) * R5) | 0;
+          raw[o++] = (Math.round(g / cells / G6) * G6) | 0;
+          raw[o++] = (Math.round(b / cells / R5) * R5) | 0;
+        } else {
+          raw[o++] = (r / cells) | 0;
+          raw[o++] = (g / cells) | 0;
+          raw[o++] = (b / cells) | 0;
+        }
       }
     }
 

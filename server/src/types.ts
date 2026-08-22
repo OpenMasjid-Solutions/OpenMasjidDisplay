@@ -379,8 +379,6 @@ export interface PiDevice {
       | 'display-off'
       | 'display-on'
       | 'set-timezone'
-      | 'set-hostname'
-      | 'os-update'
       | 'screenshot'
       | 'set-video-mode'
       | 'keep-video-mode';
@@ -392,8 +390,8 @@ export interface PiDevice {
     /** Only for 'shell-session': where the device should dial in, and the one-time secret it must
      *  present. Same life as the Wi-Fi passphrase — gone the moment the device acknowledges. */
     shellSession?: { id: string; secret: string; rows: number; cols: number };
-    /** Only for 'set-timezone' / 'set-hostname' / 'set-video-mode'. Validated on the way in, and
-     *  again by root on the device — which is the check that matters. */
+    /** Only for 'set-timezone' / 'set-video-mode'. Validated on the way in, and again by root on
+     *  the device — which is the check that matters. */
     text?: string;
   };
   /** The last lines the agent logged, as IT saw them — sent on check-in so the panel can show
@@ -417,16 +415,6 @@ export interface PiDevice {
    */
   displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
   /**
-   * How this television is mounted, and how much of the picture it crops.
-   *
-   * Applied by the agent to each FRAME rather than written into the boot config: display_rotate
-   * and the overscan_* options belong to the legacy firmware display stack and do nothing under
-   * the KMS driver this installer configures, and a boot-config change costs a reboot and can leave
-   * a screen black. The agent owns every pixel it writes, so it can simply turn the picture — see
-   * pi/raster.ts. rotate is clockwise degrees; overscan is percent per edge, 0-15.
-   */
-  displayTransform?: { rotate: 0 | 90 | 180 | 270; overscan: number };
-  /**
    * Reboot this screen nightly.
    *
    * A blunt instrument, and it is here because it is the one that works: a board that has been up
@@ -435,6 +423,10 @@ export interface PiDevice {
    * clock, so it happens whether or not the internet does.
    */
   rebootSchedule?: { enabled: boolean; at: string };
+  /** While this is in the future the screen keeps sending pictures of itself, for a live preview
+   *  window somebody has open. It EXPIRES rather than being switched off, so a closed browser tab
+   *  stops the frames on its own — see PiState.previewUntil. */
+  previewUntil?: number;
   /**
    * The forced HDMI mode from the device's own kernel command line, or 'auto'.
    *

@@ -10,16 +10,15 @@
  * the device.** Root re-checks every payload on the Pi, because a check on the far side of a network
  * from the thing running the command is a courtesy to whoever is typing, not a boundary.
  *
- * The turn-the-picture functions are tested differently — they are pure arithmetic on pixel buffers,
- * and the reason they exist at all is that the documented firmware alternatives do nothing on this
- * hardware. So they are checked against actual pixels, at actual corners, in every orientation.
+ * The exception is the nightly reboot, which is tested for the opposite reason: what matters there is
+ * not that a value is refused but that an ABSENT one still means something, because every screen is
+ * meant to reboot overnight whether or not anybody ever opened this window.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { normTimezone, normHostname, normTimeOfDay, normVideoMode, normDisplayTransform, PI_COMMANDS } from './piAgent';
-import { rotateRgba, overscanBox, blitCentered, fitMode } from './pi/raster';
+import { normTimezone, normTimeOfDay, normVideoMode, effectiveRebootSchedule, DEFAULT_REBOOT_AT, PI_COMMANDS } from './piAgent';
 import { looksLikePng, SCREENSHOT_MAX_BYTES } from './piScreenshot';
 
 // ── timezone ────────────────────────────────────────────────────────────────
@@ -53,33 +52,16 @@ test('the device checks the timezone again, and against something this side cann
   // The point of the note in normTimezone: a character filter cannot tell whether a zone EXISTS.
   // Root's arm does, by looking in /usr/share/zoneinfo, and that is what makes the pair sufficient.
   const install = fs.readFileSync(path.resolve(__dirname, '..', 'assets', 'pi', 'install.sh'), 'utf8');
-  const arm = install.slice(install.indexOf('    set-timezone)'), install.indexOf('    set-hostname)'));
+  const start = install.indexOf('    set-timezone)');
+  const end = install.indexOf('    logs)', start);
+  assert.ok(start >= 0 && end > start, 'could not find the timezone arm — has the dispatcher been rewritten?');
+  const arm = install.slice(start, end);
   assert.ok(/\/usr\/share\/zoneinfo\//.test(arm), 'root must require the zone to exist on the device');
   // The `+` needs escaping: unescaped it is a quantifier on the `/` before it, so this asserted
   // "an underscore followed by one or more slashes" and quietly did not check the filter at all.
   assert.ok(/\[!A-Za-z0-9_\/\+-\]/.test(arm), 'and re-filter the characters itself');
 });
 
-// ── hostname ────────────────────────────────────────────────────────────────
-
-test('a hostname is one lower-case DNS label', () => {
-  assert.deepEqual(normHostname('main-hall'), { text: 'main-hall' });
-  // Lower-cased rather than refused: Linux accepts mixed case and then everything that compares
-  // hostnames disagrees about it.
-  assert.deepEqual(normHostname('MainHall'), { text: 'mainhall' });
-  for (const bad of ['-leading', 'trailing-', 'has space', 'has_underscore', 'a.b', 'x'.repeat(64), '', '..']) {
-    assert.ok('error' in normHostname(bad), `${JSON.stringify(bad)} should be refused`);
-  }
-});
-
-test('setting a hostname fixes /etc/hosts too', () => {
-  // Without this the box resolves its own name by asking DNS, and every sudo waits for that to time
-  // out. It looks like a slow machine rather than a missing line in a file.
-  const install = fs.readFileSync(path.resolve(__dirname, '..', 'assets', 'pi', 'install.sh'), 'utf8');
-  const arm = install.slice(install.indexOf('    set-hostname)'), install.indexOf('    os-update)'));
-  assert.ok(/\/etc\/hosts/.test(arm), 'root must update /etc/hosts alongside the hostname');
-  assert.ok(/127\\?\.0\\?\.1\\?\.1/.test(arm), 'specifically the 127.0.1.1 line');
-});
 
 // ── times of day ────────────────────────────────────────────────────────────
 
@@ -141,149 +123,16 @@ test('confirming a mode is a separate verb, and it is the only thing that stops 
   assert.ok(PI_COMMANDS.includes('keep-video-mode'));
   assert.ok(PI_COMMANDS.includes('set-video-mode'));
   const install = fs.readFileSync(path.resolve(__dirname, '..', 'assets', 'pi', 'install.sh'), 'utf8');
-  const keep = install.slice(install.indexOf('    keep-video-mode)'), install.indexOf('    set-timezone)'));
+  const ks = install.indexOf('    keep-video-mode)');
+  const ke = install.indexOf('    set-timezone)', ks);
+  assert.ok(ks >= 0 && ke > ks, 'could not find the keep arm');
+  const keep = install.slice(ks, ke);
   assert.ok(/rm -f "\$STATEDIR\/video-mode-pending"/.test(keep), 'it drops the marker');
   assert.ok(/systemctl disable omd-video-revert\.timer/.test(keep), 'and disarms the timer');
 });
 
-test('rotation and overscan are NOT privileged verbs', () => {
-  // The whole reason they are done in the frame: they need no root, no reboot, and cannot leave a
-  // screen black. A verb for either would be a boot-partition edit for something free.
-  for (const v of PI_COMMANDS) {
-    assert.ok(!/rotate|rotation|overscan/.test(v), `${v} should not exist — see pi/raster.ts`);
-  }
-});
 
-// ── how a screen is mounted ─────────────────────────────────────────────────
 
-test('a rotation is one of exactly four values', () => {
-  for (const r of [90, 180, 270]) assert.equal(normDisplayTransform({ rotate: r }).rotate, r);
-  // Anything else becomes 0 rather than an error: the index arithmetic in rotateRgba only holds for
-  // those four, and a screen drawn upright is the right failure.
-  for (const bad of [45, 91, -90, 360, '90deg', null, undefined, NaN, Infinity]) {
-    assert.equal(normDisplayTransform({ rotate: bad }).rotate, 0, `rotate ${String(bad)} should fall back`);
-  }
-  assert.equal(normDisplayTransform(null).rotate, 0, 'and a missing object is not a crash');
-});
-
-test('overscan is bounded, because it becomes a render size', () => {
-  assert.equal(normDisplayTransform({ overscan: 5 }).overscan, 5);
-  assert.equal(normDisplayTransform({ overscan: 99 }).overscan, 15, 'clamped, not honoured');
-  for (const bad of [-5, 0, 'lots', null, NaN]) {
-    assert.equal(normDisplayTransform({ overscan: bad }).overscan, 0);
-  }
-});
-
-test('an overscan box is smaller than the screen and never degenerate', () => {
-  assert.deepEqual(overscanBox(1920, 1080, 0), { width: 1920, height: 1080 }, 'off means untouched');
-  const five = overscanBox(1920, 1080, 5);
-  assert.equal(five.width, 1728, '5% per edge leaves 90%');
-  assert.equal(five.height, 972);
-  // A value out of range must not produce a zero-sized render target, which resvg would refuse.
-  for (const p of [15, 99, -1, NaN]) {
-    const b = overscanBox(1920, 1080, p);
-    assert.ok(b.width >= 16 && b.height >= 16, `${p} produced ${b.width}x${b.height}`);
-    assert.ok(b.width <= 1920 && b.height <= 1080, `${p} produced something larger than the screen`);
-  }
-});
-
-// ── turning the picture ─────────────────────────────────────────────────────
-
-/** A 2x3 frame whose every pixel is identifiable: red channel = x, green = y. */
-function grid(w: number, h: number): Uint8Array {
-  const px = new Uint8Array(w * h * 4);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      px[i] = x + 1;
-      px[i + 1] = y + 1;
-      px[i + 2] = 0;
-      px[i + 3] = 255;
-    }
-  }
-  return px;
-}
-
-const at = (f: { pixels: Uint8Array; width: number }, x: number, y: number): [number, number] => {
-  const i = (y * f.width + x) * 4;
-  return [f.pixels[i], f.pixels[i + 1]];
-};
-
-test('a quarter turn moves the top-left corner to the top-right, and swaps the size', () => {
-  const src = grid(2, 3); // 2 wide, 3 tall
-  const out = rotateRgba(src, 2, 3, 90);
-  assert.equal(out.width, 3, 'the axes swap');
-  assert.equal(out.height, 2);
-  // 90 is a clockwise rotation OF THE PICTURE: the pixel that was at the top-left is now at the
-  // top-right. Which means it is the setting for a television mounted ANTIclockwise — the two are
-  // opposite by definition, and the panel's labels name the mounting rather than this number.
-  assert.deepEqual(at(out, 2, 0), [1, 1], 'the old (0,0) is now at the right-hand end of the top row');
-  assert.deepEqual(at(out, 0, 0), [1, 3], 'and the old bottom-left is now the top-left');
-});
-
-test('the panel offers the rotation that CORRECTS each mounting, not the one that names it', () => {
-  // The mistake this exists to catch is a screen that comes back upside down in the other
-  // direction. It was made once: the picture was verified against a real frame off a real board and
-  // the labels were the wrong way round, because "turned right" reads like it should be 90.
-  const ui = fs.readFileSync(path.resolve(__dirname, '..', '..', 'web', 'src', 'routes', 'PiDisplayPanel.tsx'), 'utf8');
-  const from = ui.indexOf('const ROTATIONS = [');
-  const block = from < 0 ? '' : ui.slice(from, ui.indexOf('] as const;', from));
-  assert.ok(block, 'could not find the rotation list in the panel');
-  // Plain string matching, not a regex: every character here is a brace or a quote, and escaping
-  // that into a pattern is how the assertion stops meaning anything.
-  assert.ok(
-    block.includes("{ v: 270, label: 'Turned clockwise' }"),
-    'a set turned clockwise needs the picture turned back the other way',
-  );
-  assert.ok(block.includes("{ v: 90, label: 'Turned anticlockwise' }"), 'and vice versa');
-});
-
-test('270 is the other way, and 90 then 270 is the identity', () => {
-  const src = grid(4, 3);
-  const once = rotateRgba(src, 4, 3, 90);
-  const back = rotateRgba(once.pixels, once.width, once.height, 270);
-  assert.equal(back.width, 4);
-  assert.equal(back.height, 3);
-  assert.deepEqual([...back.pixels], [...src], 'a turn each way must land exactly where it started');
-});
-
-test('180 keeps the size and reverses the picture', () => {
-  const src = grid(4, 3);
-  const out = rotateRgba(src, 4, 3, 180);
-  assert.equal(out.width, 4);
-  assert.equal(out.height, 3);
-  assert.deepEqual(at(out, 3, 2), [1, 1], 'the top-left is now the bottom-right');
-  assert.deepEqual(at(out, 0, 0), [4, 3], 'and the bottom-right is now the top-left');
-  // Twice is the identity, which is the cheapest check that no pixel was dropped or duplicated.
-  const twice = rotateRgba(out.pixels, out.width, out.height, 180);
-  assert.deepEqual([...twice.pixels], [...src]);
-});
-
-test('no rotation copies nothing at all', () => {
-  const src = grid(4, 3);
-  const out = rotateRgba(src, 4, 3, 0);
-  assert.equal(out.pixels, src, 'the common case must not allocate a second frame every second');
-});
-
-test('a rotated frame still lands letterboxed in the framebuffer it is drawn to', () => {
-  // The whole chain, as Screen.show runs it: a portrait design, fitted to a sideways screen, turned,
-  // then centred in a LANDSCAPE framebuffer. What comes out has to be exactly the framebuffer's
-  // size, or the write is sheared.
-  // A LANDSCAPE design on a screen turned on its side, which is the case somebody actually hits:
-  // they mount the television in a corridor and keep the timetable they already had.
-  const fb = { w: 1920, h: 1080 };
-  const box = overscanBox(fb.w, fb.h, 0);
-  const fit = fitMode(1920, 1080, box.height, box.width); // swapped, as a quarter turn requires
-  assert.deepEqual(fit, { mode: 'width', value: 1080 }, 'a 16:9 design in a 9:16 space is limited by width');
-  const rendered = grid(1080, 607); // what resvg returns for that fit
-  const turned = rotateRgba(rendered, 1080, 607, 90);
-  assert.equal(turned.width, 607, 'a wide design becomes a narrow one');
-  assert.equal(turned.height, 1080);
-  const frame = blitCentered(turned.pixels, turned.width, turned.height, fb.w, fb.h);
-  assert.equal(frame.length, fb.w * fb.h * 4, 'exactly the framebuffer, whatever the design was');
-  // And the margin is black — that is what makes a sideways television look deliberate.
-  assert.deepEqual([...frame.subarray(0, 4)], [0, 0, 0, 0], 'the corner outside the picture stays black');
-});
 
 // ── the picture of the screen ───────────────────────────────────────────────
 
@@ -326,4 +175,77 @@ test('the agent builds the PNG itself rather than adding a package to every scre
   // 16bpp is the REAL case on this hardware — measured, and config.txt's framebuffer_depth=32 does
   // not change it under KMS. A 32bpp path that assumed itself would produce a blue-tinted smear.
   assert.ok(/RGB565|565/.test(agent), 'the 16bpp framebuffer has to be unpacked, not copied');
+});
+
+// ── the nightly reboot ──────────────────────────────────────────────────────
+
+test('every screen reboots overnight, including one nobody has configured', () => {
+  // The point of this default, and the reason it is a function rather than a fallback written at
+  // three call sites: the boards that most need a nightly reboot are the ones in a masjid with
+  // nobody technical, and a setting that has to be found and switched on is a setting that stays
+  // off. An absent value has to mean "yes, at three", not "no".
+  assert.deepEqual(effectiveRebootSchedule({} as never), { enabled: true, at: DEFAULT_REBOOT_AT });
+  assert.equal(DEFAULT_REBOOT_AT, '03:00', 'nothing is happening in a prayer hall at three in the morning');
+
+  // But a deliberate no is honoured. A masjid that wants a screen up around the clock has said so,
+  // and a default that overrode that would be a screen that reboots itself every night for ever
+  // with no way to stop it.
+  assert.deepEqual(
+    effectiveRebootSchedule({ rebootSchedule: { enabled: false, at: '' } } as never),
+    { enabled: false, at: DEFAULT_REBOOT_AT },
+  );
+  assert.deepEqual(
+    effectiveRebootSchedule({ rebootSchedule: { enabled: true, at: '04:15' } } as never),
+    { enabled: true, at: '04:15' },
+  );
+  // An enabled schedule with no time is the one combination that could reboot at an hour nobody
+  // chose. It falls back to the default rather than to midnight or to never.
+  assert.deepEqual(
+    effectiveRebootSchedule({ rebootSchedule: { enabled: true, at: '' } } as never),
+    { enabled: true, at: DEFAULT_REBOOT_AT },
+  );
+});
+
+test('the screen reboots from its OWN clock, so it happens with the internet down', () => {
+  // The whole reason this is a schedule carried on the poll rather than a command sent at 3am. And
+  // the reason it is evaluated BEFORE the state fetch in the agent's loop: everything after that
+  // line is skipped when the server cannot be reached, which is exactly the night it matters.
+  const agent = fs.readFileSync(path.resolve(__dirname, 'pi', 'index.ts'), 'utf8');
+  const loop = agent.slice(agent.indexOf('const poll = async ()'), agent.indexOf('// ── the check-in ──'));
+  const applyAt = loop.indexOf('applyDisplaySchedule(live)');
+  const fetchAt = loop.indexOf('/state`');
+  assert.ok(applyAt > 0, 'the poll loop must evaluate the schedules');
+  assert.ok(applyAt < fetchAt, 'and it must do so before the state fetch, which can fail and skip the rest');
+});
+
+// ── the live preview ────────────────────────────────────────────────────────
+
+test('a preview stops on its own when nobody is watching any more', () => {
+  // There is no reliable "off": a closed tab, a shut lid and a dropped tunnel all send nothing. So
+  // the panel pushes a DEADLINE and the device stops when it lapses. A flag would leave a Pi
+  // uploading a picture a second for ever.
+  const api = fs.readFileSync(path.resolve(__dirname, 'api.ts'), 'utf8');
+  assert.ok(/previewUntil = Date\.now\(\) \+ PREVIEW_WINDOW_MS/.test(api), 'the route sets a deadline, not a flag');
+  const agent = fs.readFileSync(path.resolve(__dirname, 'pi', 'index.ts'), 'utf8');
+  assert.ok(
+    /st\.previewUntil && Date\.now\(\) < st\.previewUntil/.test(agent),
+    'and the device checks it against its own clock every poll',
+  );
+});
+
+test('a preview frame is shrunk before it is sent, and re-quantised after', () => {
+  // A frame a second of full 1080p is about half a megabyte each, from a Pi, through a masjid's
+  // tunnel. Shrinking is what makes the feature reasonable rather than rude.
+  const agent = fs.readFileSync(path.resolve(__dirname, 'pi', 'index.ts'), 'utf8');
+  assert.ok(/const PREVIEW_SHRINK = [2-4];/.test(agent), 'the preview must not send full-size frames');
+
+  const fbsrc = fs.readFileSync(path.resolve(__dirname, 'pi', 'framebuffer.ts'), 'utf8');
+  assert.ok(/const cells = step \* step;/.test(fbsrc), 'the shrink averages rather than samples');
+  // And the measured half, which is the part that would be dropped as redundant by somebody reading
+  // it fresh. This framebuffer is RGB565 written with an ordered dither; averaging blocks of a
+  // dither invents colours that were never in it, and the averaged frame cost THREE TIMES the bytes
+  // of a sampled one — 404 KB against 125. Snapping the average back onto the source's own 5/6/5
+  // grid recovers that for 14 KB. Remove it and a live preview silently triples its bandwidth.
+  assert.ok(/R5 = 255 \/ 31/.test(fbsrc), 'the averaged result must be re-quantised to the source grid');
+  assert.ok(/Math\.round\(r \/ cells \/ R5\)/.test(fbsrc), 'and it has to be applied to the pixels');
 });

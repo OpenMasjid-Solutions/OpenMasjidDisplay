@@ -41,9 +41,7 @@ import {
   normWifiJoin,
   normShellCommand,
   normTimezone,
-  normHostname,
   normTimeOfDay,
-  normDisplayTransform,
   normVideoMode,
   type PiCommandAction,
   findDeviceByToken,
@@ -56,6 +54,15 @@ import {
   deviceOnline,
 } from './piAgent';
 import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
+
+/**
+ * How long one "somebody is watching" beat keeps a screen sending pictures.
+ *
+ * Long enough that a beat lost to a slow tunnel does not make the preview stutter, short enough that
+ * a browser tab closed without warning stops the frames while somebody is still in the room. The
+ * panel beats at roughly a third of this.
+ */
+const PREVIEW_WINDOW_MS = 15_000;
 import {
   findByToken,
   webScreenState,
@@ -1609,7 +1616,6 @@ export function createApi(deps: Deps) {
             // The screen's own account of itself, not what was last asked for — see PiDevice.
             displayOff: d.displayOff,
             displaySchedule: d.displaySchedule,
-            displayTransform: d.displayTransform,
             rebootSchedule: d.rebootSchedule,
             // What the DEVICE's own boot config says, and whether a change to it is still
             // provisional — see PiDevice.videoMode.
@@ -1691,13 +1697,8 @@ export function createApi(deps: Deps) {
         // check that PROTECTS the device is root's on the device, which also requires the zone to
         // exist in /usr/share/zoneinfo. This side of a network cannot know that.
         let text: string | undefined;
-        if (action === 'set-timezone' || action === 'set-hostname' || action === 'set-video-mode') {
-          const parsed =
-            action === 'set-timezone'
-              ? normTimezone(body!.text)
-              : action === 'set-hostname'
-                ? normHostname(body!.text)
-                : normVideoMode(body!.text);
+        if (action === 'set-timezone' || action === 'set-video-mode') {
+          const parsed = action === 'set-timezone' ? normTimezone(body!.text) : normVideoMode(body!.text);
           if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
           text = parsed.text;
         }
@@ -1813,26 +1814,29 @@ export function createApi(deps: Deps) {
       }
 
       /**
-       * How this television is mounted, and how much of the edge it crops.
+       * "Somebody is watching this screen."
        *
-       * Stored and carried on the state poll, exactly like the schedule — the agent applies it to
-       * the next frame it draws. No reboot, and nothing written to the boot partition: see
-       * PiDevice.displayTransform for why the documented firmware options are not the answer here.
+       * Called repeatedly while a live-preview window is open, and it does one thing: push a
+       * deadline a few seconds into the future. The device reads that on its ordinary poll and sends
+       * a frame for as long as it holds.
+       *
+       * A deadline rather than an on/off flag, because there is no reliable "off". A browser tab
+       * closed mid-preview sends nothing, and neither does a laptop whose lid was shut or a tunnel
+       * that dropped — so a flag would leave a Pi sending half-megabyte frames for ever, and the one
+       * thing this must not become is a screen that quietly uploads a picture a second until
+       * somebody notices the bandwidth.
        */
-      const piTransform = /^\/api\/pi\/([\w-]+)\/display-transform$/.exec(pathname);
-      if (piTransform && method === 'PUT') {
-        const body = await readBody(req, 1_000).catch(() => null);
-        if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
-        const t = normDisplayTransform(body);
+      const piPreview = /^\/api\/pi\/([\w-]+)\/preview$/.exec(pathname);
+      if (piPreview && method === 'POST') {
         let found = false;
         store.update((db) => {
-          const d = (db.piDevices ?? []).find((x) => x.id === piTransform[1]);
+          const d = (db.piDevices ?? []).find((x) => x.id === piPreview[1]);
           if (!d) return;
           found = true;
-          d.displayTransform = t;
+          d.previewUntil = Date.now() + PREVIEW_WINDOW_MS;
         });
         if (!found) return sendJson(res, 404, { error: 'No such screen.' });
-        return sendJson(res, 200, { ok: true, displayTransform: t });
+        return sendJson(res, 200, { ok: true, forMs: PREVIEW_WINDOW_MS });
       }
 
       /**

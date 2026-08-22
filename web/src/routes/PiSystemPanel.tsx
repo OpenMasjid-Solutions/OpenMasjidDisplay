@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * The board's own settings — the ones that drift and then cause faults nothing else explains.
+ * The board's own settings — the two that matter from another city.
  *
  * The timezone is the reason this section exists. A screen on the wrong zone shows every prayer time
  * an hour out, confidently and with no error anywhere, and the only way to find it was to shell in
  * and run `timedatectl`. It is also the single most consequential setting on the whole device, and
  * until now it was the one thing here that could only be set by whoever first wrote the SD card.
  *
- * The rest earn their place the same way: a hall of screens all called "raspberry" cannot be
- * identified in a router, Debian's own security updates were nobody's job, and a board that has been
- * up for eleven months is fixed by a reboot at 3am rather than by anything anybody wants to debug
- * remotely.
+ * The nightly reboot is the blunt fix that works: a board that has been up for eleven months with a
+ * slow leak somewhere in a camera pipeline is put right by a reboot at 3am and by nothing anybody
+ * wants to debug remotely. It is ON by default for every screen — see effectiveRebootSchedule for
+ * why that is deliberate rather than presumptuous.
  *
- * Every one of these runs as root on the device, through the closed verb set — the panel never sends
- * a command, it names one. See PI_COMMANDS.
+ * Both run as root on the device through the closed verb set: the panel never sends a command, it
+ * names one. See PI_COMMANDS.
  */
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { PiDeviceInfo } from '../types';
-import { Spinner, IconDownload, Toggle, useToast } from '../ui';
+import { Spinner, useToast } from '../ui';
 
 /**
  * The zones a masjid is actually in, offered by name.
@@ -53,21 +53,26 @@ const ZONES = [
   'America/Toronto',
 ];
 
+/** What a screen with nothing stored does. Kept in step with the server's own default, which is the
+ *  one that actually runs — see effectiveRebootSchedule. */
+const DEFAULT_REBOOT_AT = '03:00';
+
 export function PiSystemSection({ device }: { device: PiDeviceInfo }) {
   const toast = useToast();
   const [busy, setBusy] = useState('');
 
   const [tz, setTz] = useState(device.timezone || '');
-  const [host, setHost] = useState(device.hostname || '');
+  // The server fills this in for every screen, so an absent value only happens against a display
+  // server too old to send it. Defaulted the same way here so the two cannot disagree about what
+  // an absent schedule means.
   const reb = device.rebootSchedule;
-  const [rebOn, setRebOn] = useState(!!reb?.enabled);
-  const [rebAt, setRebAt] = useState(reb?.at || '03:30');
+  const [rebOn, setRebOn] = useState(reb ? reb.enabled : true);
+  const [rebAt, setRebAt] = useState(reb?.at || DEFAULT_REBOOT_AT);
 
-  // Follow the device: both of these are things it is authoritative about, and it can be changed
+  // Follow the device: the timezone is something IT is authoritative about, and it can be changed
   // from a terminal too. Keyed on the incoming value, so typing here is not overwritten by a poll
   // that changed nothing.
   useEffect(() => setTz(device.timezone || ''), [device.timezone]);
-  useEffect(() => setHost(device.hostname || ''), [device.hostname]);
 
   const send = async (label: string, fn: () => Promise<unknown>, said: string) => {
     setBusy(label);
@@ -126,57 +131,14 @@ export function PiSystemSection({ device }: { device: PiDeviceInfo }) {
 
       <div className="pi-row" style={{ marginBlockStart: '0.6rem' }}>
         <label className="hint muted">
-          name on the network{' '}
           <input
-            className="input input--sm"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            placeholder="main-hall"
-            aria-label="This screen's hostname"
-            spellCheck={false}
-            style={{ width: '11rem' }}
+            type="checkbox"
+            checked={rebOn}
+            onChange={(e) => setRebOn(e.target.checked)}
+            style={{ marginInlineEnd: '0.35rem' }}
           />
+          reboot every night
         </label>
-        <button
-          className="btn btn--sm"
-          disabled={busy !== '' || !host.trim() || host === device.hostname}
-          onClick={() =>
-            void send(
-              'host',
-              () => api.piCommand(device.id, 'set-hostname', undefined, undefined, host.trim()),
-              `Asked the screen to rename itself to ${host.trim().toLowerCase()}.`,
-            )
-          }
-        >
-          {busy === 'host' ? <Spinner /> : 'Rename'}
-        </button>
-      </div>
-      <p className="hint muted pi-note">
-        Letters, digits and hyphens. This is what the masjid&rsquo;s router shows, so
-        &ldquo;main-hall&rdquo; beats a wall of boards all called <code>raspberry</code>.
-      </p>
-
-      <div className="pi-row" style={{ marginBlockStart: '0.6rem' }}>
-        <button
-          className="btn btn--ghost btn--sm"
-          disabled={busy !== ''}
-          title="Install operating-system security updates on this board. Takes a few minutes and runs in the background."
-          onClick={() =>
-            void send(
-              'os',
-              () => api.piCommand(device.id, 'os-update'),
-              'Asked the screen to install system updates. It runs in the background and takes a few minutes.',
-            )
-          }
-        >
-          {busy === 'os' ? <Spinner /> : <IconDownload size={14} />} System updates
-        </button>
-        <span className="hint muted">Debian&rsquo;s own packages &mdash; not this app</span>
-      </div>
-
-      <div className="pi-row" style={{ marginBlockStart: '0.6rem' }}>
-        <Toggle checked={rebOn} onChange={setRebOn} label="Reboot this screen every night" />
-        <span className="hint">Reboot every night</span>
         <label className="hint muted">
           at{' '}
           <input
@@ -189,7 +151,7 @@ export function PiSystemSection({ device }: { device: PiDeviceInfo }) {
           />
         </label>
         <button
-          className="btn btn--sm btn--primary"
+          className="btn btn--sm"
           disabled={busy !== ''}
           onClick={() =>
             void send(
@@ -203,9 +165,10 @@ export function PiSystemSection({ device }: { device: PiDeviceInfo }) {
         </button>
       </div>
       <p className="hint muted pi-note">
-        A blunt fix, and the one that works: pick a time when nobody is in the hall and a board that
-        has been running for months clears itself out overnight. The screen keeps its own clock and
-        does this itself.
+        On for every screen at {DEFAULT_REBOOT_AT} unless you turn it off here. Nothing is happening in
+        a prayer hall at three in the morning, and a board that has been running for months clears
+        itself out overnight instead of being found wedged on a Friday. The screen keeps its own clock
+        and does this itself.
       </p>
     </section>
   );

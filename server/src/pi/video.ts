@@ -193,19 +193,9 @@ function pixFmt(bpp: number): string {
 export function videoArgs(
   url: string,
   geo: FbGeometry,
-  opts: { plan: DecodePlan; device: string; timeoutFlag?: string | null; rotate?: number },
+  opts: { plan: DecodePlan; device: string; timeoutFlag?: string | null },
 ): string[] {
   const { width: w, height: h } = geo;
-  // The same rotation the timetable gets, for the same reason: a television turned on its side has
-  // to be sent a turned picture, and under KMS the firmware's rotate options do nothing. ffmpeg
-  // draws to /dev/fb0 itself, so it has to do its own turning — this agent never sees these frames.
-  //
-  // Placed BEFORE the scale, so the scale still targets the framebuffer's real dimensions and the
-  // pad still fills it. Transposing after scaling would produce a frame the framebuffer refuses.
-  // Cheap here because it runs on the already-fps-limited stream: 12 frames a second, not the
-  // camera's 25.
-  const turn =
-    opts.rotate === 90 ? 'transpose=1,' : opts.rotate === 270 ? 'transpose=2,' : opts.rotate === 180 ? 'hflip,vflip,' : '';
   return [
     '-hide_banner',
     '-loglevel',
@@ -261,7 +251,7 @@ export function videoArgs(
     // 268 distinct 16-bit colours, so there is no banding either way. (An earlier comparison across
     // separate live runs appeared to show a difference; it was comparing different moments of a
     // moving picture, not different conversions.)
-    `fps=${CAMERA_FPS},${turn}scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=area,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,format=${pixFmt(
+    `fps=${CAMERA_FPS},scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=area,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,format=${pixFmt(
       geo.bpp,
     )}`,
     '-f',
@@ -452,8 +442,6 @@ export class VideoPlayer {
   private proc: ChildProcess | null = null;
   private url = '';
   private geo: FbGeometry | null = null;
-  /** Quarter turns to apply, matching the timetable's — see videoArgs. */
-  private rotate = 0;
   private stopped = true;
   /** What was decided for this camera. Null until the source has been probed. */
   private plan: DecodePlan | null = null;
@@ -491,14 +479,11 @@ export class VideoPlayer {
 
   /** Start, or switch to a different camera. A no-op when already playing this one, so it can be
    *  called on every poll without restarting the picture every five seconds. */
-  play(url: string, geo: FbGeometry, rotate = 0): void {
-    // The rotation is part of "is this the same picture": changing it while a camera is playing has
-    // to restart ffmpeg, because the filter chain is fixed at spawn.
-    if (!this.stopped && this.url === url && this.geo?.width === geo.width && this.rotate === rotate) return;
+  play(url: string, geo: FbGeometry): void {
+    if (!this.stopped && this.url === url && this.geo?.width === geo.width) return;
     this.stop();
     this.url = url;
     this.geo = geo;
-    this.rotate = rotate;
     this.stopped = false;
     this.failures = 0;
     this.plan = null;
@@ -598,7 +583,6 @@ export class VideoPlayer {
     if (this.stopped || !this.geo) return;
     const plan: DecodePlan = this.plan ?? { kind: 'software', why: 'Decoding in software.' };
     const args = videoArgs(this.url, this.geo, {
-      rotate: this.rotate,
       plan,
       device: this.device,
       timeoutFlag: socketTimeoutFlag(this.ffmpeg),

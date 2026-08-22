@@ -296,12 +296,23 @@ export interface PiState {
    * does not. A device that has not heard from us in three hours still knows what time to go dark.
    */
   displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
-  /** How the television is mounted and how much of the edge it eats. Applied to the frame by the
-   *  agent, so it takes effect on the next one and needs no reboot — see pi/raster.ts. */
-  displayTransform?: { rotate: 0 | 90 | 180 | 270; overscan: number };
   /** Reboot this screen every night at a fixed time. Enforced by the agent from its own clock, for
    *  the same reason the display schedule is. */
   rebootSchedule?: { enabled: boolean; at: string };
+  /**
+   * While this is in the future, keep sending pictures of the screen.
+   *
+   * A live preview rather than a stream, and the difference is the whole design: nothing can connect
+   * to this device, so there is no socket to push frames down. What there is instead is a poll every
+   * five seconds, which the agent already shortens to about a second while something is happening.
+   * So the panel says "somebody is watching, for the next fifteen seconds" and refreshes that while
+   * its window is open; the device sends a frame per poll for as long as that holds.
+   *
+   * Expiring rather than a flag that gets turned off is what makes it safe. A browser tab closed
+   * mid-preview, a laptop lid shut, a tunnel that drops — every one of those stops the frames within
+   * fifteen seconds without anybody having to send anything.
+   */
+  previewUntil?: number;
   /** What the panel has asked this device to do, if anything. Collected on the device's own poll,
    *  because nothing can connect to it. */
   command: {
@@ -313,7 +324,7 @@ export interface PiState {
     shell?: string;
     /** only for 'shell-session' */
     shellSession?: { id: string; secret: string; rows: number; cols: number };
-    /** only for 'set-timezone' / 'set-hostname' */
+    /** only for 'set-timezone' / 'set-video-mode' */
     text?: string;
   } | null;
 }
@@ -360,8 +371,8 @@ export function piState(
       // a lit television at 2am, and its schedule should still be honoured — and a sideways screen
       // showing a pairing code should show it sideways too.
       displaySchedule: device.displaySchedule,
-      displayTransform: device.displayTransform,
-      rebootSchedule: device.rebootSchedule,
+      rebootSchedule: effectiveRebootSchedule(device),
+      previewUntil: device.previewUntil,
       command: pendingCommand(device, nowMs),
     };
   }
@@ -391,8 +402,8 @@ export function piState(
     pollMs: PI_POLL_MS,
     screenName: tv.name,
     displaySchedule: device.displaySchedule,
-    displayTransform: device.displayTransform,
-    rebootSchedule: device.rebootSchedule,
+    rebootSchedule: effectiveRebootSchedule(device),
+    previewUntil: device.previewUntil,
     command: pendingCommand(device, nowMs),
   };
 }
@@ -599,17 +610,14 @@ export const PI_COMMANDS = [
   // every guide reaches for, is a no-op on a Pi 4 under KMS. Measured; see the installer.
   'display-off',
   'display-on',
-  // The settings that drift and cause faults nothing else explains. A wrong timezone makes every
-  // prayer time on the wall wrong, which is why it is here rather than left to whoever set the
-  // card up.
+  // The setting that drifts and causes faults nothing else explains: a wrong timezone makes every
+  // prayer time on the wall wrong, which is why it is here rather than left to whoever set the card
+  // up. It is the only one of its kind — a hostname control was here briefly and removed, because
+  // nobody was ever going to open this window to rename a board.
   'set-timezone',
-  'set-hostname',
-  // Debian packages, not this app — 'update' and 'reinstall' already cover the app.
-  'os-update',
   // FORCING the HDMI mode, for a television that negotiates a bad one. The only setting on this
   // device that needs the boot partition and a reboot — and the only one that can leave a screen
-  // black, which is why it reverts itself unless somebody confirms the picture is fine. Rotation
-  // and overscan are NOT here: the agent turns its own pixels, so those need neither.
+  // black, which is why it reverts itself unless somebody confirms the picture is fine.
   'set-video-mode',
   'keep-video-mode',
   // A picture of what the screen is showing right now. The only one of these that needs NO
@@ -652,7 +660,7 @@ export interface PiCommand {
   /** Only for 'shell-session': where to dial in, and the one-time secret to present. Held on the
    *  command exactly as long as a Wi-Fi passphrase is — until the device acknowledges it. */
   shellSession?: { id: string; secret: string; rows: number; cols: number };
-  /** Only for 'set-timezone' / 'set-hostname'. One short validated string; root re-checks it. */
+  /** Only for 'set-timezone' / 'set-video-mode'. One short validated string; root re-checks it. */
   text?: string;
 }
 
@@ -672,36 +680,24 @@ export function normTimezone(raw: unknown): { text: string } | { error: string }
 }
 
 /**
- * A hostname: one DNS label, RFC 1123.
+ * When this screen reboots itself overnight — the DEFAULT, not just what somebody chose.
  *
- * Lower-cased, deliberately. Linux accepts mixed case and then everything that compares hostnames
- * disagrees about it, so a masjid naming a screen "MainHall" gets one that is sometimes mainhall.
+ * Every screen does this at 03:00 unless an admin has said otherwise, and that is deliberate rather
+ * than tidy: the boards that need it most are the ones nobody is looking at, in a masjid with no
+ * technical staff, and a setting that has to be found and turned on is a setting that stays off. A
+ * screen in a prayer hall at three in the morning is doing nothing anybody will miss for the ninety
+ * seconds this costs.
+ *
+ * A device with nothing stored gets the default; a device where somebody has turned it off gets
+ * exactly that. The distinction lives here so the agent, the panel and the API cannot disagree
+ * about what an absent setting means.
  */
-export function normHostname(raw: unknown): { text: string } | { error: string } {
-  const text = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-  if (!text) return { error: 'Type a name for this screen.' };
-  if (text.length > 63) return { error: 'A name can be at most 63 characters.' };
-  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(text)) {
-    return { error: 'Use letters, digits and hyphens only, starting and ending with a letter or digit.' };
-  }
-  return { text };
-}
+export const DEFAULT_REBOOT_AT = '03:00';
 
-/**
- * How a screen is mounted, from whatever the panel sent.
- *
- * Both fields are re-derived rather than trusted: `rotate` has to be one of exactly four values
- * because the rotation is index arithmetic that only holds for those, and `overscan` becomes a
- * render target size — an unbounded one would ask resvg for a frame of nonsense, and a negative one
- * would grow the picture past the screen.
- */
-export function normDisplayTransform(raw: unknown): { rotate: 0 | 90 | 180 | 270; overscan: number } {
-  const o = (raw ?? {}) as Record<string, unknown>;
-  const r = Number(o.rotate);
-  const rotate = r === 90 || r === 180 || r === 270 ? (r as 90 | 180 | 270) : 0;
-  const p = Number(o.overscan);
-  const overscan = Number.isFinite(p) && p > 0 ? Math.min(15, Math.round(p)) : 0;
-  return { rotate, overscan };
+export function effectiveRebootSchedule(device: PiDevice): { enabled: boolean; at: string } {
+  const s = device.rebootSchedule;
+  if (!s) return { enabled: true, at: DEFAULT_REBOOT_AT };
+  return { enabled: s.enabled, at: s.at || DEFAULT_REBOOT_AT };
 }
 
 /**
@@ -772,9 +768,7 @@ export function queueCommand(
   // the Wi-Fi passphrase beside it: written to the store because the device may poll after a
   // restart, deleted the instant it acknowledges, and never returned by any read endpoint.
   if (action === 'shell-session' && shellSession) device.command.shellSession = shellSession;
-  if (text && (action === 'set-timezone' || action === 'set-hostname' || action === 'set-video-mode')) {
-    device.command.text = text;
-  }
+  if (text && (action === 'set-timezone' || action === 'set-video-mode')) device.command.text = text;
   return device.command;
 }
 

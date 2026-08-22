@@ -228,9 +228,6 @@ export interface PiDeviceInfo {
   displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
   /** And reboot nightly, by the same mechanism. */
   rebootSchedule?: { enabled: boolean; at: string };
-  /** How the television is mounted, and how much of the edge it crops. Applied to each frame by the
-   *  agent, so a change shows up on the next one — no reboot, and nothing written to the card. */
-  displayTransform?: { rotate: 0 | 90 | 180 | 270; overscan: number };
   /** The screen's own timezone, as its system has it. A wrong one makes every prayer time on the
    *  wall wrong, confidently, which is why the panel shows it rather than assuming. */
   timezone?: string;

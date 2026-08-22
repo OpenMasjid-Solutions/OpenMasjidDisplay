@@ -915,8 +915,36 @@ for req in "$SPOOL"/*; do
             # halfway is exactly the thing somebody will need to be able to read afterwards.
             if systemd-run --collect --quiet --unit=omd-reinstall \
               --description='OpenMasjidDisplay: re-run the screen installer' \
-              /bin/sh -c 'sh "$1" 2>&1 | logger -t omd-reinstall; rm -f "$1"' sh "$TMP"; then
-              echo 'control: re-running the installer at the dashboard request'
+              /bin/sh -c '
+                # The OPERATING SYSTEM first, then this app.
+                #
+                # One button updates both, and they have to be sequential rather than two jobs:
+                # the installer runs apt-get itself to fetch its dependencies, and two apt
+                # processes means one of them loses the dpkg lock and fails. So it is one chain in
+                # one transient unit, which holds the lock once.
+                #
+                # This order, specifically. The installer re-applies the boot settings, the
+                # service units and the agent, so it lands LAST and puts right anything the
+                # upgrade disturbed. The other way round, an apt upgrade that replaced a unit file
+                # would leave the screen running whatever it replaced it with.
+                #
+                # --force-confold keeps OUR files where a package ships its own, and
+                # DEBIAN_FRONTEND=noninteractive is what stops apt asking a question nobody is
+                # here to answer.
+                export DEBIAN_FRONTEND=noninteractive
+                # -o DPkg::Lock::Timeout, for the reason APT_OPTS carries it in the installer: a Pi
+                # that booted a minute ago is running unattended-upgrades and holding the lock. This
+                # chain ends in `|| true`, so without a timeout it would block for as long as that
+                # takes and then report success either way.
+                apt-get -o DPkg::Lock::Timeout=900 update 2>&1 | logger -t omd-reinstall || true
+                apt-get -y -o DPkg::Lock::Timeout=900 -o Dpkg::Options::=--force-confold upgrade 2>&1 | logger -t omd-reinstall || true
+                # Not conditional on apt succeeding. A masjid with a broken mirror or no internet
+                # route to Debian still has to be able to update the app, which is the half of
+                # this anybody presses the button for.
+                sh "$1" 2>&1 | logger -t omd-reinstall
+                rm -f "$1"
+              ' sh "$TMP"; then
+              echo 'control: updating the system packages and re-running the installer at the dashboard request'
             else
               echo 'control: could not start the installer'
               rm -f "$TMP" 2>/dev/null || true
@@ -1074,48 +1102,6 @@ for req in "$SPOOL"/*; do
           fi
           ;;
       esac
-      ;;
-
-    set-hostname)
-      # Cosmetic on its own, but it is what a masjid sees in their router and in this panel, and a
-      # hall full of screens all called "raspberry" is unmanageable.
-      _hnreq=$STATEDIR/hostname-request
-      _hn=$(head -c 64 "$_hnreq" 2>/dev/null | tr -d '\n\r' || true)
-      rm -f "$_hnreq"
-      # RFC 1123: letters, digits and hyphens, not starting or ending with one.
-      case "$_hn" in
-        ''|*[!a-z0-9-]*|-*|*-) echo "control: refusing a hostname that is not a plain DNS label" ;;
-        *)
-          if hostnamectl set-hostname "$_hn" 2>/dev/null; then
-            # /etc/hosts has to follow, or sudo and anything else resolving the local name stalls
-            # for a DNS timeout on every call.
-            if grep -qE '^127\.0\.1\.1' /etc/hosts 2>/dev/null; then
-              sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$_hn/" /etc/hosts 2>/dev/null || true
-            else
-              printf '127.0.1.1\t%s\n' "$_hn" >> /etc/hosts 2>/dev/null || true
-            fi
-            echo "control: hostname set to $_hn"
-          else
-            echo "control: could not set the hostname"
-          fi
-          ;;
-      esac
-      ;;
-
-    os-update)
-      # Debian packages, not this app — `update` and `reinstall` already cover the app.
-      #
-      # Detached through systemd-run for the same reason the reinstall is: this takes minutes, and
-      # anything started from the dispatcher dies with it (Type=oneshot plus the default
-      # KillMode=control-group takes the whole cgroup down). Output goes to the journal, which the
-      # screen report now surfaces, so somebody can see how it went without being here for it.
-      if systemd-run --collect --quiet --unit=omd-os-update \
-        --description='OpenMasjidDisplay: apt upgrade' \
-        /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get -y -o Dpkg::Options::=--force-confold upgrade' 2>/dev/null; then
-        echo "control: started an OS package upgrade in the background"
-      else
-        echo "control: could not start the OS upgrade (is one already running?)"
-      fi
       ;;
 
     logs)

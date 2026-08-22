@@ -167,18 +167,16 @@ export const api = {
       | 'shell'
       | 'display-off'
       | 'display-on'
-      | 'os-update'
       | 'screenshot'
       | 'set-timezone'
-      | 'set-hostname'
       | 'set-video-mode'
       | 'keep-video-mode',
     /** Only for 'wifi-join'. The passphrase is used once on the device and never logged. */
     wifi?: { ssid: string; psk: string },
     /** Only for 'shell'. One line, run on the screen as its own unprivileged user. */
     shell?: string,
-    /** Only for 'set-timezone' / 'set-hostname' / 'set-video-mode'. Checked here for a quick answer
-     *  and again by root on the device, which is the check that actually protects it. */
+    /** Only for 'set-timezone' / 'set-video-mode'. Checked here for a quick answer and again by
+     *  root on the device, which is the check that actually protects it. */
     text?: string,
   ) =>
     req<{ queued: boolean }>(
@@ -196,14 +194,15 @@ export const api = {
   piRebootSchedule: (id: string, s: { enabled: boolean; at: string }) =>
     req<{ ok: boolean }>('PUT', `/api/pi/${id}/reboot-schedule`, s),
 
-  /** How the television is mounted and how much of the edge it eats. Takes effect on the screen's
-   *  next frame — the agent turns its own pixels, so this needs no reboot. */
-  piDisplayTransform: (id: string, t: { rotate: number; overscan: number }) =>
-    req<{ ok: boolean; displayTransform: { rotate: 0 | 90 | 180 | 270; overscan: number } }>(
-      'PUT',
-      `/api/pi/${id}/display-transform`,
-      t,
-    ),
+  /**
+   * "Somebody is watching this screen."
+   *
+   * Called repeatedly while a live-preview window is open. It pushes a deadline a few seconds out;
+   * the screen sends a picture on each of its polls for as long as that holds, and stops on its own
+   * when it lapses. A deadline rather than an on/off switch because there is no reliable "off" — a
+   * closed tab sends nothing.
+   */
+  piPreview: (id: string) => req<{ ok: boolean; forMs: number }>('POST', `/api/pi/${id}/preview`),
 
   /**
    * Ask for a terminal on a screen.

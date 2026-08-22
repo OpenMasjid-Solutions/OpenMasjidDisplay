@@ -43,7 +43,7 @@ import {
 import { VideoPlayer } from './video';
 import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
-import { fitMode, blitCentered, rotateRgba, overscanBox } from './raster';
+import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
 import { netFacts, scanNetworks } from './network';
 import { piStats } from './stats';
@@ -133,9 +133,8 @@ interface PiStateWire {
   displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
   /** And reboot nightly, for the same reason and by the same mechanism. */
   rebootSchedule?: { enabled: boolean; at: string };
-  /** How the television is mounted, and how much of the edge it crops. Applied to the frame, so a
-   *  change takes effect on the next one — see raster.ts. */
-  displayTransform?: { rotate?: number; overscan?: number };
+  /** While this is in the future, keep sending pictures — somebody has a preview window open. */
+  previewUntil?: number;
   command?: {
     id: string;
     action:
@@ -154,8 +153,6 @@ interface PiStateWire {
       | 'display-off'
       | 'display-on'
       | 'set-timezone'
-      | 'set-hostname'
-      | 'os-update'
       | 'screenshot'
       | 'set-video-mode'
       | 'keep-video-mode';
@@ -165,7 +162,7 @@ interface PiStateWire {
     shell?: string;
     /** Only ever present for 'shell-session'. Where to dial in, and the one-time secret. */
     shellSession?: { id: string; secret: string; rows: number; cols: number };
-    /** Only ever present for 'set-timezone' / 'set-hostname'. Root validates it again. */
+    /** Only ever present for 'set-timezone' / 'set-video-mode'. Root validates it again. */
     text?: string;
   } | null;
 }
@@ -183,14 +180,6 @@ class Screen {
   private constructor(
     private readonly fb: Framebuffer,
     readonly geo: FbGeometry,
-    /**
-     * How this television is mounted and how much of the picture it eats.
-     *
-     * Mutable, and set from the state poll rather than passed in: the framebuffer is opened once at
-     * startup and these are per-screen settings an admin can change while it is running. Both are
-     * applied to the FRAME, not to the boot config — see raster.ts for why that is not a shortcut.
-     */
-    public transform: { rotate: 0 | 90 | 180 | 270; overscan: number } = { rotate: 0, overscan: 0 },
   ) {}
 
   static open(): Screen | null {
@@ -227,17 +216,9 @@ class Screen {
       const srcW = m ? Number(m[1]) : 1920;
       const srcH = m ? Number(m[2]) : 1080;
 
-      // The box the picture is allowed to fill, and which way round it is. For a quarter turn the
-      // target is the framebuffer's dimensions SWAPPED, because the frame is rasterised the way it
-      // will be seen and then turned into the framebuffer's shape.
-      const box = overscanBox(this.geo.width, this.geo.height, this.transform.overscan);
-      const quarter = this.transform.rotate === 90 || this.transform.rotate === 270;
-      const fitW = quarter ? box.height : box.width;
-      const fitH = quarter ? box.width : box.height;
-
       const t0 = process.hrtime.bigint();
       const img = new Resvg(svg, {
-        fitTo: fitMode(srcW, srcH, fitW, fitH),
+        fitTo: fitMode(srcW, srcH, this.geo.width, this.geo.height),
         font: fontFiles.length
           ? {
               // The server's own curated faces, fetched from it. NOT the system fonts: resvg
@@ -257,12 +238,7 @@ class Screen {
       }).render();
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
-      // Rotated after rasterising and before blitting: resvg has no concept of the framebuffer's
-      // orientation, and blitCentered's letterboxing is what turns "a portrait picture" into "a
-      // portrait picture centred in a landscape framebuffer with black down both sides" — which is
-      // exactly what a television turned on its side needs to be sent.
-      const rot = rotateRgba(img.pixels, img.width, img.height, this.transform.rotate);
-      const frame = blitCentered(rot.pixels, rot.width, rot.height, this.geo.width, this.geo.height);
+      const frame = blitCentered(img.pixels, img.width, img.height, this.geo.width, this.geo.height);
       return this.fb.draw(frame) ? ms : null;
     } catch (e) {
       log('could not draw a frame:', (e as Error).message);
@@ -486,33 +462,26 @@ async function runCommand(
     return;
   }
 
-  if (cmd.action === 'os-update') {
-    requestPrivileged(cmd.id, 'os-update', 'asked the system to install operating-system updates');
-    return;
-  }
-
-  // Both of these carry a short string, which cannot travel in the spool file: the dispatcher reads
-  // a verb as `head -c 32 | tr -dc 'a-z-'`, which would turn "America/New_York" into
+  // The timezone carries a short string, which cannot travel in the spool file: the dispatcher
+  // reads a verb as `head -c 32 | tr -dc 'a-z-'`, which would turn "America/New_York" into
   // "americanewyork". Same shape as a Wi-Fi join — the payload goes beside the verb, and root
   // validates it itself rather than trusting this side.
-  if (cmd.action === 'set-timezone' || cmd.action === 'set-hostname') {
+  if (cmd.action === 'set-timezone') {
     if (!cmd.text) {
-      log(`a ${cmd.action} arrived with nothing to set; ignoring it`);
+      log('a set-timezone arrived with nothing to set; ignoring it');
       return;
     }
-    const file = cmd.action === 'set-timezone' ? 'tz-request' : 'hostname-request';
     try {
       const dir = '/var/lib/openmasjid-screen';
       // Written and renamed BEFORE the verb, so the dispatcher can never wake on a request whose
       // payload has not landed.
-      fs.writeFileSync(`${dir}/.${file}`, `${cmd.text}
-`, { mode: 0o600 });
-      fs.renameSync(`${dir}/.${file}`, `${dir}/${file}`);
+      fs.writeFileSync(`${dir}/.tz-request`, `${cmd.text}\n`, { mode: 0o600 });
+      fs.renameSync(`${dir}/.tz-request`, `${dir}/tz-request`);
     } catch (e) {
-      log(`could not leave the ${cmd.action} details for the system:`, (e as Error).message);
+      log('could not leave the timezone for the system:', (e as Error).message);
       return;
     }
-    requestPrivileged(cmd.id, cmd.action, `asked the system to set ${cmd.action === 'set-timezone' ? 'the timezone' : 'the hostname'} to "${cmd.text}"`);
+    requestPrivileged(cmd.id, 'set-timezone', `asked the system to set the timezone to "${cmd.text}"`);
     live.checkInNow = true;
     return;
   }
@@ -656,8 +625,8 @@ function displayIsOff(): boolean {
 /** Send a screenshot to the dashboard. Its own route, for the same reason the journal has one: it is
  *  a few hundred kilobytes and wanted occasionally, and sharing the check-in would force that cap up
  *  for every screen on every poll. */
-async function sendScreenshot(cfg: AgentConfig): Promise<void> {
-  const png = framebufferPng();
+async function sendScreenshot(cfg: AgentConfig, shrink = PREVIEW_SHRINK): Promise<void> {
+  const png = framebufferPng(shrink);
   if (!png) {
     log('could not read the framebuffer for a screenshot:', framebufferPngError() || 'no reason given');
     return;
@@ -839,6 +808,16 @@ function shellCwd(): string {
 
 /** Our own ceiling on a terminal session, behind the server's. If the socket is wedged rather
  *  than closed, this is what stops a bash sitting on the device for the rest of the week. */
+/**
+ * How much to shrink a screenshot before sending it.
+ *
+ * 2 halves each axis, so a quarter of the pixels: a 1080p timetable goes from about half a megabyte
+ * to well under a hundred kilobytes, which is what makes a frame a second through a masjid's tunnel
+ * reasonable rather than rude. A timetable is large flat type, so it stays readable — and reading
+ * the times off it is the only thing anybody wants the picture for.
+ */
+const PREVIEW_SHRINK = 2;
+
 const SHELL_SESSION_MAX_MS = 65 * 60_000;
 
 /** How long a console command may run before it is killed, and how much of its output is kept.
@@ -934,8 +913,6 @@ type PrivilegedVerb =
   | 'display-off'
   | 'display-on'
   | 'set-timezone'
-  | 'set-hostname'
-  | 'os-update'
   | 'set-video-mode'
   | 'keep-video-mode'
   | 'update'
@@ -1411,15 +1388,6 @@ async function runAdopted(
 
       const first = !live.state;
       live.state = st;
-      // Re-read every poll rather than only on change: it costs nothing, and it means a screen that
-      // was mounted sideways picks the setting up on its next poll with no restart.
-      if (screen) {
-        const r = Number(st.displayTransform?.rotate);
-        screen.transform = {
-          rotate: r === 90 || r === 180 || r === 270 ? r : 0,
-          overscan: Number(st.displayTransform?.overscan) || 0,
-        };
-      }
       live.clockOffsetMs = st.serverNow - Date.now();
       live.lastPollOk = Date.now();
       pollMs = typeof st.pollMs === 'number' && st.pollMs >= 1000 ? st.pollMs : POLL_MS;
@@ -1439,6 +1407,16 @@ async function runAdopted(
       await resolveAssets(live, cache, cfg.server).catch(() => {
         /* a missing image draws the themed scene instead; the next poll tries again */
       });
+      // Somebody is watching this screen in the dashboard. Send a frame, and poll fast enough for
+      // it to look live — the same fast-poll window a console uses, re-armed on every frame for as
+      // long as the panel keeps saying somebody is there. Both ends expire: the panel stops
+      // refreshing previewUntil when its window closes, and this stops the moment that lapses.
+      if (st.previewUntil && Date.now() < st.previewUntil) {
+        live.fastPollUntil = Date.now() + 30_000;
+        await sendScreenshot(cfg).catch(() => {
+          /* a dropped frame is not worth a log line once a second */
+        });
+      }
       // A console open in the panel shortens the wait, for a minute at a time. Bounded, and only
       // ever set by having just run something: a screen nobody is looking at is back to five
       // seconds within a minute, so this cannot become a device that polls hard for ever.
@@ -1508,7 +1486,7 @@ async function runAdopted(
       // ffmpeg draws straight to the framebuffer; anything we painted would be a flicker over it.
       const stream = live.state.stream;
       if (stream && screen) {
-        player.play(stream.url, screen.geo, screen.transform.rotate);
+        player.play(stream.url, screen.geo);
         const st = player.status();
         if (st.playing) {
           cameraDownSince = 0;

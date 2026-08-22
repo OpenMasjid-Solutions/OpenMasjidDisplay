@@ -340,7 +340,7 @@ export function PiSettings({
         <WifiSection device={device} badge={badge} />
       </section>
 
-      <PiDisplaySection device={device} />
+      <PiDisplaySection device={device} screenName={screenName} />
 
       <PiSystemSection device={device} />
 
@@ -429,8 +429,8 @@ export function PiSettings({
               updating
                 ? 'This screen is installing now. It takes a few minutes and restarts itself when it is done.'
                 : device.upToDate
-                  ? `Already running ${device.agentVersion}. Running this again re-applies its setup.`
-                  : 'Install the current version on this screen and re-apply its setup'
+                  ? `Already running ${device.agentVersion}. Running this again installs system updates and re-applies its setup.`
+                  : "Install system updates and the current version of this app, and re-apply the screen's setup"
             }
             onClick={() => void ask('reinstall')}
           >
@@ -455,6 +455,12 @@ export function PiSettings({
             </span>
           )}
         </div>
+        <p className="hint muted pi-note">
+          <strong>Update</strong> does both halves at once: the operating system&rsquo;s own security
+          updates, and then this app. In that order, and as one job — the installer fetches packages
+          itself, so two updates at the same time would fight over the package lock. It takes a few
+          minutes and the screen restarts itself when it is done.
+        </p>
         <p className="hint muted pi-note">
           Nothing here is sent to the screen directly — it collects instructions on its own, every few
           seconds. So these say <em>asked</em>, never <em>done</em>.

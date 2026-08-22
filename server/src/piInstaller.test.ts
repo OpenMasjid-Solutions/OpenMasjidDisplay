@@ -273,8 +273,22 @@ test('apt is not silenced, and cannot wait forever', () => {
   const tpl = installerTemplate() as string;
   // A freshly booted Pi runs unattended-upgrades, which holds the dpkg lock. With -qq and
   // >/dev/null the installer sat there printing nothing for over fifteen minutes.
-  assert.ok(!/apt-get[^\n]*-qq[^\n]*install/.test(tpl), 'apt install must not be quiet');
-  assert.ok(!/apt-get[^\n]*install[^\n]*>\s*\/dev\/null/.test(tpl), 'nor have its output discarded');
+  // `install` has to be a WORD here, not a substring. It matched the "install" inside the log tag
+  // `omd-reinstall` the first time an apt call was piped to logger — a guard that fails on an
+  // unrelated line is a guard somebody loosens, so it now means what it says.
+  const aptInstall = /apt-get(?:\s+-{1,2}[^\s]+|\s+-o\s+[^\s]+)*\s+install\b[^\n]*/g;
+  const invocations = tpl.match(aptInstall) ?? [];
+  assert.ok(invocations.length > 0, 'the installer does install packages — has this been rewritten?');
+  assert.deepEqual(
+    invocations.filter((l) => /(^|\s)-qq(\s|$)/.test(l)),
+    [],
+    'apt install must not be quiet',
+  );
+  assert.deepEqual(
+    invocations.filter((l) => />\s*\/dev\/null/.test(l)),
+    [],
+    'nor have its output discarded',
+  );
   assert.ok(tpl.includes('DPkg::Lock::Timeout'), 'apt must not block on the lock indefinitely');
   assert.ok(tpl.includes('wait_for_apt'), 'and should say who is holding it');
 });
@@ -461,10 +475,8 @@ test('the dispatcher still executes nothing outside its closed set', () => {
       'display-off|display-on',
       'keep-video-mode',
       'logs',
-      'os-update',
       'reboot',
       'reinstall',
-      'set-hostname',
       'set-timezone',
       'set-video-mode',
       'update',
