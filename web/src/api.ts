@@ -176,6 +176,15 @@ export const api = {
       wifi ? { action, wifi } : shell ? { action, shell } : { action },
     ),
 
+  /**
+   * Ask for a terminal on a screen.
+   *
+   * Returns the session id and how long the screen has to pick it up. The SECRET the screen must
+   * present never comes here — it goes to the device on its own poll, so a compromised panel
+   * session cannot impersonate a screen.
+   */
+  piTerminalOpen: (id: string, rows: number, cols: number) =>
+    req<{ id: string; claimMs: number }>('POST', `/api/pi/${id}/terminal`, { rows, cols }),
   /** Forget a device: it goes back to showing a fresh pairing code. Its screen is kept. */
   piForget: (id: string) => req<{ ok: boolean }>('POST', `/api/pi/${id}/forget`),
 

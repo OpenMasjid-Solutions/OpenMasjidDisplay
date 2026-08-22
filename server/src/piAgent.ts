@@ -287,6 +287,8 @@ export interface PiState {
     wifi?: { ssid: string; psk: string };
     /** only for 'shell' */
     shell?: string;
+    /** only for 'shell-session' */
+    shellSession?: { id: string; secret: string; rows: number; cols: number };
   } | null;
 }
 
@@ -537,6 +539,10 @@ export const PI_COMMANDS = [
   'wifi-join',
   'wifi-forget',
   'wifi-rescan',
+  // A full interactive terminal, dialled OUT by the device to a session the panel minted — see
+  // piShell.ts. Same account and same sandbox as 'shell'; the difference is that the bytes flow
+  // both ways over a socket the DEVICE opened, so a keystroke does not wait for the next poll.
+  'shell-session',
   // One line, run by the AGENT as its own unprivileged user — deliberately NOT through the root
   // control spool. That spool matches a verb out of a fixed set with a filter that keeps only
   // lowercase letters and dashes, and its narrowness is the only thing making root's side of this
@@ -567,6 +573,9 @@ export interface PiCommand {
   wifi?: { ssid: string; psk: string };
   /** Only for 'shell'. The line to run, already validated. */
   shell?: string;
+  /** Only for 'shell-session': where to dial in, and the one-time secret to present. Held on the
+   *  command exactly as long as a Wi-Fi passphrase is — until the device acknowledges it. */
+  shellSession?: { id: string; secret: string; rows: number; cols: number };
 }
 
 export function isPiCommand(v: unknown): v is PiCommandAction {
@@ -587,6 +596,7 @@ export function queueCommand(
   nowMs: number,
   wifi?: { ssid: string; psk: string },
   shell?: string,
+  shellSession?: { id: string; secret: string; rows: number; cols: number },
 ): PiCommand | null {
   const device = db.piDevices?.find((d) => d.id === deviceId);
   if (!device || !device.token) return null;
@@ -609,6 +619,10 @@ export function queueCommand(
   // why nothing happened. It is never logged, and never returned by any read endpoint.
   if (action === 'wifi-join' && wifi) device.command.wifi = wifi;
   if (action === 'shell' && shell) device.command.shell = shell;
+  // A terminal secret, on its way to a device that will use it once within the minute. Same life as
+  // the Wi-Fi passphrase beside it: written to the store because the device may poll after a
+  // restart, deleted the instant it acknowledges, and never returned by any read endpoint.
+  if (action === 'shell-session' && shellSession) device.command.shellSession = shellSession;
   return device.command;
 }
 
@@ -616,11 +630,18 @@ export function queueCommand(
 export function pendingCommand(
   device: PiDevice,
   nowMs: number,
-): { id: string; action: PiCommandAction; wifi?: { ssid: string; psk: string }; shell?: string } | null {
+): {
+  id: string;
+  action: PiCommandAction;
+  wifi?: { ssid: string; psk: string };
+  shell?: string;
+  shellSession?: { id: string; secret: string; rows: number; cols: number };
+} | null {
   const c = device.command;
   if (!c || nowMs - c.issuedAt > PI_COMMAND_TTL_MS) return null;
   if (c.wifi) return { id: c.id, action: c.action, wifi: c.wifi };
   if (c.shell) return { id: c.id, action: c.action, shell: c.shell };
+  if (c.shellSession) return { id: c.id, action: c.action, shellSession: c.shellSession };
   return { id: c.id, action: c.action };
 }
 

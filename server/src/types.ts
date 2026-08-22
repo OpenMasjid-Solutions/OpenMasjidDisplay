@@ -374,12 +374,16 @@ export interface PiDevice {
       | 'wifi-join'
       | 'wifi-forget'
       | 'wifi-rescan'
-      | 'shell';
+      | 'shell'
+      | 'shell-session';
     issuedAt: number;
     /** Only for 'wifi-join', and deleted as soon as the device acknowledges the command. */
     wifi?: { ssid: string; psk: string };
     /** Only for 'shell': one line for the device to run as its own unprivileged user. */
     shell?: string;
+    /** Only for 'shell-session': where the device should dial in, and the one-time secret it must
+     *  present. Same life as the Wi-Fi passphrase — gone the moment the device acknowledges. */
+    shellSession?: { id: string; secret: string; rows: number; cols: number };
   };
   /** The last lines the agent logged, as IT saw them — sent on check-in so the panel can show
    *  what a screen is doing without anybody opening a shell on it. Display text only. */

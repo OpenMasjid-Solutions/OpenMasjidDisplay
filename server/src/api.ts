@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config';
 import { makeLog } from './logger';
+import { openShellSession, closeShellSession, closeShellSessionsFor, SHELL_CLAIM_MS } from './piShell';
 import type { Store } from './store';
 import type { Orchestrator } from './orchestrator';
 import {
@@ -1659,8 +1660,40 @@ export function createApi(deps: Deps) {
         return sendJson(res, 202, { queued: true });
       }
 
+      /**
+        * Ask for a terminal on a screen.
+        *
+        * Mints a session and hands the DEVICE its secret on the next poll; the browser gets only
+        * the id, and opens a WebSocket to /api/pi/shell/<id> to watch. See piShell.ts for why it is
+        * built inside out and what bounds it.
+        */
+       const piShellOpen = /^\/api\/pi\/([\w-]+)\/terminal$/.exec(pathname);
+       if (piShellOpen && method === 'POST') {
+         const body = (await readBody(req, 1_000).catch(() => null)) as { rows?: unknown; cols?: unknown } | null;
+         const device = (store.db.piDevices ?? []).find((d) => d.id === piShellOpen[1]);
+         if (!device || !device.token) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
+         const { id, secret } = openShellSession(device.id, body?.rows, body?.cols);
+         let queued: ReturnType<typeof queueCommand> = null;
+         store.update((db) => {
+           queued = queueCommand(db, device.id, 'shell-session', Date.now(), undefined, undefined, {
+             id,
+             secret,
+             rows: 24,
+             cols: 80,
+           });
+         });
+         if (!queued) {
+           closeShellSession(id, 'the screen could not be given the session');
+           return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
+         }
+         // The id is safe to hand back; the secret is not, and never leaves for the browser.
+         return sendJson(res, 202, { id, claimMs: SHELL_CLAIM_MS });
+       }
+
       const piForget = /^\/api\/pi\/([\w-]+)\/forget$/.exec(pathname);
       if (piForget && method === 'POST') {
+        // A screen being handed to somebody else must not still have a live shell on it.
+        closeShellSessionsFor(piForget[1], 'the screen was forgotten');
         store.update((db) => {
           const d = (db.piDevices ?? []).find((x) => x.id === piForget[1]);
           if (d) {

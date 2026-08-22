@@ -12,6 +12,21 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Added
+- **A real terminal on a Raspberry Pi screen**, behind the gear on its card. Not a one-command box:
+  a proper shell with a prompt, tab completion and an editor if you want one. Nothing connects to
+  the screen — it is offered a session on its next check-in and dials back out — so it works
+  through a masjid’s router with nothing forwarded and no port open on the Pi. It runs as the
+  screen’s own limited account (no administrator, no <code>sudo</code>), closes itself after ten
+  idle minutes, cannot last more than an hour, and nothing typed in it is written to any log.
+  A screen running older software says so and offers the single-command box instead.
+
+### Fixed
+- **Clicking the small “?” beside a setting no longer does the setting’s job.** Clicking the one
+  next to “Gold accent” opened the colour picker, and the same went for every other hint on the
+  Appearance tab — the file picker, the layout menu, all of them. The hint now only ever shows its
+  own tooltip. Clicking the setting’s NAME still works as before.
+
 ### Fixed
 - **The editor preview no longer flips between the two designs.** It shows the design you have
   actually chosen. The flipping was left over from a burn-in rotation the screens have not done

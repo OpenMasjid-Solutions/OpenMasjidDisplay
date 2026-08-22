@@ -742,6 +742,11 @@ span.tl--min:hover { filter: none; transform: none; }
    browser: a 672px window with a 280px body. */
 .modal--term .modal-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .modal--term .pi-log--term { flex: 1 1 auto; max-height: none; min-height: 7rem; margin-block: 0; }
+/* The terminal canvas fills the window the same way the transcript pane does, so going fullscreen
+   gives you more rows rather than more empty space. min-height keeps xterm measurable on open —
+   fit() on a zero-height element gives a 1x1 terminal and the session opens at the wrong size. */
+.pi-term { flex: 1 1 auto; min-height: 8rem; overflow: hidden; border-radius: var(--radius-sm, 8px); }
+.pi-term .xterm { height: 100%; padding: 0.5rem; }
 .modal--term .pi-console { margin-block-start: 0.6rem; }
 /* The window is wide enough that a command's output does not wrap every other line. Matches
    OpenMasjidOS's .win--wide. */

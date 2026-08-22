@@ -29,6 +29,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import WebSocket from 'ws';
 import { Resvg } from '@resvg/resvg-js';
 import { Framebuffer, quietConsole, describeFramebuffer, FB_DEVICE, type FbGeometry } from './framebuffer';
 import { VideoPlayer } from './video';
@@ -132,11 +133,14 @@ interface PiStateWire {
       | 'wifi-join'
       | 'wifi-forget'
       | 'wifi-rescan'
-      | 'shell';
+      | 'shell'
+      | 'shell-session';
     /** Only ever present for 'wifi-join'. The password is used once and never logged. */
     wifi?: { ssid: string; psk: string };
     /** Only ever present for 'shell'. One line, run as THIS user — see runShell. */
     shell?: string;
+    /** Only ever present for 'shell-session'. Where to dial in, and the one-time secret. */
+    shellSession?: { id: string; secret: string; rows: number; cols: number };
   } | null;
 }
 
@@ -400,6 +404,17 @@ async function runCommand(
     return;
   }
 
+  if (cmd.action === 'shell-session') {
+    if (!cmd.shellSession?.id || !cmd.shellSession.secret) {
+      log('a terminal session arrived with nothing to dial into; ignoring it');
+      return;
+    }
+    // Not awaited: the session lives for as long as somebody is typing, and the poll loop has a
+    // screen to keep drawing. Everything it owns is torn down by its own handlers.
+    runShellSession(cfg, cmd.shellSession);
+    return;
+  }
+
   if (cmd.action === 'shell') {
     if (!cmd.shell) {
       log('a console command arrived with nothing in it; ignoring it');
@@ -428,6 +443,128 @@ async function runCommand(
   }
 }
 
+/**
+ * A terminal session: dial out to the server and give it a real shell.
+ *
+ * The direction is the whole point. Nothing connects TO this device — it is behind a masjid's NAT
+ * on an address DHCP moves, and it holds a capability rather than listening on a port. So the panel
+ * mints a session, we are told about it on an ordinary state poll, and WE open the socket. The
+ * invariant survives and a keystroke still arrives in milliseconds.
+ *
+ * ## The pty, without a native module
+ *
+ * `script` (util-linux, already on the image) allocates a pty and runs a command inside it. That is
+ * what makes this a real terminal — a prompt, job control, an editor — rather than a pipe with a
+ * shell on the end. Two details it cost to find:
+ *
+ *  - **`SHELL` has to be forced.** `script -c` runs its command through `$SHELL`, and this account's
+ *    shell is `/usr/sbin/nologin` (it is a service account, deliberately). Without this the session
+ *    opens and immediately prints "This account is currently not available".
+ *  - **The size is set once, at spawn.** `stty rows/cols` inside the pty is the only handle we have
+ *    on it; resizing the browser window mid-session cannot reflow it, because that needs TIOCSWINSZ
+ *    on the pty fd and we do not have one without a native module. Sized from the browser's terminal
+ *    when the session is minted, which is right for every case except resizing mid-session.
+ *
+ * ## What it is allowed to be
+ *
+ * The same account and the same unit sandbox as the one-shot console: NoNewPrivileges, no write
+ * access to /opt, no capability to reboot the board, no sudo. The root control spool is not involved
+ * and must never be — its closed verb set is what makes root's half of this device simple enough to
+ * reason about, and "run this string" would end that for every verb at once.
+ *
+ * Nothing here logs a byte of the session. Not the keystrokes, not the output, not a sample: a
+ * terminal transcript is the likeliest thing in this whole app to contain a password.
+ */
+function runShellSession(cfg: AgentConfig, s: { id: string; secret: string; rows: number; cols: number }): void {
+  const url = `${cfg.server.replace(/^http/, 'ws')}/pi/${cfg.token}/shell/${encodeURIComponent(s.id)}`;
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url, { headers: { 'x-openmasjid-shell-secret': s.secret } });
+  } catch (e) {
+    log('could not open a terminal session:', (e as Error).message);
+    return;
+  }
+
+  let child: ReturnType<typeof spawn> | null = null;
+  let closed = false;
+  const done = (why: string): void => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(cap);
+    try {
+      child?.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+    try {
+      ws.close();
+    } catch {
+      /* already gone */
+    }
+    log(`terminal session ended (${why})`);
+  };
+
+  // Our own backstop for the server's limits. If the socket is wedged rather than closed, this is
+  // what stops a bash sitting on the device for the rest of the week.
+  const cap = setTimeout(() => done('reached the local time limit'), SHELL_SESSION_MAX_MS);
+
+  ws.on('open', () => {
+    const rows = Math.max(8, Math.min(200, Math.round(s.rows) || 24));
+    const cols = Math.max(20, Math.min(400, Math.round(s.cols) || 80));
+    try {
+      child = spawn('script', ['-qfc', `stty rows ${rows} cols ${cols}; exec /bin/bash -i`, '/dev/null'], {
+        cwd: shellCwd(),
+        env: {
+          PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+          HOME: '/var/lib/openmasjid-screen',
+          // Forced: see the note above about nologin.
+          SHELL: '/bin/bash',
+          TERM: 'xterm-256color',
+          LANG: 'C.UTF-8',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (e) {
+      try {
+        ws.send(`\r\ncould not start a shell: ${(e as Error).message}\r\n`);
+      } catch {
+        /* the socket went too */
+      }
+      done('the shell would not start');
+      return;
+    }
+    log('terminal session open');
+    child.stdout?.on('data', (b: Buffer) => {
+      try {
+        if (ws.readyState === 1) ws.send(b);
+      } catch {
+        /* closing */
+      }
+    });
+    child.stderr?.on('data', (b: Buffer) => {
+      try {
+        if (ws.readyState === 1) ws.send(b);
+      } catch {
+        /* closing */
+      }
+    });
+    child.on('close', () => done('the shell exited'));
+    child.on('error', () => done('the shell failed'));
+  });
+
+  ws.on('message', (data: unknown) => {
+    // Whatever the panel typed, straight into the pty. Not inspected and not logged.
+    try {
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
+      child?.stdin?.write(buf);
+    } catch {
+      /* the shell has gone */
+    }
+  });
+  ws.on('close', () => done('the panel closed it'));
+  ws.on('error', (e: Error) => done(`socket error: ${e.message}`));
+}
+
 /** The state directory when we can use it, otherwise the root.
  *
  *  spawn() throws synchronously on a cwd it cannot use, which would turn every console command into
@@ -441,6 +578,10 @@ function shellCwd(): string {
     return '/';
   }
 }
+
+/** Our own ceiling on a terminal session, behind the server's. If the socket is wedged rather
+ *  than closed, this is what stops a bash sitting on the device for the rest of the week. */
+const SHELL_SESSION_MAX_MS = 65 * 60_000;
 
 /** How long a console command may run before it is killed, and how much of its output is kept.
  *  Both are bounded because nobody is watching this device: a command that waits for input would

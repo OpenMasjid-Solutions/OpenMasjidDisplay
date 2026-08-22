@@ -19,6 +19,7 @@ import { api } from '../api';
 import type { PiDeviceInfo } from '../types';
 import { Modal, Spinner, IconDownload, IconPower, IconCheck, IconSparkle, IconCopy, IconTerminal, copyText, useToast } from '../ui';
 import { WifiSection } from './WifiPanel';
+import { PiTerminal } from './PiTerminal';
 
 /**
  * What to say about the log's age.
@@ -134,6 +135,14 @@ export function PiSettings({
 
   // ── the console ──
   const [consoleOpen, setConsoleOpen] = useState(false);
+  /**
+   * Which kind of session the window shows.
+   *
+   * 'terminal' is the real thing and what the button opens. 'single' is the one-shot console, kept
+   * because it is the only one that works on a screen whose agent is too old to offer a terminal —
+   * and an unclaimed session is exactly the symptom of that, so the terminal offers the swap itself.
+   */
+  const [sessionKind, setSessionKind] = useState<'terminal' | 'single'>('terminal');
   const [cmd, setCmd] = useState('');
   /** The scrollback, kept HERE rather than on the server. The device answers one command at a time
    *  and the store keeps one answer; the conversation only exists in the window having it. */
@@ -379,23 +388,24 @@ export function PiSettings({
       </section>
 
       <section className="pi-sec">
-        <h3 className="pi-sec__title">Console</h3>
+        <h3 className="pi-sec__title">Terminal</h3>
         <div className="pi-row">
-          <button className="btn btn--ghost btn--sm" onClick={() => setConsoleOpen(true)}>
-            <IconTerminal size={14} /> Open console
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => {
+              setSessionKind('terminal');
+              setConsoleOpen(true);
+            }}
+          >
+            <IconTerminal size={14} /> Open terminal
           </button>
-          {term.length > 0 && !consoleOpen && (
-            <span className="hint muted">{term.filter((l) => l.startsWith('$ ')).length} command(s) this session</span>
-          )}
         </div>
         <p className="hint muted pi-note">
-          Runs one line on the screen and shows what it said — for when a screen is behaving oddly and
-          the buttons above do not cover it. It opens in its own window you can drag aside and keep
-          open while you work here. Commands run as the screen&rsquo;s own account, not as an
-          administrator, so this can look at almost anything and change almost nothing: there is no
-          <code>sudo</code>, each command is given 20 seconds, and only the first 10,000 characters of
-          its output come back. A password typed there travels to the screen and is shown back in the
-          window; it is never written to the screen&rsquo;s log.
+          A real shell on the screen, in its own window you can drag aside and keep open while you
+          work here. Nothing connects to the screen: it is offered a session on its next check-in and
+          dials back out, so this works through a masjid&rsquo;s router with nothing forwarded. It runs
+          as the screen&rsquo;s own account, not as an administrator — no <code>sudo</code> — and closes
+          itself after ten idle minutes. Nothing typed there is written to any log.
         </p>
       </section>
 
@@ -458,54 +468,57 @@ export function PiSettings({
           floating
           term
           wide
-          title={`${screenName} — console`}
+          title={`${screenName} — ${sessionKind === 'terminal' ? 'terminal' : 'single command'}`}
           onClose={() => setConsoleOpen(false)}
         >
-          <pre className="pi-log pi-log--term" ref={termRef}>
-            {term.length
-              ? term.join('\n')
-              : 'Runs one line on the screen and shows what it said.\n\nTry:  free -m\n      vcgencmd measure_temp\n      nmcli device status\n      ffmpeg -hide_banner -decoders | grep v4l2'}
-          </pre>
-          <div className="pi-row pi-console">
-            <span className="pi-console__prompt" aria-hidden="true">
-              $
-            </span>
-            <input
-              className="input pi-console__input"
-              value={cmd}
-              onChange={(e) => setCmd(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  void runCmd();
-                } else onConsoleKey(e);
-              }}
-              placeholder={running ? 'waiting for the screen…' : 'a command to run on this screen'}
-              aria-label="Command to run on this screen"
-              spellCheck={false}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              disabled={running}
-              // The window is opened to type in. Modal's own focus handling steps aside when
-              // something inside has already claimed focus — see the note there.
-              autoFocus
-            />
-            <button className="btn btn--sm btn--primary" disabled={running || !cmd.trim()} onClick={() => void runCmd()}>
-              {running ? <Spinner /> : 'Run'}
-            </button>
-            {term.length > 0 && (
-              <button className="btn btn--ghost btn--sm" onClick={() => setTerm([])} title="Clear the scrollback">
-                Clear
-              </button>
-            )}
-          </div>
-          {/* One line. A terminal window is mostly terminal, and the full explanation is already in
-              the Console section of the settings window this opened from. */}
-          <p className="hint muted pi-note">
-            Runs as the screen&rsquo;s own account — no <code>sudo</code>. 20 seconds and 10,000
-            characters per command.
-          </p>
+          {sessionKind === 'terminal' ? (
+            <PiTerminal deviceId={device.id} onFallback={() => setSessionKind('single')} />
+          ) : (
+            <>
+              <pre className="pi-log pi-log--term" ref={termRef}>
+                {term.length
+                  ? term.join('\n')
+                  : 'Runs one line on the screen and shows what it said.\n\nTry:  free -m\n      vcgencmd measure_temp\n      nmcli device status'}
+              </pre>
+              <div className="pi-row pi-console">
+                <span className="pi-console__prompt" aria-hidden="true">
+                  $
+                </span>
+                <input
+                  className="input pi-console__input"
+                  value={cmd}
+                  onChange={(e) => setCmd(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void runCmd();
+                    } else onConsoleKey(e);
+                  }}
+                  placeholder={running ? 'waiting for the screen…' : 'a command to run on this screen'}
+                  aria-label="Command to run on this screen"
+                  spellCheck={false}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  disabled={running}
+                  autoFocus
+                />
+                <button className="btn btn--sm btn--primary" disabled={running || !cmd.trim()} onClick={() => void runCmd()}>
+                  {running ? <Spinner /> : 'Run'}
+                </button>
+                {term.length > 0 && (
+                  <button className="btn btn--ghost btn--sm" onClick={() => setTerm([])} title="Clear the scrollback">
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p className="hint muted pi-note">
+                One command at a time, queued for the screen&rsquo;s next check-in — what a screen too
+                old for a terminal can still do. Runs as the screen&rsquo;s own account, no{' '}
+                <code>sudo</code>, 20 seconds and 10,000 characters per command.
+              </p>
+            </>
+          )}
         </Modal>
       )}
     </Modal>

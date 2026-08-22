@@ -254,6 +254,25 @@ export function Help({ text }: { text: string }) {
         onMouseLeave={hide}
         onFocus={show}
         onBlur={hide}
+        /**
+         * A click on the badge must do nothing but show the badge's own tooltip.
+         *
+         * `Field` wraps its label AND its control in one <label>, which is what makes clicking the
+         * word "Background" focus the input beside it — normal, wanted HTML behaviour. The "?" lives
+         * inside that same label, so clicking it was forwarded to the control too: clicking the hint
+         * beside "Gold accent" opened the operating system's colour picker. The tooltip said one
+         * thing and the click did another.
+         *
+         * preventDefault is what stops the label activating its control (the badge is not a button,
+         * so there is no default of its own to lose); stopPropagation keeps it out of any wrapper
+         * that treats a click as "pick me". The tooltip still appears, because clicking focuses the
+         * badge and onFocus shows it — which is also what makes this work on a touch screen, where
+         * there is no hover at all.
+         */
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
       >
         ?
       </span>
