@@ -2684,6 +2684,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     // from the centre outward, but keeps every slide filling the wall at full size — the
     // trade-off a signage screen actually wants over a small, fully-intact image nobody at the
     // back of the room can read.
+    //
+    // This also covers incorrect-parking alert cards from the volunteer page — they render
+    // as full-bleed 1920×1080 frames (see reportCard.ts) precisely so they fill the wall the
+    // same way, with no separate sidebar composite or glass panel needed.
     out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`);
   } else {
     out.push(isSimple ? layoutSimple(area, m, ctx) : layoutReference(area, m, ctx));

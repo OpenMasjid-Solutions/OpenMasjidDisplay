@@ -582,8 +582,9 @@ export interface ParkingReport {
   location: string;
   /** why it's being reported */
   reason: string;
-  /** uploaded photo filename under /data/uploads, or '' for none */
-  image: string;
+  /** uploaded photo filenames under /data/uploads (0..several); the card renders one
+   *  frame per photo so the slideshow scrolls through them */
+  images: string[];
   /** timetable ids to show this on; ['*'] = all timetables */
   targets: string[];
   createdAt: string;

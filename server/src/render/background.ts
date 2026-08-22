@@ -209,22 +209,29 @@ export function removeAnnouncement(file: string): void {
 const REPORT_MIME: Record<string, string> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
 const MAX_REPORT_IMAGE = 5 * 1024 * 1024;
 
-/** Save a report's photo from a data URL; returns the stored filename, or '' if none/invalid. */
-export function saveReportImage(reportId: string, dataUrl: string): string {
+const MAX_REPORT_IMAGES = 4;
+
+/** Save a report's photos from data URLs; returns the stored filenames (skips any
+ *  invalid/oversized ones), capped at MAX_REPORT_IMAGES. Named `<id>.report.<n>.<ext>`. */
+export function saveReportImages(reportId: string, dataUrls: unknown): string[] {
   const safeId = safeName(reportId);
-  if (!safeId) return '';
-  const m = /^data:([^;]+);base64,(.+)$/s.exec(String(dataUrl || ''));
-  if (!m) return '';
-  const ext = REPORT_MIME[m[1]];
-  if (!ext) return '';
-  const buf = Buffer.from(m[2], 'base64');
-  if (buf.length === 0 || buf.length > MAX_REPORT_IMAGE) return '';
+  if (!safeId || !Array.isArray(dataUrls)) return [];
   fs.mkdirSync(uploadsDir(), { recursive: true });
   removeReportImage(reportId);
-  const name = `${safeId}.report.${crypto.randomBytes(4).toString('hex')}${ext}`;
-  fs.writeFileSync(path.join(uploadsDir(), name), buf);
-  cache.delete(name);
-  return name;
+  const names: string[] = [];
+  for (const dataUrl of dataUrls.slice(0, MAX_REPORT_IMAGES)) {
+    const m = /^data:([^;]+);base64,(.+)$/s.exec(String(dataUrl || ''));
+    if (!m) continue;
+    const ext = REPORT_MIME[m[1]];
+    if (!ext) continue;
+    const buf = Buffer.from(m[2], 'base64');
+    if (buf.length === 0 || buf.length > MAX_REPORT_IMAGE) continue;
+    const name = `${safeId}.report.${names.length}.${crypto.randomBytes(4).toString('hex')}${ext}`;
+    fs.writeFileSync(path.join(uploadsDir(), name), buf);
+    cache.delete(name);
+    names.push(name);
+  }
+  return names;
 }
 
 /** A data: URI for a report photo, for embedding in the rendered card SVG. */
