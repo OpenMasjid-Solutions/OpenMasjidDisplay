@@ -959,47 +959,137 @@ for req in "$SPOOL"/*; do
       fi
       ;;
     logs)
-      # Collect the journal for OUR units, for somebody reading it in the dashboard.
+      # Collect a SCREEN REPORT, not a log dump.
       #
-      # The agent already keeps its own last eighty lines in memory, and that is not the same thing:
-      # it holds what the agent chose to say, and misses everything the agent is not the author of —
-      # the root dispatcher's decisions, the installer's nine steps, and the ffmpeg exit that the
-      # agent only summarises. That is exactly the material somebody debugging a screen needs.
+      # This used to be 800 lines of `journalctl -u` for our three units and nothing else, which is
+      # the agent narrating itself: "showing X", "frosted the background", the cadence advice. All
+      # true, none of it the thing you want first. Somebody opening this is asking "why is that
+      # screen wrong", and the answers to that are mostly FACTS, not lines — a wrong timezone, a
+      # brown-out, a full card, a service that has restarted forty times, a camera that will not
+      # open. So the facts come first, then the errors, then the narration.
       #
-      # It has to come through root because the agent is not in systemd-journal, and putting it there
-      # would hand it every OTHER unit's output on the machine as well. Collecting our three units
-      # here keeps the privilege where it already is.
+      # The one that earns its place most is `get_throttled`. It is a bitmask nobody remembers, and
+      # under-voltage is the single commonest cause of a Raspberry Pi behaving oddly — a screen that
+      # freezes for a few seconds a day, or drops its camera, usually has a phone charger on the end
+      # of it rather than a bug. Decoded into words here, because a raw 0x50005 in a log is a fact
+      # nobody acts on.
       #
-      # Bounded twice on purpose: -n caps the LINES, and tail -c caps the BYTES, because one
-      # pathological line (a filter graph, a stack trace) can be enormous on its own and a line cap
-      # alone would not save us.
-      # THREE -u flags, and not `-t` for the installer. Measured on a real Pi:
-      #
-      #   -u agent -u control              -> 39 lines
-      #   -t omd-reinstall                 -> 50 lines
-      #   -u agent -u control -t omd-...   ->  0 lines   <-- what this first shipped as
-      #   -u agent -u control -u omd-...   -> 50 lines
-      #
-      # journalctl ORs repeated matches on the SAME field and ANDs across different fields, so mixing
-      # `-u` with `-t` asks for entries that are both in those units and carry that identifier —
-      # nothing is. It produced a file containing the words "-- No entries --" and nothing else, which
-      # is the worst kind of wrong: a log collection that succeeds and returns emptiness.
-      #
-      # The installer's output is reachable by unit anyway: it runs under the transient
-      # omd-reinstall.service, so `-u omd-reinstall` catches what `logger -t omd-reinstall` wrote.
-      journalctl --no-pager --output=short-iso -n 800 \
+      # Everything is bounded: each section has its own line or byte cap, so one enormous ffmpeg
+      # filter-graph line cannot push the facts out of the file. POSIX sh throughout, like the rest
+      # of this script.
+      : > "$PREFIX/.journal.stage"
+      _sec() { printf '\n== %s ==\n' "$1" >> "$PREFIX/.journal.stage"; }
+      _kv() { printf '%-22s %s\n' "$1" "$2" >> "$PREFIX/.journal.stage"; }
+
+      printf 'SCREEN REPORT  %s\n' "$(date -Is 2>/dev/null || date)" >> "$PREFIX/.journal.stage"
+
+      _sec 'This device'
+      _kv 'model' "$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)"
+      _kv 'serial' "$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null | tail -1)"
+      # READ the field, never source the file: this runs as root, and sourcing executes whatever
+      # is in it. It is also why the static check in piInstaller.test.ts flagged $PRETTY_NAME as a
+      # variable nothing sets — it was right to.
+      _kv 'os' "$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '\"')"
+      _kv 'kernel' "$(uname -r 2>/dev/null)"
+      # The build inlines this with esbuild's --define, so the __AGENT_VERSION__ token is not in
+      # the bundle to match on — grep the version literal it was replaced BY.
+      _kv 'agent' "$(grep -oE '[0-9]+[.][0-9]+[.][0-9]+(-dev[.][0-9]+)?' /opt/openmasjid-screen/agent.js 2>/dev/null | head -1)"
+      _kv 'hostname' "$(hostname 2>/dev/null)"
+      _kv 'uptime' "$(uptime -p 2>/dev/null || cut -d. -f1 /proc/uptime)"
+      # A wrong clock makes EVERY prayer time on the screen wrong, so the timezone is a headline fact.
+      _kv 'local time' "$(date 2>/dev/null)"
+      _kv 'timezone' "$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)"
+      _kv 'clock synced' "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+
+      _sec 'Health'
+      _kv 'temperature' "$(vcgencmd measure_temp 2>/dev/null | sed 's/temp=//' || echo n/a)"
+      # The bitmask, in words. Bits 0-3 are happening NOW, bits 16-19 have happened since boot.
+      _thr=$(vcgencmd get_throttled 2>/dev/null | sed 's/throttled=//')
+      if [ -n "$_thr" ]; then
+        _t=$(( $_thr ))
+        _kv 'throttling' "$_thr"
+        [ $(( _t & 1 )) -ne 0 ] && printf '  !! UNDER-VOLTAGE RIGHT NOW - the power supply is not keeping up\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 2 )) -ne 0 ] && printf '  !! ARM frequency capped right now\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 4 )) -ne 0 ] && printf '  !! THROTTLED RIGHT NOW\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 8 )) -ne 0 ] && printf '  !! at the soft temperature limit right now\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 65536 )) -ne 0 ] && printf '  !  under-voltage HAS happened since boot - suspect the power supply or cable\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 131072 )) -ne 0 ] && printf '  !  ARM frequency has been capped since boot\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 262144 )) -ne 0 ] && printf '  !  throttling has happened since boot - check airflow\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 524288 )) -ne 0 ] && printf '  !  the soft temperature limit has been hit since boot\n' >> "$PREFIX/.journal.stage"
+        [ "$_t" -eq 0 ] && printf '  ok - no under-voltage or throttling since boot\n' >> "$PREFIX/.journal.stage"
+      fi
+      _kv 'load' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
+      free -m 2>/dev/null | sed -n '1,2p' >> "$PREFIX/.journal.stage"
+      df -h / 2>/dev/null | sed -n '1,2p' >> "$PREFIX/.journal.stage"
+      _kv 'framebuffer' "$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null) @ $(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null)bpp"
+
+      _sec 'Services'
+      for _u in openmasjid-screen openmasjid-screen-control.path; do
+        _kv "$_u" "$(systemctl is-active "$_u" 2>/dev/null) / $(systemctl is-enabled "$_u" 2>/dev/null)"
+      done
+      # A restart count is the difference between "it is running" and "it is crash-looping".
+      _kv 'agent restarts' "$(systemctl show -p NRestarts --value openmasjid-screen 2>/dev/null)"
+      _kv 'agent since' "$(systemctl show -p ActiveEnterTimestamp --value openmasjid-screen 2>/dev/null)"
+      _kv 'agent cpu total' "$(systemctl show -p CPUUsageNSec --value openmasjid-screen 2>/dev/null | awk '{ if ($1 != "") printf "%.0f s", $1/1000000000 }')"
+      _failed=$(systemctl list-units --state=failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+      _kv 'failed units' "${_failed:-none}"
+
+      _sec 'Network'
+      _kv 'addresses' "$(hostname -I 2>/dev/null)"
+      _kv 'default route' "$(ip route show default 2>/dev/null | head -1)"
+      _kv 'dns' "$(awk '/^nameserver/{printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)"
+      nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null | sed 's/^/  /' >> "$PREFIX/.journal.stage"
+      _kv 'wifi signal' "$(nmcli -t -f IN-USE,SSID,SIGNAL device wifi list 2>/dev/null | sed -n 's/^\*://p' | head -1)"
+      # Can it actually reach the display server? The question every other fact is a proxy for.
+      if [ -n "$SERVER" ]; then
+        if curl -fsS --max-time 8 $CURL_OPTS "$SERVER/pi.sh" -o /dev/null 2>/dev/null; then
+          _kv 'display server' "reachable ($SERVER)"
+        else
+          _kv 'display server' "NOT REACHABLE ($SERVER)"
+        fi
+      fi
+
+      # Errors from EVERY unit, not just ours: the thing that broke the screen is often something
+      # else on the box (the network manager, the card, the kernel).
+      # ERRORS ONLY (-p 3), and the most recent of them. With warnings included (-p 4) this filled
+      # with boot-time udev and pci-regulator noise — "supply vpcie3v3 not found", alsa rules with
+      # no matching label — which is the very "technically a log, no use to anybody" problem this
+      # rewrite exists to end. The warning COUNT is kept, so nothing is dropped in silence.
+      _sec 'Errors this boot (all units)'
+      journalctl -b -p 3 --no-pager --output=short-iso -n 120 2>/dev/null \
+        | grep -v 'MediaMTX API unreachable' >> "$PREFIX/.journal.stage" 2>/dev/null || true
+      _kv 'warnings (not listed)' "$(journalctl -b -p 4..4 --no-pager -q 2>/dev/null | wc -l)"
+
+      # Kernel lines that matter on this board specifically. `-k` cannot be combined with `-u`
+      # (journalctl ANDs across different fields), which is why this is its own pass.
+      _sec 'Kernel messages worth seeing'
+      journalctl -k -b --no-pager --output=short-iso 2>/dev/null \
+        | grep -iE 'voltage|throttl|hdmi|cec|oom|i/o error|mmc0: |ext4-fs error|usb .*disconnect' \
+        | tail -60 >> "$PREFIX/.journal.stage" 2>/dev/null || true
+
+      _sec "The screen's own log"
+      # Last, and given the rest of the budget: it is the narration, and the facts above are what
+      # somebody needs first. THREE -u flags and not `-t` for the installer — journalctl ORs
+      # repeated matches on the same field and ANDs across different fields, so `-u X -t Y` asks for
+      # entries that are both, and nothing is. Measured on a real Pi: that combination returned a
+      # file containing the words "-- No entries --" and nothing else, which is the worst kind of
+      # wrong. The installer is reachable by unit anyway (it runs as omd-reinstall.service).
+      journalctl --no-pager --output=short-iso -n 600 \
         -u openmasjid-screen -u openmasjid-screen-control -u omd-reinstall 2>/dev/null \
-        | sed -E 's#([a-z][a-z0-9+.-]*://)[^@[:space:]/]+@#\1***@#g' \
-        | tail -c 180000 > "$PREFIX/.journal.stage" 2>/dev/null || true
-      # The credential scrub above is belt-and-braces: the agent already redacts camera URLs before
-      # it logs them (redactCreds), and no code path logs a Wi-Fi passphrase or the device token. But
-      # this file is about to leave the device, so anything shaped like user:pass@ dies here rather
-      # than being trusted not to exist.
+        | tail -c 120000 >> "$PREFIX/.journal.stage" 2>/dev/null || true
+
+      # One scrub over the WHOLE report, last. Belt-and-braces: the agent already redacts camera
+      # URLs before it logs them (redactCreds) and no code path logs a Wi-Fi passphrase or the
+      # device token — but this file is about to leave the device, so anything shaped like
+      # user:pass@ dies here rather than being trusted not to exist.
+      sed -E -i 's#([a-z][a-z0-9+.-]*://)[^@[:space:]/]+@#\1***@#g' "$PREFIX/.journal.stage" 2>/dev/null || true
+      # And a final byte cap, because every section above is bounded but the sum is not.
+      tail -c 180000 "$PREFIX/.journal.stage" > "$PREFIX/.journal.stage.cut" 2>/dev/null && mv -f "$PREFIX/.journal.stage.cut" "$PREFIX/.journal.stage"
       # Counted while it is still ours, then handed over. Reading a size back out of $STATEDIR
       # afterwards would be reading a path the agent can have swapped.
       _n=$(wc -c < "$PREFIX/.journal.stage" 2>/dev/null || echo 0)
       handover "$PREFIX/.journal.stage" "$STATEDIR/journal.txt"
-      echo "control: collected $_n bytes of log for the dashboard"
+      echo "control: collected $_n bytes of screen report for the dashboard"
       ;;
     wifi-rescan)
       # Reading the list NetworkManager already has needs no privilege and the agent does it for

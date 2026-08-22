@@ -1,7 +1,7 @@
 {
   "name": "openmasjid-display-server",
   "private": true,
-  "version": "0.70.0-dev.74",
+  "version": "0.70.0-dev.75",
   "description": "Control plane + timetable renderer + embedded RTSP server for OpenMasjid Display",
   "license": "AGPL-3.0-only",
   "scripts": {

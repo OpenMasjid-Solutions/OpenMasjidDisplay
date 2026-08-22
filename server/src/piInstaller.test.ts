@@ -574,7 +574,17 @@ test('control.sh can actually reach the server it is told to reinstall from', ()
 
   const shellProvided = new Set(['PATH', 'HOME', 'IFS', 'PWD', '1', '2', '@', '*', '?', '#', '$', '!', '0']);
   const used = new Set<string>();
-  for (const m of ctl.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)) used.add(m[1]);
+  // COMMENTS STRIPPED FIRST. This reads CODE, and a comment that mentions a variable in order to
+  // explain it is not code. It has flagged a comment four separate times in this project — notes
+  // about req.destroy(), about gpu_mem, about the TLS environment variable, and one explaining why
+  // the os-release field must not be sourced — and every time the fix was to reword prose to
+  // appease a regex, which is backwards: the next person writing an honest comment hits it again.
+  const COMMENT = new RegExp("(^|[ \\t])#.*$");
+  const code = ctl
+    .split(String.fromCharCode(10))
+    .map((l) => l.replace(COMMENT, "$1"))
+    .join(String.fromCharCode(10));
+  for (const m of code.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)) used.add(m[1]);
 
   const undefinedVars = [...used].filter((v) => !assigned.has(v) && !shellProvided.has(v));
   assert.deepEqual(
@@ -838,6 +848,49 @@ test('the device identity is flushed to disk, not just renamed into place', () =
   const renameAt = cfg.indexOf('renameSync');
   assert.ok(fsyncAt > 0 && renameAt > 0, 'both a flush and a rename must be present');
   assert.ok(fsyncAt < renameAt, 'the flush must come BEFORE the rename, or it protects nothing');
+});
+
+test('the screen report leads with facts, not with the agent narrating itself', () => {
+  // This was 800 lines of `journalctl -u` for our own units and nothing else — the agent telling you
+  // it was showing a timetable. Somebody opening it is asking "why is that screen wrong", and most
+  // answers to that are FACTS: a wrong timezone, a brown-out, a full card, a service that has
+  // restarted forty times, a display server it cannot reach. So the facts come first now.
+  const ctl = installerTemplate() as string;
+  for (const section of ['This device', 'Health', 'Services', 'Network', 'Errors this boot', 'Kernel messages worth seeing']) {
+    assert.ok(ctl.includes(section), `the report must have a ${section} section`);
+  }
+  // The facts that answer the questions people actually ask.
+  assert.match(ctl, /timedatectl show -p Timezone/, 'a wrong timezone makes every prayer time wrong');
+  assert.match(ctl, /NTPSynchronized/, 'and an unsynced clock is the same fault one step back');
+  assert.match(ctl, /NRestarts/, 'a restart count separates "running" from "crash-looping"');
+  assert.match(ctl, /df -h/, 'a full card breaks a screen in ways nothing else explains');
+  assert.match(ctl, /list-units --state=failed/, 'and a failed unit elsewhere often IS the fault');
+  // The report is read by somebody deciding whether to drive to the masjid, so the question every
+  // other fact is a proxy for is asked outright.
+  assert.match(ctl, /display server/, 'it must say whether the screen can reach us');
+});
+
+test('get_throttled is decoded into words, because nobody acts on a bitmask', () => {
+  // Under-voltage is the commonest cause of a Pi behaving oddly — a screen that freezes for a few
+  // seconds a day, or drops its camera, usually has a phone charger on the end of it rather than a
+  // bug. A raw 0x50005 in a log is a fact nobody acts on; "under-voltage HAS happened since boot" is
+  // one somebody can act on without knowing the bit layout.
+  const ctl = installerTemplate() as string;
+  assert.match(ctl, /get_throttled/, 'it has to be read');
+  assert.match(ctl, /UNDER-VOLTAGE RIGHT NOW/i, 'the live bits are named');
+  assert.match(ctl, /under-voltage HAS happened since boot/i, 'and the sticky ones separately');
+  // Bit 16 is the sticky under-voltage flag — the one that explains yesterday's fault.
+  assert.ok(ctl.includes(String(1 << 16)), 'the sticky bits must actually be tested for');
+  assert.ok(ctl.includes(String(1 << 18)), 'including the throttling one');
+});
+
+test('the report is bounded section by section, not only at the end', () => {
+  // One enormous ffmpeg filter-graph line must not be able to push the facts out of the file, so
+  // every section that can grow carries its own cap as well as the final byte cap.
+  const ctl = installerTemplate() as string;
+  const caps = ctl.match(/-n \d+|tail -c \d+|tail -\d+/g) ?? [];
+  assert.ok(caps.length >= 4, `expected several per-section caps, found ${JSON.stringify(caps)}`);
+  assert.match(ctl, /tail -c 180000/, 'and one final byte cap over the whole report');
 });
 
 test('the log collection asks journalctl for all three units, not a mix of filter types', () => {

@@ -12,6 +12,18 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Changed
+- **A screen’s log is now a screen report, and it answers the question you opened it with.** It used
+  to be 800 lines of the screen narrating itself. It now starts with the facts: the model, the OS,
+  how long it has been up, **its clock and timezone** (a wrong timezone makes every prayer time on
+  that screen wrong), its temperature, its disk and memory, how many times the software has
+  restarted, what its network looks like, and whether it can actually reach this display server.
+  Then errors, then kernel messages worth seeing, then the screen’s own log.
+- **It also tells you plainly if the power supply is not keeping up.** Raspberry Pis report
+  under-voltage and overheating as a code nobody remembers; the report now says it in words —
+  “under-voltage HAS happened since boot — suspect the power supply or cable”. That is the
+  commonest reason a screen freezes for a few seconds a day or keeps dropping its camera.
+
 ### Added
 - **A real terminal on a Raspberry Pi screen**, behind the gear on its card. Not a one-command box:
   a proper shell with a prompt, tab completion and an editor if you want one. Nothing connects to
