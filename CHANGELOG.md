@@ -13,6 +13,15 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **The editor preview no longer flips between the two designs.** It shows the design you have
+  actually chosen. The flipping was left over from a burn-in rotation the screens have not done
+  since the layouts were merged years ago — it went unnoticed while the values it swapped between
+  all looked identical, and became obvious the moment Modern and Simple were two real designs.
+- **Jumu’ah in the Simple layout reads properly.** The row said “JUMU’AH 1/2”, which looks like a
+  fraction. It now labels each time the way the Modern layout does: “1st 1:30 PM” and
+  “2nd 2:30 PM”. A masjid with one Jumu’ah gets no label at all.
+
+### Fixed
 - **The calculation-method line no longer sits on top of your announcement pictures.** While a
   slideshow image was showing, the small grey footnote at the bottom of the screen (“Custom 18° /
   15° · Asr: Hanafi”, or your own footer line) was still drawn across it — over the poster’s own

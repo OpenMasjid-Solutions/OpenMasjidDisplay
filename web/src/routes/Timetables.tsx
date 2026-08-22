@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
-import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, IqamahScheduleEntry, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
+import type { AppState, Timetable, IqamahRule, IqamahConfig, IqamahYear, IqamahScheduleEntry, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, IconDownload, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 import { readImageForUpload } from '../image';
@@ -166,20 +166,18 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const [previewDate, setPreviewDate] = useState('');
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((p) => ({ ...p, [k]: v }));
 
-  // The screens rotate the layout every 5 min when "Rotate layouts" is on; in the
-  // editor we can't wait 5 min, so cycle the preview through the three layouts
-  // quickly so you can see what it'll do. (The live display still uses the 15-min clock.)
-  const CAROUSEL_LAYOUTS: TimetableLayout[] = ['modern', 'simple'];
-  const [demoIdx, setDemoIdx] = useState(0);
-  useEffect(() => {
-    if (!f.layoutCarousel) return;
-    const t = setInterval(() => setDemoIdx((i) => (i + 1) % CAROUSEL_LAYOUTS.length), 4000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [f.layoutCarousel]);
-  const previewBody = f.layoutCarousel
-    ? { ...formBody(f), layout: CAROUSEL_LAYOUTS[demoIdx], layoutCarousel: false }
-    : formBody(f);
+  // The preview shows the design that is SET, and nothing else.
+  //
+  // It used to swap every four seconds whenever `layoutCarousel` was on, to demonstrate a
+  // five-minute burn-in rotation on the screens. That rotation was removed with the three
+  // arrangement presets in v0.37.0 and nothing has read the flag since — so the swap was
+  // advertising behaviour the screen does not have. It went unnoticed for as long as it did
+  // because the three values it cycled all drew identical pixels; the moment two real designs
+  // existed it became a preview flipping between them while the wall showed one.
+  //
+  // There is no switch for the flag in the editor either, so a timetable can only still carry it
+  // from before. Left in the data and ignored here, which is what the renderer does.
+  const previewBody = formBody(f);
 
   const themePrimary = state.themes.find((t) => t.id === f.themeId)?.palette.primary ?? '#22D3EE';
   const themeGold = state.themes.find((t) => t.id === f.themeId)?.palette.gold ?? '#D4AF37';

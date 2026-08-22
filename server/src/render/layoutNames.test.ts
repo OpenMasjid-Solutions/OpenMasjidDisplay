@@ -115,3 +115,25 @@ test("Jumu'ah is marked out from the day's five prayers", () => {
   // gold BAND cannot work — gold over dark navy comes out olive at every alpha.
   assert.ok(svg.includes('#F59E0B') || svg.includes('#f59e0b'), "the Jumu'ah time carries the gold");
 });
+
+// ── how Jumu'ah reads in the Simple table ───────────────────────────────────
+
+test("Jumu'ah labels its times rather than calling itself \"1/2\"", () => {
+  // The row carried a "1/2" suffix to explain that its two times were the first and second
+  // jamā'ah rather than an Adhan and an Iqāmah. It reads as a fraction. The other layout had
+  // already solved this by labelling each TIME with its ordinal, which is what this does now.
+  const svg = renderDisplaySvg(tt({ layout: 'simple', jumuah: ['13:30', '14:30'] }), NOW);
+  assert.ok(svg.includes('JUMU'), "the row is there");
+  assert.ok(!svg.includes('1/2'), 'the fraction is gone');
+  const after = svg.slice(svg.indexOf('JUMU'));
+  const texts = [...after.matchAll(/>([^<>]{1,20})</g)].map((m) => m[1]);
+  assert.deepEqual(texts.slice(0, 4), ['1st', '1:30 PM', '2nd', '2:30 PM'], 'each time carries its ordinal');
+});
+
+test("one Jumu'ah gets no ordinal at all", () => {
+  const svg = renderDisplaySvg(tt({ layout: 'simple', jumuah: ['13:30'] }), NOW);
+  const after = svg.slice(svg.indexOf('JUMU'));
+  const texts = [...after.matchAll(/>([^<>]{1,20})</g)].map((m) => m[1]);
+  assert.deepEqual(texts.slice(0, 1), ['1:30 PM'], 'a lone time needs no "1st"');
+  assert.ok(!after.includes('1st'));
+});

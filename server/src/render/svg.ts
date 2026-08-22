@@ -1910,10 +1910,14 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     // one row the countdown sentence above is actually counting down to — should highlight.
     .map((r) => ({ key: r.key, name: rowName(r, c.L).toUpperCase(), t1: r.adhan, t2: r.iqamah, highlight: !!r.next }));
   if (m.jumuah.length) {
+    // The name is just "JUMU'AH". It used to carry a "1/2" suffix to explain that the two times in
+    // the row were the first and second jamā'ah rather than an Adhan and an Iqāmah — but "1/2"
+    // reads as a fraction, and the other layout had already solved this properly: it labels each
+    // TIME with its ordinal. So does this one now (see `ordinal` in the row draw).
     const multi = m.jumuah.length > 1;
     lines.push({
       key: 'jumuah',
-      name: (c.L.jumuah ?? "Jumu'ah").toUpperCase() + (multi ? ' 1/2' : ''),
+      name: (c.L.jumuah ?? "Jumu'ah").toUpperCase(),
       t1: multi ? m.jumuah[0] : null,
       t2: m.jumuah[multi ? 1 : 0],
     });
@@ -1963,8 +1967,32 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     // A one-Jumu'ah masjid has nothing to put in the Adhan slot (Jumu'ah has no separate
     // Adhan/Iqamah — `t1`/`t2` are just its 1st/2nd time, if there are two), so that slot
     // is skipped entirely rather than drawn as an empty "—" beside a single time.
-    if (line.t1 != null) out.push(text(colAd, midY, fmtShort(line.t1, c.timeFormat), { size: timeSize * 0.92, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
-    out.push(text(colIq, midY, fmtShort(line.t2, c.timeFormat), { size: timeSize, fill: iqColor, family: FONT_DISPLAY, weight: line.highlight ? 600 : 500, anchor: 'end' }));
+    /**
+     * A time, with an ordinal label in front of it for Jumu'ah.
+     *
+     * Laid out left-to-right from a computed start rather than by stepping back from the column:
+     * `approxWidth` is calibrated for regular-weight Latin and these times are heavier, so
+     * positioning the ordinal from the measured width of the time is how it ends up sitting on
+     * top of it. Here only the GROUP's start comes from a measurement, so an error shifts the
+     * pair a pixel or two instead of overlapping it. Same shape as jumuahBar in the other layout.
+     */
+    const timeAt = (right: number, hours: number | null, size: number, fill: string, weight: number, ordinal: string) => {
+      const str = fmtShort(hours, c.timeFormat);
+      if (!ordinal) {
+        out.push(text(right, midY, str, { size, fill, family: FONT_DISPLAY, weight, anchor: 'end' }));
+        return;
+      }
+      const os = clamp(size * 0.46, 9, 22);
+      const ordBox = os * 2.1;
+      const ordGap = os * 0.5;
+      const groupW = ordBox + ordGap + approxWidth(str, size) * 1.12;
+      const gx = right - groupW;
+      out.push(text(gx + ordBox, midY, ordinal, { size: os, fill: hexToRgba(fill, 0.75), family: FONT_SANS, weight: 700, anchor: 'end' }));
+      out.push(text(gx + ordBox + ordGap, midY, str, { size, fill, family: FONT_DISPLAY, weight, anchor: 'start' }));
+    };
+    const jum = line.key === 'jumuah' && m.jumuah.length > 1;
+    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, c.p.textDim, 300, jum ? ordinalEn(1) : '');
+    timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, jum ? ordinalEn(2) : '');
   });
   return out.join('');
 }
