@@ -87,11 +87,12 @@ CLAUDE.md § *The changelog has two audiences*.
 - **An Iqāmah-change announcement that OpenMasjidOS reported as sent, but which never arrived, is
   now noticed and sent again.** A masjid&rsquo;s WhatsApp link can expire on its own — the way WhatsApp
   Desktop signs itself out — and until recently nothing spotted it: messages were accepted, recorded
-  as sent, and never delivered. OpenMasjidOS now detects that and tells this app which of its
-  messages were affected. Where the change has not taken effect yet, the announcement goes out again
-  by itself, on the usual schedule and at the usual pace. Where it has already taken effect the
-  wording would now be wrong, so it is left alone and flagged in Settings instead — the log says
-  &ldquo;may not have arrived&rdquo; rather than showing a tick.
+  as sent, and never delivered. OpenMasjidOS now detects that and names exactly which of this
+  screen&rsquo;s messages were affected. Where the change has not taken effect yet, the announcement goes
+  out again by itself, on the usual schedule and at the usual pace. Where it has already taken effect
+  the wording would now be wrong, so it is left alone and flagged in Settings instead — the log says
+  &ldquo;may not have arrived&rdquo; rather than showing a tick, and says what went wrong with the link so you
+  know whether the phone needs attention.
 - **A queued announcement is no longer given up on too early.** OpenMasjidOS now holds messages when
   the WhatsApp link is down, released once an admin has re-linked the phone, so one can legitimately
   sit in the queue for days. This app stopped asking after 24 hours, which left it recorded as

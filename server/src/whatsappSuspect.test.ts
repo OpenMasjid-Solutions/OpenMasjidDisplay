@@ -177,3 +177,83 @@ test('the poll is hourly — often enough for a failure that ran for a day', () 
   assert.ok(WA_SUSPECT_MS >= 15 * 60_000, 'more often than this buys nothing; the window takes ~10 minutes to appear');
   assert.ok(WA_SUSPECT_MS <= 6 * 60 * 60_000, 'the failure this exists for went unnoticed for over a day');
 });
+
+// ── when the platform names the messages ────────────────────────────────────
+
+test('an id list is authoritative: a message it does not name was not lost', () => {
+  // The reason this matters more than exactness. The platform HOLDS messages while the link is down
+  // and releases them once an admin re-links the phone — so a message queued during an outage can be
+  // delivered, properly, afterwards. It overlaps the window on any interval test and was never lost.
+  // Re-announcing it posts the same Iqamah change to the group twice, which is the one failure worse
+  // than the one this whole feature addresses.
+  const lost = entry({ id: 'lost' });
+  const held = entry({ id: 'held' });
+  const win = [{ ...covering[0], ids: ['lost'], truncated: false }];
+  assert.deepEqual(markSuspectEntries([lost, held], win, NOW), { pending: 1, stale: 0 });
+  assert.equal(lost.suspect, 'pending');
+  assert.equal(held.suspect, undefined, 'named nowhere, so not lost — however its timing looks');
+});
+
+test('a truncated list falls back to inference for what it could not name', () => {
+  // 500 per window is far more than this app could ever send, but a cap that silently dropped the
+  // rest would turn "not named" from evidence into an accident.
+  const named = entry({ id: 'named' });
+  const other = entry({ id: 'other' });
+  const win = [{ ...covering[0], ids: ['named'], truncated: true }];
+  assert.deepEqual(markSuspectEntries([named, other], win, NOW), { pending: 2, stale: 0 });
+});
+
+test('no id list at all still works, for a platform too old to send one', () => {
+  const e = entry();
+  assert.equal(markSuspectEntries([e], [{ ...covering[0], ids: [], truncated: false }], NOW).pending, 1);
+});
+
+test('without ids, a message we only learned about long after the window is left alone', () => {
+  // The held case again, with the only bound inference can offer: if the verdict reached us hours
+  // after the window closed, the platform's report was after it too. A heuristic, which is exactly
+  // why the id list is preferred wherever it exists.
+  const held = entry({
+    at: new Date(NOW - 2 * DAY).toISOString(),
+    settledAt: new Date(NOW - 6 * 60 * 60_000).toISOString(),
+  });
+  assert.deepEqual(markSuspectEntries([held], covering, NOW), { pending: 0, stale: 0 });
+
+  // But an ordinary polling lag of a minute or two is still covered — that IS the lost case.
+  const lost = entry({
+    at: new Date(NOW - 2 * DAY).toISOString(),
+    settledAt: new Date(NOW - 2 * DAY + 90_000).toISOString(),
+  });
+  assert.equal(markSuspectEntries([lost], covering, NOW).pending, 1);
+});
+
+test('an entry with no id is still matched by inference', () => {
+  // Entries written before this app stored the platform's id, and entries from a platform too old to
+  // return one. They can never appear in an id list, so falling back is the only honest option.
+  const e = entry({ id: undefined });
+  assert.equal(markSuspectEntries([e], [{ ...covering[0], ids: ['someone-else'], truncated: true }], NOW).pending, 1);
+});
+
+// ── the cause ──────────────────────────────────────────────────────────────
+
+test('the cause is recorded so the panel can say what happened', () => {
+  const e = entry();
+  markSuspectEntries([e], [{ ...covering[0], ids: ['m1'], cause: 'session-expired' }], NOW);
+  assert.equal(e.suspectCause, 'session-expired');
+});
+
+test('an unrecognised cause is normalised rather than stored raw', () => {
+  // The platform said more may be added, so a value from a newer platform must not break an older
+  // build of this app — and must not reach a page as arbitrary text either.
+  const src = fs.readFileSync(path.resolve(__dirname, 'fabric.ts'), 'utf8');
+  assert.match(src, /SUSPECT_CAUSES\.includes\(o\.cause as SuspectCause\) \? \(o\.cause as SuspectCause\) : 'unknown'/);
+});
+
+test('a success-shaped body on an error is not read as an all-clear', () => {
+  // The trap a sibling app hit: /groups answering {groups: []} on a 429. The platform now sends
+  // ok:false, and an ABSENT ok has to stay acceptable or this breaks against every older platform.
+  const src = fs.readFileSync(path.resolve(__dirname, 'fabric.ts'), 'utf8');
+  const fn = src.slice(src.indexOf('export async function whatsappSuspectWindows'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /if \(j\.ok === false\) return null;/, 'ok:false is an error');
+  assert.ok(!/j\.ok !== true/.test(body), 'but a missing ok must not be treated as one');
+});

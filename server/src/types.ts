@@ -612,6 +612,14 @@ export interface WhatsAppLogEntry {
    *                 for an admin to look at rather than acted on.
    */
   suspect?: 'pending' | 'resent' | 'stale';
+  /**
+   * Why the link was down, in the platform's words: 'session-expired', 'needs-relink',
+   * 'key-rejected' or 'unknown'. Stored as a plain string rather than a union, because the platform
+   * said more may be added and a stored value from a newer platform must not fail to parse on an
+   * older build of this app. The panel words its own sentence from it and falls back to saying
+   * nothing specific.
+   */
+  suspectCause?: string;
   /** true when the poster image went with it, false/absent when only the text did */
   asImage?: boolean;
   /** why the platform refused, or why it later failed; never contains the message */

@@ -296,6 +296,9 @@ export interface WhatsAppLogEntry {
   settledAt?: string;
   /** set when the platform withdrew its own "sent" for this message */
   suspect?: WhatsAppSuspect;
+  /** why the link was down, in the platform's words. More values may appear, so this is a plain
+   *  string and anything unrecognised is worded generically rather than shown raw. */
+  suspectCause?: string;
   /** the poster image went too, rather than text alone */
   asImage?: boolean;
   error?: string;

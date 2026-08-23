@@ -567,21 +567,46 @@ export class WhatsAppAnnouncer {
 }
 
 /**
+ * How long after a window closes we will still believe a `sent` we learned about fell inside it.
+ *
+ * Only used when the platform does not name the messages. We poll for verdicts once a minute, five
+ * at a time, so learning about a genuinely lost message lags the platform's report by a minute or
+ * two — and a backlog can stretch that. Ten minutes is generous for the lag and still far short of
+ * the case this exists to exclude, which is a message HELD for hours or days and then delivered
+ * perfectly well after the phone was re-linked.
+ */
+const SUSPECT_LEARN_SLACK_MS = 10 * 60_000;
+
+/**
  * Mark the log entries a suspect window covers, and say how many of each kind.
  *
  * Exported and pure so the decision can be tested without a platform: what counts as "covered" is
- * the part worth being exact about.
+ * the part worth being exact about, and there are now two ways to decide it.
  *
- * A message is covered when the moment it was handed to the gateway could have fallen inside the
- * window — and we do not know that moment. What we know is that it is somewhere between when we
- * queued it (`at`) and when we learned it was sent (`settledAt`), because we only poll for a verdict
- * once a minute and five at a time. So the test is whether that INTERVAL overlaps the window, not
- * whether either endpoint sits inside it. A point test on `at` alone would miss a message queued
- * just before the link died, which is precisely the message most likely to be affected.
+ * ## By id, when the platform names them
+ *
+ * `ids` is authoritative and settles something inference cannot. The platform holds messages while
+ * the WhatsApp link is down and releases them once an admin re-links the phone — so a message
+ * QUEUED during an outage can be delivered, properly, after it. That message overlaps the window on
+ * any interval test and was never lost, and re-announcing it posts the same Iqamah change to the
+ * group twice. Only the platform knows which messages it actually reported sent while the link was
+ * dead, and now it says so.
+ *
+ * ## By overlap, when it does not
+ *
+ * Older platforms send no ids, and a truncated list is incomplete by definition. Then we fall back
+ * to asking whether the hand-off COULD have fallen inside the window: it is somewhere between our
+ * queueing the message and our learning it was sent, so the test is an interval overlap rather than
+ * a point test on either end — a point test on `at` would miss a message queued just before the link
+ * died, which is the likeliest one of all to have been lost.
+ *
+ * With one bound added for the held case above: if we did not learn the verdict until well after the
+ * window closed, the platform's report was after it too. That is a heuristic, and it is why the id
+ * list is preferred wherever it exists.
  */
 export function markSuspectEntries(
   entries: WhatsAppLogEntry[],
-  windows: { from: number; to: number }[],
+  windows: { from: number; to: number; ids?: string[]; truncated?: boolean; cause?: string }[],
   nowMs: number,
 ): { pending: number; stale: number } {
   let pending = 0;
@@ -594,8 +619,23 @@ export function markSuspectEntries(
     const queuedAt = Date.parse(e.at) || 0;
     if (!queuedAt) continue;
     const learnedAt = Date.parse(e.settledAt ?? e.at) || queuedAt;
-    const covered = windows.some((w) => queuedAt <= w.to && learnedAt >= w.from);
-    if (!covered) continue;
+    let hit: { cause?: string } | null = null;
+    for (const w of windows) {
+      const named = !!e.id && (w.ids?.includes(e.id) ?? false);
+      if (named) {
+        hit = w;
+        break;
+      }
+      // The list is authoritative when it is complete: a message the platform did NOT name is a
+      // message it did not lose, and guessing otherwise is what duplicates an announcement.
+      if (w.ids?.length && !w.truncated) continue;
+      if (queuedAt <= w.to && learnedAt >= w.from && learnedAt <= w.to + SUSPECT_LEARN_SLACK_MS) {
+        hit = w;
+        break;
+      }
+    }
+    if (!hit) continue;
+    if (hit.cause) e.suspectCause = hit.cause.slice(0, 32);
     // The domain call, and the only one the platform explicitly said it cannot make for us. An
     // Iqamah-change notice that has not taken effect yet still has a job to do, and somebody turning
     // up at the wrong time is the cost of not re-sending it. One that has already taken effect does

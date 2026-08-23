@@ -455,6 +455,19 @@ const WA_STATE: Record<WhatsAppLogEntry['outcome'], { mark: string; colour: stri
  * ours were affected; these are the two answers worth showing an admin, because one needs nothing
  * from them and the other needs a decision.
  */
+/**
+ * What went wrong with the link, in words an admin can act on.
+ *
+ * The platform names the cause and said more values may be added, so anything unrecognised falls
+ * back to the generic sentence rather than putting a raw enum on the page. Each of these is
+ * something a person does something different about, which is the only reason to show it at all.
+ */
+const WA_CAUSE: Record<string, string> = {
+  'session-expired': "The masjid's WhatsApp session had signed itself out, the way WhatsApp Desktop does after a while.",
+  'needs-relink': 'The phone needed linking to WhatsApp again.',
+  'key-rejected': "WhatsApp rejected the connection's credentials.",
+};
+
 const WA_SUSPECT: Record<'pending' | 'stale', { mark: string; colour: string; word: string; title: string }> = {
   pending: {
     mark: '!',
@@ -486,10 +499,14 @@ function WhatsAppLog({ entries, groups, fallbackLabel }: { entries: WhatsAppLogE
               // A "sent" the platform has since withdrawn is drawn as the doubt it is, not as a
               // tick. The whole incident behind this was a row reading "sent" about a message
               // nobody received, for over a day.
-              const s =
+              const base =
                 e.suspect && e.suspect !== 'resent'
                   ? WA_SUSPECT[e.suspect]
                   : WA_STATE[e.outcome] ?? WA_STATE.queued;
+              // The cause goes in front of the explanation, because it is the part that tells an
+              // admin whether this is something they need to go and fix on the phone.
+              const why = e.suspect && e.suspectCause ? WA_CAUSE[e.suspectCause] : '';
+              const s = why ? { ...base, title: `${why} ${base.title}` } : base;
               return (
                 <>
                   <span style={{ color: s.colour }} title={s.title}>
