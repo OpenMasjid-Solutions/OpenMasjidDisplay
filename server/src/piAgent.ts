@@ -122,7 +122,7 @@ export interface EnrolInput {
   stats?: unknown;
   /** the answer to a console command, if one was asked for since the last check-in */
   shellResult?: unknown;
-  /** what root reported about the last join it was asked to make */
+  /** what root reported about the last join OR forget it was asked to make */
   wifiResult?: unknown;
   /** whether the device believes its own display output is currently off */
   displayOff?: unknown;
@@ -372,7 +372,7 @@ export function piState(
       // showing a pairing code should show it sideways too.
       displaySchedule: device.displaySchedule,
       rebootSchedule: effectiveRebootSchedule(device),
-      previewUntil: device.previewUntil,
+      previewUntil: previewWantedUntil(device.id, nowMs) || undefined,
       command: pendingCommand(device, nowMs),
     };
   }
@@ -403,7 +403,7 @@ export function piState(
     screenName: tv.name,
     displaySchedule: device.displaySchedule,
     rebootSchedule: effectiveRebootSchedule(device),
-    previewUntil: device.previewUntil,
+    previewUntil: previewWantedUntil(device.id, nowMs) || undefined,
     command: pendingCommand(device, nowMs),
   };
 }
@@ -411,6 +411,35 @@ export function piState(
 // ── liveness, exactly as browser screens do it ───────────────────────────────
 
 const seen = new Map<string, number>();
+
+/**
+ * Which screens somebody is currently watching, and until when.
+ *
+ * In memory, NOT in the store, and that is the whole point of it living here beside `seen`. It is
+ * refreshed about once a second for as long as a preview window is open, and every store.update
+ * rewrites db.json whole and runs every change listener — so persisting it meant a full rewrite of
+ * a masjid's entire configuration once a second, onto an SD card, to record a fact that is
+ * meaningless fifteen seconds later and after a restart. Exactly the reasoning that keeps liveness
+ * out of the store.
+ */
+const previewWanted = new Map<string, number>();
+
+/** Somebody is watching this screen until `untilMs`. */
+export function markPreviewWanted(deviceId: string, untilMs: number): void {
+  previewWanted.set(deviceId, untilMs);
+  // Bounded the same way `seen` is: a deleted screen would otherwise linger for the life of the
+  // process. Anything already expired is dead weight by definition.
+  if (previewWanted.size > 200) {
+    const now = Date.now();
+    for (const [k, t] of previewWanted) if (t < now) previewWanted.delete(k);
+  }
+}
+
+/** Until when, if anybody is. Expired entries read as nobody. */
+export function previewWantedUntil(deviceId: string, nowMs = Date.now()): number {
+  const at = previewWanted.get(deviceId) ?? 0;
+  return at > nowMs ? at : 0;
+}
 
 export function markDeviceSeen(deviceId: string, nowMs: number): void {
   seen.set(deviceId, nowMs);
@@ -543,11 +572,16 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput, n
 
   if (input.wifiResult && typeof input.wifiResult === 'object') {
     const o = input.wifiResult as Record<string, unknown>;
+    // Which action this is the answer to. Only ever 'join' or 'forget', and an unknown value
+    // becomes 'join' rather than reaching the panel — the panel words the message from this, and a
+    // forget reported as a join reads as "the last attempt did not work", which is a lie.
+    const kind = str(o.kind, 16) === 'forget' ? 'forget' : 'join';
     device.wifiResult = {
       // null is a real third answer: the join worked but nothing could prove the server was still
       // reachable over it. Collapsing that into success is how a screen gets stranded quietly.
       ok: o.ok === true ? true : o.ok === false ? false : null,
       detail: str(o.detail, 200),
+      kind,
       at: new Date(nowMs).toISOString(),
     };
   }
@@ -581,6 +615,7 @@ export function normDeviceNet(raw: unknown): DeviceNet | null {
 /** Test seam. */
 export function __resetDevicesForTests(): void {
   seen.clear();
+  previewWanted.clear();
 }
 
 // ── telling a device to do something, when nothing can connect to it ─────────

@@ -325,11 +325,11 @@ function ScreenCard({
               device's own rate limit refuses the second press without a word. */}
           {device?.agentVersion ? (
             updating ? (
-              <span className="hint" style={{ color: 'var(--color-warn, #fbbf24)' }}>· installing…</span>
+              <span className="hint" style={{ color: 'var(--color-warning)' }}>· installing…</span>
             ) : (
               <span
                 className="hint"
-                style={{ color: device.upToDate ? 'var(--color-ok, #4ade80)' : 'var(--color-warn, #fbbf24)' }}
+                style={{ color: device.upToDate ? 'var(--color-success)' : 'var(--color-warning)' }}
               >
                 {device.upToDate ? '· up to date' : '· update available'}
               </span>
@@ -444,7 +444,7 @@ function NetBadge({ net }: { net?: PiDeviceNet }) {
       <span
         className="hint"
         title={`On Wi-Fi${net.ssid ? ` — ${net.ssid}` : ''}${net.signal ? `, signal ${net.signal}%` : ''}${weak ? '. A weak signal is a common cause of a screen stuttering or dropping out.' : ''}`}
-        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: weak ? 'var(--color-warn, #fbbf24)' : undefined }}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: weak ? 'var(--color-warning)' : undefined }}
       >
         <IconWifi size={14} /> {net.ssid || 'Wi-Fi'}
         {net.signal ? <SignalBars percent={net.signal} /> : null}

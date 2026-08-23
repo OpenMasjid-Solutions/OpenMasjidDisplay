@@ -35,6 +35,15 @@ CLAUDE.md § *The changelog has two audiences*.
   one that could leave a screen dark — and it asks you afterwards whether you can see the picture,
   with the live view a click away to check. If you cannot, the screen puts the old resolution back
   by itself within a few minutes.
+- **Announcement images are no longer softened on decoder screens.** A screen driven by an RTSP
+  decoder box was being drawn at 1280 across and scaled up to 1920 by the video encoder, which is
+  what made a high-quality poster look low-resolution on the wall. Screens are now drawn at their
+  own resolution, and a box that genuinely cannot keep up with that drops back by itself rather than
+  letting the clock skip. Raspberry Pi screens were never affected — they already drew at full size.
+- **The list of Wi-Fi networks is folded away.** A masjid sees a dozen of its neighbours' networks,
+  and the list was pushing the password box and the Connect button off the bottom of the window. The
+  line that matters — which network the screen is on — is now always visible, and the list opens when
+  you actually want to change something.
 - **Update now updates the whole screen.** One button installs the operating system’s own security
   updates and the newest version of this app, in that order, and restarts the screen when it is
   done. There is no longer a separate button for each.
@@ -61,6 +70,11 @@ CLAUDE.md § *The changelog has two audiences*.
   A screen running older software says so and offers the single-command box instead.
 
 ### Fixed
+- **&ldquo;Forget network&rdquo; on a Raspberry Pi screen did nothing, and said it had worked.** It only ever
+  removed the network the screen was connected to at that moment — so on a screen running on its
+  cable, which is the only time the button is even offered, there was nothing to remove and it
+  reported success anyway. It now removes every Wi-Fi network the screen has saved, and says what
+  actually happened.
 - **Clicking the small “?” beside a setting no longer does the setting’s job.** Clicking the one
   next to “Gold accent” opened the colour picker, and the same went for every other hint on the
   Appearance tab — the file picker, the layout menu, all of them. The hint now only ever shows its

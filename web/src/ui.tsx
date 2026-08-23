@@ -164,7 +164,7 @@ export function SignalBars({ percent, size = 14 }: { percent: number; size?: num
             width: Math.max(2, size * 0.16),
             height: size * (0.3 + i * 0.175),
             borderRadius: 1,
-            background: i <= level ? (weak ? 'var(--color-warn, #fbbf24)' : 'currentColor') : 'currentColor',
+            background: i <= level ? (weak ? 'var(--color-warning)' : 'currentColor') : 'currentColor',
             // Unfilled bars stay visible but recede, so the scale is readable rather than implied.
             opacity: i <= level ? 1 : 0.22,
           }}

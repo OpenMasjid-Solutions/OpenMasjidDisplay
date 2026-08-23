@@ -73,10 +73,6 @@ export function webScreenOnline(tvId: string, nowMs: number): boolean {
   return at != null && nowMs - at <= WEB_SEEN_TIMEOUT_MS;
 }
 
-export function forgetWebScreen(tvId: string): void {
-  seen.delete(tvId);
-}
-
 /** Test seam. */
 export function __resetWebScreensForTests(): void {
   seen.clear();

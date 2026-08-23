@@ -225,7 +225,10 @@ test('a preview stops on its own when nobody is watching any more', () => {
   // the panel pushes a DEADLINE and the device stops when it lapses. A flag would leave a Pi
   // uploading a picture a second for ever.
   const api = fs.readFileSync(path.resolve(__dirname, 'api.ts'), 'utf8');
-  assert.ok(/previewUntil = Date\.now\(\) \+ PREVIEW_WINDOW_MS/.test(api), 'the route sets a deadline, not a flag');
+  assert.ok(
+    /markPreviewWanted\(device\.id, Date\.now\(\) \+ PREVIEW_WINDOW_MS\)/.test(api),
+    'the route sets a deadline, not a flag',
+  );
   const agent = fs.readFileSync(path.resolve(__dirname, 'pi', 'index.ts'), 'utf8');
   assert.ok(
     /st\.previewUntil && Date\.now\(\) < st\.previewUntil/.test(agent),

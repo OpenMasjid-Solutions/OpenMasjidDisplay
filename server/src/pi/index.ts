@@ -651,12 +651,44 @@ async function sendScreenshot(cfg: AgentConfig, shrink = PREVIEW_SHRINK): Promis
  * lets somebody turn a screen on by hand during its off hours and have it stay on until the next
  * boundary, instead of fighting a loop that switches it off again a second later.
  */
+/**
+ * Is this time inside the window that starts at `off` and ends at `on`?
+ *
+ * The window normally crosses midnight — 23:00 to 04:30 is the whole point of it — so the comparison
+ * has to handle off > on. Plain string comparison is correct here and cheaper than parsing: both are
+ * zero-padded HH:MM, so they sort in time order.
+ */
+function insideOffWindow(hhmm: string, off: string, on: string): boolean {
+  if (!off || !on || off === on) return false;
+  return off < on ? hhmm >= off && hhmm < on : hhmm >= off || hhmm < on;
+}
+
 function applyDisplaySchedule(live: Live): void {
   const sch = live.state?.displaySchedule;
   const reb = live.state?.rebootSchedule;
   if (!sch?.enabled && !reb?.enabled) return;
   const now = live.serverTime();
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  /**
+   * Once per boot: match the schedule's CURRENT state, not just its next boundary.
+   *
+   * Acting on transitions alone is right while the agent is running — it is what lets somebody turn
+   * a screen on by hand during its off hours without a loop fighting them. It is wrong the moment
+   * the board has just started, because a fresh boot leaves the framebuffer unblanked: a screen
+   * scheduled dark from 23:00 to 04:30 that reboots at 03:00 — which every screen now does by
+   * default — came back up LIT and stayed lit, since 04:30's "turn on" has nothing to do and 23:00
+   * is twenty hours away. The two features cancelled each other out.
+   *
+   * Only if the display is actually on, so this does not leave a spool file on every boot.
+   */
+  if (!live.scheduleReconciled) {
+    live.scheduleReconciled = true;
+    if (sch?.enabled && insideOffWindow(hhmm, sch.offAt, sch.onAt) && !displayIsOff()) {
+      requestPrivileged('sch_boot_off', 'display-off', 'this screen is inside its overnight hours, so switching it off');
+    }
+  }
+
   // ONE minute guard for both schedules, so a minute is acted on once whichever of them named it.
   if (hhmm === live.lastScheduleMinute) return;
   live.lastScheduleMinute = hhmm;
@@ -1014,16 +1046,20 @@ async function sendJournal(cfg: AgentConfig): Promise<void> {
  * panel reporting an old failure next to a working connection. Root writes it; we only ever read
  * it, so a corrupt or half-written file is treated as no answer rather than as a problem.
  */
-function readWifiResult(): { ok: boolean | null; detail: string } | undefined {
+function readWifiResult(): { ok: boolean | null; detail: string; kind?: string } | undefined {
   const p = '/var/lib/openmasjid-screen/wifi-result';
   try {
     if (!fs.existsSync(p)) return undefined;
-    const [verdict = '', detail = ''] = fs.readFileSync(p, 'utf8').split(String.fromCharCode(10));
+    // Three lines now: verdict, detail, and optionally WHICH action this is the answer to. A join
+    // writes the first two, as it always has, so a file with no third line is a join — which is
+    // what makes this readable by an older agent and vice versa.
+    const [verdict = '', detail = '', kind = ''] = fs.readFileSync(p, 'utf8').split(String.fromCharCode(10));
     fs.unlinkSync(p);
     // 'unverified' is its own answer and must not read as success: it means the join worked but
     // nothing proved the display server could still be reached afterwards.
     const ok = verdict.trim() === 'yes' ? true : verdict.trim() === 'no' ? false : null;
-    return { ok, detail: detail.trim().slice(0, 200) };
+    const which = kind.trim();
+    return { ok, detail: detail.trim().slice(0, 200), ...(which ? { kind: which.slice(0, 16) } : {}) };
   } catch {
     return undefined;
   }
@@ -1166,6 +1202,10 @@ class Live {
   /** the last HH:MM the display schedule was evaluated for, so a boundary fires once and not on
    *  every poll inside that minute — see applyDisplaySchedule */
   lastScheduleMinute = '';
+  /** Whether the schedule has been reconciled once since this process started. The schedule acts on
+   *  TRANSITIONS, which is right while running and wrong immediately after a boot — see
+   *  applyDisplaySchedule. */
+  scheduleReconciled = false;
 
   serverTime(): Date {
     return new Date(Date.now() + this.clockOffsetMs);

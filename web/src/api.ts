@@ -202,7 +202,8 @@ export const api = {
    * when it lapses. A deadline rather than an on/off switch because there is no reliable "off" — a
    * closed tab sends nothing.
    */
-  piPreview: (id: string) => req<{ ok: boolean; forMs: number }>('POST', `/api/pi/${id}/preview`),
+  piPreview: (id: string) =>
+    req<{ ok: boolean; forMs: number; screenshotAt?: string }>('POST', `/api/pi/${id}/preview`),
 
   /**
    * Ask for a terminal on a screen.

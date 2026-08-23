@@ -208,8 +208,10 @@ export interface PiDeviceInfo {
   journalAt?: string;
   /** The Wi-Fi networks this screen can see, strongest first. */
   networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
-  /** The outcome of the last join. `ok: null` = joined, but the server was not proven reachable. */
-  wifiResult?: { ok: boolean | null; detail: string; at: string };
+  /** The outcome of the last join OR forget. `ok: null` = joined, but the server was not proven
+   *  reachable. `kind` says which action it answers — a forget reported as a join reads as 'the last
+   *  attempt did not work', which is the opposite of what happened. */
+  wifiResult?: { ok: boolean | null; detail: string; at: string; kind?: 'join' | 'forget' };
   /** When an install was last asked for, so the card can say it is busy for the couple of minutes
    *  it takes. Not proof of anything: the version changing is what says it worked. */
   updateAskedAt?: number;

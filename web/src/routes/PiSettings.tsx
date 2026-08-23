@@ -62,7 +62,7 @@ function Meter({ label, percent, text }: { label: string; percent: number; text:
       <span className="pi-meter__track">
         <span
           className="pi-meter__fill"
-          style={{ width: `${Math.min(100, percent)}%`, background: over ? 'var(--color-warn, #fbbf24)' : 'var(--color-primary)' }}
+          style={{ width: `${Math.min(100, percent)}%`, background: over ? 'var(--color-warning)' : 'var(--color-primary)' }}
         />
       </span>
       <span className="hint muted pi-meter__text">{text}</span>
@@ -304,13 +304,13 @@ export function PiSettings({
           <span className="hint muted">agent {device.agentVersion || '?'}</span>
           {device.agentVersion ? (
             updating ? (
-              <span className="hint" style={{ color: 'var(--color-warn, #fbbf24)' }}>
+              <span className="hint" style={{ color: 'var(--color-warning)' }}>
                 · installing…
               </span>
             ) : (
               <span
                 className="hint"
-                style={{ color: device.upToDate ? 'var(--color-ok, #4ade80)' : 'var(--color-warn, #fbbf24)' }}
+                style={{ color: device.upToDate ? 'var(--color-success)' : 'var(--color-warning)' }}
               >
                 {device.upToDate ? '· up to date' : '· update available'}
               </span>

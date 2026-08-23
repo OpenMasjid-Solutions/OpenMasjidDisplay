@@ -26,9 +26,18 @@ import { Modal, Spinner, useToast } from '../ui';
 /** The modes worth offering by name. Anything else can still be typed. */
 const MODES = ['auto', '1920x1080', '1920x1080@60', '1280x720', '1024x768', '800x600'];
 
-/** How often to tell the server somebody is watching. A third of the server's own window, so one
- *  lost beat does not interrupt the picture. */
-const BEAT_MS = 5000;
+/**
+ * How often to tell the server somebody is watching — and, in the same breath, ask what the newest
+ * picture is.
+ *
+ * One second, because it does both jobs. It is comfortably inside the server's fifteen-second window,
+ * so several lost beats in a row cannot interrupt the picture; and it is what makes the view live,
+ * because the reply carries the timestamp of the newest frame and the image is re-fetched only when
+ * that changes. A few bytes a second to find that out, rather than re-reading a device row that
+ * carries up to 180KB of collected journal — which is the traffic the settings window's own
+ * 8-second cadence exists to avoid.
+ */
+const BEAT_MS = 1000;
 
 /** "4 seconds ago", for a picture whose whole value is that it is current. */
 function ago(iso?: string): string {
@@ -58,6 +67,8 @@ function PreviewWindow({
   onClose: () => void;
 }) {
   const [error, setError] = useState('');
+  /** The newest frame the server has, as IT reports it on each beat. */
+  const [shotIso, setShotIso] = useState(device.screenshotAt ?? '');
   /** When this window opened, so "waiting" can be told from "showing a picture from last week". */
   const startedAt = useRef(Date.now());
 
@@ -66,8 +77,13 @@ function PreviewWindow({
     const beat = () =>
       api
         .piPreview(device.id)
-        .then(() => {
-          if (alive) setError('');
+        .then((r) => {
+          if (!alive) return;
+          setError('');
+          // Only ever forward. The image is keyed on this, so re-assigning the same value costs
+          // nothing, and assigning an older one would make the browser fetch a frame it already has.
+          const at = r.screenshotAt;
+          if (at) setShotIso((prev) => (at > prev ? at : prev));
         })
         .catch((e: unknown) => {
           if (alive) setError(e instanceof Error ? e.message : 'Lost contact with the display server.');
@@ -82,13 +98,13 @@ function PreviewWindow({
     };
   }, [device.id]);
 
-  const shotAt = device.screenshotAt ? new Date(device.screenshotAt).getTime() : 0;
+  const shotAt = shotIso ? new Date(shotIso).getTime() : 0;
   // Two seconds of slack: the frame that arrives immediately after opening was taken a moment
   // before the window existed, and calling that stale would flash a warning on every open.
   const live = shotAt > startedAt.current - 2000;
-  const url = device.screenshotAt
-    ? `/api/pi/${device.id}/screenshot?t=${encodeURIComponent(device.screenshotAt)}`
-    : '';
+  // Keyed on the frame's own timestamp, so the browser fetches each picture exactly once and never
+  // re-fetches one it already has while waiting for the next.
+  const url = shotIso ? `/api/pi/${device.id}/screenshot?t=${encodeURIComponent(shotIso)}` : '';
 
   return (
     <Modal open floating wide title={`${screenName} — live`} onClose={onClose}>
@@ -101,16 +117,16 @@ function PreviewWindow({
       )}
       <div className="pi-row" style={{ marginBlockStart: '0.5rem' }}>
         {live ? (
-          <span className="hint" style={{ color: 'var(--color-ok, #4ade80)' }}>
-            live · updated {ago(device.screenshotAt)}
+          <span className="hint" style={{ color: 'var(--color-success)' }}>
+            live · updated {ago(shotIso)}
           </span>
         ) : (
           <span className="hint muted">
-            <Spinner /> {url ? `showing a picture from ${ago(device.screenshotAt)}` : 'waiting…'}
+            <Spinner /> {url ? `showing a picture from ${ago(shotIso)}` : 'waiting…'}
           </span>
         )}
         {error && (
-          <span className="hint" style={{ color: 'var(--color-warn, #fbbf24)' }}>
+          <span className="hint" style={{ color: 'var(--color-warning)' }}>
             {error}
           </span>
         )}
@@ -191,12 +207,12 @@ export function PiDisplaySection({ device, screenName }: { device: PiDeviceInfo;
           {/* What the DEVICE says, not what was last pressed. Undefined is its own state: an agent
               too old to report this must not be drawn as "on". */}
           {device.displayOff === true && (
-            <span className="hint" style={{ color: 'var(--color-warn, #fbbf24)' }}>
+            <span className="hint" style={{ color: 'var(--color-warning)' }}>
               the display is asleep
             </span>
           )}
           {device.displayOff === false && (
-            <span className="hint" style={{ color: 'var(--color-ok, #4ade80)' }}>
+            <span className="hint" style={{ color: 'var(--color-success)' }}>
               the display is on
             </span>
           )}
@@ -265,7 +281,7 @@ export function PiDisplaySection({ device, screenName }: { device: PiDeviceInfo;
           // the setting that made it show nothing, so the screen puts it back on its own unless
           // somebody says the picture is fine.
           <div className="pi-row">
-            <span className="hint" style={{ color: 'var(--color-warn, #fbbf24)' }}>
+            <span className="hint" style={{ color: 'var(--color-warning)' }}>
               Can you see the timetable on this screen?
             </span>
             <button

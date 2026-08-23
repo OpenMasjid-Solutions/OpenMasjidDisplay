@@ -1271,12 +1271,55 @@ for req in "$SPOOL"/*; do
       echo 'control: asked for a fresh Wi-Fi scan'
       ;;
     wifi-forget)
-      # Only ever the saved profile for a network we are NOT currently relying on.
+      # Every SAVED wireless profile, not merely the one currently active.
+      #
+      # It used to read the connection active on wlan0 and delete that. On a screen whose Wi-Fi is
+      # switched off, or that has a saved network it is not presently associated with — which is the
+      # normal state of a screen running on its cable — that name comes back EMPTY, nothing was
+      # deleted, and the arm still printed "forgot the saved Wi-Fi network". So the button reported
+      # success and changed nothing, which is exactly what it was reported as doing. Measured on a
+      # real Pi 4: `nmcli -t -f GENERAL.CONNECTION device show wlan0` returned "GENERAL.CONNECTION:"
+      # and the box had one saved profile, for its cable.
+      #
+      # "Forget network" means the screen must stop knowing how to join Wi-Fi at all, so it is every
+      # 802-11-wireless profile. And the outcome is reported back through the same result file a join
+      # uses, because a button whose only feedback was a line in a journal nobody opened is how this
+      # went unnoticed.
+      STAGE="$PREFIX/.wifi-result.stage"
+      RES="$STATEDIR/wifi-result"
       if nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | grep -q '^[^:]*:ethernet:connected'; then
-        cur=$(nmcli -t -f GENERAL.CONNECTION device show wlan0 2>/dev/null | cut -d: -f2- || true)
-        [ -n "$cur" ] && nmcli connection delete "$cur" >/dev/null 2>&1 || true
-        echo 'control: forgot the saved Wi-Fi network'
+        # The type is matched at the END of the line rather than as the second field: nmcli's terse
+        # output backslash-escapes a colon inside a name, so splitting on ':' would drop a network
+        # called "Guest: 5G". sed prints only the wireless lines, with the type removed, which leaves
+        # exactly the names to delete.
+        nmcli -t -f NAME,TYPE connection show 2>/dev/null | sed -n 's/:802-11-wireless$//p' |
+          while IFS= read -r _name; do
+            nmcli connection delete "$_name" >/dev/null 2>&1 || true
+          done
+        # Counted AFTER, from what is left, because the loop above runs in a subshell and cannot
+        # hand a counter back out of it. An `if` rather than a `case`, because a nested case arm
+        # inside this one truncates it for the test that reads an arm up to its first terminator —
+        # which is how the refusal below stopped being checked.
+        _left=$(nmcli -t -f TYPE connection show 2>/dev/null | grep -c '^802-11-wireless' || true)
+        [ -n "$_left" ] || _left=0
+        if [ "$_left" -eq 0 ]; then
+          printf 'yes
+This screen no longer has a saved Wi-Fi network.
+forget
+' > "$STAGE"; handover "$STAGE" "$RES"
+          echo 'control: deleted every saved Wi-Fi network'
+        else
+          printf 'no
+%s saved network(s) could not be removed.
+forget
+' "$_left" > "$STAGE"; handover "$STAGE" "$RES"
+          echo "control: $_left saved Wi-Fi network(s) could not be removed"
+        fi
       else
+        printf 'no
+There is no cable, so the saved network is the only way back to this screen.
+forget
+' > "$STAGE"; handover "$STAGE" "$RES"
         echo 'control: refusing to forget Wi-Fi — there is no cable, so it is the only way back'
       fi
       ;;

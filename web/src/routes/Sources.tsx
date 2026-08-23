@@ -193,7 +193,7 @@ function SourceModal({ src, onClose, onSaved }: { src: Source | null; onClose: (
         <div className="row" style={{ gap: '0.6rem', marginBlockStart: '0.5rem', alignItems: 'center' }}>
           <button type="button" className="btn btn--ghost btn--sm" onClick={test} disabled={testing}>{testing ? <><Spinner /> Testing…</> : 'Test connection'}</button>
           {testResult && (
-            <span className="hint" style={{ color: testResult.ok ? 'var(--ok, #2bbf90)' : 'var(--danger, #e5736b)' }}>
+            <span className="hint" style={{ color: testResult.ok ? 'var(--color-success)' : 'var(--color-danger)' }}>
               {testResult.ok ? `✓ ${testResult.message}` : `✗ ${testResult.message}`}
             </span>
           )}

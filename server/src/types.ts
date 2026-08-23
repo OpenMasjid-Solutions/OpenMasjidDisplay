@@ -423,10 +423,6 @@ export interface PiDevice {
    * clock, so it happens whether or not the internet does.
    */
   rebootSchedule?: { enabled: boolean; at: string };
-  /** While this is in the future the screen keeps sending pictures of itself, for a live preview
-   *  window somebody has open. It EXPIRES rather than being switched off, so a closed browser tab
-   *  stops the frames on its own — see PiState.previewUntil. */
-  previewUntil?: number;
   /**
    * The forced HDMI mode from the device's own kernel command line, or 'auto'.
    *
@@ -473,7 +469,7 @@ export interface PiDevice {
   networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
   /** What the device's root side reported about the last join. `ok: null` means it joined but
    *  nothing proved the display server was still reachable over it — not a success. */
-  wifiResult?: { ok: boolean | null; detail: string; at: string };
+  wifiResult?: { ok: boolean | null; detail: string; at: string; kind?: 'join' | 'forget' };
   /** How this screen is attached to the network, as IT sees it. Self-reported and sanitised on
    *  arrival like every other device fact — this is decoration for the panel, never a decision. */
   net?: DeviceNet;

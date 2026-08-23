@@ -47,6 +47,7 @@ import {
   findDeviceByToken,
   findPendingByCode,
   markDeviceSeen,
+  markPreviewWanted,
   makeDeviceToken,
   piState,
   prunePending,
@@ -357,7 +358,27 @@ export function createApi(deps: Deps) {
   // Browser screens, PAGE and STATE only: a real screen asks for its state every 5 s, so ~12
   // a minute plus the odd page load. Generous enough for a masjid rebooting every television
   // at once.
-  const screenLimiter = new RequestLimiter(120, 60_000);
+  /**
+   * The budget for a screen asking what to show, and it is sized from the CADENCE, not picked.
+   *
+   * 120/min was sized for "a screen that asks twice a minute" — which is what a browser screen does.
+   * A Pi does not: it polls every five seconds normally (12/min) and shortens that to about 1.2s
+   * whenever anything is happening — a console open, a live preview running — which is 50/min from
+   * one device. And behind the platform's tunnel every screen in the masjid arrives from the SAME
+   * address, so the budget is shared: three screens with a console open between them was already
+   * 150/min against a cap of 120.
+   *
+   * What that failure looks like matters, and it is why this is not left tight: the 429 lands on the
+   * device's STATE POLL, so the screen decides it has lost contact with the display server and says
+   * so on the wall. A rate limit that turns a busy dashboard into "lost contact" on a television in
+   * a prayer hall is worse than no rate limit.
+   *
+   * This is the same mistake the media limiter below was created to fix, in the same file, for the
+   * same reason — a cap sized for one traffic pattern applied to another. So: sized for a masjid's
+   * worth of screens all fast-polling at once (see PI_FAST_POLL_MS), and it remains a bound on a
+   * runaway rather than a shape imposed on normal traffic.
+   */
+  const screenLimiter = new RequestLimiter(600, 60_000);
   // Video segments need their OWN budget, and this is why: an HLS player fetches a playlist
   // and a segment roughly every second — and in low-latency mode a "part" every 0.27 s. Those
   // went through the limiter above, sized for a screen that asks twice a minute, so a camera
@@ -498,7 +519,12 @@ export function createApi(deps: Deps) {
           pathname,
         );
       if (piMatch) {
-        if (!screenLimiter.allow(req)) {
+        // A picture of the screen is a STREAM while a preview window is open — one frame roughly
+        // every second — so it is budgeted with the video segments, not with the polls. Putting it
+        // through the poll budget is what would have made a live preview lock a screen out of asking
+        // what to show, which is the exact bug the media limiter below was created for.
+        const limiter = piMatch[3] === 'screenshot' ? screenMediaLimiter : screenLimiter;
+        if (!limiter.allow(req)) {
           res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
           res.end('Too many requests.');
           return;
@@ -1828,15 +1854,18 @@ export function createApi(deps: Deps) {
        */
       const piPreview = /^\/api\/pi\/([\w-]+)\/preview$/.exec(pathname);
       if (piPreview && method === 'POST') {
-        let found = false;
-        store.update((db) => {
-          const d = (db.piDevices ?? []).find((x) => x.id === piPreview[1]);
-          if (!d) return;
-          found = true;
-          d.previewUntil = Date.now() + PREVIEW_WINDOW_MS;
-        });
-        if (!found) return sendJson(res, 404, { error: 'No such screen.' });
-        return sendJson(res, 200, { ok: true, forMs: PREVIEW_WINDOW_MS });
+        // Read, not written: the deadline is in-memory (see markPreviewWanted), because a store
+        // update rewrites db.json whole and this is called once a second.
+        const device = (store.db.piDevices ?? []).find((x) => x.id === piPreview[1]);
+        if (!device) return sendJson(res, 404, { error: 'No such screen.' });
+        markPreviewWanted(device.id, Date.now() + PREVIEW_WINDOW_MS);
+        const shotAt = device.screenshotAt;
+        // The newest frame's timestamp rides back on the beat. It is what makes the picture live: the
+        // panel keys its <img> on this, so a frame is fetched exactly once and nothing is re-fetched
+        // while it waits for the next one. Sending it here costs a few bytes on a request that was
+        // already happening, and saves the panel re-reading a device row carrying up to 180KB of
+        // collected journal once a second to find the same thing out.
+        return sendJson(res, 200, { ok: true, forMs: PREVIEW_WINDOW_MS, screenshotAt: shotAt });
       }
 
       /**

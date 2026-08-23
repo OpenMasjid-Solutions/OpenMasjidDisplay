@@ -148,7 +148,7 @@ export function PiTerminal({ deviceId, onFallback }: { deviceId: string; onFallb
       <div className="pi-row" style={{ marginBlockStart: '0.5rem' }}>
         {phase === 'opening' && <span className="hint muted"><Spinner /> starting…</span>}
         {phase === 'waiting' && <span className="hint muted"><Spinner /> waiting for the screen to pick this up…</span>}
-        {phase === 'live' && <span className="hint" style={{ color: 'var(--color-ok, #4ade80)' }}>connected</span>}
+        {phase === 'live' && <span className="hint" style={{ color: 'var(--color-success)' }}>connected</span>}
         {note && <span className="hint muted">{note}</span>}
         {phase === 'ended' && (
           <button className="btn btn--ghost btn--sm" onClick={onFallback}>

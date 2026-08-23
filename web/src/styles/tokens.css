@@ -37,6 +37,11 @@
   --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.5);
   --radius-card: 1rem;
   --radius-button: 0.625rem;
+  /* The tightest radius in the set: an inset row, a list item, a small field — things that sit
+     INSIDE something already rounded, where the button radius reads as a bubble. Added because five
+     places were reaching for a --radius-sm that had never been defined and silently falling back to
+     their own hardcoded guess (0.35rem in one file, 8px in another). */
+  --radius-input: 0.375rem;
 
   --glass-blur: 16px;
   --glass-blur-inset: 9px;

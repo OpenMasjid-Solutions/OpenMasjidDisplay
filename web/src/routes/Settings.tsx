@@ -216,7 +216,7 @@ function NotificationsPanel() {
       <div className="row" style={{ gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="btn btn--ghost btn--sm" onClick={test} disabled={busy}>{busy ? <><Spinner /> Sending…</> : 'Send a test notification'}</button>
         {advice && (
-          <span className="hint" style={{ color: advice.ok ? 'var(--ok, #2bbf90)' : 'var(--danger, #e5736b)', maxWidth: 560 }}>
+          <span className="hint" style={{ color: advice.ok ? 'var(--color-success)' : 'var(--color-danger)', maxWidth: 560 }}>
             {advice.ok ? '✓ ' : '✗ '}{advice.msg}
           </span>
         )}
