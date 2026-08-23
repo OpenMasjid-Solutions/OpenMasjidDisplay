@@ -26,3 +26,11 @@ server/assets/pi/agent.js
 .pish.txt
 .logsres.txt
 .st.json
+# Rendered comparisons from a measurement — dither variants, preview sizes, rotated frames. Same
+# residue as the captures above, and three of them reached a commit before this line existed.
+.d-*.png
+.p-*.png
+.rot.png
+.shot.png
+.final.png
+.preview*.png
