@@ -257,3 +257,50 @@ test('a success-shaped body on an error is not read as an all-clear', () => {
   assert.match(body, /if \(j\.ok === false\) return null;/, 'ok:false is an error');
   assert.ok(!/j\.ok !== true/.test(body), 'but a missing ok must not be treated as one');
 });
+
+// ── the same window, over and over ─────────────────────────────────────────
+
+test('a window re-reported unchanged for days changes nothing after the first pass', () => {
+  // The platform retains a window for seven days after the outage ends and re-reports it UNCHANGED:
+  // from, to, cause, count and ids are all snapshotted at detection and never revised, because the
+  // queue pauses at that moment and nothing else writes outcome records. So this runs against the
+  // same window about 170 times, and every pass after the first has to be a no-op.
+  const e = entry();
+  const win = [{ ...covering[0], ids: ['m1'], truncated: false, cause: 'session-expired' }];
+  assert.deepEqual(markSuspectEntries([e], win, NOW), { pending: 1, stale: 0 });
+  for (let i = 0; i < 5; i++) {
+    assert.deepEqual(markSuspectEntries([e], win, NOW), { pending: 0, stale: 0 }, `pass ${i + 2}`);
+  }
+  assert.equal(e.suspect, 'pending', 'and the verdict is untouched');
+  assert.equal(e.suspectCause, 'session-expired');
+});
+
+test('a message sent AFTER the outage is not caught by the retained window', () => {
+  // The other half of a window that hangs around for a week: ordinary announcements keep happening
+  // while it does. One sent after the link came back must not be swept up — and it cannot be, because
+  // the id list was fixed at detection and its timing is outside the bounds.
+  const later = entry({
+    id: 'after',
+    at: new Date(NOW - 60 * 60_000).toISOString(),
+    settledAt: new Date(NOW - 59 * 60_000).toISOString(),
+  });
+  const win = [{ ...covering[0], ids: ['m1'], truncated: false }];
+  assert.deepEqual(markSuspectEntries([later], win, NOW), { pending: 0, stale: 0 });
+  assert.equal(later.suspect, undefined);
+});
+
+test('the marking happens inside the store update, not beside it', () => {
+  // It used to run twice — once to count, once to "apply" — against the same array of the same
+  // objects. The first call was already the mutation, outside store.update where nothing schedules a
+  // save; the second was a no-op that happened to schedule the save the first one needed. Correct by
+  // accident, and it breaks the moment somebody deletes the call whose return value is unused.
+  const src = fs.readFileSync(path.resolve(__dirname, 'whatsappAnnounce.ts'), 'utf8');
+  const start = src.indexOf('private async checkSuspect()');
+  const body = src.slice(start, src.indexOf('\n  }', start));
+  const calls = [...body.matchAll(/markSuspectEntries\(/g)].length;
+  assert.equal(calls, 1, 'marking twice against the same objects is a mutation nobody scheduled a save for');
+  assert.ok(
+    !/markSuspectEntries\(this\.store\.db/.test(body),
+    'and it must not mutate live state from outside store.update',
+  );
+});

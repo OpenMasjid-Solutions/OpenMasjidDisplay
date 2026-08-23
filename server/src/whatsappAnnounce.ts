@@ -546,11 +546,24 @@ export class WhatsAppAnnouncer {
     // null is "could not ask" — an older platform, a timeout, a 404. Not "nothing is wrong", and
     // the difference matters here for the same reason it does for a message status.
     if (!windows?.length) return;
-    const marked = markSuspectEntries(this.store.db.whatsappLog ?? [], windows, now);
-    if (!marked.pending && !marked.stale) return;
+    // Marked ONCE, inside the update, and the counts come back out through a captured variable.
+    //
+    // This used to call markSuspectEntries twice: once on `this.store.db` to get the counts, then
+    // again inside store.update to "apply" them. Those are the same array of the same objects, so the
+    // first call was already the mutation — outside store.update, where nothing schedules a save or
+    // notifies a listener — and the second was a no-op that happened to schedule the save the first
+    // one needed. It worked by accident, and in a way that breaks if anyone removes the call that
+    // returns a value nobody reads.
+    //
+    // Worth getting right rather than leaving: the platform retains a window for seven days after the
+    // outage ends and re-reports it UNCHANGED — everything about it is snapshotted at detection — so
+    // this path now runs against the same window roughly 170 times. Which is fine, because marking
+    // is idempotent: an entry that already carries a verdict is skipped.
+    let marked = { pending: 0, stale: 0 };
     this.store.update((db) => {
-      markSuspectEntries(db.whatsappLog ?? [], windows, now);
+      marked = markSuspectEntries(db.whatsappLog ?? [], windows, now);
     });
+    if (!marked.pending && !marked.stale) return;
     if (marked.pending) {
       log.warn(
         `the platform can no longer vouch for ${marked.pending} Iqamah-change notice(s) it reported as sent; ` +
