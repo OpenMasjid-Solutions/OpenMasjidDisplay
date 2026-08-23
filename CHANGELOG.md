@@ -84,6 +84,22 @@ CLAUDE.md § *The changelog has two audiences*.
   A screen running older software says so and offers the single-command box instead.
 
 ### Fixed
+- **An Iqāmah-change announcement that OpenMasjidOS reported as sent, but which never arrived, is
+  now noticed and sent again.** A masjid&rsquo;s WhatsApp link can expire on its own — the way WhatsApp
+  Desktop signs itself out — and until recently nothing spotted it: messages were accepted, recorded
+  as sent, and never delivered. OpenMasjidOS now detects that and tells this app which of its
+  messages were affected. Where the change has not taken effect yet, the announcement goes out again
+  by itself, on the usual schedule and at the usual pace. Where it has already taken effect the
+  wording would now be wrong, so it is left alone and flagged in Settings instead — the log says
+  &ldquo;may not have arrived&rdquo; rather than showing a tick.
+- **A queued announcement is no longer given up on too early.** OpenMasjidOS now holds messages when
+  the WhatsApp link is down, released once an admin has re-linked the phone, so one can legitimately
+  sit in the queue for days. This app stopped asking after 24 hours, which left it recorded as
+  &ldquo;waiting&rdquo; for ever — and a waiting message counts as handled, so the announcement was quietly
+  stranded. It now keeps asking for a week.
+- **With several announcements outstanding, the oldest ones were never asked about.** Only the five
+  most recent were checked each minute, so on a backlog the earliest simply aged out and stayed
+  &ldquo;waiting&rdquo;. Now the oldest are asked about first.
 - **&ldquo;Forget network&rdquo; on a Raspberry Pi screen did nothing, and said it had worked.** It only ever
   removed the network the screen was connected to at that moment — so on a screen running on its
   cable, which is the only time the button is even offered, there was nothing to remove and it

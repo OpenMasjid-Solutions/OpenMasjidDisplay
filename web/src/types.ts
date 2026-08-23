@@ -274,6 +274,14 @@ export interface Settings {
  *  sentence. `no-fabric` and `not-allowed` are this app's own additions. */
 export type WhatsAppReason = 'ready' | 'not-configured' | 'not-linked' | 'unreachable' | 'not-allowed' | 'no-fabric';
 
+/**
+ * The platform later said its own "sent" for a message cannot be trusted — see the server's own
+ * WhatsAppLogEntry for the incident this exists for. "pending" will be announced again on the usual
+ * schedule, "resent" already has been, and "stale" announced a change that has since taken effect,
+ * so re-sending it would be confusing rather than helpful and it is left for a person to look at.
+ */
+export type WhatsAppSuspect = 'pending' | 'resent' | 'stale';
+
 export interface WhatsAppLogEntry {
   at: string;
   event: 'iqamah-change';
@@ -286,6 +294,8 @@ export interface WhatsAppLogEntry {
   outcome: 'queued' | 'sent' | 'failed' | 'expired';
   /** when the platform's verdict was recorded */
   settledAt?: string;
+  /** set when the platform withdrew its own "sent" for this message */
+  suspect?: WhatsAppSuspect;
   /** the poster image went too, rather than text alone */
   asImage?: boolean;
   error?: string;

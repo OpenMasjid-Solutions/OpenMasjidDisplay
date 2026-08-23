@@ -467,6 +467,68 @@ export async function whatsappMessageStatus(id: string): Promise<WhatsAppOutcome
   }
 }
 
+/**
+ * A window in which the platform's own "sent" cannot be trusted.
+ *
+ * A masjid's WhatsApp session expired the way WhatsApp Desktop signs itself out, and nothing
+ * noticed: the gateway went on accepting messages and the platform went on recording them `sent`,
+ * for over a day, while none of them arrived. The platform detects that within about ten minutes
+ * now, but there is a residual window between the link dying and it being noticed, and the messages
+ * inside that window were recorded `sent`.
+ *
+ * The platform cannot resend them — it deletes a message's contents the moment it hands it to the
+ * gateway, on purpose — so the app that still has the source data is the only thing that can. For
+ * this app that is an Iqamah-change notice, and it is exactly the kind of message worth sending
+ * again: somebody turns up at the wrong time otherwise.
+ *
+ * On the READ budget (600/min), not the send budget, so polling this costs no sends.
+ */
+export interface SuspectWindow {
+  /** epoch ms */
+  from: number;
+  to: number;
+  /** how many of OUR messages the platform reported `sent` inside it — scoped to this app id */
+  count: number;
+}
+
+export async function whatsappSuspectWindows(): Promise<SuspectWindow[] | null> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return null;
+  warnIfCleartextSecret();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp/suspect`, {
+      headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    // NULL, not []. A platform too old to have this endpoint answers 404, and "I could not ask"
+    // must not read as "there is nothing wrong" — the caller decides what to do with not knowing,
+    // exactly as it does for a message status it could not obtain.
+    if (!res.ok) return null;
+    const j = (await res.json().catch(() => ({}))) as { windows?: unknown };
+    if (!Array.isArray(j.windows)) return null;
+    const out: SuspectWindow[] = [];
+    for (const w of j.windows.slice(0, 50)) {
+      const o = (w ?? {}) as Record<string, unknown>;
+      const from = Number(o.from);
+      const to = Number(o.to);
+      const count = Number(o.count);
+      // Every field re-derived. A window with from > to, or either end absent, would silently
+      // match nothing or everything depending on how it were compared — and a window that matches
+      // everything would re-announce the masjid's whole history to its group.
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from <= 0 || to < from) continue;
+      out.push({ from, to, count: Number.isFinite(count) && count > 0 ? Math.round(count) : 0 });
+    }
+    return out;
+  } catch (err) {
+    log.debug(`fabric whatsapp suspect lookup failed: ${err instanceof Error ? err.message : err}`);
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 /** Pull the platform's session token out of the request's Cookie header. */
 function omosCookie(req: IncomingMessage): string | null {
   const raw = req.headers.cookie;

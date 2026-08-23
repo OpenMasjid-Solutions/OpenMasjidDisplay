@@ -1,7 +1,7 @@
 {
   "name": "openmasjid-display-server",
   "private": true,
-  "version": "0.70.0-dev.79",
+  "version": "0.70.0-dev.80",
   "description": "Control plane + timetable renderer + embedded RTSP server for OpenMasjid Display",
   "license": "AGPL-3.0-only",
   "scripts": {
@@ -10,7 +10,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.check.json",
-    "test": "node --import tsx --test src/prayer/engine.test.ts src/scheduler.test.ts src/iqamahCsv.test.ts src/iqamahSchedule.test.ts src/validate.test.ts src/render/iqamahOverride.test.ts src/render/salahHadith.test.ts src/auth.test.ts src/store.test.ts src/render/staleness.test.ts src/rateLimit.test.ts src/fabric.test.ts src/changelog.test.ts src/render/iqamahReminder.test.ts src/httpio.test.ts src/render/announce.test.ts src/whatsappAnnounce.test.ts src/whatsappMedia.test.ts src/iqamahWizard.test.ts src/fabricCommands.test.ts src/webScreen.test.ts src/piAgent.test.ts src/pi/agent.test.ts src/piInstaller.test.ts src/pi/render.test.ts src/pi/video.test.ts src/pi/lanHost.test.ts src/render/dateFit.test.ts src/render/staticFps.test.ts src/render/renderSize.test.ts src/pi/network.test.ts src/testFileCoverage.test.ts src/pi/decode.test.ts src/checkInSize.test.ts src/screenBudget.test.ts src/pi/stats.test.ts src/render/layoutNames.test.ts src/render/announceOverlay.test.ts src/piRoutes.test.ts src/piShell.test.ts src/piControls.test.ts src/piConsole.test.ts src/render/frost.test.ts src/whatsappOutcome.test.ts src/screenAlerts.test.ts src/render/prayerIcon.test.ts",
+    "test": "node --import tsx --test src/prayer/engine.test.ts src/scheduler.test.ts src/iqamahCsv.test.ts src/iqamahSchedule.test.ts src/validate.test.ts src/render/iqamahOverride.test.ts src/render/salahHadith.test.ts src/auth.test.ts src/store.test.ts src/render/staleness.test.ts src/rateLimit.test.ts src/fabric.test.ts src/changelog.test.ts src/render/iqamahReminder.test.ts src/httpio.test.ts src/render/announce.test.ts src/whatsappAnnounce.test.ts src/whatsappMedia.test.ts src/iqamahWizard.test.ts src/fabricCommands.test.ts src/webScreen.test.ts src/piAgent.test.ts src/pi/agent.test.ts src/piInstaller.test.ts src/pi/render.test.ts src/pi/video.test.ts src/pi/lanHost.test.ts src/render/dateFit.test.ts src/render/staticFps.test.ts src/render/renderSize.test.ts src/pi/network.test.ts src/testFileCoverage.test.ts src/pi/decode.test.ts src/checkInSize.test.ts src/screenBudget.test.ts src/pi/stats.test.ts src/render/layoutNames.test.ts src/render/announceOverlay.test.ts src/piRoutes.test.ts src/piShell.test.ts src/piControls.test.ts src/piConsole.test.ts src/render/frost.test.ts src/whatsappOutcome.test.ts src/whatsappSuspect.test.ts src/screenAlerts.test.ts src/render/prayerIcon.test.ts",
     "build:agent": "node scripts/build-agent.mjs"
   },
   "dependencies": {

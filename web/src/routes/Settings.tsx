@@ -447,6 +447,31 @@ const WA_STATE: Record<WhatsAppLogEntry['outcome'], { mark: string; colour: stri
   expired: { mark: '✗', colour: 'var(--color-danger)', word: 'expired', title: 'OpenMasjidOS gave up on this one before it could be sent.' },
 };
 
+/**
+ * How a withdrawn "sent" is drawn.
+ *
+ * OpenMasjidOS found that a masjid's WhatsApp link can expire without anything noticing, and that
+ * messages handed over in that window were recorded as sent while none arrived. It tells us which of
+ * ours were affected; these are the two answers worth showing an admin, because one needs nothing
+ * from them and the other needs a decision.
+ */
+const WA_SUSPECT: Record<'pending' | 'stale', { mark: string; colour: string; word: string; title: string }> = {
+  pending: {
+    mark: '!',
+    colour: 'var(--color-warning)',
+    word: 'may not have arrived',
+    title:
+      'OpenMasjidOS reported this as sent and has since found its WhatsApp link was down at the time, so it probably never arrived. This change has not happened yet, so it will be announced to the group again automatically.',
+  },
+  stale: {
+    mark: '!',
+    colour: 'var(--color-warning)',
+    word: 'may not have arrived',
+    title:
+      'OpenMasjidOS reported this as sent and has since found its WhatsApp link was down at the time. This change has already taken effect, so it is NOT being announced again — the wording would be wrong now. Send a message by hand if the group still needs to know.',
+  },
+};
+
 function WhatsAppLog({ entries, groups, fallbackLabel }: { entries: WhatsAppLogEntry[]; groups: { id: string; label: string }[]; fallbackLabel: string }) {
   const name = (id: string) => groups.find((g) => g.id === id)?.label || fallbackLabel || id;
   return (
@@ -458,7 +483,13 @@ function WhatsAppLog({ entries, groups, fallbackLabel }: { entries: WhatsAppLogE
             {/* An outcome this app has never written — a store restored from a newer build —
                 falls back to "waiting" rather than rendering an empty box. */}
             {(() => {
-              const s = WA_STATE[e.outcome] ?? WA_STATE.queued;
+              // A "sent" the platform has since withdrawn is drawn as the doubt it is, not as a
+              // tick. The whole incident behind this was a row reading "sent" about a message
+              // nobody received, for over a day.
+              const s =
+                e.suspect && e.suspect !== 'resent'
+                  ? WA_SUSPECT[e.suspect]
+                  : WA_STATE[e.outcome] ?? WA_STATE.queued;
               return (
                 <>
                   <span style={{ color: s.colour }} title={s.title}>

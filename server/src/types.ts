@@ -588,6 +588,30 @@ export interface WhatsAppLogEntry {
   /** when the platform's verdict was recorded, ISO — so the panel can distinguish "waiting"
    *  from "asked, and this is the answer". */
   settledAt?: string;
+  /**
+   * The platform later said its own `sent` for this message cannot be trusted.
+   *
+   * A masjid's WhatsApp session expired the way WhatsApp Desktop signs itself out, and nothing
+   * noticed: the gateway kept accepting messages and the platform kept recording them `sent` while
+   * none arrived. It detects that within about ten minutes now, but the messages already inside
+   * that window keep their `sent` record — and the platform cannot resend them, because it deletes
+   * a message's contents the moment it hands it over. This app still has the source data, so it is
+   * the only thing that can.
+   *
+   * `outcome` is deliberately left at `sent`: that IS what the platform reported, and rewriting it
+   * to `failed` would be putting words in its mouth. This field records what we later learned about
+   * the report, and the three states are what we then did about it:
+   *
+   *  - `pending`  — identified, and the change is still ahead, so it should go out again. The
+   *                 dedupe stops treating it as handled, and the ordinary paced announce path picks
+   *                 it up when that change is next in range.
+   *  - `resent`   — a later entry for the same change exists. Set when that entry is written, so a
+   *                 suspect message cannot re-open itself for ever.
+   *  - `stale`    — the change it announced is already in effect. Re-sending "from Friday, Asr will
+   *                 be at 5:30" after Friday is not a correction, it is confusing, so this is left
+   *                 for an admin to look at rather than acted on.
+   */
+  suspect?: 'pending' | 'resent' | 'stale';
   /** true when the poster image went with it, false/absent when only the text did */
   asImage?: boolean;
   /** why the platform refused, or why it later failed; never contains the message */
