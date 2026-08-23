@@ -407,11 +407,16 @@ export function PiSettings({
           </button>
         </div>
         <p className="hint muted pi-note">
-          A real shell on the screen, in its own window you can drag aside and keep open while you
-          work here. Nothing connects to the screen: it is offered a session on its next check-in and
-          dials back out, so this works through a masjid&rsquo;s router with nothing forwarded. It runs
-          as the screen&rsquo;s own account, not as an administrator — no <code>sudo</code> — and closes
-          itself after ten idle minutes. Nothing typed there is written to any log.
+          A real root shell on the screen, in its own window you can drag aside and keep open while
+          you work here. Nothing connects to the screen: it is offered a session on its next check-in
+          and dials back out, so this works through a masjid&rsquo;s router with nothing forwarded and
+          no port open on the Pi.
+        </p>
+        <p className="hint muted pi-note">
+          <strong>It is the whole machine.</strong> You can reboot it, install packages, read any log,
+          edit any file. Treat it as you would a terminal on the server itself: the session closes
+          after ten idle minutes, cannot last more than an hour, and nothing typed in it is written to
+          any log — but while it is open there is nothing on that screen it cannot do.
         </p>
       </section>
 
@@ -526,8 +531,9 @@ export function PiSettings({
               </div>
               <p className="hint muted pi-note">
                 One command at a time, queued for the screen&rsquo;s next check-in — what a screen too
-                old for a terminal can still do. Runs as the screen&rsquo;s own account, no{' '}
-                <code>sudo</code>, 20 seconds and 10,000 characters per command.
+                old for a terminal can still do. Unlike the terminal, this runs as the screen&rsquo;s
+                own limited account with no <code>sudo</code>, so <code>reboot</code> and anything else
+                needing root will not work here. 20 seconds and 10,000 characters per command.
               </p>
             </>
           )}

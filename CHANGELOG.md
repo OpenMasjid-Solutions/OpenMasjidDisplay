@@ -49,6 +49,20 @@ CLAUDE.md § *The changelog has two audiences*.
   done. There is no longer a separate button for each.
 
 ### Changed
+- **The terminal on a Raspberry Pi screen is now a real root shell.** It used to run as the
+  screen’s own limited account, which meant `sudo` did not work and neither did `reboot` — you
+  could look at almost anything and change almost nothing. It is now the whole machine: restart the
+  screen, install a package, read any log, edit any file, exactly as if you were sitting at it. This
+  is the same thing OpenMasjidOS offers in its own dashboard.
+
+  Worth knowing what that means: anyone who can sign in to this dashboard can now do anything on
+  every screen the masjid owns. Nothing else changed about how a session is opened — the screen is
+  offered it on its next check-in and dials out itself, so no port is opened on the Pi, and the
+  session still closes after ten idle minutes and cannot last more than an hour. Nothing typed in it
+  is written to any log.
+
+  The single-command box, which is what a screen running older software falls back to, is still
+  limited and now says so.
 - **A screen’s log is now a screen report, and it answers the question you opened it with.** It used
   to be 800 lines of the screen narrating itself. It now starts with the facts: the model, the OS,
   how long it has been up, **its clock and timezone** (a wrong timezone makes every prayer time on

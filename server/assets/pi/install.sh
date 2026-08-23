@@ -1015,6 +1015,99 @@ for req in "$SPOOL"/*; do
       fi
       ;;
 
+    shell-session)
+      # ── A ROOT terminal on this screen, dialled out to a session the panel minted. ──
+      #
+      # This is the one arm that hands over the whole machine, so it is worth being exact about what
+      # it is and what still holds it shut.
+      #
+      # It used to be the AGENT's own job, and the terminal it gave you ran as omdscreen under
+      # NoNewPrivileges — so `sudo` was not merely absent, it was unusable, and `reboot` could not
+      # work however you asked for it. That is a debugging window, not a terminal. A screen on a wall
+      # in another city needs the real thing, and OpenMasjidOS's own dashboard offers exactly that.
+      #
+      # What this verb does NOT take is a command. It takes a session id and a one-time secret, and
+      # starts an interactive shell — so the spool still carries no attacker-chosen command text and
+      # the dispatcher's filter is still what decides which verb runs. What moved is the privilege
+      # of the shell at the far end of a socket the panel already controlled.
+      #
+      # What still holds:
+      #   * the session is minted by the panel, offered to this device ONCE, and single-use;
+      #   * the secret goes only to the device, never to the browser;
+      #   * the device DIALS OUT — nothing can connect to it — so no port is opened here;
+      #   * the server expires it: 60s to claim, 10 idle minutes, one hour maximum;
+      #   * every session start and end is in the journal, and nothing typed is ever logged.
+      _req=$STATEDIR/shell-request
+      _run=$PREFIX/shell-request
+      if [ ! -f "$_req" ]; then
+        # Two sessions asked for at once, and the second payload replaced the first. Not worth
+        # aborting the rest of the spool for.
+        echo 'control: a terminal was asked for with no session details; ignoring'
+      else
+        # MOVED before it is read, and that ordering is the point: $STATEDIR belongs to the agent,
+        # so anything validated in place could be swapped for something else immediately afterwards.
+        # rename(2) does not follow a symlink at the destination, and once the file is under $PREFIX
+        # the agent cannot reach it at all. Same reasoning as handover(), in the other direction.
+        mv -f "$_req" "$_run" 2>/dev/null || true
+        chown root:root "$_run" 2>/dev/null || true
+        chmod 600 "$_run" 2>/dev/null || true
+        # Four lines: id, secret, rows, cols. Checked here as well as in the agent — not because the
+        # agent is untrusted with its own file format, but because this is the arm that starts a root
+        # shell and it should be readable as obviously bounded.
+        _sid=$(sed -n 1p "$_run" 2>/dev/null | tr -d '\n\r')
+        _ssec=$(sed -n 2p "$_run" 2>/dev/null | tr -d '\n\r')
+        _srow=$(sed -n 3p "$_run" 2>/dev/null | tr -d '\n\r')
+        _scol=$(sed -n 4p "$_run" 2>/dev/null | tr -d '\n\r')
+        # A field is valid when stripping everything but its allowed characters leaves it unchanged.
+        # `tr -dc` rather than a `case` pattern for one specific reason: a nested case arm inside this
+        # one carries its own terminator, and a test that reads an arm up to its first terminator then
+        # sees half of it. That has now cost two debugging sessions in this file, so the arms that
+        # matter most are written without nesting at all.
+        _ok=1
+        [ -n "$_sid" ]  && [ "$_sid"  = "$(printf '%s' "$_sid"  | tr -dc 'A-Za-z0-9_-')" ] || _ok=0
+        [ -n "$_ssec" ] && [ "$_ssec" = "$(printf '%s' "$_ssec" | tr -dc 'A-Za-z0-9_-')" ] || _ok=0
+        [ -n "$_srow" ] && [ "$_srow" = "$(printf '%s' "$_srow" | tr -dc '0-9')" ] || _ok=0
+        [ -n "$_scol" ] && [ "$_scol" = "$(printf '%s' "$_scol" | tr -dc '0-9')" ] || _ok=0
+        if [ "$_ok" = 0 ]; then
+          rm -f "$_run"
+          echo 'control: refusing a terminal session whose details are not a plain id, secret and size'
+        else
+          # The agent's own TLS trust, read out of its unit rather than duplicated in a second file.
+          # A masjid whose display server has a self-signed certificate has exactly one setting for
+          # this and it lives there; a copy would be one more thing to keep in step, and the failure
+          # of getting it wrong is a terminal that never connects and says nothing about why.
+          # The two NAMED variables, not NODE_*. Matching any NODE_ variable picks up
+          # `Environment=NODE_ENV=production`, which the unit also carries, and `head -1` then
+          # discards whatever followed. Measured on a real Pi 4: the unit has two such lines, the
+          # loose pattern returned NODE_ENV and the setting that mattered —
+          # NODE_TLS_REJECT_UNAUTHORIZED=0, for a display server with a self-signed certificate — was
+          # dropped. The terminal would simply have failed to connect, with nothing saying why.
+          # The installer sets exactly one of these two, never both.
+          _tls=$(sed -n \
+            -e 's/^Environment=\(NODE_EXTRA_CA_CERTS=.*\)$/\1/p' \
+            -e 's/^Environment=\(NODE_TLS_REJECT_UNAUTHORIZED=.*\)$/\1/p' \
+            /etc/systemd/system/openmasjid-screen.service 2>/dev/null | head -1 || true)
+          # No --unit: two terminals open at once would collide on a fixed name, and systemd's own
+          # generated name plus --collect cleans itself up either way. Detached for the same reason
+          # the reinstall is — this dispatcher's cgroup goes down when it exits, and a terminal has
+          # to outlive it by up to an hour.
+          if [ -n "$_tls" ]; then
+            systemd-run --collect --quiet --setenv="$_tls" \
+              --description='OpenMasjidDisplay: terminal session' \
+              /usr/bin/node "$PREFIX/agent.js" --shell-session "$_run" >/dev/null 2>&1 \
+              && echo 'control: started a terminal session' \
+              || { rm -f "$_run"; echo 'control: could not start a terminal session'; }
+          else
+            systemd-run --collect --quiet \
+              --description='OpenMasjidDisplay: terminal session' \
+              /usr/bin/node "$PREFIX/agent.js" --shell-session "$_run" >/dev/null 2>&1 \
+              && echo 'control: started a terminal session' \
+              || { rm -f "$_run"; echo 'control: could not start a terminal session'; }
+          fi
+        fi
+      fi
+      ;;
+
     set-video-mode)
       # FORCE the HDMI mode, for a television that negotiates a bad one.
       #

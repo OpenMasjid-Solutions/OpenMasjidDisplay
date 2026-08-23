@@ -501,6 +501,9 @@ test('the dispatcher still executes nothing outside its closed set', () => {
       'reinstall',
       'set-timezone',
       'set-video-mode',
+      // The one verb that hands over the whole machine — and it still carries no command, only a
+      // session id and a one-time secret. See its arm for the whole of what holds it shut.
+      'shell-session',
       'update',
       'wifi-forget',
       'wifi-join',

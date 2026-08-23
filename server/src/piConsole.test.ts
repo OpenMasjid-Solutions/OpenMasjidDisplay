@@ -14,9 +14,22 @@
  * reboot the board. A console command can look at nearly anything on the screen and change nearly
  * nothing.
  *
- * That distinction is the thing worth defending in a test, because the tempting simplification —
- * "the spool already runs things as root, put it there" — would trade the property away for every
- * other verb at the same time. So the first two tests here are about where this feature is NOT.
+ * ## And the terminal, which IS root
+ *
+ * The full terminal is a different feature and it is deliberately privileged: it opens a root shell,
+ * because a screen three hundred miles away that cannot be rebooted or have a package installed on
+ * it does not have a terminal, it has a viewer. So the spool does now start something as root at the
+ * panel's request.
+ *
+ * The line that keeps the closed verb set worth anything is therefore not "nothing privileged comes
+ * from the panel" — it is narrower and it is exact: **no verb carries a command string.** The
+ * terminal's verb carries a session id, a one-time secret and a size. The console's payload IS a
+ * command string, which is precisely why it must never become a verb; its bound is the account it
+ * runs as.
+ *
+ * Both halves of that are asserted below, because the tempting simplification — "the spool already
+ * starts a root shell, put the console there too" — would collapse the distinction and take every
+ * other verb's narrowness with it.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,11 +58,51 @@ test('a console command is never a root verb', () => {
   const src = agentSrc();
   const union = /type PrivilegedVerb =([\s\S]*?);/.exec(src);
   assert.ok(union, 'could not find the PrivilegedVerb union in the agent');
-  assert.ok(!union[1].includes('shell'), 'a console command must not be something the agent asks root for');
+
+  // The EXACT verb, not a substring of one. The invariant here is narrower than it first looks and
+  // the distinction is the whole of it: what must never be a root verb is a verb that carries a
+  // COMMAND STRING — because the spool's filter (`head -c 32 | tr -dc 'a-z-'`) is what makes root's
+  // side of this device a closed set, and one verb meaning "run this" would end that property for
+  // every other verb at once.
+  //
+  // `shell-session` IS a root verb, and deliberately: it opens a root terminal. It carries a session
+  // id, a one-time secret and a size, and no command text at any point — so the spool still names
+  // verbs rather than executing strings. A substring check could not tell those two apart, and read
+  // as this invariant being broken when it is not.
+  const verbs = [...union[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
+  assert.ok(verbs.length > 0, 'could not read the verbs out of the union');
+  assert.ok(!verbs.includes('shell'), 'a console command must not be something the agent asks root for');
 
   // And the dispatcher on the device. piInstaller.test.ts asserts the exact verb list; this says
   // WHY 'shell' must never join it, in the file somebody adding it would be reading.
   assert.ok(!/^\s{4}shell\)/m.test(installerSrc()), 'the root dispatcher must have no branch for a console command');
+});
+
+test('the root terminal carries a session, never a command', () => {
+  // The line that keeps the closed verb set meaningful now that one verb opens a root shell. If a
+  // command string ever reaches this arm, the spool has become "run this as root" and every other
+  // verb's narrowness stops buying anything.
+  const arm = installerSrc();
+  const start = arm.indexOf('    shell-session)');
+  assert.ok(start >= 0, 'the dispatcher must have a shell-session arm');
+  const branch = arm.slice(start, arm.indexOf(';;', start));
+  // It reads exactly four fields, and every one of them is checked to be a token or a number.
+  for (const field of ['_sid', '_ssec', '_srow', '_scol']) {
+    assert.ok(branch.includes(field), `the arm must read ${field}`);
+  }
+  assert.match(branch, /tr -dc 'A-Za-z0-9_-'/, 'the id and secret have to be plain tokens');
+  assert.match(branch, /tr -dc '0-9'/, 'and the size has to be digits');
+  // Nothing from the request may reach a command line. The only thing passed to node is the PATH of
+  // the request file, which root owns by then.
+  assert.ok(
+    !/\$_sid|\$_ssec/.test(branch.slice(branch.indexOf('systemd-run'))),
+    'no field from the request may be interpolated into the command that starts the terminal',
+  );
+  // And the payload is moved out of the agent's reach BEFORE being read, or it could be swapped
+  // between the check and the use.
+  const mvAt = branch.indexOf('mv -f "$_req"');
+  assert.ok(mvAt >= 0, 'the request must be moved out of the agent-writable directory');
+  assert.ok(mvAt < branch.indexOf('_sid=$('), 'and moved before it is read, not after');
 });
 
 test('the agent runs a console command itself, in its own sandbox', () => {
@@ -201,4 +254,25 @@ test('a journal is kept from the END, because that is where the fault is', () =>
   setDeviceJournal(db, 'pi_test', 'old '.repeat(80_000) + 'THE INTERESTING PART', 1_000);
   assert.ok((device.journal?.length ?? 0) <= 200_000);
   assert.ok(device.journal?.endsWith('THE INTERESTING PART'), 'truncating from the front discards the answer');
+});
+
+test('the root terminal inherits the screen\'s TLS trust, and the RIGHT variable', () => {
+  // A masjid whose display server has a self-signed certificate has exactly one setting for this and
+  // it lives in the agent's unit. The terminal runs in a transient unit, which inherits nothing, so
+  // it has to be passed across — and the pattern that does it has to name the variable.
+  //
+  // Measured on a real Pi 4: the unit carries TWO `Environment=NODE_` lines, and a pattern matching
+  // `NODE_[A-Z_]*` returned `NODE_ENV=production` while `head -1` discarded
+  // `NODE_TLS_REJECT_UNAUTHORIZED=0`. The terminal would have failed to connect on exactly the
+  // installs that need the setting, saying nothing about why.
+  const src = installerSrc();
+  const start = src.indexOf('    shell-session)');
+  const branch = src.slice(start, src.indexOf(';;', start));
+  assert.ok(/NODE_EXTRA_CA_CERTS/.test(branch), 'the pinned-CA case has to be carried across');
+  assert.ok(/NODE_TLS_REJECT_UNAUTHORIZED/.test(branch), 'and the unverified case');
+  assert.ok(
+    !/NODE_\[A-Z_\]\*/.test(branch),
+    'a loose NODE_* pattern matches NODE_ENV before it matches the setting that matters',
+  );
+  assert.ok(/--setenv=/.test(branch), 'and it must actually reach the transient unit');
 });

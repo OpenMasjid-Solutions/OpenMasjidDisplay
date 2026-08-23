@@ -452,3 +452,25 @@ this file.
   to absorb this class of thing was removed in 0.51.1. `ALERT_MIN_GAP_MS` in orchestrator.ts floors the
   DOWN alert only — a recovery can only follow a down alert already sent, and suppressing one would
   leave an admin believing a screen is dead. Delay such an alert, never drop it.
+- **The Pi terminal is a ROOT shell, and that was a deliberate change.** It used to run as the
+  screen's own unprivileged account under `NoNewPrivileges`, which made `sudo` unusable and
+  `reboot` impossible — a debugging window rather than a terminal. It is now the whole machine, to
+  match what OpenMasjidOS's own dashboard offers. Understand what that means before touching it: a
+  stolen dashboard session is root on every screen the masjid owns. Four things hold it shut and
+  all four are load-bearing:
+  - **The panel mints, the device dials OUT.** Nothing connects to a Pi and no port is opened on
+    one. The session is offered on the device’s own state poll and it opens the socket.
+  - **The secret never reaches a browser.** `openShellSession` returns it so the API can put it on
+    the COMMAND for the device; the panel is given the id alone. Single-use, and a wrong secret
+    ends the session rather than allowing another try.
+  - **Three clocks, on the server:** 60s to claim, 10 idle minutes, one hour maximum. The agent
+    keeps its own backstop (`SHELL_SESSION_MAX_MS`) for a socket that wedges rather than closes.
+  - **The spool still names verbs, it does not run strings.** The `shell-session` verb carries a
+    session id, a one-time secret and a terminal size — never command text. That distinction is
+    what keeps the rest of the closed verb set worth anything, and `piConsole.test.ts` asserts it
+    in both directions: `shell` (which DOES carry a string) must never become a root verb, and the
+    root terminal's arm must never interpolate a field from its request into a command line.
+  Nothing about a session is ever logged — not the keystrokes, not the output, not a sample. The
+  one-shot console (`shell`) is deliberately still unprivileged; it is the fallback for a screen
+  whose agent is too old to offer a terminal, and the panel says so rather than letting it look
+  broken.

@@ -493,14 +493,40 @@ async function runCommand(
     return;
   }
 
+  /**
+   * A terminal. Handed to ROOT rather than run here.
+   *
+   * This process runs as omdscreen under NoNewPrivileges, so a shell it started could not become
+   * root by any route — `sudo` is not merely absent, it is unusable, and `reboot` cannot work
+   * however it is asked for. That is a debugging window, not a terminal, and a screen on a wall in
+   * another city needs the real thing.
+   *
+   * So the session details go into the spool and root starts the terminal itself, in a transient
+   * unit that outlives this poll. The verb carries no command — only a session id, a one-time
+   * secret and a size — so the spool is still a closed set of verbs rather than a way to run
+   * strings; see the `shell-session` arm in the installer for what still holds it shut.
+   */
   if (cmd.action === 'shell-session') {
-    if (!cmd.shellSession?.id || !cmd.shellSession.secret) {
+    const s = cmd.shellSession;
+    if (!s?.id || !s.secret) {
       log('a terminal session arrived with nothing to dial into; ignoring it');
       return;
     }
-    // Not awaited: the session lives for as long as somebody is typing, and the poll loop has a
-    // screen to keep drawing. Everything it owns is torn down by its own handlers.
-    runShellSession(cfg, cmd.shellSession);
+    const rows = Math.max(8, Math.min(200, Math.round(s.rows) || 24));
+    const cols = Math.max(20, Math.min(400, Math.round(s.cols) || 80));
+    try {
+      const dir = '/var/lib/openmasjid-screen';
+      // Four lines rather than JSON: root reads this too, and parsing JSON in shell is how a
+      // validation gets skipped. Written and renamed BEFORE the verb, so the dispatcher cannot wake
+      // on a request whose payload has not landed. 0600 because line two is a credential.
+      fs.writeFileSync(`${dir}/.shell-request`, `${s.id}\n${s.secret}\n${rows}\n${cols}\n`, { mode: 0o600 });
+      fs.renameSync(`${dir}/.shell-request`, `${dir}/shell-request`);
+    } catch (e) {
+      log('could not leave the terminal session details for the system:', (e as Error).message);
+      return;
+    }
+    // The secret is NOT in this message, and there is no branch here that could put it in one.
+    requestPrivileged(cmd.id, 'shell-session', 'asked the system to open a terminal session');
     return;
   }
 
@@ -724,15 +750,27 @@ function applyDisplaySchedule(live: Live): void {
  *    on the pty fd and we do not have one without a native module. Sized from the browser's terminal
  *    when the session is minted, which is right for every case except resizing mid-session.
  *
- * ## What it is allowed to be
+ * ## What it is allowed to be: everything
  *
- * The same account and the same unit sandbox as the one-shot console: NoNewPrivileges, no write
- * access to /opt, no capability to reboot the board, no sudo. The root control spool is not involved
- * and must never be — its closed verb set is what makes root's half of this device simple enough to
- * reason about, and "run this string" would end that for every verb at once.
+ * This runs as ROOT, and it is the only part of this agent that does. It is not started by the agent
+ * — the agent cannot start anything privileged — but by the control spool, in a transient unit; see
+ * the `shell-session` arm in the installer for the whole of what still holds it shut.
+ *
+ * It was deliberately the other way round first: the same account and sandbox as the one-shot
+ * console, NoNewPrivileges, no sudo, no way to reboot the board. That is a defensible thing to build
+ * and it is not a terminal. You could not restart the screen you were looking at, could not install
+ * a package to diagnose something, could not read a root-owned log — and every one of those is why
+ * somebody opens a terminal on a machine three hundred miles away. OpenMasjidOS's own dashboard
+ * offers a real root shell; a screen managed from the same family of dashboards should not offer
+ * something that merely looks like one.
+ *
+ * What did NOT change is the way in: the panel mints a session, the device is offered it once and
+ * dials OUT, the secret never reaches a browser, and the server expires it three different ways.
+ * The privilege at the far end moved; the door did not.
  *
  * Nothing here logs a byte of the session. Not the keystrokes, not the output, not a sample: a
- * terminal transcript is the likeliest thing in this whole app to contain a password.
+ * terminal transcript is the likeliest thing in this whole app to contain a password — and now the
+ * likeliest to contain a root one.
  */
 function runShellSession(cfg: AgentConfig, s: { id: string; secret: string; rows: number; cols: number }): void {
   const url = `${cfg.server.replace(/^http/, 'ws')}/pi/${cfg.token}/shell/${encodeURIComponent(s.id)}`;
@@ -770,12 +808,17 @@ function runShellSession(cfg: AgentConfig, s: { id: string; secret: string; rows
   ws.on('open', () => {
     const rows = Math.max(8, Math.min(200, Math.round(s.rows) || 24));
     const cols = Math.max(20, Math.min(400, Math.round(s.cols) || 80));
+    // Root's own home, because this process IS root — started by the control spool as a transient
+    // unit, not by the agent. HOME is not cosmetic here: every tool that writes a dotfile uses it,
+    // and pointing root's shell at the agent's state directory would scatter root-owned files
+    // through a directory the agent has to be able to write.
+    const asRoot = process.getuid?.() === 0;
     try {
       child = spawn('script', ['-qfc', `stty rows ${rows} cols ${cols}; exec /bin/bash -i`, '/dev/null'], {
-        cwd: shellCwd(),
+        cwd: asRoot ? '/root' : shellCwd(),
         env: {
           PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-          HOME: '/var/lib/openmasjid-screen',
+          HOME: asRoot ? '/root' : '/var/lib/openmasjid-screen',
           // Forced: see the note above about nologin.
           SHELL: '/bin/bash',
           TERM: 'xterm-256color',
@@ -940,6 +983,10 @@ function runShell(cmd: string): Promise<{ out: string; code: number | null; ms: 
  * anything derived from the network.
  */
 type PrivilegedVerb =
+  // A ROOT terminal. The only verb that hands over the whole machine, and the reason it is a verb
+  // at all is that this process cannot start anything privileged — see the shell-session branch of
+  // runCommand. It carries a session id and a one-time secret, never a command.
+  | 'shell-session'
   // 'screenshot' is deliberately absent: the agent reads the framebuffer itself, because it is
   // already in the video group. Nothing that can be done unprivileged belongs in this list.
   | 'display-off'
@@ -1667,8 +1714,68 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: Error) => {
+/**
+ * Run one terminal session and exit — the agent's second entry point.
+ *
+ * Reached only as `agent.js --shell-session <file>`, and only ever from the control spool's
+ * `shell-session` arm, which starts it as root in a transient unit. The file holds four lines: the
+ * session id, the one-time secret, and the terminal's rows and columns. Root has already moved it
+ * somewhere the agent cannot reach and checked its shape; this reads it, deletes it, and dials out.
+ *
+ * Deliberately the same binary as the agent. The socket handling, the TLS trust, the config and the
+ * pty are all here already, and a second program that had to be kept in step with this one is a
+ * second program that would quietly stop being.
+ */
+async function runShellSessionOnly(file: string): Promise<void> {
+  let lines: string[];
+  try {
+    lines = fs.readFileSync(file, 'utf8').split(String.fromCharCode(10));
+  } catch (e) {
+    log('could not read the terminal session details:', (e as Error).message);
+    process.exit(1);
+  }
+  // Deleted before the session opens, not after: it holds a single-use secret, and a session that
+  // runs for an hour must not leave that on disk for the hour.
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    /* already gone, which is fine */
+  }
+  const [id = '', secret = '', rowsRaw = '', colsRaw = ''] = lines;
+  // Re-validated here as well as by root. Same reasoning as everywhere else in this app: the check
+  // that matters is the one made by the thing about to act on the value.
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id.trim()) || !/^[A-Za-z0-9_-]{8,128}$/.test(secret.trim())) {
+    log('refusing a terminal session whose id or secret is not a plain token');
+    process.exit(1);
+  }
+  const cfg = loadConfig();
+  if (!cfg?.server || !cfg.token) {
+    log('cannot open a terminal: this screen has no server address or is not adopted');
+    process.exit(1);
+  }
+  runShellSession(cfg, {
+    id: id.trim(),
+    secret: secret.trim(),
+    rows: Number(rowsRaw) || 24,
+    cols: Number(colsRaw) || 80,
+  });
+  // runShellSession tears everything down through its own handlers and this process has nothing
+  // else to do, so the socket closing is what ends us. The backstop inside it (SHELL_SESSION_MAX_MS)
+  // is what stops a wedged socket leaving a root bash on the device for the rest of the week.
+}
+
+const shellArg = process.argv.indexOf('--shell-session');
+if (shellArg >= 0) {
+  const file = process.argv[shellArg + 1];
+  if (!file) {
+    log('--shell-session needs the path to a session file');
+    process.exit(1);
+  }
+  void runShellSessionOnly(file);
+} else {
+  main().catch((e: Error) => {
   // Last resort. systemd restarts us; the journal gets the reason.
-  log('fatal:', e.message);
-  process.exit(1);
-});
+    log('fatal:', e.message);
+    process.exit(1);
+  });
+}

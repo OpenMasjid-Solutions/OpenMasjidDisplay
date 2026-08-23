@@ -157,9 +157,9 @@ export function PiTerminal({ deviceId, onFallback }: { deviceId: string; onFallb
         )}
       </div>
       <p className="hint muted pi-note">
-        A shell on the screen, as the screen&rsquo;s own account — not an administrator, and no{' '}
-        <code>sudo</code>. The session closes after ten idle minutes and cannot last more than an
-        hour. Nothing typed here is written to any log.
+        A root shell on the screen — the whole machine, including <code>reboot</code>. The session
+        closes after ten idle minutes and cannot last more than an hour. Nothing typed here is
+        written to any log.
       </p>
     </>
   );
