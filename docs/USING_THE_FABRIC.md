@@ -22,6 +22,9 @@ domain: true         # learn our PUBLIC url behind the admin's tunnel (widget + 
 https: true          # serve the control panel through the platform's TLS proxy
 whatsapp: true       # post the Iqamah-change notice to a group the admin approved
 commands:            # things an admin can run by messaging the masjid's number (!display)
+fabric:              # what we PROVIDE to other apps: `timetable`, over the app-to-app broker
+  provides:
+    - capability: timetable
 ```
 
 ### 1. Single sign-on (implemented — keep it)
@@ -191,7 +194,8 @@ rather than a limiter bolted on, which is the point — there is no code path he
 `commands:` declares what an admin can run by messaging the masjid's WhatsApp number. The platform
 owns everything except the doing — it decides who may run them, renders the numbered menu from our
 manifest order, and formats the reply. We serve one route, `POST /fabric/commands/run`
-(`server/src/fabricCommands.ts`), and it is the **only inbound Fabric surface this app has**.
+(`server/src/fabricCommands.ts`), and it is the **only inbound route that can write** — §8 below
+adds a second, read-only one under the same `/fabric/` prefix, which is not a permission.
 
 The envelope, all of which is load-bearing:
 
@@ -237,6 +241,117 @@ Four rules, all of which this app depends on:
 **`confirm: true` is deliberately OFF.** The platform's confirmation fires per call, so it would
 demand a code before *every* step. The wizard's own `save` is the confirmation, and nothing is
 written before it. `argument.required` is **false**, which is what makes a bare `!display 1` legal.
+
+### 8. Providing `timetable` to other apps (implemented — keep it)
+
+This is the only thing Display **provides**. Everything else above is Display consuming the
+platform; here another app on the same box consumes Display, through the platform's **app-to-app
+broker**, and the platform is the only route between them.
+
+```yaml
+fabric:
+  provides:
+    - capability: timetable
+```
+
+**Why it exists.** Display owns prayer-time correctness in this family of apps. The calculation,
+the Iqamah rules, the CSV per-day overrides, the scheduled "from this date" changes, the masjid's
+timezone and its Hijri offset all live here and nowhere else. **OpenMasjidCompanion** — the
+installable PWA musallis add to their phones — shows a prayer timetable as its home screen and
+fires its push notifications from those times, and is forbidden by its own rules from calculating
+any of it. So it reads ours. `server/src/fabricTimetable.ts`.
+
+**Two methods, on the control-panel port, at the exact unprefixed paths:**
+
+```
+POST /fabric/timetable/list   → { v:1, timetables:[{ id, name }] }
+POST /fabric/timetable/get    ← { id, from:"YYYY-MM-DD", days:1..45 }
+```
+
+The broker proxies `POST ${OPENMASJID_BASE_URL}/api/fabric/app/display/timetable/<method>` onto
+those, injecting **our own** `OPENMASJID_APP_SECRET` as `X-OpenMasjid-App-Secret` and the trusted
+caller id as `X-OpenMasjid-Caller-App`.
+
+`get` answers with the timetable's `masjidName`, its **`timezone`** (IANA), `language`,
+`hourCycle`, and one object per day carrying `date`, `hijri.label`, `sunrise`, the five prayers as
+`{adhan, iqamah}`, and `jumuah`. The exact shape is the `Fabric*` interfaces in
+`server/src/fabricTimetable.ts` — those are the written contract, and `fabricTimetable.test.ts`
+holds it to them.
+
+Four things about that payload are load-bearing and easy to get wrong later:
+
+- **The wire is 24-hour `"HH:mm"`, always** — `hourCycle` is what this timetable *displays*, not
+  what it sends. The trap is reusing the renderer's `fmtShort(h, tt.timeFormat)`, which would hand
+  a consumer `"9:25 PM"` to parse and an em dash where it expected nothing. `hhmm()` floors the
+  minute exactly as the screens do, because a phone showing a time a minute later than the board
+  on the wall is a discrepancy nobody can explain.
+- **Every override is already applied**, per day — CSV, scheduled change, Adhan offsets, the
+  Iqamah rule, in that precedence. What a musalli standing in the masjid on that date would read
+  off the screen is what goes on the wire. That is the whole point of asking us rather than
+  calculating.
+- **`timezone` is the zone the times were actually computed in**, which is *not* always
+  `tt.timezone`: that field is `''` for "this box's zone", and the engine also falls back to the
+  host zone for a name Intl does not recognise. A consumer schedules notifications from this, so
+  reporting the stored string would be silently an hour or more out for everyone.
+- **`jumuah` is emitted only on days that are Friday in the masjid's zone**, with `adhan: null`.
+  The screens carry the Jumu'ah strip on *every* day as a standing reference; repeating that here
+  would assert a jamā'ah on a Tuesday. The null is a fact, not a gap — a timetable configures
+  Jumu'ah as jamā'ah times only, and the Friday countdown on the wall runs to the calculated
+  **Dhuhr** adhan relabelled "Jumu'ah", so that day's `prayers.dhuhr.adhan` is the time to use.
+
+**The envelope**, and which part of it is doing what — because only one of these is the
+authentication:
+
+- **The secret is the authentication.** `X-OpenMasjid-App-Secret` must equal our own
+  `OPENMASJID_APP_SECRET`, length-checked then constant-time compared. It proves the call came
+  *through the platform*.
+- **The path is the authorisation.** The broker maps `…/app/display/<capability>/<method>` onto
+  `/fabric/<capability>/<method>`, so the capability the admin granted **is** the path segment,
+  and a grant for one cannot reach another's handler. The grant list stays with the platform;
+  a second copy here would only ever drift.
+- **The exact *raw* path is the LAN-only rule** — and this is the one place this route is
+  deliberately stricter than §7. `/fabric/commands/run` enforces LAN-only by refusing any request
+  carrying `x-forwarded-*`, on the reasoning that the platform builds its headers from scratch.
+  That reasoning does not transfer: the broker *is* a proxy, and if it appends
+  `X-Forwarded-For` the route would be dead on arrival, silently, and only on a real box. So this
+  route compares the **request line** against the path it matched instead. That is strictly
+  stronger for the case that actually matters — `pathname` comes from `new URL()`, which collapses
+  dot segments, so `/display/../fabric/timetable/get` reaches an "exact path" match while the raw
+  target never equals the bare path. No tunnelled spelling of the request can pass.
+- **The caller id is neither.** Anything holding the secret can spell it however it likes. It is
+  *required* because a genuine broker call always carries one, it is checked for **shape only**,
+  and it is kept because a refusal in the log is worth little without knowing who was asking.
+  Never turn it into an allow-list of apps: a route that refused a caller the platform
+  legitimately started using would fail closed and silently.
+
+**Read-only, and asserted rather than intended** — nothing in the module touches `store.update`,
+and a test reads the file to prove it. A provider that can write turns a leaked secret into an
+attacker repointing a masjid's prayer times.
+
+`days` is capped at **45** server-side. That keeps the answer far inside the broker's 256 KB
+response ceiling (a 45-day answer with eight Jumu'ah jamā'āt and Arabic labels is well under
+128 KB), but the cap is really about CPU: every day is a fresh solar computation in the same
+process that runs the 1 fps loop drawing the actual screens. There is also a 60/min socket-keyed
+limiter for the same reason. Outside 1–45 is `400`, not a clamp.
+
+The full error set, since a consumer has to branch on it: `400 {error:'bad_request'}`,
+`403 {error:'forbidden'}` (the envelope — deliberately not saying which part of it failed),
+`404 {error:'unknown_timetable'}`, `405 {error:'method_not_allowed'}` (both methods are POST),
+`409 {error:'no_location'}` (the timetable exists but the admin never set coordinates — retrying
+will not fix it, and answering anyway would compute for latitude 0, longitude 0 and return times
+that look entirely reasonable), `429 {error:'too_many_requests'}`, and
+`503 {error:'not_ready'}` before we have a secret. An unexpected throw becomes the dispatcher's
+generic 500, so treat any 5xx as "ask again later".
+
+**This capability is not the public widget.** `/w/<id>.json` is gated on `widget.enabled`, shaped
+for an iframe and open to the internet with CORS. That opt-in governs whether the masjid publishes
+times on their own *website*, which has nothing to do with whether they granted another app on
+their own box the capability to read them — so `list` deliberately does **not** apply it. Copying
+that gate would hide timetables the admin clearly meant to share; ignoring it in the other
+direction, on the public route, would expose ones they never published.
+
+**Adding a field is additive and bumps nothing; changing or removing one is a new `v`.** A
+consumer must ignore fields it does not know.
 
 ## What Display does NOT need — but exists
 

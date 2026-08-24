@@ -241,7 +241,9 @@ function gregorian(parts: { year: number; month: number; day: number }, lang: st
   }).format(new Date(Date.UTC(parts.year, parts.month - 1, parts.day + offsetDays, 12)));
 }
 
-function hijri(parts: { year: number; month: number; day: number }, lang: string, offsetDays = 0): string {
+/** Exported for the Fabric `timetable` capability, which hands this label to another app
+ *  because that app is not allowed to work a Hijri date out for itself. */
+export function hijri(parts: { year: number; month: number; day: number }, lang: string, offsetDays = 0): string {
   try {
     return new Intl.DateTimeFormat(`${lang}-u-ca-islamic-umalqura`, {
       day: 'numeric',

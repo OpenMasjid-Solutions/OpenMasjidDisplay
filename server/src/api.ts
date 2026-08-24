@@ -23,6 +23,12 @@ import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, w
 import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
 import type { FabricCommands } from './fabricCommands';
 import {
+  handleFabricTimetable,
+  TIMETABLE_GET_PATH,
+  TIMETABLE_LIST_PATH,
+  TIMETABLE_MAX_BODY_BYTES,
+} from './fabricTimetable';
+import {
   originFor,
   renderInstaller,
   installerTemplate,
@@ -355,6 +361,14 @@ export function createApi(deps: Deps) {
   // X-Forwarded-For: this one sits in front of a secret check, and a forged header would both
   // dodge the cap entirely and add a Map entry per request.
   const commandLimiter = new RequestLimiter(60, 60_000, true);
+  // The `timetable` capability served to other apps through the broker. The only legitimate
+  // caller is the platform relaying one app's refresh, which is a handful of calls an hour, so
+  // 60/min is purely a bound on a runaway — and a needed one: a `get` at the 45-day cap is 45
+  // solar computations sharing this process with the 1 fps loop that draws the screens, so a
+  // tight loop here is a way to make a television stutter. Keyed on the SOCKET (the `true`) for
+  // the same reason as the commands limiter above: it sits in front of a secret check, where a
+  // forged X-Forwarded-For would dodge the cap and mint a Map entry per request.
+  const fabricAppLimiter = new RequestLimiter(60, 60_000, true);
   // Browser screens, PAGE and STATE only: a real screen asks for its state every 5 s, so ~12
   // a minute plus the odd page load. Generous enough for a masjid rebooting every television
   // at once.
@@ -389,6 +403,7 @@ export function createApi(deps: Deps) {
   setInterval(() => {
     widgetLimiter.prune();
     commandLimiter.prune();
+    fabricAppLimiter.prune();
     screenLimiter.prune();
     screenMediaLimiter.prune();
   }, 5 * 60_000).unref?.();
@@ -424,6 +439,31 @@ export function createApi(deps: Deps) {
         const body = await readBody(req, 8_000).catch(() => null);
         if (!body) return sendJson(res, 400, { ok: false, error: 'Could not read that request.' });
         return commands.handle(req, res, body);
+      }
+
+      /**
+       * ANOTHER APP reading this masjid's prayer times, through the platform's app-to-app
+       * broker: the `timetable` capability we declare in `manifest.yaml`'s `fabric.provides`.
+       *
+       * Same reason as the route above for sitting up here — there is no session, only our own
+       * app secret presented back to us — but a DIFFERENT caller and a different blast radius,
+       * so it is a separate handler and not a second command. Read-only. The broker maps
+       * `/api/fabric/app/display/timetable/<method>` onto these exact paths, and the handler
+       * re-checks the raw request line against the one it matched, which is what keeps the
+       * capability off the tunnel (`new URL()` above has already normalised dot segments away,
+       * so `pathname` alone would accept `/display/../fabric/timetable/get`).
+       */
+      if (pathname === TIMETABLE_LIST_PATH || pathname === TIMETABLE_GET_PATH) {
+        if (!fabricAppLimiter.allow(req)) return sendJson(res, 429, { error: 'too_many_requests' });
+        // Matched on the path REGARDLESS of method, so that a GET says so instead of falling
+        // through to the static branch below — which answers any non-/api/ GET with the panel's
+        // index.html, and would hand a consumer debugging its integration a page of HTML with a
+        // 200 on it. Nothing is disclosed by admitting the route exists: it is in the manifest,
+        // and the manifest is in the public catalog.
+        if (method !== 'POST') return sendJson(res, 405, { error: 'method_not_allowed' });
+        const body = await readBody(req, TIMETABLE_MAX_BODY_BYTES).catch(() => null);
+        if (!body) return sendJson(res, 400, { error: 'bad_request' });
+        return handleFabricTimetable(req, res, pathname === TIMETABLE_LIST_PATH ? 'list' : 'get', body, store);
       }
 
       // ---- Volunteer page (also served here, not just on its own port) ----

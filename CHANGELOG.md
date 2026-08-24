@@ -47,6 +47,16 @@ CLAUDE.md § *The changelog has two audiences*.
 - **Update now updates the whole screen.** One button installs the operating system’s own security
   updates and the newest version of this app, in that order, and restarts the screen when it is
   done. There is no longer a separate button for each.
+- **Other OpenMasjid apps on your box can now read your prayer times from here.** Your timetables
+  are the masjid’s single source of truth for prayer times, and until now nothing else could use
+  them — so anything that needed the times had to be told them a second time, by hand, and drift
+  the moment you changed an Iqamah. Display now offers them to the other apps you have installed:
+  the calculated Adhan times, your Iqamah times with every scheduled change and imported day
+  already applied, Jumu‘ah on the right Fridays, the Hijri date and your timezone. **OpenMasjid
+  Companion** — the app musallis add to their phones — is the first to use it, so the times on
+  somebody’s phone are the times on the wall, including the change you scheduled for next month.
+  Nothing is shared outside your own box, nothing can be changed through it, and OpenMasjidOS
+  decides which apps are allowed to ask: it is not on unless you install an app that uses it.
 
 ### Changed
 - **The terminal on a Raspberry Pi screen is now a real root shell.** It used to run as the

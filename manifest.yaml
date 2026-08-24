@@ -4,7 +4,7 @@ id: display
 name: OpenMasjid Display
 tagline: Run prayer timetables, cameras and HDMI on every screen in your masjid — over your network
 category: displays
-version: 0.70.0-dev.82
+version: 0.70.0-dev.83
 author: OpenMasjid-Solutions
 license: AGPL-3.0-only
 icon: icon.png
@@ -86,6 +86,21 @@ commands:
     argument:
       label: answer
       required: false
+# What this app OFFERS to other apps on the box, through the platform's app-to-app broker.
+# `timetable` lets an app the admin has granted it read this masjid's prayer times — the
+# calculated Adhan times, the Iqamah times with every override and scheduled change already
+# applied, Jumu'ah, the Hijri date and the masjid's timezone. OpenMasjidCompanion (the
+# musallis' phone app) is the first consumer: it is not allowed to calculate prayer times
+# itself, because Display owns whether they are right.
+#
+# Read-only, and served at the exact unprefixed paths POST /fabric/timetable/{list,get}
+# (server/src/fabricTimetable.ts) — never the tunnel's /<basePath>/… form, which is what keeps
+# the capability on the LAN. The platform decides WHICH apps may call it; we never keep a
+# second list. Note `commands` above stays OUT of this block on purpose: it is reserved, it can
+# write, and putting it here would hand the Iqamah wizard to any app with a grant.
+fabric:
+  provides:
+    - capability: timetable
 # Serve the CONTROL PANEL over HTTPS. The platform runs a TLS proxy on a dedicated
 # port (terminating with the dashboard's cert) in front of the first published port
 # (the control panel) and makes "Open" use it. This gives the panel a secure context

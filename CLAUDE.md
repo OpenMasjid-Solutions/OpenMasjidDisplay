@@ -408,20 +408,57 @@ this file.
   whether to warn that the secret is crossing a public network in cleartext.)
 - Behind the OS proxy you may trust `X-Forwarded-*` **only because the platform's ingress now
   sanitises them** — never trust them when the app is reached directly.
-- **`POST /fabric/commands/run` is the only INBOUND Fabric route** (v0.69.0): the platform calling
-  *us* to run an admin's WhatsApp command, with no session cookie, and it can write prayer times.
+- **There are exactly TWO inbound Fabric routes, and they are different trust boundaries** sharing
+  the `/fabric/` prefix. That prefix is not a permission. Both are authenticated the same single
+  way — by the caller presenting **our own** `OPENMASJID_APP_SECRET` back to us, constant-time
+  compared, length-checked first — and everything else about them differs. The shared primitives
+  live in `fabricInbound.ts`; **what they must never share is a handler or a caller rule.**
+- **`POST /fabric/commands/run`** (v0.69.0) is the PLATFORM calling *us* to run an admin's WhatsApp
+  command, with no session cookie, and **it is the only inbound route that can write prayer times**.
   Three things hold it shut and all three are load-bearing:
   - **Both headers, never one.** `X-OpenMasjid-App-Secret` must equal our own `OPENMASJID_APP_SECRET`
-    (constant-time, length-checked first) **and** `X-OpenMasjid-Caller-App` must be exactly
-    `omos:platform` — a value no app id can be, since the colon is outside the app-id charset. The
-    secret alone is not enough: anything that ever learned it could otherwise drive the wizard.
-  - **The exact path only.** Behind the tunnel this app is served under `/<basePath>/…` and the
-    platform does not strip the prefix, so a tunnelled request arrives as
-    `/display/fabric/commands/run` and matches nothing. *Not registering the prefixed form IS the
-    LAN-only enforcement* — there is no header to trust for it. Never add one.
+    **and** `X-OpenMasjid-Caller-App` must be exactly `omos:platform` — a value no app id can be,
+    since the colon is outside the app-id charset. The secret alone is not enough: anything that
+    ever learned it could otherwise drive the wizard.
+  - **The exact path, plus no forwarding headers.** Not registering the tunnel's `/<basePath>/…`
+    form is *most* of the LAN-only enforcement, but **not all of it**, and the difference has bitten
+    once: the router derives `pathname` with `new URL()`, which **normalises**, so
+    `/display/../fabric/commands/run` collapses onto the bare path and matches. This route closes
+    that by refusing any request carrying `x-forwarded-*`/`forwarded` — the platform builds its
+    header set from scratch, so a genuine call never has them. Keep both tests.
   - **Nothing is written before `save`.** The exchange can end without us (idle, turn cap, an exit
     word, a new `!` command) and we are never told, so a half-answered flow must leave a draft that
     expires, never a partial change.
+- **`POST /fabric/timetable/{list,get}`** (v0.70.0) is ANOTHER APP — OpenMasjidCompanion first —
+  reading this masjid's prayer times through the platform's app-to-app broker, the `timetable`
+  capability in `manifest.yaml`'s `fabric.provides`. `fabricTimetable.ts`, and see
+  `docs/USING_THE_FABRIC.md` §8. What holds here:
+  - **Read-only, and asserted rather than intended.** Nothing in the module calls `store.update`
+    and a test reads the file to prove it. A provider that can write turns a leaked secret into an
+    attacker repointing every prayer time in the masjid.
+  - **The path is the authorisation.** The broker maps `…/app/display/<capability>/<method>` onto
+    `/fabric/<capability>/<method>`, so the capability the admin granted **is** the path segment and
+    one grant cannot reach another's handler. The grant list stays with the platform; **never keep a
+    second copy** — it would only drift, and it would fail closed and silently the first time the
+    platform used a caller id we had not thought of. Hence the caller header is checked for **shape
+    only**: it is required (a genuine broker call always has one) and logged, but it is not a
+    security control, because anything holding the secret can spell it however it likes.
+  - **LAN-only is enforced on the RAW request line**, not on `pathname` and *not* by refusing
+    `x-forwarded-*`. The commands route's header test does not transfer: the broker **is** a proxy,
+    so if it ever adds `X-Forwarded-For` that route would be dead on arrival, silently, and only on
+    a real box. Comparing the raw target instead is strictly stronger — `%2e%2e`, `.%2e`, an
+    absolute-form target, a protocol-relative `//host/…`, and a backslash **all** normalise onto the
+    route, and none of them can be spelled with the raw target equal to the bare path. The table is
+    in `fabricInbound.ts` and pinned in `fabricTimetable.test.ts`. **Never "simplify" that check to
+    `new URL(...).pathname`** — that is the very normalisation it exists to undo, and it reopens
+    every row at once.
+  - **Bounded, because this process also draws the screens.** `days` is capped at 45 *server-side*
+    (400, never a clamp) and the route has its own socket-keyed 60/min limiter. Every day is a fresh
+    solar computation in the same process as the 1 fps render loop.
+  - **`widget.enabled` is the wrong gate here and must not be copied.** It governs whether the
+    masjid publishes times on their own *website*; this is a different, admin-granted, same-box
+    channel. Applying it would hide timetables the admin meant to share — and dropping it from the
+    *public* `/w/<id>` route would expose ones they never published.
 - **WhatsApp is queued, never sent.** `202 {queued:true}` means accepted for later delivery. The 202
   now carries an `id` and `/api/fabric/whatsapp/status/<id>` answers `queued`/`sent`/`failed`/
   `expired` (OpenMasjidOS **0.51.1+**, advertised as `outcomes` — absent must read as false; per-app
