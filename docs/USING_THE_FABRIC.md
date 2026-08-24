@@ -261,12 +261,25 @@ installable PWA musallis add to their phones — shows a prayer timetable as its
 fires its push notifications from those times, and is forbidden by its own rules from calculating
 any of it. So it reads ours. `server/src/fabricTimetable.ts`.
 
-**Two methods, on the control-panel port, at the exact unprefixed paths:**
+**Three methods, on the control-panel port, at the exact unprefixed paths:**
 
 ```
 POST /fabric/timetable/list   → { v:1, timetables:[{ id, name }] }
 POST /fabric/timetable/get    ← { id, from:"YYYY-MM-DD", days:1..45 }
+POST /fabric/timetable/logo   ← { id }
 ```
+
+`TIMETABLE_PATHS` and `TIMETABLE_METHOD_BY_PATH` in `fabricTimetable.ts` are the one source of
+truth for that mapping in both directions, so the path the dispatcher matched and the path the
+envelope re-checks cannot drift. **A new method is additive and does not change `v`.**
+
+**Probing for a method an older Display does not serve gets `401 {"error":"Please sign in."}` —
+not a 404.** Verified against a running server, and it surprises people, so: an unmatched path
+falls past every branch above to this app's session gate, and a Fabric call carries no session
+cookie. There is no route to 404 *from*. So a consumer must treat **any** non-200 as "not
+available, fall through", and must not branch on 404 specifically — from these methods a 404
+means `unknown_timetable`, i.e. *the id was wrong*, which is a completely different problem from
+*this Display is too old*.
 
 The broker proxies `POST ${OPENMASJID_BASE_URL}/api/fabric/app/display/timetable/<method>` onto
 those, injecting **our own** `OPENMASJID_APP_SECRET` as `X-OpenMasjid-App-Secret` and the trusted
@@ -298,6 +311,41 @@ Four things about that payload are load-bearing and easy to get wrong later:
   would assert a jamā'ah on a Tuesday. The null is a fact, not a gap — a timetable configures
   Jumu'ah as jamā'ah times only, and the Friday countdown on the wall runs to the calculated
   **Dhuhr** adhan relabelled "Jumu'ah", so that day's `prayers.dhuhr.adhan` is the time to use.
+
+**`logo` — the masjid's own mark, so a musalli's home-screen icon is theirs.** Answers
+`{v:1, id, logo:{mime, bytes, data}}` with `data` base64 and **no `data:` prefix**, or
+`{v:1, id, logo:null}` when the timetable uses the built-in mark. `bytes` is the *decoded*
+length, so a consumer can sanity-check before decoding. Companion resolves
+*Display's timetable logo → the platform's `/api/public/logo` → its own mark*, and this is the
+first link: it is the logo already on the wall in front of the musalli, and the one more likely
+to be set at all, because a masjid configures its screens long before it visits
+OpenMasjidOS → Settings → Customize.
+
+Four things about it:
+
+- **A separate method, not a field on `get`, deliberately.** `get` is polled on a cadence and
+  its whole virtue is being small. A logo is 10–200 KB, byte-identical on every poll, and
+  changes maybe once in the life of an install; inlining it would multiply the steady-state cost
+  of the feed by an order of magnitude. Fetched separately it is cached until the masjid changes
+  it.
+- **Raster only, as an allowlist** (`image/png`, `image/jpeg`, `image/gif`) — never "anything but
+  SVG". SVG is refused with `415 {error:'logo_not_raster'}` even though a masjid can upload one
+  and the screens render it perfectly: an SVG is a script container, and this particular image
+  becomes an app icon on a phone after a consumer has parsed and re-encoded it. WebP is absent
+  for an unrelated reason — `checkUploadedImage` already refuses it at upload because resvg
+  cannot decode it, so a WebP logo is not on the screens either.
+- **The bytes decide the type, never the file extension.** `sniffImageMime` reads the magic
+  bytes, so an SVG saved as `logo.png` is still refused — which is exactly the case a check on
+  the extension would wave through.
+- **Capped at 175 KB decoded** (`TIMETABLE_LOGO_MAX_BYTES`), *derived* from the broker's 256 KB
+  ceiling rather than picked: base64 costs a third more, so the encoded answer is ~239 KB and a
+  test recomputes that arithmetic. Over the cap is `413 {error:'logo_too_large'}`, because a
+  response that overruns the ceiling arrives **truncated** — a corrupt image that nothing in the
+  chain would report as corrupt.
+
+A `logoImage` that names a missing file, or one that tries to escape `/data/uploads`, answers
+`logo: null` — not an error. The screens fall back to the built-in mark in exactly that
+situation, so it is the honest answer. `logo` needs no location, unlike `get`.
 
 **The envelope**, and which part of it is doing what — because only one of these is the
 authentication:
@@ -336,10 +384,11 @@ limiter for the same reason. Outside 1–45 is `400`, not a clamp.
 
 The full error set, since a consumer has to branch on it: `400 {error:'bad_request'}`,
 `403 {error:'forbidden'}` (the envelope — deliberately not saying which part of it failed),
-`404 {error:'unknown_timetable'}`, `405 {error:'method_not_allowed'}` (both methods are POST),
-`409 {error:'no_location'}` (the timetable exists but the admin never set coordinates — retrying
-will not fix it, and answering anyway would compute for latitude 0, longitude 0 and return times
-that look entirely reasonable), `429 {error:'too_many_requests'}`, and
+`404 {error:'unknown_timetable'}`, `405 {error:'method_not_allowed'}` (all three methods are
+POST), `409 {error:'no_location'}` (the timetable exists but the admin never set coordinates —
+retrying will not fix it, and answering anyway would compute for latitude 0, longitude 0 and
+return times that look entirely reasonable), `413 {error:'logo_too_large'}`,
+`415 {error:'logo_not_raster'}`, `429 {error:'too_many_requests'}`, and
 `503 {error:'not_ready'}` before we have a secret. An unexpected throw becomes the dispatcher's
 generic 500, so treat any 5xx as "ask again later".
 

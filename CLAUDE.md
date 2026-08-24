@@ -429,13 +429,19 @@ this file.
   - **Nothing is written before `save`.** The exchange can end without us (idle, turn cap, an exit
     word, a new `!` command) and we are never told, so a half-answered flow must leave a draft that
     expires, never a partial change.
-- **`POST /fabric/timetable/{list,get}`** (v0.70.0) is ANOTHER APP — OpenMasjidCompanion first —
-  reading this masjid's prayer times through the platform's app-to-app broker, the `timetable`
-  capability in `manifest.yaml`'s `fabric.provides`. `fabricTimetable.ts`, and see
+- **`POST /fabric/timetable/{list,get,logo}`** (v0.70.0) is ANOTHER APP — OpenMasjidCompanion
+  first — reading this masjid's prayer times through the platform's app-to-app broker, the
+  `timetable` capability in `manifest.yaml`'s `fabric.provides`. `fabricTimetable.ts`, and see
   `docs/USING_THE_FABRIC.md` §8. What holds here:
   - **Read-only, and asserted rather than intended.** Nothing in the module calls `store.update`
-    and a test reads the file to prove it. A provider that can write turns a leaked secret into an
-    attacker repointing every prayer time in the masjid.
+    **or any fs writer** — it reads the disk for the logo, so "read-only" has to mean the disk
+    too — and a test reads the file to prove both. A provider that can write turns a leaked
+    secret into an attacker repointing every prayer time in the masjid.
+  - **`logo` serves RASTER ONLY, by allowlist** (`image/png`, `image/jpeg`, `image/gif`), and the
+    type comes from `sniffImageMime`'s magic bytes, never the file extension — so an SVG saved as
+    `logo.png` is still refused. SVG is excluded on purpose even though the screens render it:
+    it is a script container, and this image becomes an app icon on a phone after a consumer has
+    parsed and re-encoded it. Never turn that allowlist into "anything but SVG".
   - **The path is the authorisation.** The broker maps `…/app/display/<capability>/<method>` onto
     `/fabric/<capability>/<method>`, so the capability the admin granted **is** the path segment and
     one grant cannot reach another's handler. The grant list stays with the platform; **never keep a
@@ -454,7 +460,10 @@ this file.
     every row at once.
   - **Bounded, because this process also draws the screens.** `days` is capped at 45 *server-side*
     (400, never a clamp) and the route has its own socket-keyed 60/min limiter. Every day is a fresh
-    solar computation in the same process as the 1 fps render loop.
+    solar computation in the same process as the 1 fps render loop. `logo` is capped at 175 KB
+    decoded, **derived** from the broker's 256 KB ceiling (base64 costs a third more) rather than
+    picked — over the ceiling the answer arrives truncated, which is a corrupt image that nothing
+    in the chain reports as corrupt. Re-derive the arithmetic if you ever raise it; a test does.
   - **`widget.enabled` is the wrong gate here and must not be copied.** It governs whether the
     masjid publishes times on their own *website*; this is a different, admin-granted, same-box
     channel. Applying it would hide timetables the admin meant to share — and dropping it from the

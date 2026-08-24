@@ -22,12 +22,7 @@ import {
 import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, whatsappGroups } from './fabric';
 import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
 import type { FabricCommands } from './fabricCommands';
-import {
-  handleFabricTimetable,
-  TIMETABLE_GET_PATH,
-  TIMETABLE_LIST_PATH,
-  TIMETABLE_MAX_BODY_BYTES,
-} from './fabricTimetable';
+import { handleFabricTimetable, TIMETABLE_METHOD_BY_PATH, TIMETABLE_MAX_BODY_BYTES } from './fabricTimetable';
 import {
   originFor,
   renderInstaller,
@@ -453,7 +448,8 @@ export function createApi(deps: Deps) {
        * capability off the tunnel (`new URL()` above has already normalised dot segments away,
        * so `pathname` alone would accept `/display/../fabric/timetable/get`).
        */
-      if (pathname === TIMETABLE_LIST_PATH || pathname === TIMETABLE_GET_PATH) {
+      const timetableMethod = TIMETABLE_METHOD_BY_PATH.get(pathname);
+      if (timetableMethod) {
         if (!fabricAppLimiter.allow(req)) return sendJson(res, 429, { error: 'too_many_requests' });
         // Matched on the path REGARDLESS of method, so that a GET says so instead of falling
         // through to the static branch below — which answers any non-/api/ GET with the panel's
@@ -463,7 +459,7 @@ export function createApi(deps: Deps) {
         if (method !== 'POST') return sendJson(res, 405, { error: 'method_not_allowed' });
         const body = await readBody(req, TIMETABLE_MAX_BODY_BYTES).catch(() => null);
         if (!body) return sendJson(res, 400, { error: 'bad_request' });
-        return handleFabricTimetable(req, res, pathname === TIMETABLE_LIST_PATH ? 'list' : 'get', body, store);
+        return handleFabricTimetable(req, res, timetableMethod, body, store);
       }
 
       // ---- Volunteer page (also served here, not just on its own port) ----

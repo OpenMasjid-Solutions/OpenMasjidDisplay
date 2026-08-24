@@ -57,6 +57,12 @@ CLAUDE.md § *The changelog has two audiences*.
   somebody’s phone are the times on the wall, including the change you scheduled for next month.
   Nothing is shared outside your own box, nothing can be changed through it, and OpenMasjidOS
   decides which apps are allowed to ask: it is not on unless you install an app that uses it.
+- **Your masjid’s logo goes with those times.** The logo you uploaded for your screens is now
+  offered alongside them, so an app like OpenMasjid Companion can use it rather than its own mark
+  — which means when a musalli adds the app to their phone, the icon on their home screen is your
+  masjid’s. It is the logo they are already looking at on the wall. If you have not uploaded one,
+  apps fall back on their own. PNG, JPG and GIF logos are shared; an SVG is not, because it is a
+  file format that can carry code and this one ends up as an icon on somebody’s phone.
 
 ### Changed
 - **The terminal on a Raspberry Pi screen is now a real root shell.** It used to run as the

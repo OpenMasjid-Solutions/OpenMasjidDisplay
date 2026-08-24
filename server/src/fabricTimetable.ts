@@ -34,6 +34,7 @@
  *    override is already applied (see `buildModel`) and the format is 24-hour on the wire
  *    regardless of how this timetable happens to be displayed.
  */
+import fs from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from './config';
 import { makeLog } from './logger';
@@ -42,6 +43,7 @@ import type { Store } from './store';
 import type { Lang, Timetable } from './types';
 import { buildModel, hijri, labels } from './render/svg';
 import { zonedNoon } from './prayer/engine';
+import { sniffImageMime, uploadFilePath } from './render/background';
 import { checkBrokerEnvelope } from './fabricInbound';
 
 const log = makeLog('fabric-timetable');
@@ -53,8 +55,31 @@ export const TIMETABLE_CAPABILITY = 'timetable';
 /** The exact, UNPREFIXED paths. Never register the tunnel's `/<basePath>/…` form. */
 export const TIMETABLE_LIST_PATH = `/fabric/${TIMETABLE_CAPABILITY}/list`;
 export const TIMETABLE_GET_PATH = `/fabric/${TIMETABLE_CAPABILITY}/get`;
+export const TIMETABLE_LOGO_PATH = `/fabric/${TIMETABLE_CAPABILITY}/logo`;
 
-/** Wire contract version. Additive fields do not change it. */
+export type TimetableMethod = 'list' | 'get' | 'logo';
+
+/**
+ * Path per method, and the reverse lookup — one source of truth for both directions, so the
+ * route the dispatcher matched and the path the envelope re-checks can never disagree. Adding a
+ * method is one line here and nothing else.
+ *
+ * A `Map` rather than an object, and not for style: the reverse lookup is keyed on an
+ * ATTACKER-SUPPLIED pathname, and `({} as Record<string, T>)['constructor']` is a truthy
+ * function off the prototype. An object here would treat `/fabric/timetable/constructor`… well,
+ * no — it would need the exact key, but `__proto__` and `constructor` are exactly the sort of
+ * thing that turns a lookup into a bug. A Map has no prototype chain to fall through.
+ */
+export const TIMETABLE_PATHS: Record<TimetableMethod, string> = {
+  list: TIMETABLE_LIST_PATH,
+  get: TIMETABLE_GET_PATH,
+  logo: TIMETABLE_LOGO_PATH,
+};
+export const TIMETABLE_METHOD_BY_PATH: ReadonlyMap<string, TimetableMethod> = new Map(
+  (Object.entries(TIMETABLE_PATHS) as [TimetableMethod, string][]).map(([m, p]) => [p, m]),
+);
+
+/** Wire contract version. Additive fields — and additive METHODS — do not change it. */
 export const TIMETABLE_CONTRACT_VERSION = 1;
 
 /**
@@ -72,6 +97,49 @@ export const TIMETABLE_CONTRACT_VERSION = 1;
  * screens. Unbounded days here would be a way to make a television stutter.
  */
 export const TIMETABLE_MAX_DAYS = 45;
+
+/** The broker's response ceiling, in each direction. */
+const BROKER_RESPONSE_CEILING = 256 * 1024;
+
+/**
+ * The raster types this capability will hand over — an ALLOWLIST, never "anything but SVG".
+ *
+ * SVG is deliberately absent even though a masjid can upload one and it renders perfectly well
+ * on their own screens. An SVG is a script container, and this particular image ends up as the
+ * app icon on a musalli's phone home screen, having been re-encoded by a consumer that has to
+ * parse it first. The platform's own `/api/public/logo` takes the same position.
+ *
+ * WebP is absent for a different reason: `checkUploadedImage` in api.ts refuses it at upload
+ * (resvg cannot decode it), so a WebP logo is not on the screens either and any file on disk in
+ * that format predates the check. Which leaves exactly these three.
+ */
+const LOGO_RASTER_MIMES = ['image/png', 'image/jpeg', 'image/gif'] as const;
+
+/**
+ * The biggest logo we will hand over, DECODED — derived from the ceiling above rather than
+ * picked.
+ *
+ * base64 costs four bytes for every three, so the encoded string is 4/3 of this plus a small
+ * JSON envelope: 179,200 → 238,936 → about 239 KB against a 256 KB ceiling, leaving roughly 9%
+ * spare. Bigger than a logo has any business being (the consumer re-encodes it down to a 512px
+ * icon), and small enough that the answer provably fits. A test recomputes that arithmetic, so
+ * raising this cap without re-deriving it fails rather than producing broker-level truncation —
+ * which is the failure this constant exists to avoid, because a truncated image is a corrupt one
+ * and nothing in the chain would say so.
+ */
+export const TIMETABLE_LOGO_MAX_BYTES = 179_200;
+
+/** Encoded size of a base64 payload of `n` decoded bytes, padding included. */
+export function base64Length(n: number): number {
+  return 4 * Math.ceil(n / 3);
+}
+
+/** Headroom check for the logo cap, so the test and the comment above cannot drift apart. */
+export function logoResponseCeilingHeadroom(): { encoded: number; ceiling: number } {
+  // The envelope: {"v":1,"id":"tt_xxxxxxxx","logo":{"mime":"image/jpeg","bytes":179200,"data":""}}
+  const envelope = 90;
+  return { encoded: base64Length(TIMETABLE_LOGO_MAX_BYTES) + envelope, ceiling: BROKER_RESPONSE_CEILING };
+}
 
 /**
  * Request body cap. The body is three short fields; the platform caps its own at 4 KB. Held as
@@ -275,10 +343,75 @@ export function listTimetables(store: Store): FabricTimetableList {
   };
 }
 
-export type TimetableMethod = 'list' | 'get';
+/** The masjid's own logo, base64 with no `data:` prefix. */
+export interface FabricLogo {
+  mime: string;
+  /** DECODED length, so a consumer can sanity-check before it decodes anything. */
+  bytes: number;
+  data: string;
+}
+
+export interface FabricTimetableLogoResponse {
+  v: number;
+  id: string;
+  /** null is a NORMAL answer: this timetable uses the built-in mark. */
+  logo: FabricLogo | null;
+}
+
+export type LogoResult = { ok: true; logo: FabricLogo | null } | { ok: false; status: number; error: string };
 
 /**
- * The route. `method` is which of the two the dispatcher matched, so the exact path this
+ * The logo actually on this timetable's screens, for a consumer that wants to use it as its own
+ * icon — which is the whole point: it is the mark a musalli is already looking at on the wall.
+ *
+ * A separate method rather than a field on `get`, because `get` is polled on a cadence and its
+ * virtue is being small (18.5 KB at the day cap). A logo is 10–200 KB, identical on every poll,
+ * and changes maybe once in the life of an install.
+ */
+export function readLogo(tt: Timetable): LogoResult {
+  // No logo configured: the timetable uses the built-in dome mark. Not an error.
+  if (!tt.logoImage) return { ok: true, logo: null };
+  // `uploadFilePath` is also what validates the stored name — no traversal, no separators.
+  const info = uploadFilePath(tt.logoImage);
+  // The record names a file that is not there (a restore that missed /data/uploads, a manual
+  // tidy-up). That is "no logo", not a failure: nothing a consumer can do about it, and the
+  // screens are drawing the built-in mark in exactly this situation too.
+  if (!info) return { ok: true, logo: null };
+
+  let size: number;
+  try {
+    size = fs.statSync(info.path).size;
+  } catch {
+    return { ok: true, logo: null };
+  }
+  // Checked on the stat first so an oversized file is refused without being read into memory.
+  if (size > TIMETABLE_LOGO_MAX_BYTES) return { ok: false, status: 413, error: 'logo_too_large' };
+
+  let buf: Buffer;
+  try {
+    buf = fs.readFileSync(info.path);
+  } catch {
+    return { ok: true, logo: null };
+  }
+  // Re-checked after reading, because the stat and the read are two separate moments and the
+  // file could have been replaced between them. Cheap, and the alternative is a response that
+  // overruns the broker's ceiling and arrives truncated — i.e. a corrupt image that nothing in
+  // the chain reports as corrupt.
+  if (buf.length > TIMETABLE_LOGO_MAX_BYTES) return { ok: false, status: 413, error: 'logo_too_large' };
+
+  // The TRUE type, from the magic bytes — never `info.mime`, which comes from the file
+  // extension. Uploads are already sniffed and stored with the canonical extension, so the two
+  // agree today; sniffing means they cannot disagree tomorrow, and it is what stops an SVG that
+  // happens to be named .png from being handed over as a raster.
+  const mime = sniffImageMime(buf);
+  if (!mime || !(LOGO_RASTER_MIMES as readonly string[]).includes(mime)) {
+    return { ok: false, status: 415, error: 'logo_not_raster' };
+  }
+  return { ok: true, logo: { mime, bytes: buf.length, data: buf.toString('base64') } };
+}
+
+/**
+ * The route. `method` is which of the three the dispatcher matched, so the exact path this
  * request had to arrive on is decided here and never derived from anything in the request.
  */
 export function handleFabricTimetable(
@@ -288,8 +421,7 @@ export function handleFabricTimetable(
   body: Record<string, unknown>,
   store: Store,
 ): void {
-  const exact = method === 'list' ? TIMETABLE_LIST_PATH : TIMETABLE_GET_PATH;
-  const env = checkBrokerEnvelope(req, exact, config.omosAppSecret);
+  const env = checkBrokerEnvelope(req, TIMETABLE_PATHS[method], config.omosAppSecret);
   if (!env.ok) {
     // Metadata only: who asked and which capability. Never the body, never the secret.
     log.warn(`refused a ${TIMETABLE_CAPABILITY}/${method} call from ${env.caller} (${env.error})`);
@@ -299,9 +431,19 @@ export function handleFabricTimetable(
   if (method === 'list') return sendJson(res, 200, listTimetables(store));
 
   const id = typeof body.id === 'string' ? body.id : '';
+  if (!id) return sendJson(res, 400, { error: 'bad_request' });
+
+  if (method === 'logo') {
+    const tt = store.db.timetables.find((t) => t.id === id);
+    if (!tt) return sendJson(res, 404, { error: 'unknown_timetable' });
+    const r = readLogo(tt);
+    if (!r.ok) return sendJson(res, r.status, { error: r.error });
+    return sendJson(res, 200, { v: TIMETABLE_CONTRACT_VERSION, id: tt.id, logo: r.logo });
+  }
+
   const from = parseFrom(body.from);
   const days = body.days;
-  if (!id || !from) return sendJson(res, 400, { error: 'bad_request' });
+  if (!from) return sendJson(res, 400, { error: 'bad_request' });
   if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > TIMETABLE_MAX_DAYS) {
     return sendJson(res, 400, { error: 'bad_request' });
   }

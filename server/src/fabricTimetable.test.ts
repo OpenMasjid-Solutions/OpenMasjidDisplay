@@ -45,10 +45,17 @@ const {
   hhmm,
   effectiveTimeZone,
   parseFrom,
+  readLogo,
+  base64Length,
+  logoResponseCeilingHeadroom,
   TIMETABLE_GET_PATH,
   TIMETABLE_LIST_PATH,
+  TIMETABLE_LOGO_PATH,
+  TIMETABLE_PATHS,
+  TIMETABLE_METHOD_BY_PATH,
   TIMETABLE_MAX_DAYS,
   TIMETABLE_MAX_BODY_BYTES,
+  TIMETABLE_LOGO_MAX_BYTES,
 } = ft;
 
 const SERVER_DIR = path.resolve(__dirname, '..');
@@ -91,7 +98,7 @@ interface Captured {
 /** Minimal req/res doubles — enough for a handler that only reads headers and writes JSON. */
 function call(
   s: InstanceType<typeof Store>,
-  method: 'list' | 'get',
+  method: 'list' | 'get' | 'logo',
   headers: Record<string, string>,
   body: Record<string, unknown> = {},
   url?: string,
@@ -99,7 +106,7 @@ function call(
   const req = {
     headers,
     method: 'POST',
-    url: url ?? (method === 'list' ? TIMETABLE_LIST_PATH : TIMETABLE_GET_PATH),
+    url: url ?? TIMETABLE_PATHS[method],
   } as unknown as IncomingMessage;
   let status = 0;
   let chunk = '';
@@ -523,6 +530,160 @@ test('hhmm wraps rather than overflowing, and answers null for nothing', () => {
 });
 
 // ---------------------------------------------------------------------------
+// logo — the masjid's own mark, so a musalli's home-screen icon is theirs
+// ---------------------------------------------------------------------------
+
+const { saveLogo } = require('./render/background') as typeof import('./render/background');
+
+/** A real 1x1 PNG. Real bytes, because the whole point of this path is that it sniffs them. */
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+  'base64',
+);
+const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', 'utf8');
+
+/** Put `bytes` on disk as this timetable's logo, with whatever EXTENSION `mime` implies —
+ *  which is how a file whose name disagrees with its content gets made. */
+function withLogo(bytes: Buffer, mime = 'image/png') {
+  const tt = timetable();
+  tt.logoImage = saveLogo(tt.id, mime, bytes);
+  return tt;
+}
+
+test('a timetable with no logo answers null, which is not an error', () => {
+  const s = store();
+  const r = call(s, 'logo', good, { id: s.db.timetables[0].id });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { v: 1, id: s.db.timetables[0].id, logo: null });
+});
+
+test('a PNG logo comes back byte-for-byte, base64 with no data: prefix', () => {
+  const tt = withLogo(PNG);
+  const r = call(store(tt), 'logo', good, { id: tt.id });
+  assert.equal(r.status, 200);
+  const logo = r.body.logo as { mime: string; bytes: number; data: string };
+  assert.equal(logo.mime, 'image/png');
+  assert.equal(logo.bytes, PNG.length, 'bytes is the DECODED length');
+  assert.ok(!logo.data.startsWith('data:'), 'no data: prefix — the consumer adds its own');
+  assert.deepEqual(Buffer.from(logo.data, 'base64'), PNG, 'and it must decode back to the original');
+});
+
+test('an SVG logo is refused, even though the screens render it perfectly well', () => {
+  // An SVG is a script container, and this image becomes an app icon on a phone after being
+  // parsed and re-encoded by the consumer. 415 rather than a silent null so an admin wondering
+  // why their logo did not carry over has something to find.
+  const tt = withLogo(SVG, 'image/svg+xml');
+  const r = call(store(tt), 'logo', good, { id: tt.id });
+  assert.equal(r.status, 415);
+  assert.equal(r.body.error, 'logo_not_raster');
+});
+
+test('an SVG named .png is still refused — the bytes decide, never the extension', () => {
+  // The case a denylist on the file extension would wave straight through.
+  const tt = withLogo(SVG, 'image/png');
+  assert.ok(tt.logoImage.endsWith('.png'), 'the file really is named .png');
+  const r = call(store(tt), 'logo', good, { id: tt.id });
+  assert.equal(r.status, 415);
+  assert.equal(r.body.error, 'logo_not_raster');
+});
+
+test('an oversized logo is refused rather than truncated by the broker', () => {
+  // A response over the ceiling arrives cut in half, which is a corrupt image that nothing in
+  // the chain reports as corrupt. Better to say so.
+  const tt = withLogo(Buffer.concat([PNG, Buffer.alloc(TIMETABLE_LOGO_MAX_BYTES)]));
+  const r = call(store(tt), 'logo', good, { id: tt.id });
+  assert.equal(r.status, 413);
+  assert.equal(r.body.error, 'logo_too_large');
+});
+
+test('a logo exactly at the cap is still served', () => {
+  const tt = withLogo(Buffer.concat([PNG, Buffer.alloc(TIMETABLE_LOGO_MAX_BYTES - PNG.length)]));
+  const r = call(store(tt), 'logo', good, { id: tt.id });
+  assert.equal(r.status, 200);
+  assert.equal((r.body.logo as { bytes: number }).bytes, TIMETABLE_LOGO_MAX_BYTES);
+});
+
+test('the cap is derived from the broker ceiling, not guessed', () => {
+  // Raising TIMETABLE_LOGO_MAX_BYTES without redoing this arithmetic is exactly the mistake
+  // this asserts against: base64 costs a third more, so the encoded answer is what has to fit.
+  const { encoded, ceiling } = logoResponseCeilingHeadroom();
+  assert.equal(base64Length(3), 4);
+  assert.equal(base64Length(1), 4, 'padding counts');
+  assert.ok(encoded < ceiling, `${encoded} must fit inside ${ceiling}`);
+  assert.ok(encoded < ceiling * 0.95, `only ${ceiling - encoded} bytes spare — too tight`);
+});
+
+test('a logoImage naming a file that is not there is no logo, not a failure', () => {
+  // A restore that missed /data/uploads. The screens fall back to the built-in mark in exactly
+  // this situation, so the honest answer here is the same one.
+  const tt = timetable();
+  tt.logoImage = 'nope.logo.png';
+  const r = call(store(tt), 'logo', good, { id: tt.id });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.logo, null);
+});
+
+test('a logoImage that tries to escape the uploads directory reads nothing', () => {
+  for (const evil of ['../../db.json', '../db.json', '/etc/passwd', 'a/../../db.json', '..']) {
+    const tt = timetable();
+    tt.logoImage = evil;
+    const r = call(store(tt), 'logo', good, { id: tt.id });
+    assert.equal(r.status, 200, evil);
+    assert.equal(r.body.logo, null, evil);
+  }
+});
+
+test('logo refuses an unknown id and a missing id, like get does', () => {
+  const s = store();
+  assert.equal(call(s, 'logo', good, { id: 'tt_deadbeef' }).status, 404);
+  assert.equal(call(s, 'logo', good, { id: 'tt_deadbeef' }).body.error, 'unknown_timetable');
+  assert.equal(call(s, 'logo', good, {}).status, 400);
+  assert.equal(call(s, 'logo', good, { id: 42 }).status, 400);
+});
+
+test('logo needs no location, unlike get', () => {
+  // A masjid can have uploaded their logo before setting coordinates, and the icon is still
+  // theirs. Gating this on a location would be borrowing an unrelated failure.
+  const tt = withLogo(PNG);
+  tt.latitude = null;
+  tt.longitude = null;
+  const r = call(store(tt), 'logo', good, { id: tt.id });
+  assert.equal(r.status, 200);
+  assert.equal((r.body.logo as { mime: string }).mime, 'image/png');
+});
+
+test('logo is bound to its own path like the other two methods', () => {
+  const tt = withLogo(PNG);
+  assert.equal(call(store(tt), 'logo', good, { id: tt.id }, TIMETABLE_GET_PATH).status, 403);
+  assert.equal(call(store(tt), 'logo', good, { id: tt.id }, TIMETABLE_LIST_PATH).status, 403);
+  assert.equal(call(store(tt), 'logo', good, { id: tt.id }, '/display/../fabric/timetable/logo').status, 403);
+});
+
+test('readLogo is the whole decision, and it is pure', () => {
+  // Called twice on the same timetable it must answer identically — no cache to go stale, no
+  // clock, nothing recorded.
+  const tt = withLogo(PNG);
+  assert.deepEqual(readLogo(tt), readLogo(tt));
+});
+
+test('the path/method mapping is one source of truth in both directions', () => {
+  const methods = Object.keys(TIMETABLE_PATHS) as (keyof typeof TIMETABLE_PATHS)[];
+  assert.deepEqual(methods.sort(), ['get', 'list', 'logo']);
+  for (const m of methods) {
+    assert.equal(TIMETABLE_METHOD_BY_PATH.get(TIMETABLE_PATHS[m]), m, `${m} must round-trip`);
+    assert.equal(TIMETABLE_PATHS[m], `/fabric/timetable/${m}`);
+  }
+});
+
+test('the reverse lookup has no prototype hole', () => {
+  // The key is an attacker-supplied pathname. A plain object would answer `constructor` with a
+  // truthy function off the prototype chain, and the branch tests only truthiness.
+  for (const k of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf', '']) {
+    assert.equal(TIMETABLE_METHOD_BY_PATH.get(k), undefined, k);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Properties of the whole route
 // ---------------------------------------------------------------------------
 
@@ -558,13 +719,27 @@ test('the capability is read-only, and this is asserted rather than intended', (
   const s = src('fabricTimetable.ts');
   assert.ok(!/\.update\s*\(/.test(s), 'fabricTimetable.ts must never call store.update');
   assert.ok(!/\bdb\s*\./.test(s.replace(/store\.db\./g, '')), 'nor mutate the db object directly');
+  // It reads the filesystem now, for the logo. Read-only has to mean the disk as well: this
+  // module handles a request from another app and must not be a way to write one byte anywhere.
+  for (const w of ['writeFileSync', 'appendFileSync', 'unlinkSync', 'mkdirSync', 'rmSync', 'rmdirSync', 'renameSync', 'createWriteStream', 'writeFile', 'copyFileSync', 'chmodSync', 'openSync', 'truncateSync', 'symlinkSync']) {
+    assert.ok(!s.includes(w), `fabricTimetable.ts must never call fs.${w}`);
+  }
+  // The routes a string check on `fs.*` would miss entirely.
+  assert.ok(!s.includes('fs/promises'), 'nor the promises API, where the writers are named differently');
+  assert.ok(!s.includes('child_process'), 'nor shell out');
+  assert.ok(!/saveLogo|saveAsset|saveBackground|removeLogo|saveAnnouncement/.test(s), 'nor reach for an asset WRITER');
+  // Reading is expected — the logo lives on disk — so pin that it is ONLY these two.
+  assert.deepEqual(
+    [...s.matchAll(/\bfs\.(\w+)/g)].map((m) => m[1]).filter((v, i, a) => a.indexOf(v) === i).sort(),
+    ['readFileSync', 'statSync'],
+  );
 });
 
 test('api.ts registers the two exact paths and nothing prefixed', () => {
   const s = src('api.ts');
   // Registered from the constants, so the route, the handler's own check, the manifest and the
   // docs cannot drift apart into three different opinions about the path.
-  assert.match(s, /pathname === TIMETABLE_LIST_PATH \|\| pathname === TIMETABLE_GET_PATH/);
+  assert.match(s, /TIMETABLE_METHOD_BY_PATH\.get\(pathname\)/);
   assert.match(s, /readBody\(req, TIMETABLE_MAX_BODY_BYTES\)/, 'the body cap must be the exported constant');
   assert.equal(TIMETABLE_MAX_BODY_BYTES, 8_000);
   // Not the tunnel's form, and not a regex that would tolerate a base-path segment the way the
@@ -574,6 +749,7 @@ test('api.ts registers the two exact paths and nothing prefixed', () => {
   assert.ok(!/['"`]\/fabric\/timetable/.test(s), 'the paths must come from the constants, never be spelled out as literals');
   assert.equal(TIMETABLE_LIST_PATH, '/fabric/timetable/list');
   assert.equal(TIMETABLE_GET_PATH, '/fabric/timetable/get');
+  assert.equal(TIMETABLE_LOGO_PATH, '/fabric/timetable/logo');
 });
 
 test('a GET on a capability path says so, instead of returning the panel', () => {
@@ -581,21 +757,34 @@ test('a GET on a capability path says so, instead of returning the panel', () =>
   // on POST would hand somebody debugging their integration a page of HTML with a 200 on it.
   // The branch therefore matches on the path alone and answers 405 itself.
   const s = src('api.ts');
-  const branch = s.indexOf('pathname === TIMETABLE_LIST_PATH || pathname === TIMETABLE_GET_PATH');
+  const branch = s.indexOf('TIMETABLE_METHOD_BY_PATH.get(pathname)');
   const spa = s.indexOf("if (!pathname.startsWith('/api/') && method === 'GET')");
   assert.ok(branch > 0 && spa > 0);
   assert.ok(branch < spa, 'the capability paths must be claimed before the static/SPA catch-all');
-  assert.ok(
-    !/TIMETABLE_GET_PATH\) && method === 'POST'/.test(s),
-    'matching the branch on POST would let a GET fall through to index.html',
-  );
   const arm = s.slice(branch, branch + 1400);
   assert.match(arm, /method !== 'POST'.*method_not_allowed/s);
+  // The guard itself must not mention the method — checked on the text BETWEEN the lookup and
+  // the 405, so it holds whatever spelling a future edit uses. A pattern matching one particular
+  // spelling of the mistake is worth very little: the first version of this assertion pinned
+  // `TIMETABLE_GET_PATH) && method === 'POST'`, and the very next refactor moved the lookup onto
+  // its own line, at which point it could never have fired again. What matters is not how the
+  // guard is written but that a GET reaches the 405 rather than the SPA.
+  // Comments stripped, because the comment explaining the rule necessarily says "method".
+  const guard = arm
+    .slice(0, arm.indexOf("method !== 'POST'"))
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l))
+    .join('\n');
+  assert.ok(
+    !/\bmethod\b/.test(guard),
+    'the guard must not test the request method — folding that in sends a GET to index.html and\n' +
+      `leaves the 405 below it dead:\n${guard}`,
+  );
 });
 
 test('the route sits above the session gate and behind a limiter', () => {
   const s = src('api.ts');
-  const route = s.indexOf('pathname === TIMETABLE_LIST_PATH');
+  const route = s.indexOf('TIMETABLE_METHOD_BY_PATH.get(pathname)');
   const gate = s.indexOf("if (!authed(req)) return sendJson(res, 401,");
   assert.ok(route > 0 && gate > 0);
   assert.ok(route < gate, 'the broker has no session cookie of ours, so it must be reachable above the gate');

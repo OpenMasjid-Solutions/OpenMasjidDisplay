@@ -4,7 +4,7 @@ id: display
 name: OpenMasjid Display
 tagline: Run prayer timetables, cameras and HDMI on every screen in your masjid — over your network
 category: displays
-version: 0.70.0-dev.83
+version: 0.70.0-dev.84
 author: OpenMasjid-Solutions
 license: AGPL-3.0-only
 icon: icon.png
@@ -93,7 +93,7 @@ commands:
 # musallis' phone app) is the first consumer: it is not allowed to calculate prayer times
 # itself, because Display owns whether they are right.
 #
-# Read-only, and served at the exact unprefixed paths POST /fabric/timetable/{list,get}
+# Read-only, and served at the exact unprefixed paths POST /fabric/timetable/{list,get,logo}
 # (server/src/fabricTimetable.ts) — never the tunnel's /<basePath>/… form, which is what keeps
 # the capability on the LAN. The platform decides WHICH apps may call it; we never keep a
 # second list. Note `commands` above stays OUT of this block on purpose: it is reserved, it can

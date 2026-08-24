@@ -12,8 +12,9 @@
  *  - `POST /fabric/commands/run` — the PLATFORM asking us to run an admin's WhatsApp command.
  *    It can write prayer times. Its caller is always `omos:platform`, a value no app id can be.
  *    See fabricCommands.ts; it composes its own envelope from the helpers here.
- *  - `POST /fabric/timetable/{list,get}` — ANOTHER APP reading our timetable through the
- *    app-to-app broker. Read-only, and the caller is a real app id. See fabricTimetable.ts.
+ *  - `POST /fabric/timetable/{list,get,logo}` — ANOTHER APP reading our timetable (and the
+ *    masjid's own logo) through the app-to-app broker. Read-only, and the caller is a real app
+ *    id. See fabricTimetable.ts.
  *
  * The one thing they must never share is a handler. A capability in `fabric.provides` is
  * reachable by any app the admin granted it to; the commands route is reachable only by the
