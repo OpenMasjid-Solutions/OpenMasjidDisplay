@@ -33,7 +33,8 @@ If it prints anything else, `git checkout dev` first. Do not start work until it
 4. **`main` moves only when Hasan says the words "merge to main."** Nothing else authorises
    it: not a green CI run, not an urgent-looking bug, not an inference that he'd obviously
    want it.
-5. **That merge is a release**, not a merge. It carries the full release chain in §5 below.
+5. **That merge is a release**, not a merge. It carries the full release chain in
+   *On "merge to main"* below.
 
 ### The push protocol — every turn, without being asked
 
@@ -46,7 +47,7 @@ Work on `dev`, push to `dev`, and then **ask**:
 So the loop is: change → commit on `dev` → push `dev` → *"Do you want me to push this to `main`?"* → carry on
 on `dev`. The question is a prompt for a decision, never permission you can assume you already have: an
 unanswered ask, or silence, means the answer is still no. When the answer does come, treat it as the release
-in §5 — not a fast-forward of `main`.
+in *On "merge to main"* below — not a fast-forward of `main`.
 
 Dependabot is wired the same way: every entry in [`.github/dependabot.yml`](.github/dependabot.yml) sets
 `target-branch: dev`, so automated bumps arrive where work belongs instead of as PRs against a branch nobody
@@ -474,15 +475,21 @@ this file.
   history from **0.51.1-dev.8**). Even `sent` means "handed to WhatsApp": there is no delivery receipt
   anywhere and nothing may claim one. **A verdict we could not obtain — a 404, a timeout, an older
   platform — is not a failure**; treating it as one re-announces a change the group already has.
-  **Keep asking for as long as the platform will answer** (24h, `WA_OUTCOME_WINDOW_MS`): `expired` is
+  **Keep asking for as long as the platform will answer** (**7 days**, `WA_OUTCOME_WINDOW_MS` —
+  deliberately longer than the platform's own 24h outcome retention, because the platform now HOLDS
+  messages while the WhatsApp link is down and releases them when an admin re-links, so a verdict can
+  arrive days later; a test floors it at 3 days): `expired` is
   the verdict that re-opens a retry, and an entry left `queued` reads as *handled*, so giving up early
   strands the announcement silently and for ever.
 - **The platform no longer paces us, so this app has to** (0.51.1 removed quiet hours, the caps, the
   cooldowns, the warm-up and the random gap). Ban risk still attaches to the masjid's *number*, it is
   shared by every app on the box, and a blocked number cannot be recovered. What holds here is
   structural and must stay that way: **one approved group and never a per-person send**, one message
-  per Iqamah change deduped through the persisted log (where `sent` counts as handled exactly as
-  `queued` does, or a confirmed message becomes a duplicate), five attempts thirty minutes apart timed
+  per Iqamah change deduped through the persisted log (where `sent` counts as handled just as
+  `queued` does, or a confirmed message becomes a duplicate — **with one exception**: a `sent` the
+  platform has since DISOWNED, `suspect === 'pending'`, is *not* handled and rejoins the ordinary
+  paced path, because there the report of success is the thing that turned out to be wrong), five
+  attempts thirty minutes apart timed
   from the *verdict*, one post in flight, and **no retry around a 202**. Never add a loop over a
   roster. Nothing auth-critical may ever go this way. Message bodies, captions and image bytes are
   never logged; the app's own log keeps event + group id + timestamp + the change's date + the

@@ -1039,25 +1039,37 @@ for req in "$SPOOL"/*; do
       #   * every session start and end is in the journal, and nothing typed is ever logged.
       _req=$STATEDIR/shell-request
       _run=$PREFIX/shell-request
-      if [ ! -f "$_req" ]; then
+      if [ -L "$_req" ]; then
+        # A symlink here is NEVER legitimate — the agent writes a plain four-line file — and it is
+        # refused rather than followed, because it used to be followed. The arm did `mv` the request
+        # into $PREFIX and then chown/chmod it, reasoning that rename(2) does not dereference a
+        # symlink. True of the DESTINATION; not true of the SOURCE. A link planted here therefore
+        # BECAME $PREFIX/shell-request, and the chown/chmod that followed dereferenced it — and
+        # `chmod 600` through a link to /usr/bin/sudo strips a setuid bit permanently. handover()'s
+        # comment describes this hazard in the other direction; this arm claimed to be covered by
+        # the same reasoning and was not. Nothing below moves the agent's inode anywhere.
+        rm -f "$_req"
+        echo 'control: refusing a terminal request that is a symlink'
+      elif [ ! -f "$_req" ]; then
         # Two sessions asked for at once, and the second payload replaced the first. Not worth
         # aborting the rest of the spool for.
         echo 'control: a terminal was asked for with no session details; ignoring'
+      elif [ -z "$SERVER" ]; then
+        # The address a ROOT pty dials out to has to come from trust.env — root-owned, and the one
+        # file the agent cannot write — and never from the agent's own config.json, which it CAN
+        # (the installer chowns $CONFDIR to the service account, and the unit grants it
+        # ReadWritePaths, because the agent rewrites it on adoption). Without a trusted address
+        # there is nothing safe to dial, so nothing starts.
+        rm -f "$_req"
+        echo 'control: refusing a terminal session with no trusted server address'
       else
-        # MOVED before it is read, and that ordering is the point: $STATEDIR belongs to the agent,
-        # so anything validated in place could be swapped for something else immediately afterwards.
-        # rename(2) does not follow a symlink at the destination, and once the file is under $PREFIX
-        # the agent cannot reach it at all. Same reasoning as handover(), in the other direction.
-        mv -f "$_req" "$_run" 2>/dev/null || true
-        chown root:root "$_run" 2>/dev/null || true
-        chmod 600 "$_run" 2>/dev/null || true
-        # Four lines: id, secret, rows, cols. Checked here as well as in the agent — not because the
-        # agent is untrusted with its own file format, but because this is the arm that starts a root
-        # shell and it should be readable as obviously bounded.
-        _sid=$(sed -n 1p "$_run" 2>/dev/null | tr -d '\n\r')
-        _ssec=$(sed -n 2p "$_run" 2>/dev/null | tr -d '\n\r')
-        _srow=$(sed -n 3p "$_run" 2>/dev/null | tr -d '\n\r')
-        _scol=$(sed -n 4p "$_run" 2>/dev/null | tr -d '\n\r')
+        # READ the four fields, DELETE the agent's file, then write a fresh root-created one. The
+        # only thing that crosses the boundary is four validated strings — never an inode.
+        _sid=$(sed -n 1p "$_req" 2>/dev/null | tr -d '\n\r')
+        _ssec=$(sed -n 2p "$_req" 2>/dev/null | tr -d '\n\r')
+        _srow=$(sed -n 3p "$_req" 2>/dev/null | tr -d '\n\r')
+        _scol=$(sed -n 4p "$_req" 2>/dev/null | tr -d '\n\r')
+        rm -f "$_req"
         # A field is valid when stripping everything but its allowed characters leaves it unchanged.
         # `tr -dc` rather than a `case` pattern for one specific reason: a nested case arm inside this
         # one carries its own terminator, and a test that reads an arm up to its first terminator then
@@ -1069,9 +1081,13 @@ for req in "$SPOOL"/*; do
         [ -n "$_srow" ] && [ "$_srow" = "$(printf '%s' "$_srow" | tr -dc '0-9')" ] || _ok=0
         [ -n "$_scol" ] && [ "$_scol" = "$(printf '%s' "$_scol" | tr -dc '0-9')" ] || _ok=0
         if [ "$_ok" = 0 ]; then
-          rm -f "$_run"
           echo 'control: refusing a terminal session whose details are not a plain id, secret and size'
         else
+          # FIVE lines now, and the fifth is the point: root's own copy of the server address, so
+          # the agent cannot choose where a root terminal connects. Written by root into $PREFIX
+          # (which the agent cannot write) behind a umask, rather than chmod'ing an inode it gave us.
+          rm -f "$_run"
+          (umask 077; printf '%s\n%s\n%s\n%s\n%s\n' "$_sid" "$_ssec" "$_srow" "$_scol" "$SERVER" > "$_run")
           # The agent's own TLS trust, read out of its unit rather than duplicated in a second file.
           # A masjid whose display server has a self-signed certificate has exactly one setting for
           # this and it lives there; a copy would be one more thing to keep in step, and the failure

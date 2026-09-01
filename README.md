@@ -55,8 +55,9 @@ to match the room it hangs in, and design them in a **live editor** with a previ
 
 **Layout and look**
 
-- **Three layouts** — centered, a next-prayer **spotlight**, or a split view with a big countdown.
-- **Layout carousel** — optionally rotate through the layouts over the day to gently avoid TV burn-in.
+- **Two layouts** — **Modern**, the themed design with glass panels, a countdown ring and a scene
+  behind everything (the default); or **Simple**, a plain flat page with a logo/clock/date column
+  beside one banded prayer table, larger names and times, modelled on a real wall display.
 - **Portrait or landscape**, 720p or 1080p, with an optional **bitrate cap per size** if your network is tight.
 - **Theme presets**, plus your own **accent colour**, **gold accent** (Arabic names, Jumu'ah, the next-prayer
   highlight) and **text colour** — or leave text on **auto-contrast**, which adapts to a light photo behind it.
@@ -71,7 +72,7 @@ to match the room it hangs in, and design them in a **live editor** with a previ
 
 **Times and calculation**
 
-- **Every prayer's Adhan and Iqamah**, plus **Sunrise** and **Jumu'ah** — up to six khutbah times, and
+- **Every prayer's Adhan and Iqamah**, plus **Sunrise** and **Jumu'ah** — up to eight khutbah times, and
   they can start from a date you choose.
 - **Calculation methods**: MWL, ISNA, Egypt, Makkah, Karachi, or **Custom** with your own Fajr and Isha
   sun-depression angles. Asr by the **Standard** (Shafi'i/Maliki/Hanbali) or **Hanafi** opinion.
@@ -170,9 +171,10 @@ mode, a smart TV, or a spare laptop. It shows exactly what your other screens sh
 - It dims itself and shows a red bar if it loses contact with the server, or if the screen's own clock
   is badly wrong — the same warnings a video screen gives.
 
-> **It cannot show a camera or an HDMI source.** Those are video and a web page has no video player
-> here, so keep a decoder box for those screens. And it is **beta**: it works, but it hasn't been
-> through a season in a real masjid yet.
+> **It can show cameras and HDMI sources too**, played in the page over HLS — the stream is served
+> only through that screen's own token, on the loopback interface, never to the open network. A
+> decoder box is still the simpler choice for a screen that shows nothing but a camera. And this is
+> **beta**: it works, but it hasn't been through a season in a real masjid yet.
 
 ### 📷 Cameras and 🖥️ HDMI sources
 
@@ -248,6 +250,12 @@ didn't arrive (notifications not turned on, permission not granted, platform add
 - **HTTPS for the control panel** through the platform's TLS proxy, which is what makes clipboard copy and
   `Secure` cookies work.
 - **Notifications** relayed to the masjid's configured destination (above).
+- **Your prayer times, offered to the other OpenMasjid apps on the box.** Display owns the times, so
+  nothing else has to be told them a second time and drift when you change an Iqamah. An app you
+  install — **OpenMasjid Companion**, the one musallis add to their phones, is the first — can read the
+  calculated Adhan times, your Iqamah times with every scheduled change and imported day already
+  applied, Jumu'ah, the Hijri date, your timezone, and your masjid's logo so its icon is yours.
+  Read-only, never leaves your own box, and OpenMasjidOS decides which apps may ask.
 - **Remote access** — when it's on, the widget embed code and the volunteer page can use your public address
   automatically instead of a LAN one.
 - **WhatsApp** — post an Iqamah change to a group, and run the "add a scheduled Iqamah change" command by
@@ -357,8 +365,26 @@ shown there too, already carrying this server's address.
 The reason it exists: a Pi opens the camera **directly**, on your own network, so the video never
 passes through the display server. That is what lets the server run somewhere else entirely — in
 another building or in the cloud — while cameras stay smooth. It draws to the screen without a
-desktop or a browser, so a Raspberry Pi 3 B+ with 1 GB of RAM is enough, and it keeps itself up to
-date afterwards.
+desktop or a browser, and it keeps itself up to date afterwards.
+
+**A Raspberry Pi 4 or newer is required.** The installer checks the board and refuses a Pi 3 or
+earlier rather than installing something that would crash in a restart loop and leave a black screen
+on the wall. 2 GB of RAM is comfortable; a Pi 5 is not needed. An unrecognised board (a Zero 2 W, a
+Compute Module) is allowed through on the assumption that you chose it deliberately.
+
+From the dashboard you can also, per screen: **watch what it is showing right now** (a live picture
+read out of the screen's own video memory, about once a second — the only answer to "is that screen
+really showing today's times?" that does not depend on the screen agreeing that it is); **turn the
+television off**, on demand or on a schedule each night; set its **timezone**; force a **resolution**
+for a television that negotiates a bad one, with an automatic revert if the picture does not come
+back; **reboot** it, nightly at 3am by default; join it to **Wi-Fi**; **update** the system packages
+and this app together; and open a **terminal** on it.
+
+> The terminal is a **root** shell, deliberately — a screen in another city that cannot be rebooted
+> or have a package installed on it is a viewer, not a terminal. Understand what that means before
+> using it: a stolen dashboard session is root on every screen the masjid owns. Nothing connects *to*
+> a Pi (it dials out), the session's one-time secret never reaches a browser, and the server expires
+> it — 60 seconds to claim, 10 idle minutes, one hour maximum.
 
 See **[docs/PI_SCREENS.md](docs/PI_SCREENS.md)**.
 

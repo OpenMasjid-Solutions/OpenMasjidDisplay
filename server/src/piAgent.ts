@@ -195,7 +195,6 @@ export function enrolDevice(db: DB, input: EnrolInput, nowMs: number): { device:
       ip: str(input.ip, 64),
       model: str(input.model, 64),
       agentVersion: str(input.agentVersion, 32),
-      firstSeenAt: now,
       lastSeenAt: now,
     };
     devices.push(device);

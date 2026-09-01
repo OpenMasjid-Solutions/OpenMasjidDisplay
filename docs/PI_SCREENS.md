@@ -36,7 +36,12 @@ schedule and the settings — kilobytes — and the pictures never leave the mas
 
 ## What you need
 
-- A **Raspberry Pi 3 B+ or newer**. A Pi 4 or 5 is more comfortable; see *Performance* below.
+- A **Raspberry Pi 4 or newer**. This is enforced, not advisory: the installer reads
+  `/proc/device-tree/model` and **refuses a Pi 3 or earlier** rather than installing something that
+  crashes in a restart loop and leaves a black screen on a wall. A board it does not recognise (a
+  Zero 2 W, a Compute Module, something that is not a Pi) is allowed through, on the assumption that
+  you chose it deliberately — refusing an unknown board would be the more destructive mistake. See
+  *Performance* below for why the line is drawn there.
 - **Raspberry Pi OS Lite** — the version with no desktop. That is not a limitation to work
   around, it is the point: the agent draws straight to the screen, so there is no browser and no
   desktop to pay for.
@@ -112,12 +117,23 @@ and its adoption, and will **not** send you back to the television for a new cod
 | `openmasjid-screen.service` | the agent — **not** run as root |
 | `openmasjid-screen-console.service` | takes the text console off the HDMI output, once, at boot |
 | `openmasjid-screen-update.timer` | checks for a newer agent a few times a day |
+| `openmasjid-screen-update.service` | what the timer runs — the updater, as root, so the agent never writes `/opt` |
+| `openmasjid-screen-control.path` | watches the control directory the agent drops verbs into |
+| `openmasjid-screen-control.service` | the root dispatcher that acts on them (a **closed set** of verbs) |
 
-Packages installed: `nodejs`, `npm`, `ffmpeg`, `fonts-dejavu-core`, `curl`, `ca-certificates`.
+Packages installed: `nodejs`, `npm`, `ca-certificates`, `curl`, `openssl`, `fonts-dejavu-core`,
+`fbset`, and `ffmpeg` (installed separately because on a slow board it takes minutes on its own).
 
-Two boot settings are added if absent — `hdmi_force_hotplug=1`, so a Pi that boots before the
-television is switched on still produces a picture, and `consoleblank=0`, so the screen does not
-blank after ten minutes of nobody typing at it. Both need a reboot.
+The agent's account holds three supplementary groups: `video`, `render` and `tty`.
+
+**Three** boot settings are added if absent, and each needs a reboot:
+
+- `hdmi_force_hotplug=1` in `config.txt`, so a Pi that boots before the television is switched on
+  still produces a picture;
+- `dtoverlay=rpivid-v4l2` in `config.txt`, which exposes the dedicated H.265 decoder as
+  `/dev/video19`;
+- `consoleblank=0` in `cmdline.txt`, so the screen does not blank after ten minutes of nobody
+  typing at it.
 
 ---
 
@@ -164,16 +180,41 @@ Setting this timetable to 720p would roughly halve the work.
 **If a Pi 3 feels sluggish, set that timetable to 720p.** On a television across a hall the
 difference is close to invisible, and it roughly halves the work.
 
-Cameras use the Pi's hardware H.264 decoder where it is available, falling back to software
-automatically.
+**H.265 goes to the hardware decoder; H.264 is decoded in software, on purpose.** That is the
+opposite of what you would guess, and it was measured rather than assumed — see
+`H264_IS_FASTER_IN_SOFTWARE` in `server/src/pi/decode.ts`. On a Pi 4 at 25 fps, as cores of the four
+available: 1080p H.265 on the hardware costs 1.17, a 2688x1512 H.264 stream in software costs 2.00,
+and 4K H.265 on the hardware costs 2.34 — the worst case anybody is likely to point at a screen, and
+still 42% of the board left for the agent's own work. (`hevc_v4l2m2m` is advertised by ffmpeg on a Pi
+and does not work: the Pi's HEVC block is stateless and that wrapper drives stateful ones, so the
+hardware path is `-hwaccel drm`.)
 
 ---
 
 ## Security
 
-- **The agent does not run as root.** It holds the `video` and `tty` groups and can write exactly
-  two directories. Taking the console off the screen — the only genuinely root-only step — is a
-  separate one-shot unit.
+- **The agent does not run as root.** It holds the `video`, `render` and `tty` groups and can write
+  exactly two directories.
+- **What needs root goes through a spool that names VERBS, not commands.** The agent writes a file
+  whose *name* is a verb into `/var/lib/openmasjid-screen/control`; a root path unit notices it and a
+  dispatcher acts on a **closed set**, reading the verb through `head -c 32 | tr -dc 'a-z-'` so
+  nothing arriving over the network can widen it. Reboot, timezone, video mode, Wi-Fi, blanking the
+  television, system updates and the terminal all go this way. **No verb carries a command string**
+  — that is the property that makes the closed set worth anything, and the one-shot console, whose
+  payload *is* a command string, is therefore deliberately **not** a root verb; its bound is the
+  unprivileged account it runs as.
+- **Root never adopts a file the agent supplied.** The agent owns its state directory, so it can
+  replace any name there with a symlink — and `rename(2)` follows neither end while `chown`/`chmod`
+  do. So root reads the fields out, deletes the file, and writes a fresh one in its own directory.
+- **The terminal is a ROOT shell, and that is deliberate.** A screen in another city that cannot be
+  rebooted or have a package installed on it is a viewer, not a terminal. Know what it means: a
+  stolen dashboard session is root on every screen the masjid owns. Four things hold it shut — the
+  panel mints the session and the **device dials out** (nothing connects to a Pi, no port is opened);
+  the one-time secret goes only to the device, never to a browser; the server expires it (60 s to
+  claim, 10 idle minutes, one hour maximum); and the address the root shell connects to comes from a
+  root-owned file the agent cannot write, never from the agent's own config. Nothing about a session
+  is logged — not the keystrokes, not the output.
+- **Taking the console off the screen** is a separate one-shot unit.
 - **It cannot rewrite its own code.** `/opt` is read-only to it; updates are done by a separate
   root timer. A long-running, network-facing process that can modify its own binary is a much
   larger thing to trust than one that cannot.

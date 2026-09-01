@@ -732,7 +732,23 @@ async function platformReachable(): Promise<boolean> {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 3000);
       // No body is read here, so clearing straight after the fetch is correct.
-      await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'error' });
+      //
+      // `redirect: 'manual'`, and it is the ONE outbound call in this file that is not
+      // `'error'` — because here a redirect must count as REACHABLE.
+      //
+      // This value decides whether `/api/setup` accepts an anonymous local-admin claim: it
+      // opens only when the platform is UNREACHABLE (CLAUDE.md §4), so anything that wrongly
+      // reports "unreachable" is an unauthenticated admin takeover. With `'error'` a platform
+      // that answers 301 — an admin adding an http→https upgrade in front of the dashboard is
+      // enough — threw, landed in the catch, cached `ok:false`, and opened the guard for a full
+      // REACH_CACHE_MS. The two comments in probePlatform already state the rule this restores:
+      // *any* HTTP response means the platform is there.
+      //
+      // Nothing is weakened by it. `'manual'` does not follow the redirect either — verified: it
+      // returns the 3xx and never contacts the target — and unlike every other call here this
+      // one sends NO credential (no app secret, no cookie), so the hazard `'error'` exists to
+      // stop, our secret being bounced at some other internal host, does not arise.
+      await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'manual' });
       clearTimeout(t);
       reachCache = { at: Date.now(), ok: true };
       return true;

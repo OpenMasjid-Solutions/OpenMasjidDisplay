@@ -438,7 +438,10 @@ export function handleFabricTimetable(
     if (!tt) return sendJson(res, 404, { error: 'unknown_timetable' });
     const r = readLogo(tt);
     if (!r.ok) return sendJson(res, r.status, { error: r.error });
-    return sendJson(res, 200, { v: TIMETABLE_CONTRACT_VERSION, id: tt.id, logo: r.logo });
+    // Typed, so the declared wire contract is enforced by the compiler rather than merely
+    // described beside an untyped object literal.
+    const answer: FabricTimetableLogoResponse = { v: TIMETABLE_CONTRACT_VERSION, id: tt.id, logo: r.logo };
+    return sendJson(res, 200, answer);
   }
 
   const from = parseFrom(body.from);

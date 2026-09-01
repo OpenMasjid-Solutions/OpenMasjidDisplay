@@ -10,6 +10,8 @@
 import assert from 'node:assert';
 import test from 'node:test';
 import type { IncomingMessage } from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // fabric reads config at import time, and config reads env at ITS import time.
 process.env.OPENMASJID_BASE_URL = 'http://platform.invalid';
@@ -309,4 +311,35 @@ test('a truncated JSON body is treated the same way', async () => {
     assert.equal(r.reachable, true);
     assert.equal(r.username, null);
   });
+});
+
+test('a platform that REDIRECTS is reachable, so /api/setup stays shut', () => {
+  // The reachability probe feeds a decision that fails OPEN: `/api/setup` accepts an anonymous
+  // local-admin claim only when the platform is unreachable. So anything that wrongly reports
+  // "unreachable" is an unauthenticated admin takeover, and a 3xx is not unreachable — an admin
+  // putting an http->https upgrade in front of the dashboard is enough to produce one.
+  //
+  // `redirect: 'manual'` is what makes a 3xx an ANSWER rather than a thrown error. It is the one
+  // outbound call here that is not 'error', and that is deliberate: it does not follow the
+  // redirect either (verified), and unlike every other call in this file it sends no credential,
+  // so the hazard 'error' exists to stop — our app secret bounced at another internal host — does
+  // not arise. Do not "restore" it to 'error' on the strength of CLAUDE.md's general rule.
+  const src = fs.readFileSync(path.join(__dirname, 'fabric.ts'), 'utf8');
+  const fn = src.slice(src.indexOf('async function platformReachable'));
+  const body = fn.slice(0, fn.indexOf(String.fromCharCode(10) + '}'));
+  assert.match(body, /redirect: 'manual'/, 'the reachability probe must not throw on a redirect');
+  assert.ok(!body.includes("redirect: 'error'"), 'and must not use error, which caches ok:false');
+  assert.ok(!/x-openmasjid-app-secret/i.test(body), 'it must stay credential-free for that to be safe');
+
+  // Every OTHER outbound call keeps 'error'. Counted so a new credential-bearing call cannot
+  // quietly adopt 'manual' by copying the probe above it.
+  // Comments stripped: the note above the probe necessarily quotes both spellings.
+  const code = src
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l))
+    .join('\n');
+  const fetches = [...code.matchAll(/redirect: '(error|manual|follow)'/g)].map((m) => m[1]);
+  assert.equal(fetches.filter((r) => r === 'manual').length, 1, 'exactly one manual: the probe');
+  assert.equal(fetches.filter((r) => r === 'follow').length, 0, 'nothing may follow a redirect');
+  assert.ok(fetches.filter((r) => r === 'error').length >= 8, 'every credential-bearing call stays error');
 });

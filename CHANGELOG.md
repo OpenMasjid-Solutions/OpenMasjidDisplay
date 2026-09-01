@@ -735,6 +735,62 @@ CLAUDE.md § *The changelog has two audiences*.
 - Documentation for setting a Raspberry Pi screen up, what it needs, how it behaves when something
   is wrong, and what to check when it does not work.
 
+### Fixed
+- **Prayer times were an hour wrong on the two nights a year the clocks change.** On the night the
+  clocks went forward, a screen drawn between midnight and 2am showed every one of that day’s prayer
+  times an hour early — Fajr as 04:53 when it was really 05:53 — and then corrected itself once the
+  clock moved. The countdown, the Iqamah countdown and the Adhan pop-up all went with it. A screen
+  now works a day’s times out the same way whatever time of day it is asked.
+- **After Isha on the night before the clocks changed, the countdown to tomorrow’s Fajr skipped a
+  day** and counted to the wrong morning.
+- **The printable month calendar contradicted the screens, in three ways at once.** It ignored
+  scheduled Iqamah changes completely — so a masjid that had scheduled a change (the whole point of
+  the WhatsApp wizard) printed the *old* times indefinitely; it ignored the “call the Adhan a few
+  minutes later” setting, so both columns were early; and it rounded to the nearest minute where the
+  screens round down, so about half the rows were a minute later than the board on the wall. The
+  sheet is now produced by the same code that draws the screens, so it cannot disagree with them
+  again.
+- **The prayer times widget on a masjid’s own website showed two different times for the same
+  prayer.** The card at the top applied the Adhan delay and the week table beside it did not, so one
+  page said both 5:14 and 5:19, with nothing to say which was meant.
+- **Editing one timetable while deleting another could write the change to the wrong one.** It needed
+  two things happening at once — an image upload in one browser tab and a delete in another — but the
+  result was silent: a logo, a background, an imported CSV or a scheduled change landing on a
+  different screen’s configuration.
+- **A Raspberry Pi screen’s Wi-Fi, timezone and other settings could be turned against the screen
+  itself.** Two flaws, both needing an attacker to have already got into the screen’s limited account,
+  and both of which handed them the whole machine from there: the privileged helper could be tricked
+  into changing the permissions of any file on the system (including the one that makes `sudo` work),
+  and the root terminal could be pointed at an address of the attacker’s choosing. Neither is
+  reachable from outside the masjid’s network, and neither needs any action from an admin — updating
+  is enough.
+- **A masjid whose OpenMasjidOS dashboard sits behind a redirect could have had its control panel
+  claimed by anyone on the network.** The app decides whether the dashboard is reachable in order to
+  know whether to allow a recovery password to be set without signing in; a dashboard that answered
+  with a redirect was read as “unreachable”, which opened that door. A redirect now counts as
+  reachable, which is what it always meant.
+- **Photos a volunteer attaches to a parking report** are now served with the same protections as
+  every other uploaded image, so a browser cannot be talked into treating one as a web page.
+
+### Changed
+- **Documentation reviewed line by line against the code**, and every claim that had drifted was
+  corrected. The ones a masjid would have been misled by: the README and the Raspberry Pi guide both
+  said a Pi 3 B+ was enough, when the installer refuses anything older than a Pi 4 outright; the
+  README said a browser screen could not show a camera, which it now can; it advertised three screen
+  layouts and a burn-in “layout carousel” that do not exist (there are two layouts, Modern and
+  Simple); and it said six Jumu‘ah times where the app takes eight. The Pi guide also had the video
+  decoding exactly backwards — H.265 goes to the hardware decoder and H.264 is deliberately decoded
+  in software, which was measured, not assumed.
+- Internal notes brought back in line with the code as well: the release procedure recorded in the
+  audit folder prescribed an order that had produced three mis-tagged releases, and recommended a
+  change to how images are published that was later examined and rejected on evidence — both are now
+  marked as superseded rather than left to be followed. `CLAUDE.md` had the WhatsApp retry window at
+  24 hours where the code says seven days.
+- Dead code removed: a stale scratch file, an unused settings type, two test hooks nothing called, a
+  device field written on every screen and read by nothing, an API call whose editor was removed, and
+  ~45 lines of styling for interfaces that no longer exist. Fourteen tests that had been duplicated
+  verbatim in the installer suite were deduplicated.
+
 ## 0.69.0
 
 ### Added

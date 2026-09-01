@@ -57,6 +57,7 @@ import {
   makeDeviceId,
   makeDeviceSecret,
   CONFIG_PATH,
+  SERVER_ORIGIN_RE,
   type AgentConfig,
 } from './agentConfig';
 
@@ -1741,19 +1742,37 @@ async function runShellSessionOnly(file: string): Promise<void> {
   } catch {
     /* already gone, which is fine */
   }
-  const [id = '', secret = '', rowsRaw = '', colsRaw = ''] = lines;
+  const [id = '', secret = '', rowsRaw = '', colsRaw = '', serverRaw = ''] = lines;
   // Re-validated here as well as by root. Same reasoning as everywhere else in this app: the check
   // that matters is the one made by the thing about to act on the value.
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id.trim()) || !/^[A-Za-z0-9_-]{8,128}$/.test(secret.trim())) {
     log('refusing a terminal session whose id or secret is not a plain token');
     process.exit(1);
   }
-  const cfg = loadConfig();
-  if (!cfg?.server || !cfg.token) {
-    log('cannot open a terminal: this screen has no server address or is not adopted');
+  /**
+   * The origin comes from the SPOOL FILE — root's own copy, out of trust.env — and never from
+   * config.json.
+   *
+   * This is the fifth line, and it is a privilege boundary rather than a convenience. config.json
+   * belongs to the agent: the installer chowns $CONFDIR to the service account and the unit grants
+   * it ReadWritePaths, because the agent rewrites the file when the screen is adopted. So reading
+   * `server` from there meant a compromised UNPRIVILEGED agent could point it anywhere, ask the
+   * spool for a terminal, and be handed a ROOT pty on a socket of its choosing — the exact
+   * escalation the closed verb set exists to prevent, straight through the one verb that grants
+   * root. The token may still come from config; it is only this device's own credential. The
+   * ORIGIN may not.
+   */
+  const server = serverRaw.trim().replace(/\/+$/, '');
+  if (!SERVER_ORIGIN_RE.test(server)) {
+    log('refusing a terminal session with no trusted server address');
     process.exit(1);
   }
-  runShellSession(cfg, {
+  const cfg = loadConfig();
+  if (!cfg?.token) {
+    log('cannot open a terminal: this screen is not adopted');
+    process.exit(1);
+  }
+  runShellSession({ ...cfg, server }, {
     id: id.trim(),
     secret: secret.trim(),
     rows: Number(rowsRaw) || 24,

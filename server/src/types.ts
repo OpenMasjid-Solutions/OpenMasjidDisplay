@@ -352,7 +352,6 @@ export interface PiDevice {
   ip: string;
   model: string;
   agentVersion: string;
-  firstSeenAt: string;
   lastSeenAt: string;
   /** The screen this device drives, once adopted. */
   tvId?: string;

@@ -98,11 +98,57 @@ test('the root terminal carries a session, never a command', () => {
     !/\$_sid|\$_ssec/.test(branch.slice(branch.indexOf('systemd-run'))),
     'no field from the request may be interpolated into the command that starts the terminal',
   );
-  // And the payload is moved out of the agent's reach BEFORE being read, or it could be swapped
-  // between the check and the use.
-  const mvAt = branch.indexOf('mv -f "$_req"');
-  assert.ok(mvAt >= 0, 'the request must be moved out of the agent-writable directory');
-  assert.ok(mvAt < branch.indexOf('_sid=$('), 'and moved before it is read, not after');
+  // The agent's INODE never crosses the boundary — only four validated strings do.
+  //
+  // This assertion used to say the opposite: it required `mv -f "$_req" "$_run"` and called that
+  // moving the payload "out of the agent's reach". That was the bug, and pinning it made the bug
+  // look deliberate. rename(2) does not dereference the SOURCE any more than the destination, so a
+  // symlink planted at $STATEDIR/shell-request became $PREFIX/shell-request — and the `chown`/
+  // `chmod 600` that followed DID dereference it. `chmod 600` through a link to /usr/bin/sudo
+  // strips a setuid bit permanently; through /etc/resolv.conf it leaves a screen that can never
+  // find its display server again. Reached from the unprivileged agent, which is precisely what
+  // the spool exists to contain.
+  assert.ok(!branch.includes('mv -f "$_req"'), 'the agent-supplied file must never be renamed into $PREFIX');
+  assert.ok(!/chown.*"\$_run"/.test(branch), 'and never chowned');
+  assert.ok(!/chmod.*"\$_run"/.test(branch), 'and never chmoded');
+  assert.match(branch, /if \[ -L "\$_req" \]/, 'a symlink request is refused outright, not followed');
+  const rmAt = branch.indexOf('rm -f "$_req"', branch.indexOf('_sid=$('));
+  assert.ok(rmAt > 0, "the agent's file is deleted once its fields have been read");
+  assert.ok(rmAt < branch.indexOf('_ok=1'), 'and deleted before the fields are validated, not after');
+
+  // The ROOT pty's destination comes from trust.env, which the agent cannot write — never from
+  // config.json, which it can. Without a trusted address nothing starts.
+  assert.match(branch, /elif \[ -z "\$SERVER" \]/, 'no trusted server address means no session');
+  // Asserted in pieces rather than as one long format string, which would break on any harmless
+  // reformatting: what matters is that root creates the file itself, behind a umask, with SERVER
+  // as a field, and that all five fields go in.
+  assert.match(branch, /\(umask 077; printf /, 'root creates the file behind a umask, not a chmod');
+  assert.match(branch, /> "\$_run"\)/, 'and writes it under the root-owned prefix');
+  for (const field of ['"$_sid"', '"$_ssec"', '"$_srow"', '"$_scol"', '"$SERVER"']) {
+    assert.ok(branch.includes(field), `the written file must carry ${field}`);
+  }
+  assert.ok(branch.indexOf('umask 077') < branch.indexOf('systemd-run'), 'written before the unit starts');
+});
+
+test('the root terminal will not dial an address the agent chose', () => {
+  // The critical half of the same escalation. config.json is the AGENT's file — the installer
+  // chowns $CONFDIR to the service account and the unit grants ReadWritePaths, because the agent
+  // rewrites it on adoption. So taking `server` from there handed a compromised unprivileged agent
+  // a root pty on a socket of its choosing, through the one verb that grants root.
+  const src = fs.readFileSync(path.join(__dirname, 'pi', 'index.ts'), 'utf8');
+  const fn = src.slice(src.indexOf('async function runShellSessionOnly'));
+  const body = fn.slice(0, fn.indexOf(String.fromCharCode(10) + '}'));
+  assert.ok(body.includes('serverRaw'), 'the origin is a field of the spool file');
+  assert.match(body, /SERVER_ORIGIN_RE\.test\(server\)/, 'and it is validated as an origin');
+  assert.ok(
+    !/cfg\??\.server/.test(body),
+    'runShellSessionOnly must never read cfg.server — that is the agent-writable value',
+  );
+  assert.match(body, /runShellSession\(\{ \.\.\.cfg, server \}/, 'the trusted origin overrides the config');
+  // The installer must actually supply it, or the agent's check would reject every session.
+  const arm = installerSrc();
+  const branch = arm.slice(arm.indexOf('    shell-session)'));
+  assert.ok(branch.slice(0, branch.indexOf(';;')).includes('"$SERVER"'), 'the installer passes SERVER across');
 });
 
 test('the agent runs a console command itself, in its own sandbox', () => {
@@ -167,7 +213,6 @@ function dbWithDevice(): { db: DB; device: PiDevice } {
     ip: '10.0.0.9',
     model: 'Raspberry Pi 4 Model B',
     agentVersion: '0.70.0',
-    firstSeenAt: new Date(0).toISOString(),
     lastSeenAt: new Date(0).toISOString(),
   } as PiDevice;
   return { db: { piDevices: [device] } as unknown as DB, device };

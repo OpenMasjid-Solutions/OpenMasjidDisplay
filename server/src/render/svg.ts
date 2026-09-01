@@ -590,12 +590,37 @@ interface Model {
 export function buildModel(tt: Timetable, now: Date): Model {
   const tz = tt.timezone || undefined;
   const parts = localParts(now, tz);
-  const off = timezoneOffsetHours(now, tz);
+  /**
+   * The day's UTC offset, taken at local NOON of the day being drawn — never at the render
+   * instant.
+   *
+   * `prayerTimes` applies one fixed offset to the whole day, and on a DST-transition day the
+   * offset at the render instant is not the day's offset. Measured, America/New_York,
+   * 2026-03-08 (02:00 → 03:00): rendered at 00:30 or 01:30 the board showed Fajr 04:53,
+   * Dhuhr 12:11, Maghrib 18:00; from 03:30 onward the same day read 05:53, 13:11, 19:00.
+   * Every time was exactly an hour out for the two hours before the change — and the
+   * post-transition values are the correct ones, because every prayer that day happens after
+   * the clock moves. So the screen was an hour wrong, twice a year, in the window that ends
+   * at Fajr: the countdown, the Iqāmah countdown and the adhan popup all fired against it.
+   *
+   * Noon is the right anchor for the same reason `zonedNoon` exists, and it makes the live
+   * render agree with the two callers that were already correct — `posterModel` and the Fabric
+   * timetable feed both anchor at noon, so before this the wall and the phone disagreed.
+   */
+  const off = timezoneOffsetHours(zonedNoon(parts.year, parts.month, parts.day, tz), tz);
   // A 'Custom' method uses the masjid's own Fajr/Isha sun-depression angles.
   const method = tt.method === 'Custom' ? { label: 'Custom', fajr: tt.fajrAngle ?? 18, isha: tt.ishaAngle ?? 17 } : tt.method;
   const times = prayerTimes(parts, tt.latitude!, tt.longitude!, off, method, tt.asrMadhab);
 
-  const tomorrow = new Date(now.getTime() + 86400000);
+  /**
+   * Tomorrow, by the CALENDAR, not by adding 24 hours.
+   *
+   * A DST day is not 86,400,000 ms long, so the old arithmetic could skip a date outright:
+   * 2026-03-07 23:30 EST + 24h lands on 2026-03-09 00:30 EDT, and the "next prayer is
+   * tomorrow's Fajr" countdown shown after Isha was then counting to the wrong day's Fajr.
+   * Anchored at noon for the same reason as `off` above.
+   */
+  const tomorrow = zonedNoon(parts.year, parts.month, parts.day + 1, tz);
   const tParts = localParts(tomorrow, tz);
   const tOff = timezoneOffsetHours(tomorrow, tz);
   const tomorrowFajr = prayerTimes(tParts, tt.latitude!, tt.longitude!, tOff, method, tt.asrMadhab).fajr;
@@ -852,6 +877,9 @@ export function widgetPayload(tt: Timetable, now: Date, opts: { date?: string; w
   const lang = (tt.language || 'en') as Lang;
   const method = tt.method === 'Custom' ? { label: 'Custom', fajr: tt.fajrAngle ?? 18, isha: tt.ishaAngle ?? 17 } : tt.method;
   const hasLoc = tt.latitude != null && tt.longitude != null;
+  // Per-prayer Adhan delay, needed here because the week table below computes its own times
+  // rather than going through buildModel — see the note on `wf`.
+  const ao = tt.adhanOffsets ?? {};
   const today = localParts(now, tz);
 
   const fd = parseIsoDate(opts.date);
@@ -909,14 +937,25 @@ export function widgetPayload(tt: Timetable, now: Date, opts: { date?: string; w
     const lbl = new Date(Date.UTC(dp.year, dp.month - 1, dp.day, 12));
     const iso = isoOf(dp.year, dp.month, dp.day);
     const times = hasLoc ? prayerTimes(dp, tt.latitude!, tt.longitude!, timezoneOffsetHours(dObj, tz), method, tt.asrMadhab) : null;
-    const f = (h: number | undefined) => (times && h != null ? fmtShort(h, tt.timeFormat) : '—');
+    /**
+     * The DISPLAYED Adhan, offsets included — the same value the focus card shows.
+     *
+     * These are raw astronomical times, and the card above them comes from `buildModel`, which
+     * adds `tt.adhanOffsets`. So a masjid that calls the Adhan five minutes after the
+     * astronomical time got a widget whose card said 5:19 and whose week table said 5:14 for the
+     * same prayer on the same day, side by side on one page, with nothing to say which was
+     * meant. Whichever a visitor believed, half the page was wrong.
+     */
+    const wf = (k: keyof typeof ao, h: number | undefined) =>
+      times && h != null ? fmtShort(h + (ao[k] ?? 0) / 60, tt.timeFormat) : '—';
     days.push({
       iso,
       dow: dow.format(lbl),
       dayLabel: `${dow.format(lbl)} ${dp.day}`,
       isToday: dp.year === today.year && dp.month === today.month && dp.day === today.day,
       isFocus: iso === focusIso,
-      fajr: f(times?.fajr), dhuhr: f(times?.dhuhr), asr: f(times?.asr), maghrib: f(times?.maghrib), isha: f(times?.isha),
+      fajr: wf('fajr', times?.fajr), dhuhr: wf('dhuhr', times?.dhuhr), asr: wf('asr', times?.asr),
+      maghrib: wf('maghrib', times?.maghrib), isha: wf('isha', times?.isha),
     });
   }
   const rangeFmt = new Intl.DateTimeFormat(lang, { month: 'short', day: 'numeric', timeZone: 'UTC' });

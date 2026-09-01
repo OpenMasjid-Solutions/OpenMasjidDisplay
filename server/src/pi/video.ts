@@ -99,11 +99,6 @@ export function pickTimeoutFlag(help: string): string | null {
   return null;
 }
 
-/** Test seam — the probe result is cached for the life of the process. */
-export function __resetTimeoutFlagForTests(): void {
-  timeoutFlag = undefined;
-}
-
 /**
  * Arguments for asking a camera what it is, before deciding how to decode it.
  *

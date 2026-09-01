@@ -163,6 +163,22 @@ function previewInstant(dateStr: unknown, timezone?: string): number {
 const readBody = (req: IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> =>
   readJsonBody(req, maxBytes);
 
+/**
+ * The entry with this id, resolved WHEN IT IS USED.
+ *
+ * Several routes settle a timetable's array index, then `await` the request body — an image
+ * upload, so the wait is as long as the upload takes — and only then write. An index is not a
+ * stable reference across that wait: a DELETE of any EARLIER timetable arriving in between
+ * shifts the array, and the write then lands on a different masjid screen's configuration
+ * entirely, or throws on `undefined`. Two browser tabs are enough to do it.
+ *
+ * So inside a `store.update` callback, never index with something captured before an await —
+ * look the id up again. The early `findIndex` those routes still do is only there to answer 404
+ * quickly; it is not what the write uses.
+ */
+const byId = <T extends { id: string }>(list: T[], id: string): T | undefined =>
+  list.find((x) => x.id === id);
+
 /** Validate an uploaded image by its BYTES (not the browser's extension-derived label) and
  *  return the true mime to store — or a friendly error. Browsers label an upload's data-URI
  *  by file extension, so a JPEG named "logo.png" arrives as image/png and the display's SVG
@@ -1180,13 +1196,19 @@ export function createApi(deps: Deps) {
           const chk = checkUploadedImage(buf);
           if ('error' in chk) return sendJson(res, 400, { error: chk.error });
           const file = saveBackground(id, chk.mime, buf);
-          store.update((db) => void (db.timetables[idx].backgroundImage = file));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.backgroundImage = file;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
         if (method === 'DELETE') {
           removeBackground(id);
-          store.update((db) => void (db.timetables[idx].backgroundImage = ''));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.backgroundImage = '';
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -1214,13 +1236,19 @@ export function createApi(deps: Deps) {
           const chk = checkUploadedImage(buf);
           if ('error' in chk) return sendJson(res, 400, { error: chk.error });
           const file = saveLogo(id, chk.mime, buf);
-          store.update((db) => void (db.timetables[idx].logoImage = file));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.logoImage = file;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
         if (method === 'DELETE') {
           removeLogo(id);
-          store.update((db) => void (db.timetables[idx].logoImage = ''));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.logoImage = '';
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -1238,14 +1266,18 @@ export function createApi(deps: Deps) {
               error: parsed.errors[0] ?? 'No usable rows found. Each row needs a date and at least one time.',
             });
           }
-          store.update((db) => void (db.timetables[idx].iqamahYear = parsed.data));
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.iqamahYear = parsed.data;
+          });
           // Return the parsed map too, so the editor can update its shared copy in place
           // (the one-off editor + monthly table + CSV all edit the same iqamahYear).
           return sendJson(res, 200, { ok: true, rows: parsed.rows, errors: parsed.errors.slice(0, 5), data: parsed.data });
         }
         if (method === 'GET') {
           const mode = url.searchParams.get('mode');
-          const tt = store.db.timetables[idx];
+          const tt = byId(store.db.timetables, id);
+          if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
           const csv = mode === 'template' ? templateCsv(tt) : toCsv(tt.iqamahYear);
           const fname = mode === 'template' ? 'iqamah-template.csv' : 'iqamah-times.csv';
           res.writeHead(200, {
@@ -1258,8 +1290,11 @@ export function createApi(deps: Deps) {
           return;
         }
         if (method === 'DELETE') {
-          store.update((db) => void delete db.timetables[idx].iqamahYear);
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) delete t.iqamahYear;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -1272,8 +1307,10 @@ export function createApi(deps: Deps) {
         const body = await readBody(req, 2_000_000);
         const year = normalizeIqamahYear(body.year);
         store.update((db) => {
-          if (Object.keys(year).length) db.timetables[idx].iqamahYear = year;
-          else delete db.timetables[idx].iqamahYear;
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          if (Object.keys(year).length) t.iqamahYear = year;
+          else delete t.iqamahYear;
         });
         return sendJson(res, 200, { ok: true, rows: Object.keys(year).length });
       }
@@ -1289,8 +1326,10 @@ export function createApi(deps: Deps) {
         const body = await readBody(req, 2_000_000);
         const schedule = normalizeIqamahSchedule(body.schedule);
         store.update((db) => {
-          if (schedule.length) db.timetables[idx].iqamahSchedule = schedule;
-          else delete db.timetables[idx].iqamahSchedule;
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          if (schedule.length) t.iqamahSchedule = schedule;
+          else delete t.iqamahSchedule;
         });
         return sendJson(res, 200, { ok: true, entries: schedule.length, schedule });
       }
@@ -1319,13 +1358,15 @@ export function createApi(deps: Deps) {
         if ('error' in chk) return sendJson(res, 400, { error: chk.error });
         const file = saveAnnouncement(id, chk.mime, buf);
         store.update((db) => {
-          const a = db.timetables[idx].announcements ?? {
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          const a = t.announcements ?? {
             enabled: false, images: [], start: '', end: '', everySeconds: 60, forSeconds: 20, imageSeconds: 8,
           };
           a.images = [...a.images, file].slice(0, 30);
-          db.timetables[idx].announcements = a;
+          t.announcements = a;
         });
-        return sendJson(res, 200, store.db.timetables[idx]);
+        return sendJson(res, 200, byId(store.db.timetables, id));
       }
       const annFileMatch = /^\/api\/timetables\/([\w-]+)\/announcements\/(.+)$/.exec(pathname);
       if (annFileMatch && (method === 'DELETE' || method === 'GET')) {
@@ -1352,10 +1393,10 @@ export function createApi(deps: Deps) {
         // Only delete a file that actually belongs to THIS timetable (same guard as GET).
         if (file.startsWith(`${id}.ann.`)) removeAnnouncement(file);
         store.update((db) => {
-          const a = db.timetables[idx].announcements;
+          const a = byId(db.timetables, id)?.announcements;
           if (a) a.images = a.images.filter((f) => f !== file);
         });
-        return sendJson(res, 200, store.db.timetables[idx]);
+        return sendJson(res, 200, byId(store.db.timetables, id));
       }
 
       // ---- Sources ---------------------------------------------------------
