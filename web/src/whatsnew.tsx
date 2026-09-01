@@ -88,7 +88,7 @@ export function WhatsNewModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
-        <div className="modal-body">
+        <div className="modal-body wn-body">
           {err && <p className="form-error">{err}</p>}
           {!releases && !err && <p className="muted">Loading…</p>}
           {releases?.length === 0 && <p className="muted">No release notes shipped with this build.</p>}

@@ -19,6 +19,14 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
+# The browser-screen page (web/src/screen.tsx) imports the SERVER's own renderer —
+# server/src/render/svg.ts — so that a screen drawn in a browser and a screen encoded to
+# video come from one implementation instead of two that drift apart. That import needs the
+# server sources present at ../../server/src while the web bundle is built. They are copied
+# to a SIBLING path, matching the repo layout the import expects; nothing from here reaches
+# the runtime image, which takes only /web/dist.
+COPY server/src /server/src
+COPY server/tsconfig.json /server/tsconfig.json
 RUN npm run build
 
 # ---- Compile the server (TypeScript → dist) -------------------------------
@@ -27,7 +35,10 @@ WORKDIR /server
 COPY server/package.json server/package-lock.json ./
 RUN npm ci
 COPY server/ ./
-RUN npm run build
+# Two outputs from one stage: the server itself, and the single-file agent a Raspberry Pi
+# downloads over curl. The agent is bundled here because this is the stage that has the dev
+# dependencies; the runtime image gets only the finished file.
+RUN npm run build && npm run build:agent
 
 # ---- Runtime (target architecture) ----------------------------------------
 FROM node:22-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS runtime
@@ -69,6 +80,12 @@ COPY CHANGELOG.md ./CHANGELOG.md
 # variable Noto Naskh can drop it to a tofu box under resvg. See assets/fonts/README.md.
 COPY server/assets/fonts /app/fonts
 
+# The Raspberry Pi screen agent and its installer. Served at /pi/agent.js and /pi.sh, which is
+# what makes setting a Pi up a single curl: the script is fetched FROM here, so it already
+# knows the address to point the Pi at. Public by necessity — a Pi being set up holds no
+# credentials yet — and neither file contains a secret.
+COPY --from=server /server/assets/pi /app/pi
+
 # The RTSP server runs inside this container too, so a masjid installs and updates
 # exactly one thing. The app launches and supervises it (mediamtxServer.ts). We ship
 # MediaMTX's OWN default config — it includes the `all_others` path that lets the
@@ -86,7 +103,20 @@ ENV PORT=8080 \
     MTX_APIADDRESS=127.0.0.1:9997 \
     MTX_RTSPTRANSPORTS=tcp \
     MTX_RTMP=no \
-    MTX_HLS=no \
+    # HLS is ON but bound to LOOPBACK ONLY, and is never published as a port. It exists so a
+    # BROWSER screen can show a camera: a browser cannot play RTSP, and HLS is the one
+    # container format any browser can be made to play. The app reverse-proxies it under
+    # /s/<token>/hls/... on the control-panel port, so it inherits that port's TLS and the
+    # admin's tunnel, and a camera is reachable only through a screen's own capability token.
+    # Binding to 127.0.0.1 is what stops it becoming a second, unauthenticated way to watch
+    # the masjid's cameras.
+    MTX_HLS=yes \
+    MTX_HLSADDRESS=127.0.0.1:8888 \
+    # fmp4, NOT lowLatency. Low-latency HLS emits a "part" every ~0.27 s, which is a great
+    # deal of muxing and a great many HTTP requests for a wall clock that nobody is
+    # frame-racing. Ordinary segments cut both, and a second or two of extra delay on a
+    # camera in a prayer hall is not worth the CPU on a Raspberry Pi.
+    MTX_HLSVARIANT=fmp4 \
     MTX_WEBRTC=no \
     MTX_SRT=no
 EXPOSE 8080 8081 8554

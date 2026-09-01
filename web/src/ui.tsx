@@ -8,6 +8,8 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -69,9 +71,108 @@ export const IconSun = (p: IP) => <Svg {...p}><circle cx="12" cy="12" r="4" /><p
 export const IconRefresh = (p: IP) => <Svg {...p}><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" /></Svg>;
 // "What's new" — a sparkle, matching the account-menu icon set's stroke weight.
 export const IconSparkle = (p: IP) => <Svg {...p}><path d="M12 3l1.8 4.9L18.7 9.7l-4.9 1.8L12 16.4l-1.8-4.9L5.3 9.7l4.9-1.8Z" /><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7Z" /></Svg>;
+export const IconTerminal = (p: IP) => <Svg {...p}><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></Svg>;
 export const IconUser = (p: IP) => <Svg {...p}><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></Svg>;
 export const IconExpand = (p: IP) => <Svg {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></Svg>;
 export const IconDownload = (p: IP) => <Svg {...p}><path d="M12 3v12M7 11l5 5 5-5M4 20h16" /></Svg>;
+// How a screen is attached to the network. Two shapes that stay apart at 14px, which is the size
+// they are actually used at: expanding arcs against a hard-edged plug.
+export const IconWifi = (p: IP) => <Svg {...p}><path d="M5 12.5a10 10 0 0 1 14 0M8 16a6 6 0 0 1 8 0" /><circle cx="12" cy="19.5" r="1" /></Svg>;
+export const IconEthernet = (p: IP) => <Svg {...p}><rect x="6" y="10" width="12" height="9" rx="1.5" /><path d="M9.5 10V7.5h5V10M9 19v2M12 19v2M15 19v2" /></Svg>;
+// Not attached to anything — the same plug with the run of wire broken.
+export const IconNoLink = (p: IP) => <Svg {...p}><path d="M4 4l16 16" /><path d="M9 5h6M7 12h4M13 12h4" /></Svg>;
+
+/**
+ * A glyph for a traffic light. Separate from `Svg` because the numbers are different and the
+ * difference is the whole point: at 8–9px inside a 0.82rem circle, the shared 1.8 stroke weight is
+ * invisible. OpenMasjidOS uses lucide at strokeWidth 3.5 here, so this does too.
+ *
+ * `currentColor` rather than a fixed fill, because the CSS sets the colour and the opacity on
+ * `.tl svg` — that is what makes the glyphs appear only when the group is hovered.
+ */
+/**
+ * Which overlay is on top, so Escape closes one thing.
+ *
+ * Both handlers listen on `window`, so stopping propagation cannot separate them: opening a
+ * console window over the settings window and pressing Escape closed BOTH, and the one the person
+ * was looking at vanished along with the one behind it. OpenMasjidOS avoids this by having a single
+ * listener in its window manager that closes only the front-most window; there is no manager here,
+ * so the equivalent is a stack every overlay registers in and consults.
+ */
+const overlayStack: symbol[] = [];
+
+function useTopOverlay(active: boolean): () => boolean {
+  const idRef = useRef<symbol | null>(null);
+  if (idRef.current === null) idRef.current = Symbol('overlay');
+  const id = idRef.current;
+  useEffect(() => {
+    if (!active) return;
+    overlayStack.push(id);
+    return () => {
+      const i = overlayStack.indexOf(id);
+      if (i >= 0) overlayStack.splice(i, 1);
+    };
+  }, [active, id]);
+  return useCallback(() => overlayStack[overlayStack.length - 1] === id, [id]);
+}
+
+function TlGlyph({ size, d }: { size: number; d: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={3.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={d} />
+    </svg>
+  );
+}
+
+/**
+ * Signal strength as bars, the way every other device shows it.
+ *
+ * A percentage is precision nobody can use: "72%" and "85%" prompt a comparison that means nothing,
+ * because received signal strength is not linear in anything a person cares about and the number
+ * moves several points while you watch it. Four bars answers the only real question — will this one
+ * work — and it is the vocabulary every phone and laptop has already taught everybody.
+ *
+ * The exact percentage stays available as a tooltip, for the rare case where somebody is walking an
+ * aerial around a hall and wants to see it move.
+ */
+export function SignalBars({ percent, size = 14 }: { percent: number; size?: number }) {
+  // Four buckets. The thresholds are deliberately not even quarters: below about a third, Wi-Fi
+  // starts costing retransmissions long before it stops working, so that band is worth its own
+  // (single, warning-coloured) bar rather than being lumped in with the middle.
+  const level = percent >= 75 ? 4 : percent >= 50 ? 3 : percent >= 30 ? 2 : percent > 0 ? 1 : 0;
+  const weak = level <= 1 && level > 0;
+  return (
+    <span
+      title={`Signal ${Math.round(percent)}%`}
+      aria-label={`Signal ${level} of 4`}
+      style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 1.5, height: size, lineHeight: 0 }}
+    >
+      {[1, 2, 3, 4].map((i) => (
+        <span
+          key={i}
+          style={{
+            width: Math.max(2, size * 0.16),
+            height: size * (0.3 + i * 0.175),
+            borderRadius: 1,
+            background: i <= level ? (weak ? 'var(--color-warning)' : 'currentColor') : 'currentColor',
+            // Unfilled bars stay visible but recede, so the scale is readable rather than implied.
+            opacity: i <= level ? 1 : 0.22,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
 
 /** OpenMasjid crescent + dome brand mark. Rendered as a CSS mask painted in
  *  `currentColor`, so it adapts to light/dark themes and stays crisp at any size. */
@@ -153,6 +254,25 @@ export function Help({ text }: { text: string }) {
         onMouseLeave={hide}
         onFocus={show}
         onBlur={hide}
+        /**
+         * A click on the badge must do nothing but show the badge's own tooltip.
+         *
+         * `Field` wraps its label AND its control in one <label>, which is what makes clicking the
+         * word "Background" focus the input beside it — normal, wanted HTML behaviour. The "?" lives
+         * inside that same label, so clicking it was forwarded to the control too: clicking the hint
+         * beside "Gold accent" opened the operating system's colour picker. The tooltip said one
+         * thing and the click did another.
+         *
+         * preventDefault is what stops the label activating its control (the badge is not a button,
+         * so there is no default of its own to lose); stopPropagation keeps it out of any wrapper
+         * that treats a click as "pick me". The tooltip still appears, because clicking focuses the
+         * badge and onFocus shows it — which is also what makes this work on a touch screen, where
+         * there is no hover at all.
+         */
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
       >
         ?
       </span>
@@ -184,26 +304,88 @@ export function Field({ label, hint, inlineHint, children }: { label: string; hi
 // `windowed` dialogs (settings / editors) get macOS-style window controls and can
 // be maximized; plain dialogs (confirmations like "Remove screen?") get a simple
 // header with a close button. Nothing minimizes to the dock.
-export function Modal({ open, onClose, title, children, footer, wide, windowed }: {
-  open: boolean; onClose: () => void; title: string; children: ReactNode; footer?: ReactNode; wide?: boolean; windowed?: boolean;
+export function Modal({ open, onClose, title, children, footer, wide, windowed, floating, term }: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: ReactNode;
+  footer?: ReactNode;
+  wide?: boolean;
+  windowed?: boolean;
+  /**
+   * A floating window instead of a modal sheet: no dimming behind it, draggable by its title bar,
+   * and all three traffic lights do something. Implies `windowed`.
+   *
+   * The behaviour is OpenMasjidOS's WindowManager, because these two apps are meant to feel like one
+   * family and it already got this right — centred until you move it, dragged from the header,
+   * double-click the header for fullscreen, clamped so a window cannot be dragged off the screen.
+   * The one deliberate difference is minimize: OpenMasjidOS minimizes into its dock, and there is no
+   * dock here, so the amber light collapses the window to its title bar instead. That keeps it a
+   * real control rather than the inert decoration it is on the modal sheets.
+   */
+  floating?: boolean;
+  /** Size the body for a terminal: it fills the window and scrolls, rather than the window
+   *  growing with the transcript. */
+  term?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [maximized, setMaximized] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const isTop = useTopOverlay(open);
 
   useEffect(() => {
-    if (open) setMaximized(false);
+    if (open) {
+      setMaximized(false);
+      setCollapsed(false);
+      setPos(null);
+    }
+  }, [open]);
+
+  // Tear down an in-flight drag if the window unmounts mid-drag, so a closed window cannot leak a
+  // pointermove handler onto the page.
+  const dragCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragCleanup.current?.(), []);
+
+  // `onClose` is almost always an inline arrow at the call site, so it has a new identity on every
+  // render of the parent. Held in a ref so the key handler below can be re-registered without that
+  // identity being a dependency of the effect that MOVES FOCUS — see the comment there.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  /**
+   * Put focus in the dialog when it opens, and give it back when it closes.
+   *
+   * Keyed on `open` ALONE, and that is the whole point. This used to depend on `[open, onClose]`
+   * too — and because `onClose` is a fresh arrow on every parent render, any re-render while the
+   * dialog was open re-ran this effect and called `focus()` on the container, taking the cursor
+   * out of whatever input somebody was typing in.
+   *
+   * It was reported as the cursor jumping out of a text box after a split second, and it affected
+   * every dialog in the panel, not one — anything that re-rendered its parent did it. A five-second
+   * poll behind one of them simply turned an occasional annoyance into a constant one.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.activeElement as HTMLElement | null;
+    // Only if nothing inside has claimed focus already. A child with `autoFocus` — the console's
+    // command box — has its focus applied during commit, which is BEFORE this effect runs, so
+    // focusing the frame unconditionally took the cursor straight back out of it.
+    if (!ref.current?.contains(document.activeElement)) ref.current?.focus();
+    return () => {
+      prev?.focus?.();
+    };
   }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        if (!isTop()) return; // a window is open above us; it owns the key
+        onCloseRef.current();
         return;
       }
-      if (e.key === 'Tab' && ref.current) {
+      if (e.key === 'Tab' && ref.current && isTop()) {
         const f = ref.current.querySelectorAll<HTMLElement>(
           'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
         );
@@ -220,31 +402,150 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      prev?.focus?.();
+    return () => window.removeEventListener('keydown', onKey);
+    // No focus handling in here, and no onClose in the deps: this effect may re-run freely.
+  }, [open, isTop]);
+
+  /**
+   * Drag by the title bar. Straight from OpenMasjidOS's WindowFrame, including the clamps.
+   *
+   * The clamps are the part worth keeping verbatim: 120px of width and 60px of height always stay
+   * on screen, so a window can be pushed aside but never lost past an edge with no way back.
+   */
+  function startDrag(e: ReactPointerEvent): void {
+    if (!floating || maximized) return;
+    if ((e.target as HTMLElement).closest('.tl')) return; // not from the traffic lights
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    const start = pos ?? { x: rect.left, y: rect.top };
+    const offX = e.clientX - start.x;
+    const offY = e.clientY - start.y;
+    setPos(start);
+
+    const onMove = (ev: PointerEvent): void => {
+      setPos({
+        x: Math.max(0, Math.min(window.innerWidth - 120, ev.clientX - offX)),
+        y: Math.max(0, Math.min(window.innerHeight - 60, ev.clientY - offY)),
+      });
     };
-  }, [open, onClose]);
+    const onUp = (): void => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      dragCleanup.current = null;
+    };
+    dragCleanup.current = onUp;
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    e.preventDefault();
+  }
 
   if (!open) return null;
 
-  return (
-    <div className="modal-backdrop">
+  /**
+   * `windowed` has to add `modal--window`, and it did not.
+   *
+   * The prop styled only the HEADER — it produced the macOS traffic lights — while the class that
+   * makes the thing a window was applied by hand in exactly one place, whatsnew.tsx. So any other
+   * caller passing `windowed` got a window's chrome with a sheet's geometry: the whole dialog
+   * scrolled as one piece instead of being a fixed frame with a scrolling body, and a long list
+   * (the Wi-Fi network list, which is what exposed this) ran past the bottom of it.
+   */
+  const win = windowed || floating;
+  const shellClass = [
+    'modal',
+    'glass-raised',
+    win ? 'modal--window' : '',
+    wide ? 'modal--wide' : '',
+    maximized ? 'modal--max' : '',
+    collapsed ? 'modal--collapsed' : '',
+    term ? 'modal--term' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  /** Where a floating window sits: centred until it is dragged, and the whole viewport when it is
+   *  fullscreen. Same three cases as OpenMasjidOS's WindowFrame. */
+  const positionStyle: CSSProperties = maximized
+    ? { left: 0, top: 0, transform: 'none' }
+    : pos
+      ? { left: pos.x, top: pos.y, transform: 'none' }
+      : {};
+
+  /**
+   * Rendered into document.body, because `position: fixed` is not always fixed to the viewport.
+   *
+   * An ancestor with `transform`, `filter` or `backdrop-filter` becomes the containing block for
+   * fixed-position descendants — so `.modal-backdrop`'s `inset: 0` resolves against THAT element
+   * instead of the screen. Every card in this app is `.glass-raised`, which has a backdrop-filter,
+   * so a modal opened from inside a card was laid out inside the card: the dimming covered only the
+   * card, the dialog centred itself on the card rather than the page, and the bottom of it ran off
+   * the viewport.
+   *
+   * It went unnoticed for as long as it did because every other dialog is rendered from a page
+   * root, where the bug cannot show. The Wi-Fi panel is opened from a screen card, and showed it
+   * immediately.
+   */
+  const frame = (
       <div
         ref={ref}
         tabIndex={-1}
-        className={`modal glass-raised${wide ? ' modal--wide' : ''}${maximized ? ' modal--max' : ''}`}
+        className={shellClass}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-modal="true"
+        // A floating window is NOT modal: the settings window behind it stays usable, which is the
+        // point of being able to drag it aside. Claiming aria-modal here would tell a screen reader
+        // that everything else is unavailable, which is not true.
+        aria-modal={floating ? undefined : true}
         aria-label={title}
       >
-        <div className={`modal-head${windowed ? ' modal-head--win' : ''}`}>
-          {windowed ? (
+        <div
+          className={`modal-head${win ? ' modal-head--win' : ''}${floating ? ' modal-head--drag' : ''}`}
+          onPointerDown={startDrag}
+          // Double-clicking the title bar for fullscreen is what a window does, and it is how
+          // OpenMasjidOS's windows behave too.
+          onDoubleClick={floating ? () => setMaximized((v) => !v) : undefined}
+        >
+          {win ? (
             <>
+              {/* The glyph geometry is OpenMasjidOS's too: lucide X and Minus at 9px, Maximize2 at
+                  8px, all at stroke-width 3.5. The heavy stroke at a tiny size is what makes them
+                  legible inside a 0.82rem circle — a normal 1.8 weight disappears. */}
               <div className="traffic" role="group" aria-label="Window controls">
-                <button className="tl tl--close" onClick={onClose} aria-label="Close" title="Close" />
-                <button className="tl tl--max" onClick={() => setMaximized((v) => !v)} aria-label={maximized ? 'Restore size' : 'Maximize'} title={maximized ? 'Restore size' : 'Maximize'} />
+                <button className="tl tl--close" onClick={onClose} aria-label="Close" title="Close">
+                  <TlGlyph size={9} d="M18 6 6 18M6 6l12 12" />
+                </button>
+                {/* Amber does something only in a floating window. On a modal sheet there is
+                    nowhere for it to go, and a button that does nothing is worse than a light that
+                    plainly is one — see the `floating` prop for the divergence from OpenMasjidOS,
+                    which minimizes into its dock. */}
+                {floating ? (
+                  <button
+                    className="tl tl--min"
+                    onClick={() => {
+                      setCollapsed((v) => !v);
+                      // A collapsed window that is also fullscreen is a title bar across the whole
+                      // screen, which reads as a fault. Coming down from fullscreen to collapse is
+                      // the only sensible reading of the two together.
+                      setMaximized(false);
+                    }}
+                    aria-label={collapsed ? 'Expand' : 'Minimize'}
+                    title={collapsed ? 'Expand' : 'Minimize'}
+                  >
+                    <TlGlyph size={9} d={collapsed ? 'M12 5v14M5 12h14' : 'M5 12h14'} />
+                  </button>
+                ) : (
+                  <span className="tl tl--min" aria-hidden="true">
+                    <TlGlyph size={9} d="M5 12h14" />
+                  </span>
+                )}
+                <button
+                  className="tl tl--max"
+                  onClick={() => setMaximized((v) => !v)}
+                  aria-label={maximized ? 'Restore size' : 'Fullscreen'}
+                  title={maximized ? 'Restore size' : 'Fullscreen'}
+                >
+                  <TlGlyph size={8} d={maximized ? 'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7' : 'M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7'} />
+                </button>
               </div>
               <h2 className="modal-title">{title}</h2>
               <span className="spacer" />
@@ -257,10 +558,24 @@ export function Modal({ open, onClose, title, children, footer, wide, windowed }
             </>
           )}
         </div>
-        {children}
+        {/* A windowed dialog is a fixed frame whose BODY scrolls, so its content needs its own
+            element to scroll inside — without one, `overflow: hidden` on the frame simply clips a
+            long list and there is no way to reach the end of it. Every other modal keeps scrolling
+            as a single block, which is right for a short form. */}
+        {win ? <div className="modal-body">{children}</div> : children}
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
-    </div>
+  );
+
+  return createPortal(
+    floating ? (
+      <div className={`win-pos${maximized || pos ? '' : ' win-pos--center'}`} style={positionStyle}>
+        {frame}
+      </div>
+    ) : (
+      <div className={`modal-backdrop${maximized ? ' modal-backdrop--full' : ''}`}>{frame}</div>
+    ),
+    document.body,
   );
 }
 

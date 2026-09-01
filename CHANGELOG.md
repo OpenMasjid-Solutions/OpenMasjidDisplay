@@ -10,6 +10,86 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
+## 0.70.0
+
+The Raspberry Pi release. A cheap computer behind a television is now a full screen — it shows the
+timetable, plays your cameras, and is managed entirely from the dashboard — and the same release
+brings cameras to browser screens, a second screen design, and lets the other OpenMasjid apps on
+your box read your prayer times instead of being told them twice.
+
+### Added
+- **Raspberry Pi screens.** One command on a Pi running Raspberry Pi OS Lite, a setup code on the
+  television, and that screen is yours. It draws the timetable **itself** — no desktop, no browser —
+  and it opens your cameras **directly**, on your own network, so camera video never travels through
+  the display server. That is what lets the display server live somewhere else entirely, in another
+  building or in the cloud, while cameras stay smooth. It keeps itself up to date, keeps your
+  wallpaper, logo and announcements on the Pi so a screen survives losing the network, renders Arabic
+  properly, and uses the **masjid's** clock rather than the Pi's. A Pi 4 or newer is required.
+- **A Raspberry Pi screen is managed from the dashboard, behind the gear on its card.** *Watch this
+  screen* opens a live picture read out of the screen's own video memory — the only answer to "is
+  that screen really showing today's times?" that does not depend on the screen agreeing that it is.
+  You can also turn the television off, on demand or on a schedule each night; set the screen's
+  timezone (the single most consequential setting on the board — a screen on the wrong zone shows
+  every prayer time an hour out, confidently, with nothing anywhere saying so); force a resolution
+  for a television that negotiates a bad one, with an automatic revert if the picture does not come
+  back; reboot it, nightly at 3am by default; join it to Wi-Fi; update the system packages and this
+  app together with one button; read a screen report with load, memory, temperature and a plain
+  warning if the power supply is not keeping up; and open a console or a full terminal.
+- **Screens that are a web page, instead of a decoder box (beta).** Any device with a browser — a
+  smart TV, an old laptop, a tablet — pointed at a link. It shows the timetable, and it now plays
+  **cameras and HDMI sources** too.
+- **A second screen design, "Simple".** A plain flat page — a logo, clock and date column beside one
+  banded prayer table, with larger names and times — modelled on the wall displays many masjids
+  already have. Choose it per timetable; the themed design is now called **Modern** and stays the
+  default.
+- **Other OpenMasjid apps on your box can read your prayer times, and your logo.** Display owns the
+  times, so nothing else has to be told them a second time and drift when you change an Iqamah. An
+  app you install — **OpenMasjid Companion**, the one musallis add to their phones, is the first —
+  reads the calculated Adhan times, your Iqamah times with every scheduled change and imported day
+  already applied, Jumu'ah, the Hijri date, your timezone, and your masjid's logo so the icon on a
+  musalli's phone is yours. Read-only, never leaves your own box, and OpenMasjidOS decides which apps
+  are allowed to ask.
+
+### Changed
+- **The terminal on a Raspberry Pi screen is a root shell, deliberately.** It used to run as the
+  screen's own limited account, which meant `sudo` did not work and `reboot` was impossible — a
+  debugging window, not a terminal. It is now the whole machine, to match what the OpenMasjidOS
+  dashboard already offers. Know what that means before using it: a stolen dashboard session is root
+  on every screen the masjid owns. Nothing connects *to* a Pi — it dials out — the session's one-time
+  code never reaches a browser, and the server expires it (60 seconds to claim, 10 idle minutes, one
+  hour maximum). Nothing typed is ever logged.
+- **Raspberry Pi screens need a Pi 4 or newer.** A Pi 3 could not keep up with a modern camera. A Pi
+  3 screen already on a wall keeps working; a new install on one is refused rather than left
+  crashing.
+- **Announcement pictures are no longer softened.** A screen driven by a decoder box was being drawn
+  at 1280 across and scaled up by the video encoder, which is what made a good poster look
+  low-resolution on the wall. Screens are now drawn at their real size.
+- **The full-screen announcement slideshow fills the wall**, including incorrect-parking alerts.
+- **The WhatsApp log now tells you whether an announcement actually went out**, retries the ones that
+  did not, and flags the ones the platform later admits it never delivered — instead of leaving a
+  tick beside a message nobody received.
+
+### Fixed
+- **Prayer times were an hour wrong on the two nights a year the clocks change.** On the night the
+  clocks go forward, a screen drawn between midnight and 2am showed every one of that day's prayer
+  times an hour early — Fajr as 04:53 when it was really 05:53 — and the countdown and the Adhan
+  pop-up went with it. Fixed, along with the countdown after Isha that skipped a day on the same
+  night.
+- **The printable month calendar contradicted the screens.** It ignored scheduled Iqamah changes
+  entirely, so a masjid that had scheduled one printed the *old* times indefinitely; it ignored the
+  "call the Adhan a few minutes later" setting; and it rounded the minute where the screens round
+  down. It is now produced by the same code that draws the screens.
+- **The prayer times widget on your own website showed two different times for the same prayer** —
+  the card and the week table beside it disagreed.
+- **Security, on Raspberry Pi screens.** Two ways an attacker who had already got into a screen's
+  limited account could have taken the whole machine from there. Neither is reachable from outside
+  the masjid's network, and neither needs anything from you — updating is enough.
+- **Security, on the control panel.** A masjid whose OpenMasjidOS dashboard sits behind a redirect
+  could have had its control panel claimed by anyone on the network.
+- **A screen whose decoder keeps dropping in and out no longer floods your inbox.**
+- **Editing one timetable while deleting another could write the change to the wrong one.**
+- Many smaller fixes to Raspberry Pi setup, Wi-Fi, screen logs and the timetable editor.
+
 ## 0.69.0
 
 ### Added

@@ -3,7 +3,7 @@
 /** Normalizers that turn untrusted request bodies into safe, fully-formed
  *  domain objects. Every field is clamped/defaulted; ids and createdAt are
  *  preserved on update or generated on create. */
-import { rid, defaultIqamah } from './store';
+import { rid, screenToken, defaultIqamah } from './store';
 import { THEMES } from './render/theme';
 import { parseHHMM } from './prayer/engine';
 import type {
@@ -33,6 +33,7 @@ import type {
   AdhanPopup,
   TimetableWidget,
   WhatsAppSettings,
+  TimetableLayout,
 } from './types';
 
 type Obj = Record<string, unknown>;
@@ -42,6 +43,22 @@ function str(v: unknown, def = '', max = 2000): string {
   if (v == null) return def;
   return String(v).slice(0, max);
 }
+/**
+ * The on-screen design, migrating the three names this field used to hold.
+ *
+ * 'centered' | 'clockTop' | 'split' were arrangements of one look, collapsed into a single design
+ * in v0.37.0 and drawn identically ever since. Plain validation cannot rename them: `oneOf` falls
+ * back to the BASE value, and for an existing timetable the base IS the stale string — it would
+ * validate 'centered' into 'centered' for ever, and a picker offering only Modern and Simple would
+ * then look broken on every timetable a masjid already had. All three become 'modern', which is
+ * the design they were already being drawn as.
+ */
+export function normLayout(v: unknown, base?: unknown): TimetableLayout {
+  if (v === 'simple' || v === 'modern') return v;
+  if (base === 'simple' || base === 'modern') return base;
+  return 'modern';
+}
+
 function oneOf<T extends string>(v: unknown, list: readonly T[], def: T): T {
   return (list as readonly string[]).includes(String(v)) ? (v as T) : def;
 }
@@ -280,6 +297,11 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
   const textColor = /^#?[0-9a-fA-F]{6}$/.test(tcRaw)
     ? (tcRaw.startsWith('#') ? tcRaw : `#${tcRaw}`).toLowerCase()
     : '';
+  // "simple" layout's flat page background: '' = white. Falls back to base like the others.
+  const sbgRaw = (o.simpleBg === undefined ? base?.simpleBg ?? '' : str(o.simpleBg, '', 7)).trim();
+  const simpleBg = /^#?[0-9a-fA-F]{6}$/.test(sbgRaw)
+    ? (sbgRaw.startsWith('#') ? sbgRaw : `#${sbgRaw}`).toLowerCase()
+    : '';
   const jumuahIn = Array.isArray(o.jumuah) ? o.jumuah : base?.jumuah ?? ['13:30'];
   const jumuah = jumuahIn.slice(0, 8).map((x) => hhmmOrNull(x)).filter((x): x is string => x != null);
   return {
@@ -292,8 +314,9 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     orientation: oneOf(o.orientation, ['landscape', 'portrait'] as const, base?.orientation ?? 'landscape') as Orientation,
     // Coerce the fallback too, so a timetable saved at the now-removed 4K downgrades to 1080p.
     quality: oneOf(o.quality, ['720p', '1080p'] as const, oneOf(base?.quality, ['720p', '1080p'] as const, '1080p')) as Quality,
-    layout: oneOf(o.layout, ['centered', 'clockTop', 'split'] as const, base?.layout ?? 'centered'),
+    layout: normLayout(o.layout, base?.layout),
     layoutCarousel: o.layoutCarousel === undefined ? base?.layoutCarousel ?? false : bool(o.layoutCarousel, false),
+    simpleBg,
     masjidName: str(o.masjidName, base?.masjidName ?? 'Our Masjid', 80) || 'Our Masjid',
     location: str(o.location, base?.location ?? '', 80),
     latitude: o.latitude === undefined ? base?.latitude ?? null : geoOrNull(o.latitude, -90, 90),
@@ -373,12 +396,22 @@ export function normSource(input: unknown, base?: Source): Source {
 
 export function normTv(input: unknown, base?: Tv): Tv {
   const o = asObj(input);
+  const kind = oneOf(o.kind, ['rtsp', 'web', 'pi'] as const, base?.kind ?? 'rtsp');
   return {
     id: base?.id ?? rid('tv'),
     name: str(o.name, base?.name ?? 'Screen', 80) || 'Screen',
     room: str(o.room, base?.room ?? '', 80),
     defaultContent: o.defaultContent ? normContent(o.defaultContent) : base?.defaultContent ?? { kind: 'off' },
     override: base?.override ?? null,
+    kind,
+    // A web screen's token is minted here and never accepted from the client: it is the whole
+    // access control on an unauthenticated page, so it must come from the CSPRNG rather than
+    // from whoever is posting the form. An existing token is kept so a screen's URL survives
+    // every rename and re-point — a decoder box or a Pi has that URL saved.
+    ...(kind === 'web' ? { webToken: base?.webToken || screenToken() } : {}),
+    // Set by the adoption handler, never by a client: it is the binding between a screen and
+    // a physical device, and letting a form choose it would let a form steal one.
+    ...(base?.piDeviceId ? { piDeviceId: base.piDeviceId } : {}),
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };
 }
@@ -438,5 +471,6 @@ export function normSettings(input: unknown, base: Settings): Settings {
     volunteerEnabled: o.volunteerEnabled === undefined ? base.volunteerEnabled ?? false : bool(o.volunteerEnabled, false),
     volunteerRemote: o.volunteerRemote === undefined ? base.volunteerRemote ?? true : bool(o.volunteerRemote, true),
     whatsapp: normWhatsApp(o.whatsapp, base.whatsapp),
+    webScreensBeta: o.webScreensBeta === undefined ? base.webScreensBeta ?? false : bool(o.webScreensBeta, false),
   };
 }

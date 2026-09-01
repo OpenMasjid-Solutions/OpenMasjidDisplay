@@ -21,6 +21,8 @@ import type { Store } from './store';
 import { RenderManager, type NormalizeSpec } from './render/renderer';
 import { dimsFor } from './render/svg';
 import { resolveTv } from './scheduler';
+import { webScreenOnline } from './webScreen';
+import { deviceOnline } from './piAgent';
 import {
   ping,
   listConfiguredPaths,
@@ -43,9 +45,26 @@ export class Orchestrator {
   private applied = new Map<string, string>();
 
   /** Per-screen alert state for the offline/online notifications. */
-  private alerts = new Map<string, { downSince: number | null; offlineNotified: boolean }>();
+  private alerts = new Map<string, { downSince: number | null; offlineNotified: boolean; lastAlertAt: number }>();
   /** A screen must stop pulling its stream for this long before we call it offline. */
   private readonly OFFLINE_MS = 90_000;
+  /**
+   * And we will not tell the admin about the same screen more often than this.
+   *
+   * These alerts fire on an EXTERNAL failure rather than on anything a person did, which is the
+   * shape that has no natural bound. `offlineNotified` latches, so a screen that is simply down
+   * is reported once — but a decoder that flaps produces a down alert and a recovery alert every
+   * `OFFLINE_MS`, and at 90 seconds that is around 950 pairs a day, each one an email and a
+   * webhook. Nothing else limits it: the platform's alert route gates on the admin's on/off for
+   * the alert type, not on how often it arrives.
+   *
+   * The floor is on the DOWN alert only. A recovery is exempt because it can only ever follow a
+   * down alert we already sent, and suppressing it would leave the admin believing a screen is
+   * dead — so the bound is two alerts per screen per window, with every "down" still getting its
+   * matching "back online". Thirty minutes matches what the other OpenMasjid apps settled on for
+   * the same class of alert.
+   */
+  private readonly ALERT_MIN_GAP_MS = 30 * 60_000;
 
   constructor(
     private readonly store: Store,
@@ -98,11 +117,27 @@ export class Orchestrator {
 
     const refTt = new Set<string>();
     const refSrc = new Set<string>();
-    for (const { res } of resolutions) {
+    for (const { tv, res } of resolutions) {
       const cp = this.contentPath(res.content);
       if (!cp) continue;
-      if (res.content.kind === 'timetable') refTt.add(cp);
-      else if (res.content.kind === 'source') refSrc.add(cp);
+      if (res.content.kind === 'timetable') {
+        // A browser screen renders the timetable ITSELF, so it needs no ffmpeg pipeline and no
+        // resvg loop. That is the whole saving: a masjid that moves every screen to a browser
+        // stops encoding video entirely.
+        if (tv.kind === 'web' || tv.kind === 'pi') continue;
+        refTt.add(cp);
+      } else if (res.content.kind === 'source') {
+        // A Pi agent opens the camera's own RTSP address directly, on the same LAN as the
+        // camera. Pulling it here as well would mean the server carrying video it is not
+        // showing to anyone — and with the server in the cloud, carrying it across the
+        // internet twice. That is precisely what the device exists to avoid.
+        if (tv.kind === 'pi') continue;
+        // A BROWSER screen is the opposite case, and skipping it here was a real bug: a browser
+        // cannot render a camera, it PLAYS one — as HLS, which MediaMTX can only serve from a
+        // path it has been told to pull. Leaving web screens out meant the source path was
+        // never created, so every camera on a browser screen was "unavailable".
+        refSrc.add(cp);
+      }
     }
 
     const activeTts = db.timetables.filter((t) => refTt.has(t.id));
@@ -132,6 +167,10 @@ export class Orchestrator {
       for (const { tv, res } of resolutions) {
         const cp = this.contentPath(res.content);
         if (!cp) continue;
+        // Neither a browser screen nor a Pi has a decoder pointed at an RTSP path: they draw
+        // the timetable themselves and open a camera directly. Programming one would leave
+        // MediaMTX holding a relay open for a reader that never arrives.
+        if (tv.kind === 'web' || tv.kind === 'pi') continue;
         desired.set(tv.id, {
           source: `${config.rtspLoopback}/${cp}`,
           sourceOnDemand: true,
@@ -177,13 +216,25 @@ export class Orchestrator {
       // is on-demand, so a reader (the screen) is what makes it live — readers≥1 is
       // the cleanest "the screen is on and showing the stream" signal.
       let pulling = false;
-      if (reachable && cp) {
+      if (tv.kind === 'web') {
+        // The browser-screen equivalent: it checks in on a timer, and six missed polls is
+        // offline. Same field, so the panel badge and the offline alert are unchanged.
+        pulling = webScreenOnline(tv.id, Date.now());
+      } else if (tv.kind === 'pi') {
+        // Same idea for a device, keyed on the DEVICE rather than the screen: the agent is
+        // what checks in, and a screen with no device adopted yet is simply offline.
+        pulling = !!tv.piDeviceId && deviceOnline(tv.piDeviceId, Date.now());
+      } else if (reachable && cp) {
         const st = await getPathState(tv.id);
         pulling = !!st && st.readers >= 1;
       }
       // A decoder reading a FROZEN picture still counts as "pulling", so freshness has to
       // be asked separately — otherwise a screen showing yesterday's times reports green.
-      const isTt = res.content.kind === 'timetable' && !!cp;
+      // Staleness is about the RENDER LOOP producing frames. A browser screen has no such
+      // loop on the server — it draws for itself — so a frozen-frame verdict would be about a
+      // pipeline this screen does not use. It marks its own picture instead (screen.tsx),
+      // from the server clock it is handed and from whether it can still reach us.
+      const isTt = res.content.kind === 'timetable' && !!cp && tv.kind !== 'web' && tv.kind !== 'pi';
       const reason = isTt ? this.render.staleReason(cp!) : null;
       statuses.push({
         tvId: tv.id,
@@ -277,7 +328,7 @@ export class Orchestrator {
     for (const { tv, pulling, off, stale, staleReason, litUp } of items) {
       let st = this.alerts.get(tv.id);
       if (!st) {
-        st = { downSince: null, offlineNotified: false };
+        st = { downSince: null, offlineNotified: false, lastAlertAt: 0 };
         this.alerts.set(tv.id, st);
       }
       const name = (tv.name || 'Screen').slice(0, 60);
@@ -288,15 +339,23 @@ export class Orchestrator {
         continue;
       }
       if (pulling) {
+        // Only ever after a down alert the admin actually received, and never floored — see
+        // ALERT_MIN_GAP_MS. It resets the floor, so the NEXT down alert is the one that waits.
         if (st.offlineNotified) {
           void this.notify({ title: 'Screen back online', text: `✅ "${name}" is showing its stream again.`, level: 'success' });
+          st.lastAlertAt = now;
         }
         st.downSince = null;
         st.offlineNotified = false;
       } else {
         if (st.downSince == null) st.downSince = now;
         if (now - st.downSince >= this.OFFLINE_MS && !st.offlineNotified) {
+          // Floored, and `offlineNotified` is deliberately NOT set when it is. A screen that is
+          // still down when the window expires is reported then — the alert is delayed, never
+          // dropped, which is the difference between pacing an alert and losing one.
+          if (now - st.lastAlertAt < this.ALERT_MIN_GAP_MS) continue;
           st.offlineNotified = true;
+          st.lastAlertAt = now;
           // Say the true thing. "Still lit up" is only accurate when a decoder really is
           // attached, and a wrong clock is a different problem from a frozen renderer with
           // a different remedy, so each gets its own wording.

@@ -26,9 +26,20 @@ import {
 import { normContent } from './validate';
 import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
 import { LoginLimiter } from './rateLimit';
-import type { ContentRef } from './types';
+import { rid } from './store';
+import { saveReportImages, removeReportImage, reportImageFile } from './render/background';
+import { regenerateReportFrames } from './render/reportFrames';
+import type { ContentRef, ParkingReport } from './types';
 
 const log = makeLog('volunteer');
+
+const str = (v: unknown, max: number): string => String(v ?? '').trim().slice(0, max);
+function publicReport(r: ParkingReport) {
+  return {
+    id: r.id, plate: r.plate, description: r.description, location: r.location,
+    reason: r.reason, imageCount: r.images.length, targets: r.targets, createdAt: r.createdAt,
+  };
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -204,6 +215,63 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
         if (idx < 0) return sendJson(res, 404, { error: 'Screen not found.' });
         store.update((db) => void (db.tvs[idx].override = null));
         return sendJson(res, 200, { ok: true });
+      }
+
+      // ---- Incorrect-parking reports (volunteer-filed alert cards) --------
+      if (pathname === '/api/volunteer/reports' && method === 'GET') {
+        const reports = (store.db.reports ?? [])
+          .slice()
+          .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+          .map(publicReport);
+        const timetables = store.db.timetables.map((t) => ({ id: t.id, name: t.name }));
+        return sendJson(res, 200, { reports, timetables });
+      }
+      if (pathname === '/api/volunteer/reports' && method === 'POST') {
+        const body = await readBody(req, 8_000_000); // room for a client-resized photo
+        const plate = str(body.plate, 15);
+        const description = str(body.description, 200);
+        const location = str(body.location, 120);
+        const reason = str(body.reason, 200);
+        if (!plate && !description) return sendJson(res, 400, { error: 'Add at least a license plate or a description of the car.' });
+        if (!location) return sendJson(res, 400, { error: 'Say where the car is (the location).' });
+        if (!reason) return sendJson(res, 400, { error: 'Give a reason for the report.' });
+        const known = new Set(store.db.timetables.map((t) => t.id));
+        let targets = Array.isArray(body.targets) ? body.targets.map(String).filter((id) => known.has(id)) : [];
+        if (targets.length === 0) targets = ['*']; // no/blank selection → show on every display
+        const id = rid('rep');
+        const images = saveReportImages(id, body.images);
+        const report: ParkingReport = { id, plate, description, location, reason, images, targets, createdAt: new Date().toISOString() };
+        store.update((db) => void (db.reports ??= []).push(report));
+        regenerateReportFrames(store);
+        return sendJson(res, 201, { report: publicReport(report) });
+      }
+      const repDel = /^\/api\/volunteer\/reports\/([\w-]+)$/.exec(pathname);
+      if (repDel && method === 'DELETE') {
+        const id = repDel[1];
+        if (!(store.db.reports ?? []).some((r) => r.id === id)) return sendJson(res, 404, { error: 'Report not found.' });
+        removeReportImage(id);
+        store.update((db) => void (db.reports = (db.reports ?? []).filter((r) => r.id !== id)));
+        regenerateReportFrames(store);
+        return sendJson(res, 200, { ok: true });
+      }
+      const repImg = /^\/api\/volunteer\/reports\/([\w-]+)\/image(?:\/(\d+))?$/.exec(pathname);
+      if (repImg && method === 'GET') {
+        const rep = (store.db.reports ?? []).find((r) => r.id === repImg[1]);
+        const idx = repImg[2] ? Number(repImg[2]) : 0;
+        const f = rep && rep.images[idx] ? reportImageFile(rep.images[idx]) : null;
+        if (!f) return sendJson(res, 404, { error: 'No image.' });
+        // These are bytes a VOLUNTEER uploaded from a phone, served back with a content type
+        // taken from the stored file's extension — and the extension came from the data URI the
+        // uploader declared, not from the bytes. So the same defence the announcement-thumbnail
+        // route already carries applies here and was missing: `nosniff` so a browser cannot
+        // decide the "image/png" is really HTML, and a CSP that makes it inert if it ever does.
+        res.writeHead(200, {
+          'content-type': f.mime,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        });
+        return void fs.createReadStream(f.path).pipe(res);
       }
 
       return sendJson(res, 404, { error: 'Not found.' });

@@ -83,14 +83,109 @@ export interface TickerSpec {
 // stays at 1 fps on the worker; ffmpeg just duplicates frames and animates the text).
 // Quantising the scroll to a whole number of pixels PER FRAME is what removes judder.
 const TICKER_FPS = 20;
-/** Rasterise the timetable at a CAPPED resolution and let ffmpeg upscale to the
- *  output. The heavy per-second work is the resvg render; capping it (a 720p frame is
- *  ~2.25× cheaper than 1080p) keeps every render well under its 1-second slot even
- *  when the periodic reconcile steals CPU — so the live countdown never skips a
- *  second. Crucially the upscale is a `scale` filter set ONCE at spawn, so the layout
- *  carousel (which only changes SVG content, not ffmpeg args) still never respawns
- *  ffmpeg → the decoder never reconnects. Output ≤ 720p renders 1:1 (no upscale). */
-const RENDER_CAP = 1280; // longest side of the rasterised frame (keeps the per-second render cheap so the ticker + countdown never stutter on a 2-core box)
+
+/**
+ * Output frame rate for a timetable with no ticker — i.e. nothing on screen that moves.
+ *
+ * This is the single biggest lever on this app's CPU, and it was set to 15 on the strength of the
+ * comment in timetableArgs() that said the encoder "has ample headroom". Measured in the shipped
+ * container, that was backwards: for one 1080p screen the encoder ran ~3.5x the renderer
+ * (1429 ffmpeg ticks against 414 for node), so the output frame rate — not the SVG raster — is
+ * what a masjid without a hardware encoder is actually paying for.
+ *
+ * Encoding the same 20s of static content: 15 fps took 4470ms, 8 fps took 2300ms, 5 fps 1773ms.
+ * 8 keeps very nearly all of the saving (1.94x) and stays in the range commodity decoders and
+ * browsers handle without complaint, which 5 starts to push. Nothing is lost visually: without a
+ * ticker the picture changes once a second (the clock), so 8 frames per second is already 8x more
+ * often than the content does anything.
+ */
+export const STATIC_FPS = 8;
+/**
+ * The fallback size for a box that cannot rasterise its own output resolution in time.
+ *
+ * ## This used to be unconditional, and it was the reason announcement images looked soft
+ *
+ * Every 1080p decoder screen rasterised at 1280 and let ffmpeg upscale, on the strength of a
+ * comment that said "a 720p frame is ~2.25× cheaper than 1080p". That figure is the PIXEL COUNT
+ * ratio, assumed to be the cost ratio. Measured on the real renderer, twelve frames each:
+ *
+ *   1080p design -> 1280 (capped)   p50 135ms
+ *   1080p design -> 1920 (full)     p50 168ms   = 1.25x
+ *
+ * Not 2.25x. Most of resvg's time goes on parsing and tessellating the SVG — which this app's
+ * timetable has a great deal of, and which does not care what size it is drawn at — so the fill is
+ * a minority of the work. The same shape of mistake as the "the encoder has ample headroom" comment
+ * that set STATIC_FPS to 15: a plausible ratio, never measured, load-bearing for years.
+ *
+ * A crisp photograph blown up 1.5x by ffmpeg is exactly what "I gave it high quality announcement
+ * files, why is it so low res" looks like — and 25% more render CPU is a small price for not doing
+ * that to it.
+ *
+ * So full resolution is now the default, and the cap is where a box that genuinely cannot keep up
+ * ends up instead — decided from its OWN measured renders, not from a guess about its hardware. See
+ * noteRenderCost.
+ *
+ * The upscale, when it is used, is a `scale` filter set ONCE at spawn, so the layout carousel
+ * (which changes SVG content, not ffmpeg args) still never respawns ffmpeg and the decoder never
+ * reconnects.
+ */
+const RENDER_CAP = 1280;
+
+/**
+ * A render slot is one second, and this is how much of it a render may take before the box is
+ * declared unable to do its own resolution.
+ *
+ * Not 1000: the reconcile, the write pump and ffmpeg itself share the same core, and a render that
+ * only just fits leaves the countdown skipping whenever anything else happens. 650 leaves a third of
+ * the second spare and still keeps full resolution on anything that measured under it — which, on
+ * the numbers above, is a very long way down the range of boxes this runs on.
+ */
+const RENDER_BUDGET_MS = 650;
+
+/**
+ * Has some renderer in this process found the box too slow for full resolution?
+ *
+ * Process-wide and ONE-WAY. Process-wide because it is a property of the hardware, not of one
+ * screen, so the second screen should not have to rediscover it. One-way because going back would
+ * respawn ffmpeg, and a box hovering at the threshold would then reconnect its decoders for ever —
+ * a stuttering countdown is bad, a screen that drops out every thirty seconds is worse.
+ */
+let boxTooSlowForFullRes = false;
+
+/** The last few full-resolution render times, for the median below. */
+const renderCosts: number[] = [];
+
+/**
+ * Record what a render actually cost, and decide whether this box can keep doing them.
+ *
+ * Called for every frame. Ignored once the verdict is in, and ignored while already capped — a
+ * capped render says nothing about whether an uncapped one would fit, and feeding those in would
+ * make the median drift back down and mean nothing at all.
+ */
+export function noteRenderCost(ms: number, wasFullRes: boolean): boolean {
+  if (boxTooSlowForFullRes || !wasFullRes) return false;
+  renderCosts.push(ms);
+  if (renderCosts.length > 10) renderCosts.shift();
+  // Ten samples before judging, so a slow first render — fonts loading, the JIT still warming — is
+  // not mistaken for a slow machine.
+  if (renderCosts.length < 10) return false;
+  const sorted = [...renderCosts].sort((a, b) => a - b);
+  const p50 = sorted[Math.floor(sorted.length / 2)];
+  if (p50 <= RENDER_BUDGET_MS) return false;
+  boxTooSlowForFullRes = true;
+  log.warn(
+    `this box takes ${Math.round(p50)}ms to draw a screen at full resolution, which does not fit in ` +
+      `the one-second slot the live countdown needs — dropping to ${RENDER_CAP}px and letting ffmpeg ` +
+      `scale up. Pictures will be slightly softer; the clock will keep time.`,
+  );
+  return true;
+}
+
+/** Test seam: the verdict is process-wide and one-way, which a test has to be able to undo. */
+export function __resetRenderCostForTests(): void {
+  boxTooSlowForFullRes = false;
+  renderCosts.length = 0;
+}
 /** How old the published frame may get before we stop treating it as current. The loop
  *  renders once per second, so this is ~30 missed renders: comfortably past a slow frame
  *  or a reconcile stealing CPU, and far short of anyone reading a wrong Iqamah time off
@@ -116,6 +211,8 @@ const STALE_AFTER_MS = 30_000;
  */
 export const CLOCK_FLOOR_MS = Date.parse('2026-08-13T00:00:00Z');
 export function renderDimsFor(out: Dims): Dims {
+  // Full resolution unless this box has proved it cannot manage it — see noteRenderCost.
+  if (!boxTooSlowForFullRes) return out;
   const longest = Math.max(out.width, out.height);
   if (longest <= RENDER_CAP) return out;
   const k = RENDER_CAP / longest;
@@ -131,7 +228,10 @@ export function timetableVf(d: Dims, ticker: TickerSpec | null, inDims: Dims = d
   const up = inDims.width !== d.width || inDims.height !== d.height
     ? `scale=${d.width}:${d.height}:flags=lanczos,`
     : '';
-  if (!ticker) return `${up}format=${pixFmt},fps=15`;
+  // Must stay equal to timetableArgs()'s `ofps` for the no-ticker case. If this filter emits more
+  // frames than the encoder is configured for, ffmpeg rasterises and scales every one of them and
+  // then throws the surplus away — paying the full cost of the higher rate for none of it.
+  if (!ticker) return `${up}format=${pixFmt},fps=${STATIC_FPS}`;
   // NB: no `fps=` here. The pipeline now feeds genuine CFR frames at TICKER_FPS (the
   // last render, duplicated in real time between the 1 fps SVG renders), so drawtext
   // animates on real, evenly-paced frames. A hardware decoder gets a steady frame every
@@ -218,13 +318,16 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
   // The display is mostly static high-detail (gradients, glass, crisp text), so a low
   // CBR starved it and it went blocky/banded. Give it a generous bitrate — the content
   // compresses well so this only spends bits where detail actually needs them — and use
-  // a slightly better preset (the heavy work is the 1 fps SVG render, so the encoder has
-  // ample headroom). GOP is one keyframe per second at the output fps.
-  const ofps = ticker ? TICKER_FPS : 15;
+  // a slightly better preset. GOP is one keyframe per second at the output fps.
+  //
+  // This comment used to justify the preset with "the heavy work is the 1 fps SVG render, so the
+  // encoder has ample headroom". Measurement says the opposite — see STATIC_FPS above — so the
+  // headroom claim is gone and the static frame rate is chosen on the numbers instead.
+  const ofps = ticker ? TICKER_FPS : STATIC_FPS;
   // With a ticker we feed genuine CFR frames at TICKER_FPS (the pipeline duplicates the
   // last render in real time), so the input framerate IS the output framerate and there
-  // is no `fps=` filter. Without a ticker the SVG-per-second feed (1 fps) is upsampled by
-  // the `fps=15` filter as before (static content, no motion to stutter).
+  // is no `fps=` filter. Without a ticker the SVG-per-second feed (1 fps) is upsampled by the
+  // `fps=${STATIC_FPS}` filter (static content, so there is no motion to stutter).
   const inFps = ticker ? TICKER_FPS : 1;
   const br = bitrate > 0 ? bitrate : d.height >= 1080 ? 8000 : 4000;
   const buf = br * 2;
@@ -611,12 +714,23 @@ class TimetablePipeline extends FfmpegPipeline {
     if (sec === this.lastSec) return false;
     this.lastSec = sec;
     this.rendering = true;
+    const startedAt = Date.now();
+    // Whether THIS render is at the output's own size, which is what makes its duration a fair
+    // sample. A capped render is cheaper by construction and says nothing about the full one.
+    const fullRes = this.renderDims.width === this.dims.width;
     this.worker
       // Stamp the frame at the whole second so the clock/countdown land exactly on it.
       .raw(tt, sec * 1000, this.renderDims.width)
       .then((img) => {
         this.rendering = false;
         if (this.stopped) return;
+        // Measured before anything else uses the frame: if this box cannot draw its own resolution
+        // inside the slot, drop to the cap now rather than letting the countdown skip for ever.
+        if (noteRenderCost(Date.now() - startedAt, fullRes)) {
+          this.renderDims = this.computeRenderDims();
+          this.restartProc();
+          return;
+        }
         if (img.width !== this.renderDims.width || img.height !== this.renderDims.height) return;
         this.lastFrame = img; // the write pump feeds this to ffmpeg
         this.lastFrameAt = Date.now();

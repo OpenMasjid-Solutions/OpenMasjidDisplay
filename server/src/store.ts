@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from './config';
 import { makeLog } from './logger';
+import { normLayout } from './validate';
 import type {
   DB,
   Timetable,
@@ -36,6 +37,18 @@ export function rid(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
+/**
+ * A capability token for a web screen's public URL.
+ *
+ * Deliberately NOT `rid()`. An id only has to be unique among a few dozen screens, and four
+ * random bytes is plenty for that; this value is the ONLY thing standing between the open
+ * internet and a screen's page, so it is sized to be unguessable rather than merely unique.
+ * 16 bytes base64url ≈ 128 bits — the same order as the session-cookie secret.
+ */
+export function screenToken(): string {
+  return crypto.randomBytes(16).toString('base64url');
+}
+
 export function defaultIqamah(): IqamahConfig {
   return {
     fajr: { mode: 'offset', offset: 20 },
@@ -56,8 +69,9 @@ function seededTimetable(): Timetable {
     themeId: 'emerald',
     orientation: 'landscape',
     quality: s.quality,
-    layout: 'centered',
+    layout: 'modern',
     layoutCarousel: false,
+    simpleBg: '',
     masjidName: s.masjidName || 'Our Masjid',
     location: '',
     latitude: Number.isFinite(lat) && Math.abs(lat) <= 90 ? lat : null,
@@ -96,7 +110,9 @@ function seededTimetable(): Timetable {
 function migrateTimetable(t: Timetable): Timetable {
   return {
     ...t,
-    layout: t.layout ?? 'centered',
+    // Through normLayout, so a store written before v0.70 — where this held 'centered',
+    // 'clockTop' or 'split' — comes back as a design that still exists.
+    layout: normLayout(t.layout),
     layoutCarousel: t.layoutCarousel ?? false,
     textColor: t.textColor ?? '',
     showCountdown: t.showCountdown ?? true,
@@ -133,11 +149,14 @@ function freshDB(): DB {
       // Off, with no group and no timetable chosen. Configuring a WhatsApp gateway for
       // something else is not a request to start messaging the congregation from here.
       whatsapp: { iqamahChange: false, groupId: '', groupLabel: '', timetableId: '', daysBefore: 1 },
+      // Beta, so off until asked for.
+      webScreensBeta: false,
     },
     timetables: [seededTimetable()],
     sources: [],
     tvs: [],
     schedules: [],
+    reports: [],
   };
 }
 
@@ -164,6 +183,15 @@ export class Store {
         const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8')) as DB;
         if (parsed && typeof parsed === 'object' && Array.isArray(parsed.timetables)) {
           parsed.timetables = parsed.timetables.map(migrateTimetable);
+          // Normalize reports: older ones used a single `image`; the renderer now
+          // expects `images: string[]`. Guarantee the array so nothing reads undefined.
+          if (Array.isArray(parsed.reports)) {
+            parsed.reports = parsed.reports.map((r) => {
+              const legacy = (r as { image?: string }).image;
+              const images = Array.isArray(r.images) ? r.images : legacy ? [legacy] : [];
+              return { ...r, images };
+            });
+          }
           const fresh = freshDB();
           // Merge settings so fields added in later versions (e.g. volunteerEnabled) default in.
           // `whatsapp` needs its own merge: the spread above replaces a nested object wholesale,

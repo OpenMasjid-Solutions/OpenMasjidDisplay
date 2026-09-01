@@ -13,6 +13,7 @@ import type {
   IqamahScheduleEntry,
   Release,
   WhatsAppStatus,
+  PiDeviceInfo,
 } from './types';
 
 let onUnauth: () => void = () => {};
@@ -76,8 +77,6 @@ export const api = {
   importIqamahCsv: (id: string, csvText: string) =>
     req<{ ok: boolean; rows: number; errors: string[]; data: IqamahYear }>('POST', `/api/timetables/${id}/iqamah-csv`, { data: csvText }),
   clearIqamahCsv: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/iqamah-csv`),
-  saveIqamahYear: (id: string, year: Record<string, Record<string, string>>) =>
-    req<{ ok: boolean; rows: number }>('PUT', `/api/timetables/${id}/iqamah-year`, { year }),
   saveIqamahSchedule: (id: string, schedule: IqamahScheduleEntry[]) =>
     req<{ ok: boolean; entries: number; schedule: IqamahScheduleEntry[] }>('PUT', `/api/timetables/${id}/iqamah-schedule`, { schedule }),
   iqamahCsvUrl: (id: string, mode?: 'template') =>
@@ -135,6 +134,87 @@ export const api = {
     req<Tv>('POST', `/api/tvs/${id}/set`, { content, until }),
   resumeTv: (id: string) => req<Tv>('POST', `/api/tvs/${id}/resume`),
 
+  /** A browser screen's address: the LAN path, plus the public HTTPS one when the admin's
+   *  remote access is routing this app (the same authoritative source the widget uses). */
+  screenInfo: (id: string) =>
+    req<{ path: string; publicUrl: string; publicConfigured: boolean }>('GET', `/api/tvs/${id}/screen-info`),
+
+  /** Raspberry Pi agents this masjid has seen — pending ones waiting to be adopted, and
+   *  adopted ones with their liveness. */
+  piDevices: () => req<{ devices: PiDeviceInfo[] }>('GET', '/api/pi/devices'),
+
+  /** Adopt the screen showing this code, creating the screen it will drive. */
+  piAdopt: (code: string, name: string) => req<{ tv: Tv }>('POST', '/api/pi/adopt', { code, name }),
+
+  /** Ask a Pi to do something. 202 means QUEUED, not done: the device is not reachable from here,
+   *  it collects the instruction on its own poll within about five seconds. */
+  /** Leave an instruction for a Pi to collect on its next poll. Never "done" — always "asked". */
+  piCommand: (
+    id: string,
+    action:
+      | 'restart'
+      | 'update'
+      | 'reboot'
+      | 'reinstall'
+      | 'logs'
+      | 'wifi-on'
+      | 'wifi-off'
+      | 'wifi-join'
+      | 'wifi-forget'
+      | 'wifi-rescan'
+      | 'shell'
+      | 'display-off'
+      | 'display-on'
+      | 'screenshot'
+      | 'set-timezone'
+      | 'set-video-mode'
+      | 'keep-video-mode',
+    /** Only for 'wifi-join'. The passphrase is used once on the device and never logged. */
+    wifi?: { ssid: string; psk: string },
+    /** Only for 'shell'. One line, run on the screen as its own unprivileged user. */
+    shell?: string,
+    /** Only for 'set-timezone' / 'set-video-mode'. Checked here for a quick answer and again by
+     *  root on the device, which is the check that actually protects it. */
+    text?: string,
+  ) =>
+    req<{ queued: boolean }>(
+      'POST',
+      `/api/pi/${id}/command`,
+      wifi ? { action, wifi } : shell ? { action, shell } : text ? { action, text } : { action },
+    ),
+
+  /** When this screen turns its own output off overnight. Stored and carried on the device's poll —
+   *  the device acts on it from its own clock, so it works with the internet down. */
+  piDisplaySchedule: (id: string, s: { enabled: boolean; offAt: string; onAt: string }) =>
+    req<{ ok: boolean }>('PUT', `/api/pi/${id}/display-schedule`, s),
+
+  /** And when it reboots itself, by the same mechanism. */
+  piRebootSchedule: (id: string, s: { enabled: boolean; at: string }) =>
+    req<{ ok: boolean }>('PUT', `/api/pi/${id}/reboot-schedule`, s),
+
+  /**
+   * "Somebody is watching this screen."
+   *
+   * Called repeatedly while a live-preview window is open. It pushes a deadline a few seconds out;
+   * the screen sends a picture on each of its polls for as long as that holds, and stops on its own
+   * when it lapses. A deadline rather than an on/off switch because there is no reliable "off" — a
+   * closed tab sends nothing.
+   */
+  piPreview: (id: string) =>
+    req<{ ok: boolean; forMs: number; screenshotAt?: string }>('POST', `/api/pi/${id}/preview`),
+
+  /**
+   * Ask for a terminal on a screen.
+   *
+   * Returns the session id and how long the screen has to pick it up. The SECRET the screen must
+   * present never comes here — it goes to the device on its own poll, so a compromised panel
+   * session cannot impersonate a screen.
+   */
+  piTerminalOpen: (id: string, rows: number, cols: number) =>
+    req<{ id: string; claimMs: number }>('POST', `/api/pi/${id}/terminal`, { rows, cols }),
+  /** Forget a device: it goes back to showing a fresh pairing code. Its screen is kept. */
+  piForget: (id: string) => req<{ ok: boolean }>('POST', `/api/pi/${id}/forget`),
+
   createSchedule: (b: Partial<ScheduleRule>) => req<ScheduleRule>('POST', '/api/schedules', b),
   updateSchedule: (id: string, b: Partial<ScheduleRule>) => req<ScheduleRule>('PUT', `/api/schedules/${id}`, b),
   deleteSchedule: (id: string) => req('DELETE', `/api/schedules/${id}`),
@@ -170,6 +250,28 @@ export interface VolunteerData {
   tvs: VolunteerTv[];
   options: { timetables: { id: string; name: string }[]; sources: { id: string; name: string; type: string }[] };
 }
+export interface VolunteerReport {
+  id: string;
+  plate: string;
+  description: string;
+  location: string;
+  reason: string;
+  imageCount: number;
+  targets: string[];
+  createdAt: string;
+}
+export interface VolunteerReportsData {
+  reports: VolunteerReport[];
+  timetables: { id: string; name: string }[];
+}
+export interface NewReport {
+  plate: string;
+  description: string;
+  location: string;
+  reason: string;
+  images: string[];
+  targets: string[];
+}
 // Volunteer calls are prefixed with the app's base path (injected as window.__OMD_BASE__ when
 // the page is served under the OS tunnel at /<appId>/volunteer), so "/api/volunteer/…" resolves
 // under that same prefix. Empty on the LAN / volunteer port, so it's a no-op there.
@@ -181,4 +283,8 @@ export const volApi = {
   tvs: () => req<VolunteerData>('GET', `${VOL_BASE}/api/volunteer/tvs`),
   set: (id: string, content: ContentRef) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/tvs/${id}/set`, { content }),
   resume: (id: string) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/tvs/${id}/resume`),
+  reports: () => req<VolunteerReportsData>('GET', `${VOL_BASE}/api/volunteer/reports`),
+  addReport: (body: NewReport) => req<{ report: VolunteerReport }>('POST', `${VOL_BASE}/api/volunteer/reports`, body),
+  removeReport: (id: string) => req<{ ok: boolean }>('DELETE', `${VOL_BASE}/api/volunteer/reports/${id}`),
+  reportImageUrl: (id: string) => `${VOL_BASE}/api/volunteer/reports/${id}/image`,
 };

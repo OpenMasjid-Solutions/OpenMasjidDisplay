@@ -218,6 +218,11 @@ export interface WhatsAppAvailability {
   /** the platform's own decoded-bytes cap. Read it rather than hardcoding: it is theirs to
    *  change, and a number baked in here would silently become wrong. 0 when unknown. */
   maxMediaBytes: number;
+  /** can we ask what became of a message we handed over? (OpenMasjidOS 0.51.1+). Absent on an
+   *  older platform, and MUST read as false — asking anyway would turn every queued notice
+   *  into an unanswerable question, and treating "cannot ask" as "did not arrive" would be
+   *  worse still. */
+  outcomes: boolean;
 }
 
 const WA_REASONS: readonly WhatsAppReason[] = [
@@ -229,7 +234,7 @@ const WA_REASONS: readonly WhatsAppReason[] = [
   'no-fabric',
 ];
 
-const NO_MEDIA = { media: false, maxMediaBytes: 0 };
+const NO_MEDIA = { media: false, maxMediaBytes: 0, outcomes: false };
 
 export async function whatsappAvailability(): Promise<WhatsAppAvailability> {
   if (!config.omosBaseUrl || !config.omosAppSecret) return { available: false, reason: 'no-fabric', ...NO_MEDIA };
@@ -256,6 +261,7 @@ export async function whatsappAvailability(): Promise<WhatsAppAvailability> {
       reason?: unknown;
       media?: unknown;
       maxMediaBytes?: unknown;
+      outcomes?: unknown;
     };
     // Nothing from the platform is trusted as typed: an unknown reason word becomes
     // 'unreachable' rather than reaching the UI as a raw string with no sentence for it.
@@ -267,7 +273,9 @@ export async function whatsappAvailability(): Promise<WhatsAppAvailability> {
       media && typeof j.maxMediaBytes === 'number' && Number.isFinite(j.maxMediaBytes) && j.maxMediaBytes > 0
         ? Math.floor(j.maxMediaBytes)
         : 0;
-    return { available: j.available === true && reason === 'ready', reason, media, maxMediaBytes };
+    // Same rule as `media`: absent means an older platform, which means no.
+    const outcomes = j.outcomes === true;
+    return { available: j.available === true && reason === 'ready', reason, media, maxMediaBytes, outcomes };
   } catch (err) {
     log.debug(`fabric whatsapp status failed: ${err instanceof Error ? err.message : err}`);
     return { available: false, reason: 'unreachable', ...NO_MEDIA };
@@ -325,14 +333,22 @@ export async function whatsappGroups(): Promise<WhatsAppGroup[]> {
 /**
  * Post a message to an approved WhatsApp group through the platform's queue.
  *
- * QUEUED IS NOT SENT. The platform paces every sender through one serialised queue —
- * randomised gaps, per-recipient cooldowns, rolling caps, quiet hours — because ban risk
- * attaches to the masjid's NUMBER, not to whichever app had something to say. Delivery is
- * seconds to minutes away and hours if it lands in quiet hours, so nothing here may block
- * on it or report "sent" to anyone. A 202 means accepted for later delivery, full stop.
+ * QUEUED IS NOT SENT. A 202 means accepted for later delivery, full stop — so nothing here may
+ * block on it or report "sent" to anyone. What comes back can be followed up afterwards
+ * (whatsappMessageStatus), and even a `sent` verdict means "handed to WhatsApp", never "read":
+ * WhatsApp gives no delivery receipt.
  *
- * We never touch the gateway, its key, or the linked number — that is what makes the
- * pacing enforceable for every installed app at once. FAILS SOFT — never throws.
+ * **The platform no longer paces us** (OpenMasjidOS 0.51.1). Quiet hours, the hourly and daily
+ * caps, the per-recipient and per-group cooldowns, the warm-up ramp and the random gap between
+ * messages are gone; a typing indicator is the only pause left, and a message goes out within
+ * seconds. It used to refuse to send too much and it does not any more — so the bound on what
+ * this app sends is now entirely this app's, and it is structural: one approved group, never a
+ * person; one message per Iqamah change, deduped through the persisted log; five attempts at
+ * thirty-minute intervals; one post in flight. See whatsappAnnounce.ts. There is no loop here to
+ * turn into a thousand messages, and adding one would put the masjid's NUMBER at risk — which is
+ * unrecoverable, and shared by every app on the box.
+ *
+ * We never touch the gateway, its key, or the linked number. FAILS SOFT — never throws.
  */
 export interface WhatsAppMedia {
   /** the image itself. Base64 is the platform's wire format (OpenWA takes base64, not a URL). */
@@ -350,7 +366,7 @@ export async function whatsappSendToGroup(
   group: string,
   text: string,
   media?: WhatsAppMedia,
-): Promise<{ queued: boolean; error?: string }> {
+): Promise<{ queued: boolean; id?: string; error?: string }> {
   if (!config.omosBaseUrl || !config.omosAppSecret) return { queued: false, error: 'OpenMasjidOS is not connected.' };
   if (!group.trim()) return { queued: false, error: 'No WhatsApp group chosen.' };
   // Text is optional when an image carries the message — a poster can speak for itself — but
@@ -372,7 +388,7 @@ export async function whatsappSendToGroup(
       signal: ctrl.signal,
       redirect: 'error',
     });
-    const j = (await res.json().catch(() => ({}))) as { queued?: unknown; error?: unknown };
+    const j = (await res.json().catch(() => ({}))) as { queued?: unknown; id?: unknown; error?: unknown };
     if (!res.ok || j.queued !== true) {
       // The platform's own wording is the useful one here (an unapproved group, a full
       // queue, a cap reached) — pass it through, and never log the message body.
@@ -380,11 +396,173 @@ export async function whatsappSendToGroup(
       log.warn(`WhatsApp post not queued: ${error}`);
       return { queued: false, error };
     }
-    return { queued: true };
+    // The id is what makes "did that notice actually go out?" answerable later — see
+    // whatsappMessageStatus. Absent on a platform older than 0.51.1, which is not an error:
+    // the message is queued either way, we just cannot follow it up.
+    const id = typeof j.id === 'string' && j.id.trim() ? j.id.trim().slice(0, 64) : undefined;
+    return id ? { queued: true, id } : { queued: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn(`WhatsApp post could not reach the platform at ${config.omosBaseUrl || '(unset)'}: ${msg}`);
     return { queued: false, error: 'Could not reach OpenMasjidOS.' };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * What became of a message we handed over (OpenMasjidOS 0.51.1+).
+ *
+ * This exists because for a long time it could not: `202 {queued:true}` was the last thing
+ * anybody knew, and when the platform's queue had a head-of-line block — one held-up message
+ * stopping every message behind it, from every app, and a failing one pausing the whole queue
+ * for its retry delay — the symptom here was a poster that never arrived with nothing, at
+ * either end, able to say so. The queue is fixed and now persisted across restarts; this is
+ * the other half, so a masjid can be told the truth rather than "queued" forever.
+ *
+ * ## `null` is not a failure
+ *
+ * The return is deliberately three-valued: a state, or `null` for "we could not learn one".
+ * A 404 (evicted from the platform's bounded history, or never ours), an older platform, a
+ * timeout and an unreachable box all give `null`, and every one of them must leave a queued
+ * notice exactly as it was. Collapsing "cannot ask" into "did not arrive" would re-announce
+ * things a group already has, which is a worse fault than not knowing.
+ *
+ * FAILS SOFT — never throws.
+ */
+export type WhatsAppState = 'queued' | 'sent' | 'failed' | 'expired';
+
+const WA_STATES: readonly WhatsAppState[] = ['queued', 'sent', 'failed', 'expired'];
+
+export interface WhatsAppOutcome {
+  /** the platform's verdict, or null when we could not learn one — never treat as a failure */
+  state: WhatsAppState | null;
+  /** the platform's own words for a failed/expired message; safe to show an admin */
+  reason?: string;
+}
+
+export async function whatsappMessageStatus(id: string): Promise<WhatsAppOutcome> {
+  if (!config.omosBaseUrl || !config.omosAppSecret || !id.trim()) return { state: null };
+  warnIfCleartextSecret();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp/status/${encodeURIComponent(id)}`, {
+      headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    // 404 is "not yours, or unknown", which on a bounded history is also "old enough to have
+    // been forgotten". None of those are a verdict.
+    if (!res.ok) return { state: null };
+    const j = (await res.json().catch(() => ({}))) as { state?: unknown; reason?: unknown };
+    if (!WA_STATES.includes(j.state as WhatsAppState)) return { state: null };
+    const reason = typeof j.reason === 'string' && j.reason.trim() ? j.reason.trim().slice(0, 200) : undefined;
+    return reason ? { state: j.state as WhatsAppState, reason } : { state: j.state as WhatsAppState };
+  } catch (err) {
+    log.debug(`fabric whatsapp status lookup failed: ${err instanceof Error ? err.message : err}`);
+    return { state: null };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * A window in which the platform's own "sent" cannot be trusted.
+ *
+ * A masjid's WhatsApp session expired the way WhatsApp Desktop signs itself out, and nothing
+ * noticed: the gateway went on accepting messages and the platform went on recording them `sent`,
+ * for over a day, while none of them arrived. The platform detects that within about ten minutes
+ * now, but there is a residual window between the link dying and it being noticed, and the messages
+ * inside that window were recorded `sent`.
+ *
+ * The platform cannot resend them — it deletes a message's contents the moment it hands it to the
+ * gateway, on purpose — so the app that still has the source data is the only thing that can. For
+ * this app that is an Iqamah-change notice, and it is exactly the kind of message worth sending
+ * again: somebody turns up at the wrong time otherwise.
+ *
+ * On the READ budget (600/min), not the send budget, so polling this costs no sends.
+ */
+/** Why the link was down. More may be added, so anything unrecognised reads as 'unknown'. */
+export type SuspectCause = 'session-expired' | 'needs-relink' | 'key-rejected' | 'unknown';
+const SUSPECT_CAUSES: SuspectCause[] = ['session-expired', 'needs-relink', 'key-rejected', 'unknown'];
+
+export interface SuspectWindow {
+  /** epoch ms */
+  from: number;
+  to: number;
+  /** how many of OUR messages the platform reported `sent` inside it — scoped to this app id */
+  count: number;
+  /**
+   * WHICH of our messages, by the id it gave us when it accepted them.
+   *
+   * Authoritative, and it settles something inference cannot. Before this existed the only way to
+   * work out which messages a window covered was to ask whether the moment we handed one over
+   * could have fallen inside it — and the platform's own held-message behaviour then made that
+   * ambiguous: a message QUEUED during an outage and delivered after the phone was re-linked
+   * overlaps the window and was never lost. Re-announcing it would post the same Iqamah change to
+   * the group twice.
+   *
+   * Empty when the platform is older than 0.51.1-dev.13 and does not send it.
+   */
+  ids: string[];
+  /** true when the id list hit the platform's 500-per-window cap, so it is incomplete */
+  truncated: boolean;
+  cause: SuspectCause;
+}
+
+export async function whatsappSuspectWindows(): Promise<SuspectWindow[] | null> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return null;
+  warnIfCleartextSecret();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp/suspect`, {
+      headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    // NULL, not []. A platform too old to have this endpoint answers 404, and "I could not ask"
+    // must not read as "there is nothing wrong" — the caller decides what to do with not knowing,
+    // exactly as it does for a message status it could not obtain.
+    if (!res.ok) return null;
+    const j = (await res.json().catch(() => ({}))) as { ok?: unknown; windows?: unknown };
+    // `ok: false` on a 200 body. Belt and braces beside the res.ok check above, and the platform
+    // added it because a sibling app was reading {groups: []} on a 429 as "there are no groups" —
+    // a success-shaped body on an error is the trap. An ABSENT ok is fine: a platform older than
+    // 0.51.1-dev.13 does not send it, and demanding it would break against every one of those.
+    if (j.ok === false) return null;
+    if (!Array.isArray(j.windows)) return null;
+    const out: SuspectWindow[] = [];
+    for (const w of j.windows.slice(0, 50)) {
+      const o = (w ?? {}) as Record<string, unknown>;
+      const from = Number(o.from);
+      const to = Number(o.to);
+      const count = Number(o.count);
+      // Every field re-derived. A window with from > to, or either end absent, would silently
+      // match nothing or everything depending on how it were compared — and a window that matches
+      // everything would re-announce the masjid's whole history to its group.
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from <= 0 || to < from) continue;
+      // Bounded at the platform's own cap. Ids are opaque strings from us in the first place, but
+      // they are compared against our log, and an unbounded list from the network is not something
+      // to iterate over however friendly its source.
+      const ids = Array.isArray(o.ids)
+        ? o.ids.filter((x): x is string => typeof x === 'string' && !!x.trim()).slice(0, 500).map((x) => x.trim())
+        : [];
+      const cause = SUSPECT_CAUSES.includes(o.cause as SuspectCause) ? (o.cause as SuspectCause) : 'unknown';
+      out.push({
+        from,
+        to,
+        count: Number.isFinite(count) && count > 0 ? Math.round(count) : 0,
+        ids,
+        truncated: o.truncated === true,
+        cause,
+      });
+    }
+    return out;
+  } catch (err) {
+    log.debug(`fabric whatsapp suspect lookup failed: ${err instanceof Error ? err.message : err}`);
+    return null;
   } finally {
     clearTimeout(t);
   }
@@ -554,7 +732,23 @@ async function platformReachable(): Promise<boolean> {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 3000);
       // No body is read here, so clearing straight after the fetch is correct.
-      await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'error' });
+      //
+      // `redirect: 'manual'`, and it is the ONE outbound call in this file that is not
+      // `'error'` — because here a redirect must count as REACHABLE.
+      //
+      // This value decides whether `/api/setup` accepts an anonymous local-admin claim: it
+      // opens only when the platform is UNREACHABLE (CLAUDE.md §4), so anything that wrongly
+      // reports "unreachable" is an unauthenticated admin takeover. With `'error'` a platform
+      // that answers 301 — an admin adding an http→https upgrade in front of the dashboard is
+      // enough — threw, landed in the catch, cached `ok:false`, and opened the guard for a full
+      // REACH_CACHE_MS. The two comments in probePlatform already state the rule this restores:
+      // *any* HTTP response means the platform is there.
+      //
+      // Nothing is weakened by it. `'manual'` does not follow the redirect either — verified: it
+      // returns the 3xx and never contacts the target — and unlike every other call here this
+      // one sends NO credential (no app secret, no cookie), so the hazard `'error'` exists to
+      // stop, our secret being bounced at some other internal host, does not arise.
+      await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'manual' });
       clearTimeout(t);
       reachCache = { at: Date.now(), ok: true };
       return true;

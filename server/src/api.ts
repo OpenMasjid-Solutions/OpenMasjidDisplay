@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config';
 import { makeLog } from './logger';
+import { openShellSession, closeShellSession, closeShellSessionsFor, SHELL_CLAIM_MS } from './piShell';
 import type { Store } from './store';
 import type { Orchestrator } from './orchestrator';
 import {
@@ -21,7 +22,59 @@ import {
 import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, whatsappGroups } from './fabric';
 import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
 import type { FabricCommands } from './fabricCommands';
-import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
+import { handleFabricTimetable, TIMETABLE_METHOD_BY_PATH, TIMETABLE_MAX_BODY_BYTES } from './fabricTimetable';
+import {
+  originFor,
+  renderInstaller,
+  installerTemplate,
+  agentBundlePath,
+  resvgVersion,
+  appVersion,
+} from './piInstaller';
+import {
+  enrolDevice,
+  updateDeviceFacts,
+  setDeviceJournal,
+  stripAnsi,
+  queueCommand,
+  ackCommand,
+  isPiCommand,
+  normWifiJoin,
+  normShellCommand,
+  normTimezone,
+  normTimeOfDay,
+  normVideoMode,
+  type PiCommandAction,
+  findDeviceByToken,
+  findPendingByCode,
+  markDeviceSeen,
+  markPreviewWanted,
+  makeDeviceToken,
+  piState,
+  prunePending,
+  PI_POLL_MS,
+  deviceOnline,
+} from './piAgent';
+import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
+
+/**
+ * How long one "somebody is watching" beat keeps a screen sending pictures.
+ *
+ * Long enough that a beat lost to a slow tunnel does not make the preview stutter, short enough that
+ * a browser tab closed without warning stops the frames while somebody is still in the room. The
+ * panel beats at roughly a third of this.
+ */
+const PREVIEW_WINDOW_MS = 15_000;
+import {
+  findByToken,
+  webScreenState,
+  markWebScreenSeen,
+  hlsTargetFor,
+  WEB_POLL_MS,
+} from './webScreen';
+import { clockSuspect } from './render/renderer';
+import { fontOptions } from './render/fonts';
+import { SECURITY_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
@@ -45,10 +98,12 @@ import {
 } from './render/background';
 import { renderPreviewPng, renderPreviewMeta, renderAnnouncePng } from './render/renderPool';
 import { probeSource } from './render/renderer';
+import { backgroundTone as renderBackgroundTone } from './render/renderPool';
 import { parseIqamahCsv, toCsv, templateCsv, normalizeIqamahYear } from './iqamahCsv';
 import { normalizeIqamahSchedule } from './iqamahSchedule';
 import { renderMonthPrintHtml } from './print';
 import { localParts, zonedNoon } from './prayer/engine';
+import { resolveTv } from './scheduler';
 import {
   normTimetable,
   normSource,
@@ -57,7 +112,7 @@ import {
   normSettings,
   normContent,
 } from './validate';
-import type { DB } from './types';
+import type { DB, Timetable, Tv } from './types';
 
 const log = makeLog('api');
 
@@ -108,6 +163,22 @@ function previewInstant(dateStr: unknown, timezone?: string): number {
 const readBody = (req: IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> =>
   readJsonBody(req, maxBytes);
 
+/**
+ * The entry with this id, resolved WHEN IT IS USED.
+ *
+ * Several routes settle a timetable's array index, then `await` the request body — an image
+ * upload, so the wait is as long as the upload takes — and only then write. An index is not a
+ * stable reference across that wait: a DELETE of any EARLIER timetable arriving in between
+ * shifts the array, and the write then lands on a different masjid screen's configuration
+ * entirely, or throws on `undefined`. Two browser tabs are enough to do it.
+ *
+ * So inside a `store.update` callback, never index with something captured before an await —
+ * look the id up again. The early `findIndex` those routes still do is only there to answer 404
+ * quickly; it is not what the write uses.
+ */
+const byId = <T extends { id: string }>(list: T[], id: string): T | undefined =>
+  list.find((x) => x.id === id);
+
 /** Validate an uploaded image by its BYTES (not the browser's extension-derived label) and
  *  return the true mime to store — or a friendly error. Browsers label an upload's data-URI
  *  by file extension, so a JPEG named "logo.png" arrives as image/png and the display's SVG
@@ -140,6 +211,91 @@ function serveStatic(res: ServerResponse, pathname: string): boolean {
   });
   fs.createReadStream(full).pipe(res);
   return true;
+}
+
+/**
+ * The `/<appId>` prefix this request arrived under, or '' on the LAN.
+ *
+ * Behind the tunnel the platform serves us at /<appId>/… and does NOT strip the prefix, so a
+ * page must build its own URLs with it or every fetch lands on the platform root. Derived from
+ * the request rather than configured, so it is right whichever way the screen was opened.
+ */
+/**
+ * The font files a Raspberry Pi screen should draw with: exactly the ones this server picked.
+ *
+ * resvg chooses a single font per run rather than falling back glyph by glyph, so a Pi loading
+ * a different set does not degrade gracefully — Arabic comes out as tofu boxes. Sending the
+ * basenames and serving the files by basename keeps the two in lockstep with no path ever
+ * crossing the wire.
+ */
+function piFontNames(): string[] {
+  return (fontOptions().fontFiles ?? []).map((f) => path.basename(f));
+}
+
+/** The generic-family mapping this server renders with. Sent to a Pi so it resolves an unnamed or
+ *  `serif` font to the same real face — otherwise the text is drawn at widths the layout did not
+ *  allow for, and overflows. */
+function piFontFamilies(): { default: string; serif: string; sansSerif: string } {
+  const o = fontOptions();
+  return {
+    default: o.defaultFontFamily,
+    serif: o.serifFamily ?? o.defaultFontFamily,
+    sansSerif: o.sansSerifFamily ?? o.defaultFontFamily,
+  };
+}
+
+function piFontPath(name: string): string | null {
+  const hit = (fontOptions().fontFiles ?? []).find((f) => path.basename(f) === name);
+  return hit ?? null;
+}
+
+function basePathPrefix(pathname: string): string {
+  const m = /^(\/[a-z0-9-]+)\/s\//.exec(pathname);
+  return m ? m[1] : '';
+}
+
+/**
+ * Serve the browser-screen page.
+ *
+ * A second Vite entry (`screen.html`), not the control panel: it must boot straight into the
+ * display with no auth, no React router and none of the panel's bundle. Its asset URLs are
+ * rewritten under the tunnel prefix exactly as the volunteer page does — an absolute
+ * /assets/… from a page at /display/s/<token> would be fetched from the platform root.
+ */
+function serveScreenPage(res: ServerResponse, basePrefix: string): void {
+  const file = path.join(config.publicDir, 'screen.html');
+  if (!fs.existsSync(file)) {
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+    res.end('OpenMasjid Display is running, but the screen page was not built.');
+    return;
+  }
+  let html = fs.readFileSync(file, 'utf8');
+  if (basePrefix) html = html.replace(/="\/assets\//g, `="${basePrefix}/assets/`);
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'content-type': MIME['.html'],
+    // Never cache the shell: it carries the asset hashes, so a stale one pins a screen to an
+    // old bundle until someone physically reboots the television.
+    'cache-control': 'no-store',
+  });
+  res.end(html);
+}
+
+/**
+ * Auto text contrast and auto accent for a wallpaper photo.
+ *
+ * Both need the DECODED image, which is why they live on the server for a browser screen too:
+ * the render worker already samples the photo for the video pipeline, and having the browser
+ * do its own sampling would be a second implementation of a value that must match exactly.
+ */
+async function backgroundTone(tt: Timetable): Promise<{ bgLight: boolean; autoAccent: string | null }> {
+  try {
+    return await renderBackgroundTone(tt);
+  } catch {
+    // A tone we cannot compute is not worth failing a screen over; the theme's own colours
+    // are a perfectly good answer.
+    return { bgLight: false, autoAccent: null };
+  }
 }
 
 function serveIndex(res: ServerResponse): void {
@@ -216,9 +372,51 @@ export function createApi(deps: Deps) {
   // X-Forwarded-For: this one sits in front of a secret check, and a forged header would both
   // dodge the cap entirely and add a Map entry per request.
   const commandLimiter = new RequestLimiter(60, 60_000, true);
+  // The `timetable` capability served to other apps through the broker. The only legitimate
+  // caller is the platform relaying one app's refresh, which is a handful of calls an hour, so
+  // 60/min is purely a bound on a runaway — and a needed one: a `get` at the 45-day cap is 45
+  // solar computations sharing this process with the 1 fps loop that draws the screens, so a
+  // tight loop here is a way to make a television stutter. Keyed on the SOCKET (the `true`) for
+  // the same reason as the commands limiter above: it sits in front of a secret check, where a
+  // forged X-Forwarded-For would dodge the cap and mint a Map entry per request.
+  const fabricAppLimiter = new RequestLimiter(60, 60_000, true);
+  // Browser screens, PAGE and STATE only: a real screen asks for its state every 5 s, so ~12
+  // a minute plus the odd page load. Generous enough for a masjid rebooting every television
+  // at once.
+  /**
+   * The budget for a screen asking what to show, and it is sized from the CADENCE, not picked.
+   *
+   * 120/min was sized for "a screen that asks twice a minute" — which is what a browser screen does.
+   * A Pi does not: it polls every five seconds normally (12/min) and shortens that to about 1.2s
+   * whenever anything is happening — a console open, a live preview running — which is 50/min from
+   * one device. And behind the platform's tunnel every screen in the masjid arrives from the SAME
+   * address, so the budget is shared: three screens with a console open between them was already
+   * 150/min against a cap of 120.
+   *
+   * What that failure looks like matters, and it is why this is not left tight: the 429 lands on the
+   * device's STATE POLL, so the screen decides it has lost contact with the display server and says
+   * so on the wall. A rate limit that turns a busy dashboard into "lost contact" on a television in
+   * a prayer hall is worse than no rate limit.
+   *
+   * This is the same mistake the media limiter below was created to fix, in the same file, for the
+   * same reason — a cap sized for one traffic pattern applied to another. So: sized for a masjid's
+   * worth of screens all fast-polling at once (see PI_FAST_POLL_MS), and it remains a bound on a
+   * runaway rather than a shape imposed on normal traffic.
+   */
+  const screenLimiter = new RequestLimiter(600, 60_000);
+  // Video segments need their OWN budget, and this is why: an HLS player fetches a playlist
+  // and a segment roughly every second — and in low-latency mode a "part" every 0.27 s. Those
+  // went through the limiter above, sized for a screen that asks twice a minute, so a camera
+  // played for about ten seconds and then the whole page got "Too many requests." A wall is
+  // not abuse; it is one client pulling a video stream, and the cap here exists only to bound
+  // a runaway, not to shape normal playback.
+  const screenMediaLimiter = new RequestLimiter(1200, 60_000);
   setInterval(() => {
     widgetLimiter.prune();
     commandLimiter.prune();
+    fabricAppLimiter.prune();
+    screenLimiter.prune();
+    screenMediaLimiter.prune();
   }, 5 * 60_000).unref?.();
   // A request is authenticated if it carries a valid local session cookie. That
   // cookie is minted by first-run setup, by password login, or by confirmed
@@ -254,6 +452,32 @@ export function createApi(deps: Deps) {
         return commands.handle(req, res, body);
       }
 
+      /**
+       * ANOTHER APP reading this masjid's prayer times, through the platform's app-to-app
+       * broker: the `timetable` capability we declare in `manifest.yaml`'s `fabric.provides`.
+       *
+       * Same reason as the route above for sitting up here — there is no session, only our own
+       * app secret presented back to us — but a DIFFERENT caller and a different blast radius,
+       * so it is a separate handler and not a second command. Read-only. The broker maps
+       * `/api/fabric/app/display/timetable/<method>` onto these exact paths, and the handler
+       * re-checks the raw request line against the one it matched, which is what keeps the
+       * capability off the tunnel (`new URL()` above has already normalised dot segments away,
+       * so `pathname` alone would accept `/display/../fabric/timetable/get`).
+       */
+      const timetableMethod = TIMETABLE_METHOD_BY_PATH.get(pathname);
+      if (timetableMethod) {
+        if (!fabricAppLimiter.allow(req)) return sendJson(res, 429, { error: 'too_many_requests' });
+        // Matched on the path REGARDLESS of method, so that a GET says so instead of falling
+        // through to the static branch below — which answers any non-/api/ GET with the panel's
+        // index.html, and would hand a consumer debugging its integration a page of HTML with a
+        // 200 on it. Nothing is disclosed by admitting the route exists: it is in the manifest,
+        // and the manifest is in the public catalog.
+        if (method !== 'POST') return sendJson(res, 405, { error: 'method_not_allowed' });
+        const body = await readBody(req, TIMETABLE_MAX_BODY_BYTES).catch(() => null);
+        if (!body) return sendJson(res, 400, { error: 'bad_request' });
+        return handleFabricTimetable(req, res, timetableMethod, body, store);
+      }
+
       // ---- Volunteer page (also served here, not just on its own port) ----
       // So it works behind the OS Cloudflare tunnel at /<appId>/volunteer with NO platform
       // routing of the second port. Any volunteer path (optionally behind the /<appId> tunnel
@@ -265,6 +489,418 @@ export function createApi(deps: Deps) {
       if (/^(?:\/[a-z0-9-]+)?\/(volunteer(?:\/.*)?|api\/volunteer\/.+)$/.test(pathname)) {
         if (!store.db.settings.volunteerRemote) return sendJson(res, 404, { error: 'Not found.' });
         return volunteer(req, res);
+      }
+
+      // ---- Raspberry Pi screens: the one-line install ------------------------------
+      //
+      // Two public files, and they are public deliberately. A Pi being set up holds no
+      // credentials — it cannot, it has never spoken to this server before — so anything needed
+      // to bootstrap one has to be fetchable without them. Neither file contains a secret: the
+      // script's only variable content is this server's own address, and the agent is the same
+      // AGPL source that is in the repository.
+      const piShMatch = /^(?:\/[a-z0-9-]+)?\/pi\.sh$/.test(pathname);
+      const piAgentMatch = /^(?:\/[a-z0-9-]+)?\/pi\/agent\.js$/.test(pathname);
+      if ((piShMatch || piAgentMatch) && method === 'GET') {
+        if (!screenLimiter.allow(req)) {
+          res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
+          res.end('Too many requests.');
+          return;
+        }
+
+        if (piAgentMatch) {
+          // NOT gated on the beta setting, unlike the installer below. A Pi already driving a
+          // screen in a hall fetches this to update itself, and an admin turning the beta off
+          // must not turn that Pi into a brick.
+          const bundle = agentBundlePath();
+          if (!bundle) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+            res.end('The screen agent is not bundled in this build.');
+            return;
+          }
+          res.writeHead(200, {
+            ...SECURITY_HEADERS,
+            'content-type': 'application/javascript; charset=utf-8',
+            // Revalidated rather than cached: the agent changes with the app, and a stale copy
+            // held by a proxy would pin a screen to an old build indefinitely.
+            'cache-control': 'no-cache',
+          });
+          fs.createReadStream(bundle).pipe(res);
+          return;
+        }
+
+        // The installer IS gated: handing somebody a setup command for a feature they have not
+        // switched on leaves them with a Pi showing a code that no page will accept.
+        if (!store.db.settings.webScreensBeta) {
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('Raspberry Pi screens are not enabled. Turn on browser and Pi screens in Settings first.\n');
+          return;
+        }
+
+        const template = installerTemplate();
+        const origin = originFor(req, pathname);
+        if (!template || !origin) {
+          // A refusal, not a guess. A script carrying a mangled address installs cleanly and
+          // then never connects, which is far harder to diagnose than this line.
+          res.writeHead(template ? 400 : 404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end(
+            template
+              ? 'Could not work out this server\'s address from your request. Fetch this over the address a Pi can reach.\n'
+              : 'The installer is not bundled in this build.\n',
+          );
+          return;
+        }
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'content-type': 'text/x-shellscript; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        res.end(renderInstaller(template, origin, resvgVersion(), appVersion()));
+        return;
+      }
+
+      // ---- Raspberry Pi agents (beta) ---------------------------------------------
+      //
+      // A device, not a page. The agent polls US — it is behind the masjid's NAT on an address
+      // DHCP may move, and the display server may be in the cloud, so nothing here ever
+      // connects outward to a Pi. Enrolment has to be unauthenticated (a fresh Pi holds no
+      // credentials), so it is bounded: rate-limited here, capped in number in piAgent.ts, and
+      // it can only ever create a PENDING row. Content requires a token, and a token only
+      // exists once an admin has typed the code shown on that screen.
+      const piMatch =
+        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|logs|screenshot|command-ack|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(
+          pathname,
+        );
+      if (piMatch) {
+        // A picture of the screen is a STREAM while a preview window is open — one frame roughly
+        // every second — so it is budgeted with the video segments, not with the polls. Putting it
+        // through the poll budget is what would have made a live preview lock a screen out of asking
+        // what to show, which is the exact bug the media limiter below was created for.
+        const limiter = piMatch[3] === 'screenshot' ? screenMediaLimiter : screenLimiter;
+        if (!limiter.allow(req)) {
+          res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
+          res.end('Too many requests.');
+          return;
+        }
+
+        if (piMatch[1] === 'enrol' && method === 'POST') {
+          const body = await readBody(req, 4_000).catch(() => null);
+          if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+          let out!: ReturnType<typeof enrolDevice>['result'];
+          store.update((db) => {
+            out = enrolDevice(db, body, Date.now()).result;
+          });
+          markDeviceSeen(out.deviceId, Date.now());
+          // A pending device is told only that it is pending. It learns nothing about this
+          // masjid until an admin has adopted it.
+          return sendJson(res, 200, out);
+        }
+
+        const device = findDeviceByToken(store.db, piMatch[2] ?? '');
+        if (!device) {
+          // 404, never 403 — a token that no longer works must not be distinguishable from one
+          // that never did.
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('Not found.');
+          return;
+        }
+        markDeviceSeen(device.id, Date.now());
+        const what = piMatch[3] ?? '';
+
+        // The device acknowledging an instruction. It does this BEFORE carrying it out, because
+        // both instructions end the process that would otherwise have done the acknowledging — see
+        // ackCommand. Unauthenticated is impossible here: the token in the path is the credential.
+        if (what === 'command-ack' && method === 'POST') {
+          const body = (await readBody(req, 1_000).catch(() => null)) as { id?: unknown } | null;
+          const id = typeof body?.id === 'string' ? body.id : '';
+          if (id) store.update((db) => ackCommand(db, device.id, id));
+          return sendJson(res, 200, { ok: true });
+        }
+
+        // The full journal, collected by root on the device and uploaded when asked for.
+        //
+        // Its OWN endpoint, not part of the check-in. A check-in is capped at 32KB and carries facts
+        // the dashboard needs constantly; a journal is up to 180KB and is wanted occasionally. Sharing
+        // the route would either crowd out the facts or push the cap up for every check-in — and the
+        // last time a cap and its payload disagreed, every check-in was discarded in silence for
+        // weeks. Keeping them apart means each cap can be sized for what it actually carries.
+        if (what === 'logs' && method === 'POST') {
+          // 256KB against the device's own 180KB bound. Deliberate slack: the device truncates to
+          // 180_000 BYTES of text and JSON-encoding a log inflates it — every backslash, quote and
+          // control character becomes two or six — so a cap equal to the device's bound would reject
+          // exactly the biggest and most interesting logs.
+          const LOGS_MAX_BYTES = 262_144;
+          const body = await readBody(req, LOGS_MAX_BYTES).catch((e: unknown) => e);
+          if (body instanceof Error) {
+            const tooBig = (body as { code?: string }).code === BODY_TOO_LARGE;
+            return sendJson(res, tooBig ? 413 : 400, { error: tooBig ? 'body too large' : 'bad request' });
+          }
+          const journal = typeof (body as { journal?: unknown })?.journal === 'string' ? (body as { journal: string }).journal : '';
+          if (!journal) return sendJson(res, 400, { error: 'no log in that request' });
+          store.update((db) => setDeviceJournal(db, device.id, journal, Date.now()));
+          log.info(`stored ${journal.length} bytes of log for pi device ${device.id}`);
+          return sendJson(res, 200, { ok: true });
+        }
+
+        // A picture of what this screen is showing. Its own endpoint for the same reason the journal
+        // has one, and the cap is DERIVED from what the store will keep rather than picked: base64
+        // inflates by a third, so the body cap is the file cap plus that plus room for the JSON
+        // around it. The two limits disagreeing is exactly how every check-in was silently dropped.
+        if (what === 'screenshot' && method === 'POST') {
+          const body = await readBody(req, Math.round(SCREENSHOT_MAX_BYTES * 1.4) + 1_000).catch((e: unknown) => e);
+          if (body instanceof Error) {
+            const tooBig = (body as { code?: string }).code === BODY_TOO_LARGE;
+            return sendJson(res, tooBig ? 413 : 400, { error: tooBig ? 'body too large' : 'bad request' });
+          }
+          const b64 = typeof (body as { png?: unknown })?.png === 'string' ? (body as { png: string }).png : '';
+          if (!b64) return sendJson(res, 400, { error: 'no picture in that request' });
+          // Node's 'base64' decoder IGNORES anything that is not a base64 character rather than
+          // failing, so there is nothing to catch here — the bytes are checked for a PNG signature
+          // in saveScreenshot instead, because this file is served back to a browser as image/png
+          // and has to actually be one.
+          if (!saveScreenshot(device.id, Buffer.from(b64, 'base64'))) {
+            return sendJson(res, 400, { error: 'that was not a usable picture' });
+          }
+          store.update((db) => {
+            const d = (db.piDevices ?? []).find((x) => x.id === device.id);
+            if (d) d.screenshotAt = new Date().toISOString();
+          });
+          return sendJson(res, 200, { ok: true });
+        }
+
+        if (what === 'seen' && method === 'POST') {
+          // A periodic check-in. Its real job is refreshing what the panel shows — most of all
+          // the agent version, which changes underneath us when a Pi updates itself.
+          // The cap is DERIVED from what updateDeviceFacts is willing to store, not chosen.
+          //
+          // It was 2,000 bytes while the store accepted 80 log lines of up to 300 characters plus
+          // 30 networks — so a realistic check-in measured 9,250 bytes and was rejected every time,
+          // silently, taking the agent version and the network facts down with it. The two limits
+          // have to be reasoned about together or they drift apart again: 80 x 300 for the log is
+          // 24KB on its own, and everything else is small beside it.
+          //
+          // The enrolment route next door already had twice this cap for a much thinner body, which
+          // is the clearest sign 2,000 was never sized against anything.
+          //
+          // 48_000 since the console: a command’s answer rides this check-in too, and the store keeps
+          // up to SHELL_MAX_OUT characters of output plus the command that produced it. The maximal
+          // body the store will accept measures about 38KB, and JSON-encoding inflates output that is
+          // full of tabs and quotes — so the cap is that, rounded up, and checkInSize.test.ts fails if
+          // the two ever pass each other again.
+          const SEEN_MAX_BYTES = 48_000;
+          const body = await readBody(req, SEEN_MAX_BYTES).catch((e: unknown) => e);
+          if (body instanceof Error) {
+            // Say so, rather than answering 200 to something that was thrown away. An older agent
+            // treats a 413 as a failed post and simply tries again later, which is correct.
+            const tooBig = (body as { code?: string }).code === BODY_TOO_LARGE;
+            return sendJson(res, tooBig ? 413 : 400, { error: tooBig ? 'body too large' : 'bad request' });
+          }
+          if (body && typeof body === 'object') {
+            store.update((db) => updateDeviceFacts(db, device.id, body as Record<string, unknown>, Date.now()));
+          }
+          return sendJson(res, 200, { ok: true, pollMs: PI_POLL_MS, agentVersion: appVersion() });
+        }
+
+        if (what === 'state' && method === 'GET') {
+          const tv = device.tvId ? store.db.tvs.find((t) => t.id === device.tvId) ?? null : null;
+          const tt =
+            tv && tv.kind === 'pi'
+              ? store.db.timetables.find(
+                  (t) => t.id === resolveTv(tv, store.db.schedules, new Date(), store.db.settings.scheduleTimezone).content.id,
+                )
+              : undefined;
+          const tone = tt?.backgroundImage ? await backgroundTone(tt) : { bgLight: false, autoAccent: null };
+          const state = piState(store.db, device, tv, Date.now(), {
+            basePrefix: basePathPrefix(pathname),
+            clockSuspect: clockSuspect(),
+            bgLight: tone.bgLight,
+            autoAccent: tone.autoAccent,
+            fontNames: piFontNames(),
+            fontFamilies: piFontFamilies(),
+          });
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(state));
+          return;
+        }
+
+        if (what.startsWith('font/') && method === 'GET') {
+          // Served from the SAME curated list the renderer draws with, looked up by basename —
+          // so this can only ever hand over a file this process had already chosen to load, and
+          // never an arbitrary path. That is the whole access-control story here.
+          const file = piFontPath(what.slice('font/'.length));
+          if (!file) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+            res.end('Not found.');
+            return;
+          }
+          res.writeHead(200, {
+            ...SECURITY_HEADERS,
+            'content-type': 'font/ttf',
+            // Fonts change only when the image does, and a Pi caches them on disk anyway.
+            'cache-control': 'public, max-age=604800, immutable',
+          });
+          fs.createReadStream(file).pipe(res);
+          return;
+        }
+
+        if (what.startsWith('asset/') && method === 'GET') {
+          const found = uploadFilePath(what.slice('asset/'.length));
+          if (!found) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+            res.end('Not found.');
+            return;
+          }
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': found.mime, 'cache-control': 'public, max-age=86400' });
+          fs.createReadStream(found.path).pipe(res);
+          return;
+        }
+
+        res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+        res.end('Not found.');
+        return;
+      }
+
+      // ---- Browser screens (beta): the page a TV/Raspberry Pi opens ---------------
+      //
+      // Unauthenticated, like the widget above and for the same reason: a television cannot
+      // sign in. The 128-bit token in the URL IS the capability. An unknown token is a 404,
+      // never a 403, so tokens cannot be probed.
+      //
+      // The optional `/<basePath>` prefix is what makes this work through the admin's
+      // Cloudflare tunnel and therefore over HTTPS from anywhere — the platform serves this
+      // app under /<appId>/ and does not strip the prefix. The page fetches relative to
+      // itself, so the same markup works on the LAN and remotely with no configuration.
+      const screenMatch = /^(?:\/[a-z0-9-]+)?\/s\/([A-Za-z0-9_-]{16,64})(\/state|\/seen|\/hls\/[\w.\-]{1,80}|\/asset\/([\w.\-]{1,120}))?$/.exec(pathname);
+      if (screenMatch) {
+        const isMedia = (screenMatch[2] ?? '').startsWith('/hls/');
+        if (!(isMedia ? screenMediaLimiter : screenLimiter).allow(req)) {
+          res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
+          res.end('Too many requests.');
+          return;
+        }
+        const tv = findByToken(store.db, screenMatch[1]);
+        // 404 for an unknown token AND for a screen whose kind was changed back to rtsp —
+        // an old URL must stop working, not start leaking.
+        if (!tv || tv.kind !== 'web') {
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('Not found.');
+          return;
+        }
+        const sub = screenMatch[2] ?? '';
+
+        // The heartbeat. A browser screen has no RTSP path, so this is what "online" means
+        // for it — see webScreen.ts.
+        if (sub === '/seen' && method === 'POST') {
+          markWebScreenSeen(tv.id, Date.now());
+          return sendJson(res, 200, { ok: true, pollMs: WEB_POLL_MS });
+        }
+
+        if (sub === '/state' && method === 'GET') {
+          markWebScreenSeen(tv.id, Date.now());
+          const basePrefix = basePathPrefix(pathname);
+          const tt = store.db.timetables.find(
+            (t) => t.id === resolveTv(tv, store.db.schedules, new Date(), store.db.settings.scheduleTimezone).content.id,
+          );
+          // Computed here rather than in the browser: both need the DECODED wallpaper, and a
+          // second implementation would be a second answer.
+          const tone = tt?.backgroundImage ? await backgroundTone(tt) : { bgLight: false, autoAccent: null };
+          const state = webScreenState(store.db, tv, Date.now(), {
+            basePrefix,
+            clockSuspect: clockSuspect(),
+            bgLight: tone.bgLight,
+            autoAccent: tone.autoAccent,
+          });
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(state));
+          return;
+        }
+
+        // An uploaded background / logo / announcement image, scoped to this screen's token.
+        const assetFile = screenMatch[3];
+        if (assetFile && method === 'GET') {
+          const found = uploadFilePath(assetFile);
+          if (!found) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+            res.end('Not found.');
+            return;
+          }
+          res.writeHead(200, {
+            ...SECURITY_HEADERS,
+            'content-type': found.mime,
+            // Uploads are content-addressed by filename and replaced under a new name, so a
+            // long cache is safe and keeps a Pi off the network.
+            'cache-control': 'public, max-age=86400',
+          });
+          fs.createReadStream(found.path).pipe(res);
+          return;
+        }
+
+        // A camera / HDMI source, as HLS. The browser cannot play RTSP, so MediaMTX serves the
+        // same stream in a container a browser can play and we pass it through — see
+        // webScreen.hlsTargetFor for why this is scoped to the screen's CURRENT content.
+        if (sub.startsWith('/hls/') && method === 'GET') {
+          // The QUERY STRING has to go through. MediaMTX hands the player sub-playlist and
+          // segment URIs carrying ?session=<uuid>, and dropping it makes every request after
+          // the first playlist fail — which looks exactly like "the camera does not work".
+          // It is appended AFTER the filename is validated, so it can never widen the path.
+          const target = hlsTargetFor(store.db, tv, Date.now(), sub.slice('/hls/'.length), url.search);
+          if (!target) {
+            res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+            res.end('Not found.');
+            return;
+          }
+          markWebScreenSeen(tv.id, Date.now());
+          try {
+            // NOT redirect:'error' here, which is the rule for calls to the PLATFORM — an
+            // untrusted remote host that could bounce us at some other internal address.
+            // MediaMTX is our own sidecar on loopback, and it answers the first playlist
+            // request with a 302 to ?cookieCheck=1 (its session probe). Refusing that was why
+            // every camera reported "unavailable". So: follow exactly one hop, and only if it
+            // stays on the same loopback origin — which keeps the SSRF property that mattered.
+            let upstream = await fetch(target, { redirect: 'manual' });
+            if (upstream.status >= 300 && upstream.status < 400) {
+              const loc = upstream.headers.get('location') ?? '';
+              const next = new URL(loc, target);
+              if (next.origin !== new URL(config.mediamtxHlsUrl).origin) {
+                res.writeHead(502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+                res.end('Stream unavailable.');
+                return;
+              }
+              upstream = await fetch(next, { redirect: 'error' });
+            }
+            if (!upstream.ok || !upstream.body) {
+              res.writeHead(upstream.status === 404 ? 404 : 502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+              res.end('Stream not ready.');
+              return;
+            }
+            res.writeHead(200, {
+              ...SECURITY_HEADERS,
+              'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+              // A playlist changes every segment; a segment never does. Getting this wrong
+              // either stalls playback or re-downloads video that has not changed.
+              'cache-control': /\.m3u8$/.test(sub) ? 'no-store' : 'public, max-age=60',
+            });
+            const reader = upstream.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (!res.write(Buffer.from(value))) await new Promise((r) => res.once('drain', r));
+            }
+            res.end();
+          } catch (err) {
+            log.debug(`hls proxy failed: ${err instanceof Error ? err.message : err}`);
+            if (!res.headersSent) {
+              res.writeHead(502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+              res.end('Stream unavailable.');
+            } else res.end();
+          }
+          return;
+        }
+
+        // The page itself.
+        if (!sub && method === 'GET') return serveScreenPage(res, basePathPrefix(pathname));
+        res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
+        res.end('Not found.');
+        return;
       }
 
       // ---- Public embeddable widget (no auth; only for opted-in timetables) ------
@@ -560,13 +1196,19 @@ export function createApi(deps: Deps) {
           const chk = checkUploadedImage(buf);
           if ('error' in chk) return sendJson(res, 400, { error: chk.error });
           const file = saveBackground(id, chk.mime, buf);
-          store.update((db) => void (db.timetables[idx].backgroundImage = file));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.backgroundImage = file;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
         if (method === 'DELETE') {
           removeBackground(id);
-          store.update((db) => void (db.timetables[idx].backgroundImage = ''));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.backgroundImage = '';
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -594,13 +1236,19 @@ export function createApi(deps: Deps) {
           const chk = checkUploadedImage(buf);
           if ('error' in chk) return sendJson(res, 400, { error: chk.error });
           const file = saveLogo(id, chk.mime, buf);
-          store.update((db) => void (db.timetables[idx].logoImage = file));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.logoImage = file;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
         if (method === 'DELETE') {
           removeLogo(id);
-          store.update((db) => void (db.timetables[idx].logoImage = ''));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.logoImage = '';
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -618,14 +1266,18 @@ export function createApi(deps: Deps) {
               error: parsed.errors[0] ?? 'No usable rows found. Each row needs a date and at least one time.',
             });
           }
-          store.update((db) => void (db.timetables[idx].iqamahYear = parsed.data));
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.iqamahYear = parsed.data;
+          });
           // Return the parsed map too, so the editor can update its shared copy in place
           // (the one-off editor + monthly table + CSV all edit the same iqamahYear).
           return sendJson(res, 200, { ok: true, rows: parsed.rows, errors: parsed.errors.slice(0, 5), data: parsed.data });
         }
         if (method === 'GET') {
           const mode = url.searchParams.get('mode');
-          const tt = store.db.timetables[idx];
+          const tt = byId(store.db.timetables, id);
+          if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
           const csv = mode === 'template' ? templateCsv(tt) : toCsv(tt.iqamahYear);
           const fname = mode === 'template' ? 'iqamah-template.csv' : 'iqamah-times.csv';
           res.writeHead(200, {
@@ -638,8 +1290,11 @@ export function createApi(deps: Deps) {
           return;
         }
         if (method === 'DELETE') {
-          store.update((db) => void delete db.timetables[idx].iqamahYear);
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) delete t.iqamahYear;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -652,8 +1307,10 @@ export function createApi(deps: Deps) {
         const body = await readBody(req, 2_000_000);
         const year = normalizeIqamahYear(body.year);
         store.update((db) => {
-          if (Object.keys(year).length) db.timetables[idx].iqamahYear = year;
-          else delete db.timetables[idx].iqamahYear;
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          if (Object.keys(year).length) t.iqamahYear = year;
+          else delete t.iqamahYear;
         });
         return sendJson(res, 200, { ok: true, rows: Object.keys(year).length });
       }
@@ -669,8 +1326,10 @@ export function createApi(deps: Deps) {
         const body = await readBody(req, 2_000_000);
         const schedule = normalizeIqamahSchedule(body.schedule);
         store.update((db) => {
-          if (schedule.length) db.timetables[idx].iqamahSchedule = schedule;
-          else delete db.timetables[idx].iqamahSchedule;
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          if (schedule.length) t.iqamahSchedule = schedule;
+          else delete t.iqamahSchedule;
         });
         return sendJson(res, 200, { ok: true, entries: schedule.length, schedule });
       }
@@ -699,13 +1358,15 @@ export function createApi(deps: Deps) {
         if ('error' in chk) return sendJson(res, 400, { error: chk.error });
         const file = saveAnnouncement(id, chk.mime, buf);
         store.update((db) => {
-          const a = db.timetables[idx].announcements ?? {
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          const a = t.announcements ?? {
             enabled: false, images: [], start: '', end: '', everySeconds: 60, forSeconds: 20, imageSeconds: 8,
           };
           a.images = [...a.images, file].slice(0, 30);
-          db.timetables[idx].announcements = a;
+          t.announcements = a;
         });
-        return sendJson(res, 200, store.db.timetables[idx]);
+        return sendJson(res, 200, byId(store.db.timetables, id));
       }
       const annFileMatch = /^\/api\/timetables\/([\w-]+)\/announcements\/(.+)$/.exec(pathname);
       if (annFileMatch && (method === 'DELETE' || method === 'GET')) {
@@ -732,10 +1393,10 @@ export function createApi(deps: Deps) {
         // Only delete a file that actually belongs to THIS timetable (same guard as GET).
         if (file.startsWith(`${id}.ann.`)) removeAnnouncement(file);
         store.update((db) => {
-          const a = db.timetables[idx].announcements;
+          const a = byId(db.timetables, id)?.announcements;
           if (a) a.images = a.images.filter((f) => f !== file);
         });
-        return sendJson(res, 200, store.db.timetables[idx]);
+        return sendJson(res, 200, byId(store.db.timetables, id));
       }
 
       // ---- Sources ---------------------------------------------------------
@@ -1017,6 +1678,331 @@ export function createApi(deps: Deps) {
         const publicConfigured = !!site?.enabled && !!site.publicUrl;
         const publicUrl = publicConfigured && tt.widget?.enabled ? `${site!.publicUrl}/w/${tt.id}` : '';
         return sendJson(res, 200, { enabled: !!tt.widget?.enabled, publicUrl, publicConfigured });
+      }
+
+      // The Raspberry Pi agents this masjid has seen — pending ones waiting to be adopted,
+      // and adopted ones with their liveness. Admin-gated, unlike the agent's own routes.
+      if (pathname === '/api/pi/devices' && method === 'GET') {
+        store.update((db) => prunePending(db, Date.now()));
+        const now = Date.now();
+        return sendJson(res, 200, {
+          devices: (store.db.piDevices ?? []).map((d) => ({
+            id: d.id,
+            code: d.token ? '' : d.code, // a spent code is never shown again
+            adopted: !!d.token,
+            hostname: d.hostname,
+            ip: d.ip,
+            model: d.model,
+            agentVersion: d.agentVersion,
+            tvId: d.tvId,
+            online: deviceOnline(d.id, now),
+            lastSeenAt: d.lastSeenAt,
+            recentLog: d.recentLog ?? [],
+            logAt: d.logAt,
+            // Whether this device is already running what this server would give it. The
+            // panel needs it to say 'Up to date' instead of offering an update that does
+            // nothing — the agent ships from the same commit as the server, so one string
+            // describes both.
+            upToDate: !!d.agentVersion && d.agentVersion === appVersion(),
+            // The collected journal, ANSI-stripped here rather than in the browser so every
+            // consumer gets it readable. Absent until somebody asks for it.
+            journal: d.journal ? stripAnsi(d.journal) : undefined,
+            journalAt: d.journalAt,
+            // The answer to the last console command. ANSI-stripped for the same reason the journal
+            // is: plenty of commands colour their output, and a stray "[36m" in a <pre> reads as a
+            // fault in the tool rather than in the terminal showing it.
+            shellResult: d.shellResult ? { ...d.shellResult, out: stripAnsi(d.shellResult.out) } : undefined,
+            networks: d.networks ?? [],
+            stats: d.stats,
+            statsAt: d.statsAt,
+            wifiResult: d.wifiResult,
+            // The screen's own account of itself, not what was last asked for — see PiDevice.
+            displayOff: d.displayOff,
+            displaySchedule: d.displaySchedule,
+            rebootSchedule: d.rebootSchedule,
+            // What the DEVICE's own boot config says, and whether a change to it is still
+            // provisional — see PiDevice.videoMode.
+            videoMode: d.videoMode,
+            videoModePending: d.videoModePending,
+            videoModeResult: d.videoModeResult,
+            timezone: d.timezone,
+            // The timestamp only. The picture is fetched separately, and this is what tells the
+            // panel whether the one it would fetch is the one it just asked for.
+            screenshotAt: d.screenshotAt,
+            // Whether an install is in flight. The device is the authority on what it is running,
+            // so this is only ever a hint that it is busy — the version changing is the real answer.
+            updateAskedAt: d.updateAskedAt,
+            // How it is attached. Absent until the device has checked in with an agent new enough
+            // to report it, so the panel has to treat "unknown" as its own state rather than
+            // drawing a broken cable at every screen that has not upgraded yet.
+            net: d.net,
+          })),
+        });
+      }
+
+      // Adopt a device by the code showing on its screen, creating the screen it will drive.
+      // The code is the proof: whoever types it can see that television.
+      if (pathname === '/api/pi/adopt' && method === 'POST') {
+        const body = await readBody(req);
+        const code = typeof body.code === 'string' ? body.code : '';
+        const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
+        const pending = findPendingByCode(store.db, code);
+        if (!pending) return sendJson(res, 404, { error: 'No screen is showing that code. Check the code on the screen and try again.' });
+        if (atCap(res, store.db.tvs)) return;
+        let created!: Tv;
+        store.update((db) => {
+          const d = db.piDevices!.find((x) => x.id === pending.id)!;
+          const tv = normTv({ name: name || d.hostname || 'Screen', kind: 'pi', defaultContent: { kind: 'off' } });
+          tv.piDeviceId = d.id;
+          db.tvs.push(tv);
+          d.token = makeDeviceToken();
+          d.tvId = tv.id;
+          created = tv;
+        });
+        return sendJson(res, 200, { tv: created });
+      }
+
+      // Forget a device: drop its token so it falls back to pending and shows a fresh code.
+      // The screen it drove is left alone — deleting someone's screen is a separate decision.
+      // Ask a Pi to do something. It is not sent anywhere — it is left for the device to collect
+      // on its next poll, so this returns "asked", never "done".
+      const piCmd = /^\/api\/pi\/([\w-]+)\/command$/.exec(pathname);
+      if (piCmd && method === 'POST') {
+        // Room for a Wi-Fi passphrase now, so the cap is no longer 1KB.
+        const body = (await readBody(req, 4_000).catch(() => null)) as
+          | { action?: unknown; wifi?: unknown; shell?: unknown; text?: unknown }
+          | null;
+        if (!isPiCommand(body?.action)) return sendJson(res, 400, { error: 'Unknown action.' });
+        const action = body!.action as PiCommandAction;
+
+        // Joining a network is the only command that carries data, so it is the only one that is
+        // checked. Checked HERE so somebody typing a password is told immediately what is wrong;
+        // the check that actually protects the device is the one root does on it, since this one sits
+        // on the far side of a network from the thing running nmcli.
+        let wifi: { ssid: string; psk: string } | undefined;
+        if (action === 'wifi-join') {
+          const parsed = normWifiJoin(body!.wifi);
+          if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
+          wifi = parsed;
+        }
+
+        // A console command. Shape-checked here so somebody typing gets told immediately; what
+        // BOUNDS it is that the device runs it as its own unprivileged user and never through the
+        // root spool — see PI_COMMANDS.
+        let shell: string | undefined;
+        if (action === 'shell') {
+          const parsed = normShellCommand(body!.shell);
+          if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
+          shell = parsed.cmd;
+        }
+
+        // A timezone or a hostname. Checked here so somebody typing one is told at once — but the
+        // check that PROTECTS the device is root's on the device, which also requires the zone to
+        // exist in /usr/share/zoneinfo. This side of a network cannot know that.
+        let text: string | undefined;
+        if (action === 'set-timezone' || action === 'set-video-mode') {
+          const parsed = action === 'set-timezone' ? normTimezone(body!.text) : normVideoMode(body!.text);
+          if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
+          text = parsed.text;
+        }
+
+        let queued: ReturnType<typeof queueCommand> = null;
+        store.update((db) => {
+          queued = queueCommand(db, piCmd[1], action, Date.now(), wifi, shell, undefined, text);
+        });
+        if (!queued) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
+        // The network NAME is fine in a log — it is broadcast on the air. The passphrase never is,
+        // and there is no branch here that could put it in one.
+        //
+        // Neither is the console command, and that one is a judgement rather than an absolute: it is
+        // text an admin typed, and the first thing anybody types into a console on a screen that
+        // cannot reach its Wi-Fi is an nmcli line with a passphrase in it. Its LENGTH says as much
+        // as the server's own log needs to; the command itself comes back in the answer, where the
+        // person who typed it is the one reading.
+        log.info(
+          `queued "${action}"${wifi ? ` for network "${wifi.ssid}"` : ''}${text ? ` ("${text}")` : ''}${shell ? ` (${shell.length} characters)` : ''} for pi device ${piCmd[1]}`,
+        );
+        return sendJson(res, 202, { queued: true });
+      }
+
+      /**
+        * Ask for a terminal on a screen.
+        *
+        * Mints a session and hands the DEVICE its secret on the next poll; the browser gets only
+        * the id, and opens a WebSocket to /api/pi/shell/<id> to watch. See piShell.ts for why it is
+        * built inside out and what bounds it.
+        */
+       const piShellOpen = /^\/api\/pi\/([\w-]+)\/terminal$/.exec(pathname);
+       if (piShellOpen && method === 'POST') {
+         const body = (await readBody(req, 1_000).catch(() => null)) as { rows?: unknown; cols?: unknown } | null;
+         const device = (store.db.piDevices ?? []).find((d) => d.id === piShellOpen[1]);
+         if (!device || !device.token) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
+         // rows/cols come back CLAMPED from openShellSession and are passed on as they are. They
+         // used to be written here as a literal 24x80 while the browser's measured size was clamped
+         // and then discarded, so every session ran 80 columns wide inside a window three times
+         // that and wrapped in the middle of the terminal.
+         const { id, secret, rows, cols } = openShellSession(device.id, body?.rows, body?.cols);
+         let queued: ReturnType<typeof queueCommand> = null;
+         store.update((db) => {
+           queued = queueCommand(db, device.id, 'shell-session', Date.now(), undefined, undefined, {
+             id,
+             secret,
+             rows,
+             cols,
+           });
+         });
+         if (!queued) {
+           closeShellSession(id, 'the screen could not be given the session');
+           return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
+         }
+         // The id is safe to hand back; the secret is not, and never leaves for the browser.
+         return sendJson(res, 202, { id, claimMs: SHELL_CLAIM_MS });
+       }
+
+      /**
+       * When this screen should turn its own output off overnight.
+       *
+       * Stored, not sent: it rides the device's ordinary state poll and the AGENT acts on it from
+       * its own clock. So a masjid whose internet drops at 23:00 still gets a dark screen at
+       * midnight and a lit one at Fajr — see PiState.displaySchedule.
+       */
+      const piSchedule = /^\/api\/pi\/([\w-]+)\/display-schedule$/.exec(pathname);
+      if (piSchedule && method === 'PUT') {
+        const body = (await readBody(req, 1_000).catch(() => null)) as
+          | { enabled?: unknown; offAt?: unknown; onAt?: unknown }
+          | null;
+        if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+        const offAt = normTimeOfDay(body.offAt);
+        const onAt = normTimeOfDay(body.onAt);
+        // Refused rather than defaulted: a schedule that silently became 00:00-00:00 would look
+        // saved in the panel and turn a masjid's screens off at a time nobody chose.
+        if (body.enabled === true && (!offAt || !onAt)) {
+          return sendJson(res, 400, { error: 'Give both times as HH:MM, in 24-hour form.' });
+        }
+        let found = false;
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piSchedule[1]);
+          if (!d) return;
+          found = true;
+          d.displaySchedule = { enabled: body.enabled === true, offAt, onAt };
+        });
+        if (!found) return sendJson(res, 404, { error: 'No such screen.' });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      /**
+       * Reboot this screen every night at a fixed time.
+       *
+       * Same mechanism as the display schedule and for the same reason: carried on the state poll
+       * and acted on by the agent from its own clock, so it still happens on the night a masjid's
+       * internet is down — which is exactly the night somebody wants a wedged board to recover.
+       */
+      const piReboot = /^\/api\/pi\/([\w-]+)\/reboot-schedule$/.exec(pathname);
+      if (piReboot && method === 'PUT') {
+        const body = (await readBody(req, 1_000).catch(() => null)) as { enabled?: unknown; at?: unknown } | null;
+        if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+        const at = normTimeOfDay(body.at);
+        if (body.enabled === true && !at) {
+          return sendJson(res, 400, { error: 'Give the time as HH:MM, in 24-hour form.' });
+        }
+        let found = false;
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piReboot[1]);
+          if (!d) return;
+          found = true;
+          d.rebootSchedule = { enabled: body.enabled === true, at };
+        });
+        if (!found) return sendJson(res, 404, { error: 'No such screen.' });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      /**
+       * "Somebody is watching this screen."
+       *
+       * Called repeatedly while a live-preview window is open, and it does one thing: push a
+       * deadline a few seconds into the future. The device reads that on its ordinary poll and sends
+       * a frame for as long as it holds.
+       *
+       * A deadline rather than an on/off flag, because there is no reliable "off". A browser tab
+       * closed mid-preview sends nothing, and neither does a laptop whose lid was shut or a tunnel
+       * that dropped — so a flag would leave a Pi sending half-megabyte frames for ever, and the one
+       * thing this must not become is a screen that quietly uploads a picture a second until
+       * somebody notices the bandwidth.
+       */
+      const piPreview = /^\/api\/pi\/([\w-]+)\/preview$/.exec(pathname);
+      if (piPreview && method === 'POST') {
+        // Read, not written: the deadline is in-memory (see markPreviewWanted), because a store
+        // update rewrites db.json whole and this is called once a second.
+        const device = (store.db.piDevices ?? []).find((x) => x.id === piPreview[1]);
+        if (!device) return sendJson(res, 404, { error: 'No such screen.' });
+        markPreviewWanted(device.id, Date.now() + PREVIEW_WINDOW_MS);
+        const shotAt = device.screenshotAt;
+        // The newest frame's timestamp rides back on the beat. It is what makes the picture live: the
+        // panel keys its <img> on this, so a frame is fetched exactly once and nothing is re-fetched
+        // while it waits for the next one. Sending it here costs a few bytes on a request that was
+        // already happening, and saves the panel re-reading a device row carrying up to 180KB of
+        // collected journal once a second to find the same thing out.
+        return sendJson(res, 200, { ok: true, forMs: PREVIEW_WINDOW_MS, screenshotAt: shotAt });
+      }
+
+      /**
+       * The last picture a screen sent of itself.
+       *
+       * Behind the admin session like everything else under /api — a frame of a masjid's screen is
+       * not sensitive the way a shell is, but it is the inside of somebody's building and there is
+       * no reason for it to be public. Never cached: the whole point of it is that it is current.
+       */
+      const piShot = /^\/api\/pi\/([\w-]+)\/screenshot$/.exec(pathname);
+      if (piShot && method === 'GET') {
+        const png = readScreenshot(piShot[1]);
+        if (!png) {
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('No picture yet.');
+          return;
+        }
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'content-type': 'image/png',
+          'content-length': String(png.length),
+          'cache-control': 'no-store',
+        });
+        res.end(png);
+        return;
+      }
+
+      const piForget = /^\/api\/pi\/([\w-]+)\/forget$/.exec(pathname);
+      if (piForget && method === 'POST') {
+        // A screen being handed to somebody else must not still have a live shell on it — nor leave
+        // a picture of the inside of the building it used to be in.
+        closeShellSessionsFor(piForget[1], 'the screen was forgotten');
+        removeScreenshot(piForget[1]);
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piForget[1]);
+          if (d) {
+            delete d.token;
+            delete d.tvId;
+          }
+        });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // A browser screen's address, for the panel to hand to whoever is setting the TV up.
+      // Same authoritative /api/fabric/site source as the widget and the volunteer page: the
+      // platform only returns a publicUrl when it is actually routing this app's path, so a
+      // remote television gets an HTTPS URL that works and a LAN-only install is told plainly
+      // that there isn't one.
+      const screenInfoMatch = /^\/api\/tvs\/([\w-]+)\/screen-info$/.exec(pathname);
+      if (screenInfoMatch && method === 'GET') {
+        const tv = store.db.tvs.find((t) => t.id === screenInfoMatch[1]);
+        if (!tv) return sendJson(res, 404, { error: 'Screen not found.' });
+        if (tv.kind !== 'web' || !tv.webToken) return sendJson(res, 200, { publicUrl: '', publicConfigured: false, path: '' });
+        const site = await siteInfo();
+        const publicConfigured = !!site?.enabled && !!site.publicUrl;
+        return sendJson(res, 200, {
+          path: `/s/${tv.webToken}`,
+          publicUrl: publicConfigured ? `${site!.publicUrl}/s/${tv.webToken}` : '',
+          publicConfigured,
+        });
       }
 
       // The volunteer page's PUBLIC address behind the tunnel: the app's public base + /volunteer

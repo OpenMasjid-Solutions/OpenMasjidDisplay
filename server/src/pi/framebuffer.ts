@@ -1,0 +1,533 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+/**
+ * pi/framebuffer.ts — drawing to a Raspberry Pi's screen with no desktop installed.
+ *
+ * Raspberry Pi OS Lite has no X and no Wayland, which is exactly why it fits on a Pi 3 B+ with
+ * 1 GB of RAM. What it does have is `/dev/fb0`: a file whose bytes ARE the pixels on the HDMI
+ * output. Writing a frame is therefore a `pwrite` at the right offset, and that is the whole
+ * mechanism here.
+ *
+ * The awkward part is that the framebuffer's layout is not ours to choose. Three things vary
+ * between Pi models, kernels and monitors, and getting any of them wrong produces a picture
+ * that is visibly wrong rather than absent — a blue-tinted display, a diagonal smear, or a
+ * third of a screen — so each is read from the kernel rather than assumed:
+ *
+ *   - **the size**, which follows whatever mode the attached television negotiated;
+ *   - **the depth**, 32 bits per pixel on current Pi OS but 16 on some configurations;
+ *   - **the stride**, the number of bytes per row, which is NOT always `width × 4`. The kernel
+ *     pads rows out to a hardware-friendly boundary, and a frame written as though it were
+ *     tightly packed comes out sheared into a diagonal.
+ *
+ * Everything that decides what a byte means is a pure function of that geometry, so it is
+ * tested against each layout rather than against whatever monitor happens to be plugged in.
+ */
+import fs from 'node:fs';
+import zlib from 'node:zlib';
+import { readFbset } from './fbset';
+
+/** Where the kernel publishes the framebuffer's layout. */
+const SYS = '/sys/class/graphics/fb0';
+
+export interface FbGeometry {
+  width: number;
+  height: number;
+  /** bits per pixel: 32 (BGRX) or 16 (RGB565) */
+  bpp: number;
+  /** bytes per row, padding included — not necessarily `width * bpp / 8` */
+  stride: number;
+}
+
+/**
+ * The device we draw to.
+ *
+ * Overridable, together with the geometry, so the agent can be run on a development machine
+ * that has no framebuffer at all: point it at an ordinary file and the frames it would have put
+ * on a television can be decoded and looked at. On a Pi both are unset and the kernel is the
+ * only source of either.
+ */
+export const FB_DEVICE = process.env.OMD_SCREEN_FB || '/dev/fb0';
+
+/** Geometry override for that same development path, as `WIDTHxHEIGHTxBPP` (e.g. `1920x1080x32`).
+ *  Only consulted when the kernel has nothing to say, because on a Pi the kernel is
+ *  authoritative and a stale override would draw a correct picture at the wrong size. */
+export function geometryOverride(): FbGeometry | null {
+  const m = /^(\d{2,5})x(\d{2,5})x(16|32)$/.exec((process.env.OMD_SCREEN_FB_GEOMETRY || '').trim());
+  if (!m) return null;
+  const width = Number(m[1]);
+  const height = Number(m[2]);
+  const bpp = Number(m[3]);
+  return { width, height, bpp, stride: width * (bpp / 8) };
+}
+
+function readSys(name: string): string | null {
+  try {
+    return fs.readFileSync(`${SYS}/${name}`, 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse the kernel's geometry files.
+ *
+ * Split out from the reading so the parsing — the part with the arithmetic in it — is testable
+ * without a framebuffer. `stride` is honoured when the kernel offers it and computed otherwise,
+ * because the file is absent on some kernels and a wrong stride shears the picture.
+ */
+export function parseGeometry(
+  virtualSize: string | null,
+  bitsPerPixel: string | null,
+  stride: string | null,
+  mode: string | null = null,
+): FbGeometry | null {
+  const m = /^(\d{1,5}),(\d{1,5})$/.exec((virtualSize ?? '').trim());
+  if (!m) return null;
+  let width = Number(m[1]);
+  let height = Number(m[2]);
+  if (!width || !height || width > 8192 || height > 8192) return null;
+
+  // `virtual_size` is xres_VIRTUAL — the buffer the kernel allocated, which is allowed to be
+  // bigger than the part of it the television actually shows. Drivers make it wider or taller for
+  // panning and page-flipping, and on a Pi driving a 4K panel it came back at roughly double the
+  // visible width.
+  //
+  // Drawing into the virtual size looks almost right, which is what makes it nasty: the picture
+  // is composed correctly and then only its left portion is on screen, so every centred line is
+  // cut off exactly at its middle. `mode` carries the size that is really being scanned out
+  // (e.g. "U:1920x1080p-60"), so it wins whenever the kernel offers it.
+  const vm = /(\d{2,5})x(\d{2,5})/.exec((mode ?? '').trim());
+  if (vm) {
+    const mw = Number(vm[1]);
+    const mh = Number(vm[2]);
+    // Only ever narrows. A mode larger than the buffer would mean writing past the end of it.
+    if (mw > 0 && mh > 0 && mw <= width && mh <= height) {
+      width = mw;
+      height = mh;
+    }
+  }
+
+  const bpp = Number((bitsPerPixel ?? '').trim());
+  // Only the two depths this file knows how to pack. Anything else would be drawn as garbage,
+  // and a blank screen with a log line is a far better failure than a scrambled one.
+  if (bpp !== 32 && bpp !== 16) return null;
+
+  // NOTE: measured against the VIRTUAL width, not the visible one. The stride is the distance
+  // from one row to the next in the buffer, which does not shrink just because less of it is
+  // on screen — using the visible width here would shear the picture.
+  const packed = Number(m[1]) * (bpp / 8);
+  const declared = Number((stride ?? '').trim());
+  // A stride below the packed width cannot be real; treat it as missing rather than trusting it.
+  const rowBytes = Number.isFinite(declared) && declared >= packed ? declared : packed;
+
+  return { width, height, bpp, stride: rowBytes };
+}
+
+/** Read the attached screen's actual layout, or null if there is no framebuffer here. */
+/** Everything the kernel says about the framebuffer, verbatim — for the log. A picture that is
+ *  the right shape but in the wrong place is decided entirely by these four values, and none of
+ *  them can be guessed at from a development machine. */
+export function describeFramebuffer(): string {
+  return ['virtual_size', 'mode', 'bits_per_pixel', 'stride']
+    .map((k) => `${k}=${readSys(k) ?? '?'}`)
+    .join(' ');
+}
+
+export function readGeometry(): FbGeometry | null {
+  // fbset first, because it is the only source that separates the VISIBLE size from the virtual
+  // one — it performs the same ioctls a real graphics program would. The sysfs files below
+  // cannot make that distinction, which is how a picture ended up composed at twice the width of
+  // the television and clipped through the middle of every centred line.
+  const viaIoctl = readFbset();
+  if (viaIoctl) return viaIoctl;
+  // The kernel wins wherever it has an opinion. An override left set on a real Pi would
+  // otherwise draw a perfectly correct picture at the wrong size for the attached television.
+  return (
+    parseGeometry(readSys('virtual_size'), readSys('bits_per_pixel'), readSys('stride'), readSys('mode')) ??
+    geometryOverride()
+  );
+}
+
+/**
+ * Convert one RGBA frame into the bytes this framebuffer expects.
+ *
+ * resvg hands us RGBA in that order. A 32-bit Linux framebuffer on a Pi is XRGB8888
+ * little-endian, so the bytes on disk run blue, green, red, unused — red and blue swapped
+ * relative to what we were given. Getting this backwards is the single most likely mistake
+ * here and it does not look like a bug so much as a colour-blind theme: the gold accent turns
+ * blue and everything else looks *nearly* right.
+ *
+ * `src` is expected to be tightly packed at `width × height × 4`. The output is `stride`-based,
+ * so any row padding the kernel wants is preserved.
+ */
+/**
+ * A 4x4 ordered-dither matrix, values 0..15.
+ *
+ * Fixed rather than random on purpose: the same frame is redrawn once a second, and a random
+ * dither would make every flat area crawl.
+ */
+const BAYER_4X4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
+export function packFrame(src: Uint8Array, geo: FbGeometry): Buffer {
+  const { width, height, bpp, stride } = geo;
+  const need = width * height * 4;
+  if (src.length < need) {
+    throw new Error(`frame is ${src.length} bytes, need ${need} for ${width}x${height}`);
+  }
+  const out = Buffer.alloc(stride * height);
+
+  if (bpp === 32) {
+    for (let y = 0; y < height; y++) {
+      let s = y * width * 4;
+      let d = y * stride;
+      for (let x = 0; x < width; x++) {
+        out[d] = src[s + 2]; // B
+        out[d + 1] = src[s + 1]; // G
+        out[d + 2] = src[s]; // R
+        out[d + 3] = 0xff; // X — opaque; some overlays read this as alpha
+        s += 4;
+        d += 4;
+      }
+    }
+    return out;
+  }
+
+  // 16bpp: RGB565, little-endian — five bits of red, six of green, five of blue. Sixty-five
+  // thousand colours instead of sixteen million.
+  //
+  // DITHERED, not truncated. Truncating is the obvious reduction and it is what an earlier version
+  // did, but this display is built out of soft gradients and translucent panels, and throwing away
+  // the low bits turns every one of those into a staircase of flat bands. The reported symptom was
+  // exactly that: the timetable looked washed out and "very simple" on a Pi where the same SVG
+  // looks right in a browser. It was not the colours being wrong, it was the gradients dying.
+  //
+  // An ordered (Bayer) dither fixes it for about the same cost as the truncation: add a small,
+  // position-dependent offset before quantising, so a colour halfway between two representable
+  // values is drawn as a fine checkerboard of both instead of snapping to one. The pattern is
+  // fixed rather than random, so successive frames are identical and the picture does not shimmer
+  // — which matters when the same frame is redrawn every second.
+  for (let y = 0; y < height; y++) {
+    let s = y * width * 4;
+    let d = y * stride;
+    const row = (y & 3) << 2;
+    for (let x = 0; x < width; x++) {
+      const t = BAYER_4X4[row | (x & 3)];
+      // The offset is scaled to each channel's own quantisation step: 8 levels for the 5-bit
+      // channels, 4 for the 6-bit green. Clamped, or a near-white pixel wraps to black.
+      const r = src[s] + (t >> 1) > 255 ? 255 : src[s] + (t >> 1);
+      const g = src[s + 1] + (t >> 2) > 255 ? 255 : src[s + 1] + (t >> 2);
+      const b = src[s + 2] + (t >> 1) > 255 ? 255 : src[s + 2] + (t >> 1);
+      const v = ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
+      out[d] = v & 0xff;
+      out[d + 1] = v >> 8;
+      s += 4;
+      d += 2;
+    }
+  }
+  return out;
+}
+
+/**
+ * A cheap fingerprint of the current layout, for noticing that it changed.
+ *
+ * Three small sysfs reads, so it costs nothing to check before every frame. Deliberately not
+ * `fbset`, which spawns a process — that would be far too expensive once a second, and the point
+ * here is only to detect a change, after which the authoritative read happens once.
+ */
+export function geometrySignature(): string {
+  return [readSys('virtual_size'), readSys('mode'), readSys('bits_per_pixel'), readSys('stride')].join('|');
+}
+
+/**
+ * An open framebuffer, and the layout it currently has.
+ *
+ * The layout is NOT fixed for the life of the process, however much it looks like it should be.
+ * An earlier version of this comment claimed it "only changes when somebody swaps the television,
+ * and that comes with a reboot" — that is simply untrue on a modern set. A 4K television
+ * renegotiates after the Pi has already booted, and the driver reallocates the framebuffer at the
+ * new size and stride.
+ *
+ * The symptom is very specific and was reported exactly: the screen is right for about ten
+ * seconds and then reverts to a magnified corner. Nothing about the frames being written changed
+ * — the buffer they were being written into did, and we carried on addressing it with the size it
+ * had at startup.
+ */
+export class Framebuffer {
+  private fd: number;
+  private geometry: FbGeometry;
+  private signature: string;
+
+  private constructor(
+    fd: number,
+    geo: FbGeometry,
+    private readonly device: string,
+  ) {
+    this.fd = fd;
+    this.geometry = geo;
+    this.signature = geometrySignature();
+  }
+
+  get geo(): FbGeometry {
+    return this.geometry;
+  }
+
+  static open(device = FB_DEVICE, geo?: FbGeometry): Framebuffer | null {
+    const g = geo ?? readGeometry();
+    if (!g) return null;
+    try {
+      return new Framebuffer(fs.openSync(device, 'w'), g, device);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Notice a mode change and follow it. Returns the new layout when it moved, else null.
+   *
+   * The descriptor is reopened as well as the numbers re-read, because the driver may have
+   * reallocated the mapping rather than resized it in place — writing to the old one would either
+   * fail or land somewhere that is no longer on screen.
+   */
+  refresh(): FbGeometry | null {
+    const sig = geometrySignature();
+    if (sig === this.signature) return null;
+    this.signature = sig;
+
+    const next = readGeometry();
+    if (!next) return null;
+    const same =
+      next.width === this.geometry.width &&
+      next.height === this.geometry.height &&
+      next.bpp === this.geometry.bpp &&
+      next.stride === this.geometry.stride;
+    if (same) return null;
+
+    this.geometry = next;
+    try {
+      fs.closeSync(this.fd);
+    } catch {
+      /* already gone */
+    }
+    try {
+      this.fd = fs.openSync(this.device, 'w');
+    } catch {
+      /* the next draw returns false, and the one after that tries again */
+    }
+    return next;
+  }
+
+  /** Draw an RGBA frame. Returns false rather than throwing: a failed frame is a dropped frame,
+   *  not a reason to take the screen down. */
+  draw(rgba: Uint8Array): boolean {
+    try {
+      const buf = packFrame(rgba, this.geo);
+      let off = 0;
+      while (off < buf.length) {
+        const n = fs.writeSync(this.fd, buf, off, buf.length - off, off);
+        if (n <= 0) return false;
+        off += n;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  close(): void {
+    try {
+      fs.closeSync(this.fd);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+/**
+ * Get the text console out of the way.
+ *
+ * Two things fight us for the same pixels. The kernel's framebuffer console keeps a blinking
+ * cursor and prints messages over whatever we drew, and console blanking turns the screen off
+ * after ten minutes of no keyboard activity — which, on a screen nobody types at, means the
+ * display goes black and stays black. Both are best-effort: a Pi where these fail still shows
+ * the timetable, it just may also show a cursor.
+ */
+export function quietConsole(): void {
+  // Unbind the framebuffer console so kernel log lines stop landing on our frame.
+  for (const vt of ['vtcon0', 'vtcon1']) {
+    try {
+      fs.writeFileSync(`/sys/class/vtconsole/${vt}/bind`, '0');
+    } catch {
+      /* not present, or not ours to unbind */
+    }
+  }
+  for (const tty of ['/dev/tty0', '/dev/tty1']) {
+    try {
+      // Hide the cursor, and set the blanking timer to never. Written as escapes rather than
+      // literal control bytes, so this file stays plain text a diff can show.
+      fs.writeFileSync(tty, '\u001b[?25l\u001b[9;0]');
+    } catch {
+      /* no console on this device */
+    }
+  }
+  try {
+    fs.writeFileSync(`${SYS}/blank`, '0');
+  } catch {
+    /* already awake */
+  }
+}
+// ── reading the screen back ──────────────────────────────────────────────────
+
+/** One step of a 5-bit and a 6-bit channel, as 0-255. The grid an RGB565 framebuffer's colours
+ *  already sit on — see the shrink in framebufferPng. */
+const R5 = 255 / 31;
+const G6 = 255 / 63;
+
+/** Why the last screenshot failed, for the caller to log. Kept here because the encoder must not
+ *  depend on the agent's logger — pi/framebuffer.ts is the layer below it. */
+let lastError = '';
+
+/** The reason the last framebufferPng() returned null. */
+export function framebufferPngError(): string {
+  return lastError;
+}
+
+/**
+ * A PNG of exactly what is on the screen right now.
+ *
+ * Built here rather than shelled out to a tool, because the tools that do this (`fbgrab`, `raspi2png`)
+ * are not on the image and adding a package to every screen for a debugging convenience is a poor
+ * trade. Node has zlib, the framebuffer is a byte array, and PNG's simplest form is a header, one
+ * deflate stream and a CRC — about forty lines.
+ *
+ * The 16bpp case is the real one: this board's framebuffer is RGB565 (measured — `bits_per_pixel:
+ * 16`), so the channels are unpacked and scaled rather than copied. A 32bpp board is handled too
+ * because the same agent is meant to survive a different one.
+ */
+export function framebufferPng(shrink = 1): Buffer | null {
+  try {
+    // The SAME geometry the drawing path uses, rather than a second reading of sysfs next to it.
+    // Two readers of the same three files drift, and this one had already drifted: it went straight
+    // to sysfs, which cannot separate the visible size from the virtual one — the exact distinction
+    // that once had a picture composed at twice the television's width. It also meant the function
+    // could only ever run on a real Pi, while everything else here honours OMD_SCREEN_FB* and can be
+    // exercised against a captured framebuffer.
+    const geo = readGeometry();
+    if (!geo) return null;
+    const { width: fw, height: fh, bpp, stride } = geo;
+    if (!fw || !fh || !bpp) return null;
+    const fb = fs.readFileSync(FB_DEVICE);
+
+    /**
+     * How many framebuffer pixels go into one output pixel, per axis.
+     *
+     * A live preview sends one of these a second for as long as somebody watches, from a Pi, through
+     * a masjid's tunnel — so the size of a frame is the whole feasibility of the feature. Measured on
+     * a real 1080p timetable off a real board:
+     *
+     *   full size                     513 KB   143 ms
+     *   2x, box-averaged              404 KB    75 ms
+     *   2x, nearest-neighbour         125 KB    48 ms
+     *   2x, averaged then re-quantised 139 KB   57 ms
+     *
+     * The averaged row is the surprise, and it is why this is written the way it is. A quarter of the
+     * pixels saved only a fifth of the bytes, because this framebuffer is RGB565 written with an
+     * ORDERED DITHER (see packFrame): averaging 2x2 blocks of a dither pattern manufactures colours
+     * that were never in the source, and deflate cannot find the repetition any more.
+     *
+     * So the average is kept — it is visibly better than nearest-neighbour on the small Arabic and
+     * the footnote line — and the result is put back onto the 5/6/5 grid the source already lived on.
+     * That costs 14 KB against sampling and buys back three quarters of the file.
+     */
+    const step = Math.max(1, Math.min(4, Math.floor(shrink)));
+    const w = Math.floor(fw / step);
+    const h = Math.floor(fh / step);
+    if (!w || !h) return null;
+    const bytes = bpp / 8;
+
+    // One filter byte per row (0 = None) then RGB triples: the layout PNG's simplest encoding wants.
+    const raw = Buffer.alloc((w * 3 + 1) * h);
+    const cells = step * step;
+    let o = 0;
+    for (let y = 0; y < h; y++) {
+      raw[o++] = 0;
+      for (let x = 0; x < w; x++) {
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        for (let sy = 0; sy < step; sy++) {
+          const base = (y * step + sy) * stride;
+          for (let sx = 0; sx < step; sx++) {
+            const px = x * step + sx;
+            if (bpp === 16) {
+              const v = fb.readUInt16LE(base + px * 2);
+              r += (((v >> 11) & 31) * 255) / 31;
+              g += (((v >> 5) & 63) * 255) / 63;
+              b += ((v & 31) * 255) / 31;
+            } else {
+              const p = base + px * bytes;
+              b += fb[p];
+              g += fb[p + 1];
+              r += fb[p + 2];
+            }
+          }
+        }
+        // Averaged, then snapped back onto the source's own colour grid — see the note above the
+        // step. Only for a 16bpp source, because that is where the dither is: a 32bpp framebuffer has
+        // no dither to fight and re-quantising it would throw away colour for nothing.
+        if (bpp === 16) {
+          // The exact step of each channel's grid, not a rounded decimal: 5 bits of red and blue,
+          // 6 of green. `| 0` because a Buffer store truncates a float anyway and relying on that
+          // silently is how a one-level shift gets in.
+          raw[o++] = (Math.round(r / cells / R5) * R5) | 0;
+          raw[o++] = (Math.round(g / cells / G6) * G6) | 0;
+          raw[o++] = (Math.round(b / cells / R5) * R5) | 0;
+        } else {
+          raw[o++] = (r / cells) | 0;
+          raw[o++] = (g / cells) | 0;
+          raw[o++] = (b / cells) | 0;
+        }
+      }
+    }
+
+    let table: number[] | null = null;
+    const crc32 = (buf: Buffer): number => {
+      if (!table) {
+        table = [];
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+          table[n] = c >>> 0;
+        }
+      }
+      let c = 0xffffffff;
+      for (const byte of buf) c = table[(c ^ byte) & 255] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const chunk = (type: string, data: Buffer): Buffer => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(data.length);
+      const t = Buffer.from(type, 'latin1');
+      const crc = Buffer.alloc(4);
+      crc.writeUInt32BE(crc32(Buffer.concat([t, data])));
+      return Buffer.concat([len, t, data, crc]);
+    };
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(w, 0);
+    ihdr.writeUInt32BE(h, 4);
+    ihdr[8] = 8; // bit depth
+    ihdr[9] = 2; // truecolour
+    return Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk('IHDR', ihdr),
+      // Level 6: a 1080p screenshot of a timetable compresses to a few hundred KB, and level 9 buys
+      // a few percent for noticeably more time on a board that has a screen to keep drawing.
+      chunk('IDAT', zlib.deflateSync(raw, { level: 6 })),
+      chunk('IEND', Buffer.alloc(0)),
+    ]);
+  } catch (e) {
+    // Swallowed rather than thrown: the caller is a screenshot request, and a board that cannot
+    // be photographed must still keep drawing. The reason reaches the log through the caller.
+    lastError = (e as Error).message;
+    return null;
+  }
+}

@@ -144,6 +144,8 @@ export function SettingsPage({ state, refetch }: Props) {
 
       <WhatsAppPanel state={state} refetch={refetch} />
 
+      <BetaPanel state={state} refetch={refetch} />
+
       <div className="panel glass">
         <h3 className="section-title" style={{ marginTop: 0 }}>Connecting a screen</h3>
         <p className="muted" style={{ marginBottom: '1rem' }}>
@@ -214,7 +216,7 @@ function NotificationsPanel() {
       <div className="row" style={{ gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="btn btn--ghost btn--sm" onClick={test} disabled={busy}>{busy ? <><Spinner /> Sending…</> : 'Send a test notification'}</button>
         {advice && (
-          <span className="hint" style={{ color: advice.ok ? 'var(--ok, #2bbf90)' : 'var(--danger, #e5736b)', maxWidth: 560 }}>
+          <span className="hint" style={{ color: advice.ok ? 'var(--color-success)' : 'var(--color-danger)', maxWidth: 560 }}>
             {advice.ok ? '✓ ' : '✗ '}{advice.msg}
           </span>
         )}
@@ -430,30 +432,148 @@ function WhatsAppPanel({ state, refetch }: Props) {
   );
 }
 
-/** What we handed to the platform's queue. Event, group and time only — never the message,
- *  which is a rule worth keeping unconditional rather than re-argued per message. */
+/**
+ * What became of each notice. Event, group and time only — never the message, which is a rule
+ * worth keeping unconditional rather than re-argued per message.
+ *
+ * Four states, and the distinction that matters to whoever is reading this is between "waiting"
+ * and "it did not go". A notice the platform later failed used to be indistinguishable from one
+ * still on its way, which is precisely why an image that never arrived was so hard to chase.
+ */
+const WA_STATE: Record<WhatsAppLogEntry['outcome'], { mark: string; colour: string; word: string; title: string }> = {
+  sent: { mark: '✓', colour: 'var(--color-success)', word: 'sent', title: 'The platform handed this to WhatsApp. WhatsApp gives no delivery receipt, so this is not proof it was read.' },
+  queued: { mark: '·', colour: 'var(--color-ink-muted)', word: 'waiting', title: 'Accepted by OpenMasjidOS and not sent yet — usually a few seconds. It stays "waiting" if your OpenMasjidOS is too old to be asked (0.51.1 and up can answer).' },
+  failed: { mark: '✗', colour: 'var(--color-danger)', word: 'did not send', title: 'OpenMasjidOS could not send this. It will be tried again automatically a few times.' },
+  expired: { mark: '✗', colour: 'var(--color-danger)', word: 'expired', title: 'OpenMasjidOS gave up on this one before it could be sent.' },
+};
+
+/**
+ * How a withdrawn "sent" is drawn.
+ *
+ * OpenMasjidOS found that a masjid's WhatsApp link can expire without anything noticing, and that
+ * messages handed over in that window were recorded as sent while none arrived. It tells us which of
+ * ours were affected; these are the two answers worth showing an admin, because one needs nothing
+ * from them and the other needs a decision.
+ */
+/**
+ * What went wrong with the link, in words an admin can act on.
+ *
+ * The platform names the cause and said more values may be added, so anything unrecognised falls
+ * back to the generic sentence rather than putting a raw enum on the page. Each of these is
+ * something a person does something different about, which is the only reason to show it at all.
+ */
+const WA_CAUSE: Record<string, string> = {
+  'session-expired': "The masjid's WhatsApp session had signed itself out, the way WhatsApp Desktop does after a while.",
+  'needs-relink': 'The phone needed linking to WhatsApp again.',
+  'key-rejected': "WhatsApp rejected the connection's credentials.",
+};
+
+const WA_SUSPECT: Record<'pending' | 'stale', { mark: string; colour: string; word: string; title: string }> = {
+  pending: {
+    mark: '!',
+    colour: 'var(--color-warning)',
+    word: 'may not have arrived',
+    title:
+      'OpenMasjidOS reported this as sent and has since found its WhatsApp link was down at the time, so it probably never arrived. This change has not happened yet, so it will be announced to the group again automatically.',
+  },
+  stale: {
+    mark: '!',
+    colour: 'var(--color-warning)',
+    word: 'may not have arrived',
+    title:
+      'OpenMasjidOS reported this as sent and has since found its WhatsApp link was down at the time. This change has already taken effect, so it is NOT being announced again — the wording would be wrong now. Send a message by hand if the group still needs to know.',
+  },
+};
+
 function WhatsAppLog({ entries, groups, fallbackLabel }: { entries: WhatsAppLogEntry[]; groups: { id: string; label: string }[]; fallbackLabel: string }) {
   const name = (id: string) => groups.find((g) => g.id === id)?.label || fallbackLabel || id;
   return (
     <div style={{ marginBlockStart: '1.2rem' }}>
-      <div className="label" style={{ marginBlockEnd: '0.4rem' }}>Recently queued</div>
+      <div className="label" style={{ marginBlockEnd: '0.4rem' }}>Recent announcements</div>
       <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: '0.35rem' }}>
         {entries.map((e, i) => (
           <li key={`${e.at}-${i}`} className="hint" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'baseline' }}>
-            <span style={{ color: e.outcome === 'queued' ? 'var(--color-success)' : 'var(--color-danger)' }}>
-              {e.outcome === 'queued' ? '✓' : '✗'}
-            </span>
-            <span>{new Date(e.at).toLocaleString()}</span>
-            <span className="muted">·</span>
-            <span>Iqāmah change from {e.effectiveFrom}</span>
-            <span className="muted">·</span>
-            <span>{name(e.recipient)}</span>
-            <span className="muted">· {e.asImage ? 'image' : 'text'}</span>
+            {/* An outcome this app has never written — a store restored from a newer build —
+                falls back to "waiting" rather than rendering an empty box. */}
+            {(() => {
+              // A "sent" the platform has since withdrawn is drawn as the doubt it is, not as a
+              // tick. The whole incident behind this was a row reading "sent" about a message
+              // nobody received, for over a day.
+              const base =
+                e.suspect && e.suspect !== 'resent'
+                  ? WA_SUSPECT[e.suspect]
+                  : WA_STATE[e.outcome] ?? WA_STATE.queued;
+              // The cause goes in front of the explanation, because it is the part that tells an
+              // admin whether this is something they need to go and fix on the phone.
+              const why = e.suspect && e.suspectCause ? WA_CAUSE[e.suspectCause] : '';
+              const s = why ? { ...base, title: `${why} ${base.title}` } : base;
+              return (
+                <>
+                  <span style={{ color: s.colour }} title={s.title}>
+                    {s.mark}
+                  </span>
+                  <span>{new Date(e.at).toLocaleString()}</span>
+                  <span className="muted">·</span>
+                  <span>Iqāmah change from {e.effectiveFrom}</span>
+                  <span className="muted">·</span>
+                  <span>{name(e.recipient)}</span>
+                  <span className="muted">· {e.asImage ? 'image' : 'text'}</span>
+                  <span style={{ color: s.colour }} title={s.title}>
+                    · {s.word}
+                  </span>
+                </>
+              );
+            })()}
             {e.manual && <span className="muted">· sent by hand</span>}
             {e.error && <span style={{ color: 'var(--color-danger)' }}>· {e.error}</span>}
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * Beta features — things that work but have not been through a season in a real masjid yet.
+ *
+ * Kept behind a switch rather than shipped on: a masjid whose screens are working should not
+ * be offered a second way of driving them until they choose to try it.
+ */
+function BetaPanel({ state, refetch }: Props) {
+  const toast = useToast();
+  const [webScreens, setWebScreens] = useState(state.settings.webScreensBeta);
+
+  const save = async (v: boolean) => {
+    setWebScreens(v); // optimistic
+    try {
+      await api.saveSettings({ webScreensBeta: v });
+      await refetch();
+      toast(v ? 'Browser screens are now offered when you add a screen.' : 'Browser screens are no longer offered.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save.', 'error');
+      setWebScreens(state.settings.webScreensBeta);
+    }
+  };
+
+  return (
+    <div className="panel glass">
+      <h3 className="section-title" style={{ marginTop: 0 }}>Beta features</h3>
+      <p className="muted" style={{ marginBottom: '1rem' }}>
+        Finished, but new. Try them if they solve a problem you have; leave them off otherwise.
+      </p>
+      <div className="toggle-row row-between">
+        <span className="label" style={{ margin: 0 }}>Screens that are a web page</span>
+        <Toggle checked={webScreens} onChange={save} label="Offer browser screens when adding a screen" />
+      </div>
+      <p className="hint" style={{ marginBlockStart: '0.6rem', maxWidth: 640 }}>
+        Adds a second kind of screen: instead of a decoder box pulling a video stream, the screen opens
+        a <b>web page</b> in any browser — a Raspberry Pi in kiosk mode, a smart TV, or a spare
+        computer. It draws the timetable itself from a few hundred bytes of data rather than receiving
+        video, so it uses a tiny fraction of the network, and it works over the internet through your
+        OpenMasjidOS remote access. <b>It can only show a timetable</b> — cameras and HDMI sources are
+        video and still need a decoder box. Turning this off later leaves any screens you already made
+        working; it only stops offering the option for new ones.
+      </p>
     </div>
   );
 }

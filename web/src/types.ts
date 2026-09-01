@@ -4,7 +4,7 @@
 
 export type Quality = '720p' | '1080p';
 export type Orientation = 'landscape' | 'portrait';
-export type TimetableLayout = 'centered' | 'clockTop' | 'split';
+export type TimetableLayout = 'modern' | 'simple';
 export type Lang = 'en' | 'ar' | 'ur';
 export type CalcMethod = 'MWL' | 'ISNA' | 'Egypt' | 'Makkah' | 'Karachi' | 'Custom';
 export type AsrMadhab = 'Standard' | 'Hanafi';
@@ -69,6 +69,7 @@ export interface Timetable {
   quality: Quality;
   layout: TimetableLayout;
   layoutCarousel: boolean;
+  simpleBg: string;
   masjidName: string;
   location: string;
   latitude: number | null;
@@ -139,6 +140,12 @@ export interface Tv {
   room?: string;
   defaultContent: ContentRef;
   override?: { content: ContentRef; until: number | null } | null;
+  /** absent = 'rtsp' — every screen made before browser screens existed */
+  kind?: TvKind;
+  /** the unguessable token in a browser screen's public URL */
+  webToken?: string;
+  /** the Raspberry Pi driving this screen, for kind: 'pi'. Set when the device is adopted. */
+  piDeviceId?: string;
   createdAt: string;
 }
 
@@ -168,6 +175,90 @@ export interface WhatsAppSettings {
   daysBefore: number;
 }
 
+export type TvKind = 'rtsp' | 'web' | 'pi';
+
+/** A Raspberry Pi running the display agent, as the dashboard sees it. */
+export interface PiDeviceInfo {
+  id: string;
+  /** the pairing code shown on its screen; empty once adopted, because the code is spent */
+  code: string;
+  adopted: boolean;
+  hostname: string;
+  ip: string;
+  model: string;
+  agentVersion: string;
+  tvId?: string;
+  online: boolean;
+  lastSeenAt: string;
+  /** true when this device already runs what the server would give it, so Update is a no-op */
+  upToDate?: boolean;
+  /** the last lines the agent logged, as it saw them. Display text only. */
+  recentLog?: string[];
+  logAt?: string;
+  /** Load, memory and temperature, as the screen last reported them. */
+  stats?: {
+    load1: number; cores: number; cpuPercent: number;
+    memUsedMb: number; memTotalMb: number; memPercent: number;
+    tempC: number; uptimeSec: number;
+  };
+  statsAt?: string;
+  /** The full journal from the screen, collected when asked for. Already ANSI-stripped. */
+  journal?: string;
+  /** when it was collected, so the viewer can say how stale it is */
+  journalAt?: string;
+  /** The Wi-Fi networks this screen can see, strongest first. */
+  networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
+  /** The outcome of the last join OR forget. `ok: null` = joined, but the server was not proven
+   *  reachable. `kind` says which action it answers — a forget reported as a join reads as 'the last
+   *  attempt did not work', which is the opposite of what happened. */
+  wifiResult?: { ok: boolean | null; detail: string; at: string; kind?: 'join' | 'forget' };
+  /** When an install was last asked for, so the card can say it is busy for the couple of minutes
+   *  it takes. Not proof of anything: the version changing is what says it worked. */
+  updateAskedAt?: number;
+  /** How the screen is attached to the network. Undefined — not 'none' — until the device has
+   *  checked in with an agent new enough to report it, which is a different thing from being
+   *  unplugged and has to be drawn differently. */
+  net?: PiDeviceNet;
+  /** The answer to the last console command. One answer, not a transcript — the scrollback is
+   *  kept in the browser showing it, because the store is a file on the masjid's own volume. */
+  shellResult?: { id: string; cmd: string; out: string; code: number | null; ms: number; at: string };
+  /** Whether the screen's OUTPUT is off, as the DEVICE reads it — not as we last commanded it. A
+   *  television somebody unplugged and a nightly schedule that fired both have to show correctly. */
+  displayOff?: boolean;
+  /** Turn the output off overnight. Enforced on the device from its own clock, so it still happens
+   *  on a night the masjid's internet is down. */
+  displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
+  /** And reboot nightly, by the same mechanism. */
+  rebootSchedule?: { enabled: boolean; at: string };
+  /** The screen's own timezone, as its system has it. A wrong one makes every prayer time on the
+   *  wall wrong, confidently, which is why the panel shows it rather than assuming. */
+  timezone?: string;
+  /** The forced HDMI mode from the device's own boot config, or 'auto'. Reported BY the device,
+   *  because an unconfirmed one puts itself back and the panel has to show what is true after that. */
+  videoMode?: string;
+  /** True while a forced mode is provisional: the screen reverts it in a few minutes unless
+   *  somebody confirms the picture is fine. */
+  videoModePending?: boolean;
+  /** What the screen last said about a mode change, including that it was reverted. */
+  videoModeResult?: string;
+  /** When the screen last sent a picture of itself. The picture is fetched separately; this is what
+   *  says whether the one we would fetch is the one we just asked for. */
+  screenshotAt?: string;
+}
+
+export interface PiDeviceNet {
+  /** Ethernet wins when both are up, because the cable is what carries the traffic. */
+  link: 'ethernet' | 'wifi' | 'none';
+  /** The Wi-Fi network it is on. Empty unless link is 'wifi'. */
+  ssid: string;
+  /** 0-100. Zero unless link is 'wifi'. */
+  signal: number;
+  /** Whether the radio is switched on — distinct from whether there is a radio at all. */
+  radio: boolean;
+  /** Whether this device has Wi-Fi hardware. Wi-Fi is not offered for a screen without it. */
+  hasWifi: boolean;
+}
+
 export interface Settings {
   defaultQuality: Quality;
   scheduleTimezone: string;
@@ -175,11 +266,21 @@ export interface Settings {
   /** also serve the volunteer page on the main address / over remote access (default on) */
   volunteerRemote: boolean;
   whatsapp: WhatsAppSettings;
+  /** BETA: offer browser screens as an alternative to an RTSP decoder */
+  webScreensBeta: boolean;
 }
 
 /** Why this masjid can or cannot send — the platform's vocabulary, each needing its own
  *  sentence. `no-fabric` and `not-allowed` are this app's own additions. */
 export type WhatsAppReason = 'ready' | 'not-configured' | 'not-linked' | 'unreachable' | 'not-allowed' | 'no-fabric';
+
+/**
+ * The platform later said its own "sent" for a message cannot be trusted — see the server's own
+ * WhatsAppLogEntry for the incident this exists for. "pending" will be announced again on the usual
+ * schedule, "resent" already has been, and "stale" announced a change that has since taken effect,
+ * so re-sending it would be confusing rather than helpful and it is left for a person to look at.
+ */
+export type WhatsAppSuspect = 'pending' | 'resent' | 'stale';
 
 export interface WhatsAppLogEntry {
   at: string;
@@ -187,7 +288,17 @@ export interface WhatsAppLogEntry {
   /** the group JID — an id, never a name or a body */
   recipient: string;
   effectiveFrom: string;
-  outcome: 'queued' | 'failed';
+  /** `queued` is the platform accepting it; `sent` is the platform saying it went to WhatsApp
+   *  (not a delivery receipt — WhatsApp gives none); `failed` and `expired` both mean it did
+   *  not go. An entry stays `queued` when the platform is too old to be asked. */
+  outcome: 'queued' | 'sent' | 'failed' | 'expired';
+  /** when the platform's verdict was recorded */
+  settledAt?: string;
+  /** set when the platform withdrew its own "sent" for this message */
+  suspect?: WhatsAppSuspect;
+  /** why the link was down, in the platform's words. More values may appear, so this is a plain
+   *  string and anything unrecognised is worded generically rather than shown raw. */
+  suspectCause?: string;
   /** the poster image went too, rather than text alone */
   asImage?: boolean;
   error?: string;

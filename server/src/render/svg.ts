@@ -8,7 +8,7 @@
  * (or the masjid's own background image, gently frosted), a live **sun or moon**
  * that arcs across the sky by the real time of day and casts its glow onto the
  * translucent glass panels (top sheen + hairline borders), emerald/cyan primary
- * and a gold accent. Three arrangement presets (centered / clockTop / split) and
+ * and a gold accent. Two designs — Modern (this file's themed look) and Simple — and
  * per-element toggles are honoured; a carousel option rotates the layout over the
  * day to avoid screen burn-in. No sacred/Arabic text appears in decorative chrome.
  */
@@ -53,6 +53,11 @@ const FONT_ARABIC = 'Amiri, Noto Naskh Arabic, Noto Sans Arabic, Noto Sans, Deja
 // Warning red for the prohibited-time scrolling message (shared by the SVG band and the
 // ffmpeg drawtext so the preview and the live video match).
 export const TICKER_RED = '#f2453d';
+
+/** The frost, in one place. Named because two callers now emit it and identical pixels depend on
+ *  them emitting the same thing — see frostedBackgroundSvg. */
+const FROST_FILTER =
+  '<filter id="frost" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="14"/></filter>';
 
 // Glass surfaces are white-translucent regardless of theme, so the scene (or the
 // masjid's photo) shows through them — that is what reads as "glass".
@@ -153,6 +158,16 @@ function mixHex(a: string, b: string, t: number): string {
   return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0')}`;
 }
 
+/** Perceived brightness (0..1) of a hex colour, ITU-R BT.601 weights — good enough to
+ *  decide "is this background light or dark", not for colour-accurate work. */
+function relLuminance(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return 1;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
 /** Derive the dim/faint text shades from a chosen main text colour. We blend toward
  *  a neutral grey to make them *solid* (de-emphasised but readable), rather than
  *  semi-transparent — a translucent dim text lets a busy photo show through and
@@ -226,7 +241,9 @@ function gregorian(parts: { year: number; month: number; day: number }, lang: st
   }).format(new Date(Date.UTC(parts.year, parts.month - 1, parts.day + offsetDays, 12)));
 }
 
-function hijri(parts: { year: number; month: number; day: number }, lang: string, offsetDays = 0): string {
+/** Exported for the Fabric `timetable` capability, which hands this label to another app
+ *  because that app is not allowed to work a Hijri date out for itself. */
+export function hijri(parts: { year: number; month: number; day: number }, lang: string, offsetDays = 0): string {
   try {
     return new Intl.DateTimeFormat(`${lang}-u-ca-islamic-umalqura`, {
       day: 'numeric',
@@ -253,21 +270,35 @@ function inDailyWindow(nowMin: number, start: string, end: string): boolean {
 
 /** Which announcement image (if any) should be the backdrop right now. The display
  *  alternates: `everySeconds` of normal timetable, then `forSeconds` of cycling
- *  images (each `imageSeconds`), within the daily window. Stateless — derived from
- *  the clock so every screen/worker agrees. Returns the image filename or null. */
-export function activeAnnouncementImage(tt: Timetable, now: Date): string | null {
+ *  images (each `imageSeconds`). Stateless — derived from the clock so every
+ *  screen/worker agrees. Returns the image filename or null.
+ *
+ *  Two sources feed the rotation:
+ *   - the admin's uploaded slideshow images (only when the slideshow is enabled, and
+ *     honoring its daily window), and
+ *   - `reportFrames`: incorrect-parking alert cards, one per active volunteer report
+ *     targeting this timetable. These rotate WHENEVER present — filing a report is
+ *     the opt-in — independent of the image slideshow and its window. */
+export function activeAnnouncementImage(tt: Timetable, now: Date, reportFrames: string[] = []): string | null {
   const a = tt.announcements;
-  if (!a || !a.enabled || !a.images || a.images.length === 0) return null;
+  const images = a?.enabled && a.images ? [...a.images] : [];
+  const pool = [...images, ...reportFrames];
+  if (pool.length === 0) return null;
   const parts = localParts(now, tt.timezone || undefined);
-  if (!inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
-  const every = Math.max(1, Math.floor(a.everySeconds));
-  const forS = Math.max(1, Math.floor(a.forSeconds));
-  const imgS = Math.max(1, Math.floor(a.imageSeconds));
+  // Uploaded images respect the slideshow's daily window; alerts ignore it. So when
+  // there are no alerts, apply the window; when alerts are present, always rotate.
+  if (reportFrames.length === 0 && a && !inDailyWindow(parts.hour * 60 + parts.minute, a.start, a.end)) return null;
+  const every = Math.max(1, Math.floor(a?.everySeconds ?? 25));
+  const imgS = Math.max(1, Math.floor(a?.imageSeconds ?? 8));
+  // The "show" window must be long enough to cycle EVERY frame at least once, or a
+  // multi-photo report only ever shows its first photo before flipping back to the
+  // timetable. So stretch it to cover the whole pool when needed.
+  const forS = Math.max(Math.max(1, Math.floor(a?.forSeconds ?? 20)), pool.length * imgS);
   const cycle = every + forS;
   const phase = ((Math.floor(now.getTime() / 1000) % cycle) + cycle) % cycle;
   if (phase < every) return null; // showing the normal timetable
-  const idx = Math.floor((phase - every) / imgS) % a.images.length;
-  return a.images[idx] ?? null;
+  const idx = Math.floor((phase - every) / imgS) % pool.length;
+  return pool[idx] ?? null;
 }
 
 // Separator between ticker messages. Uses non-breaking spaces ( ) because SVG
@@ -312,6 +343,17 @@ export function activeTicker(tt: Timetable, now: Date): { text: string; prohibit
  *  SVG palette and used to be hardcoded white (invisible on the light theme's pale band).
  *  Returns a "#rrggbb" hex; the renderer converts it to ffmpeg's 0xRRGGBB form. */
 export function tickerTextColor(tt: Timetable): string {
+  // This is the ffmpeg drawtext colour for a LIVE video screen — a completely separate path
+  // from the SVG's own `p.text` (which `build()` already derives correctly for the "simple"
+  // layout's flat, admin-chosen background). Missing that here meant a video screen kept
+  // drawing the classic theme's light ticker text — fine on a dark scene, invisible on
+  // Simple's usual white page — while the browser/web-screen preview, which computes its
+  // colour from `build()`, looked correct. Same derivation as there, so the two can't drift.
+  if (tt.layout === 'simple') {
+    const raw = (tt.simpleBg || '').trim();
+    const bgHex = /^#?[0-9a-f]{6}$/i.test(raw) ? (raw.startsWith('#') ? raw : `#${raw}`) : '#ffffff';
+    return relLuminance(bgHex) > 0.6 ? '#1c2620' : '#f2f6f3';
+  }
   return getPalette(tt.themeId, tt.accent).text;
 }
 
@@ -548,12 +590,37 @@ interface Model {
 export function buildModel(tt: Timetable, now: Date): Model {
   const tz = tt.timezone || undefined;
   const parts = localParts(now, tz);
-  const off = timezoneOffsetHours(now, tz);
+  /**
+   * The day's UTC offset, taken at local NOON of the day being drawn — never at the render
+   * instant.
+   *
+   * `prayerTimes` applies one fixed offset to the whole day, and on a DST-transition day the
+   * offset at the render instant is not the day's offset. Measured, America/New_York,
+   * 2026-03-08 (02:00 → 03:00): rendered at 00:30 or 01:30 the board showed Fajr 04:53,
+   * Dhuhr 12:11, Maghrib 18:00; from 03:30 onward the same day read 05:53, 13:11, 19:00.
+   * Every time was exactly an hour out for the two hours before the change — and the
+   * post-transition values are the correct ones, because every prayer that day happens after
+   * the clock moves. So the screen was an hour wrong, twice a year, in the window that ends
+   * at Fajr: the countdown, the Iqāmah countdown and the adhan popup all fired against it.
+   *
+   * Noon is the right anchor for the same reason `zonedNoon` exists, and it makes the live
+   * render agree with the two callers that were already correct — `posterModel` and the Fabric
+   * timetable feed both anchor at noon, so before this the wall and the phone disagreed.
+   */
+  const off = timezoneOffsetHours(zonedNoon(parts.year, parts.month, parts.day, tz), tz);
   // A 'Custom' method uses the masjid's own Fajr/Isha sun-depression angles.
   const method = tt.method === 'Custom' ? { label: 'Custom', fajr: tt.fajrAngle ?? 18, isha: tt.ishaAngle ?? 17 } : tt.method;
   const times = prayerTimes(parts, tt.latitude!, tt.longitude!, off, method, tt.asrMadhab);
 
-  const tomorrow = new Date(now.getTime() + 86400000);
+  /**
+   * Tomorrow, by the CALENDAR, not by adding 24 hours.
+   *
+   * A DST day is not 86,400,000 ms long, so the old arithmetic could skip a date outright:
+   * 2026-03-07 23:30 EST + 24h lands on 2026-03-09 00:30 EDT, and the "next prayer is
+   * tomorrow's Fajr" countdown shown after Isha was then counting to the wrong day's Fajr.
+   * Anchored at noon for the same reason as `off` above.
+   */
+  const tomorrow = zonedNoon(parts.year, parts.month, parts.day + 1, tz);
   const tParts = localParts(tomorrow, tz);
   const tOff = timezoneOffsetHours(tomorrow, tz);
   const tomorrowFajr = prayerTimes(tParts, tt.latitude!, tt.longitude!, tOff, method, tt.asrMadhab).fajr;
@@ -810,6 +877,9 @@ export function widgetPayload(tt: Timetable, now: Date, opts: { date?: string; w
   const lang = (tt.language || 'en') as Lang;
   const method = tt.method === 'Custom' ? { label: 'Custom', fajr: tt.fajrAngle ?? 18, isha: tt.ishaAngle ?? 17 } : tt.method;
   const hasLoc = tt.latitude != null && tt.longitude != null;
+  // Per-prayer Adhan delay, needed here because the week table below computes its own times
+  // rather than going through buildModel — see the note on `wf`.
+  const ao = tt.adhanOffsets ?? {};
   const today = localParts(now, tz);
 
   const fd = parseIsoDate(opts.date);
@@ -867,14 +937,25 @@ export function widgetPayload(tt: Timetable, now: Date, opts: { date?: string; w
     const lbl = new Date(Date.UTC(dp.year, dp.month - 1, dp.day, 12));
     const iso = isoOf(dp.year, dp.month, dp.day);
     const times = hasLoc ? prayerTimes(dp, tt.latitude!, tt.longitude!, timezoneOffsetHours(dObj, tz), method, tt.asrMadhab) : null;
-    const f = (h: number | undefined) => (times && h != null ? fmtShort(h, tt.timeFormat) : '—');
+    /**
+     * The DISPLAYED Adhan, offsets included — the same value the focus card shows.
+     *
+     * These are raw astronomical times, and the card above them comes from `buildModel`, which
+     * adds `tt.adhanOffsets`. So a masjid that calls the Adhan five minutes after the
+     * astronomical time got a widget whose card said 5:19 and whose week table said 5:14 for the
+     * same prayer on the same day, side by side on one page, with nothing to say which was
+     * meant. Whichever a visitor believed, half the page was wrong.
+     */
+    const wf = (k: keyof typeof ao, h: number | undefined) =>
+      times && h != null ? fmtShort(h + (ao[k] ?? 0) / 60, tt.timeFormat) : '—';
     days.push({
       iso,
       dow: dow.format(lbl),
       dayLabel: `${dow.format(lbl)} ${dp.day}`,
       isToday: dp.year === today.year && dp.month === today.month && dp.day === today.day,
       isFocus: iso === focusIso,
-      fajr: f(times?.fajr), dhuhr: f(times?.dhuhr), asr: f(times?.asr), maghrib: f(times?.maghrib), isha: f(times?.isha),
+      fajr: wf('fajr', times?.fajr), dhuhr: wf('dhuhr', times?.dhuhr), asr: wf('asr', times?.asr),
+      maghrib: wf('maghrib', times?.maghrib), isha: wf('isha', times?.isha),
     });
   }
   const rangeFmt = new Intl.DateTimeFormat(lang, { month: 'short', day: 'numeric', timeZone: 'UTC' });
@@ -992,7 +1073,7 @@ function defs(p: Palette, hasImage: boolean, cel: Celestial, W: number, H: numbe
       <stop offset="50%" stop-color="${hexToRgba(p.bg, 0.52)}"/>
       <stop offset="100%" stop-color="${hexToRgba(p.bg, 0.8)}"/>
     </linearGradient>
-    ${hasImage ? `<filter id="frost" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="14"/></filter>` : ''}
+    ${hasImage ? FROST_FILTER : ''}
     <pattern id="khatam" width="58" height="58" patternUnits="userSpaceOnUse">
       <g fill="none" stroke="${p.pattern}" stroke-width="1" opacity="0.05">
         <path d="M0 0 L58 58 M58 0 L0 58"/>
@@ -1120,6 +1201,7 @@ interface Ctx {
   showName: boolean;
   showDates: boolean;
   showCountdown: boolean;
+  showSunrise: boolean;
   /** Active zawāl (pre-Dhuhr) prohibited-to-pray window — the ring reframes itself as a
    *  "Prohibited time" notice counting down to when prayer is allowed again (Dhuhr). */
   prohibited?: boolean;
@@ -1225,7 +1307,22 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
   if (c.showSeconds) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
   if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
   if (showDates) {
-    const ds = clamp(b.h * 0.11, 12, 26);
+    let ds = clamp(b.h * 0.11, 12, 26);
+    // Shrink to fit, exactly as the clock above already does.
+    //
+    // This panel draws the FULL date on one line, and the long English form is 29 characters —
+    // "Wednesday, September 30, 2026". On a narrow panel that runs past the card's edge, which is
+    // what "text spilling out of the box" was. It only showed sometimes because it needs both this
+    // layout (the burn-in rotation changes every five minutes) and a long date: "Sunday, May 3,
+    // 2026" fits comfortably.
+    //
+    // Both lines are measured and ONE scale is applied to both, so the Gregorian and Hijri lines
+    // stay the same size as each other — shrinking only the offender would look like a mistake.
+    const widestDate = Math.max(
+      c.greg ? approxWidth(c.greg, ds) : 0,
+      c.hij ? approxWidth(c.hij, ds * 0.98) : 0,
+    );
+    if (widestDate > avail) ds *= avail / widestDate;
     if (c.greg) out.push(text(edge, b.y + b.h * 0.68, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, anchor: align }));
     if (c.hij) out.push(text(edge, b.y + b.h * 0.86, c.hij, { size: ds * 0.98, fill: c.p.goldSoft, family: FONT_DISPLAY, anchor: align }));
   }
@@ -1423,12 +1520,20 @@ function jumuahBar(b: Box, m: Model, c: Ctx): string {
 /** A scrolling ticker strip along the bottom. The text is tiled and offset by the
  *  clock so it scrolls continuously; smoothness depends on the frame cadence (the
  *  renderer speeds up while a ticker is active). */
-function tickerBand(msg: string, now: Date, p: Palette, W: number, H: number, bandOnly: boolean, prohibited = false, scrollAt: { x: number; w: number } | null = null): string {
+function tickerBand(msg: string, now: Date, p: Palette, W: number, H: number, bandOnly: boolean, prohibited = false, scrollAt: { x: number; w: number } | null = null, isSimple = false): string {
   const { y, bandH, fs } = tickerLayout(W, H);
   const out: string[] = [];
   // A prohibited-time message scrolls in red, with a red top edge, so it reads clearly
   // as a warning over any theme (the ffmpeg drawtext uses the matching colour).
-  out.push(rect(0, y, W, bandH, 0, hexToRgba(p.bg, prohibited ? 0.72 : 0.6)));
+  //
+  // On the classic scene, a translucent wash of the (dark) background colour reads as a
+  // frosted strip. The "simple" layout's page has no scene to darken — its background IS
+  // the page colour — so that same wash is the page's own colour on top of itself: an
+  // invisible no-op, leaving nothing but bare text with a thin top line. Give it an actual
+  // tint (mixed toward the accent, like the prayer-table row bands) so the strip reads as
+  // its own band there too.
+  const backdrop = isSimple ? mixHex(p.bg, prohibited ? TICKER_RED : p.primary, prohibited ? 0.16 : (p.light ? 0.08 : 0.14)) : hexToRgba(p.bg, prohibited ? 0.72 : 0.6);
+  out.push(rect(0, y, W, bandH, 0, backdrop));
   out.push(rect(0, y, W, Math.max(1.5, bandH * 0.025), 0, prohibited ? TICKER_RED : hexToRgba(p.primary, 0.55)));
   if (!bandOnly) {
     // The still preview draws the scrolling text itself (the live video leaves this to
@@ -1562,38 +1667,377 @@ function layoutReference(a: Box, m: Model, c: Ctx): string {
   return out.join('');
 }
 
-/** Announcement (slideshow) layout. Landscape: the full portrait column on the LEFT
- *  (brand, clock+ring, table, Jumu'ah) with the cycling image filling the RIGHT.
- *  Portrait: the image on top with the clock + ring side by side beneath it. */
-function announcementView(a: Box, m: Model, c: Ctx, image: string): string {
+/**
+ * The "simple" layout, modelled directly on a real installed wall display: a plain
+ * flat page (no themed scene, no glass, no sun/moon), a brand column on the left —
+ * logo/name, a small sunrise/sunset line, the big clock, one date line, and a plain
+ * "next prayer in…" sentence instead of a countdown ring — and one wide banded prayer
+ * table on the right, Jumu'ah as its own last row rather than a separate strip.
+ * Nothing here is inherited from the classic look; it is its own, simpler thing.
+ * Portrait falls back to the reference layout's stack for now.
+ */
+function layoutSimple(a: Box, m: Model, c: Ctx): string {
+  if (a.w < a.h) return portraitStack(a, m, c);
   const out: string[] = [];
-  const gap = Math.min(a.w, a.h) * 0.02;
-
-  function drawImage(x: number, y: number, w: number, h: number): void {
-    const r = clamp(Math.min(w, h) * 0.03, 10, 28);
-    out.push(glass(x, y, w, h, r, { raised: true }));
-    out.push(`<clipPath id="annclip"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${r.toFixed(1)}" ry="${r.toFixed(1)}"/></clipPath>`);
-    out.push(`<image href="${image}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" clip-path="url(#annclip)"/>`);
-  }
-
-  if (a.w >= a.h) {
-    // Landscape: the whole portrait layout as a left column, image fills the right.
-    const colW = clamp(a.w * 0.4, 360, 900);
-    out.push(portraitStack({ x: a.x, y: a.y, w: colW, h: a.h }, m, c));
-    const ix = a.x + colW + gap;
-    drawImage(ix, a.y, a.x + a.w - ix, a.h);
-    return out.join('');
-  }
-  // Portrait: image on top, clock + ring side by side beneath.
-  const rowH = clamp(a.h * 0.3, 150, 340);
-  const imgH = a.h - rowH - gap;
-  drawImage(a.x, a.y, a.w, imgH);
-  const by = a.y + imgH + gap;
-  const half = (a.w - gap) / 2;
-  out.push(panelClock({ x: a.x, y: by, w: half, h: rowH }, c, 'start'));
-  out.push(panelRing({ x: a.x + half + gap, y: by, w: half, h: rowH }, c));
+  const gap = Math.min(a.w, a.h) * 0.03;
+  const leftFrac = 0.3;
+  const leftW = (a.w - gap) * leftFrac;
+  out.push(brandColumn({ x: a.x, y: a.y, w: leftW, h: a.h }, m, c));
+  const rightX = a.x + leftW + gap;
+  out.push(simpleTable({ x: rightX, y: a.y, w: a.x + a.w - rightX, h: a.h }, m, c));
   return out.join('');
 }
+
+/** Left column for the "simple" layout: brand, a small sunrise/sunset line, the big
+ *  clock, one combined date line, and a plain sentence for the next prayer — sitting
+ *  directly on the flat page, no card behind any of it. */
+function brandColumn(b: Box, m: Model, c: Ctx): string {
+  const out: string[] = [];
+  const avail = b.w * 0.95;
+  const cx = b.x + b.w / 2;
+
+  // Sizes only depend on the box width, so they can all be worked out up front —
+  // which is what lets the whole block be centred vertically: the total height has
+  // to be known before the first thing is drawn, not discovered as we go.
+  const ms = c.showLogo || c.showName ? clamp(b.w * 0.3, 46, 110) : 0;
+  let ns = 0;
+  if (c.showName) {
+    ns = clamp(b.w * 0.1, 18, 38);
+    const nw = approxWidth(c.masjidName, ns);
+    if (nw > avail) ns = Math.max(12, ns * (avail / nw));
+  }
+  const headerH = c.showLogo && c.showName ? ms + ns * 1.5 : c.showLogo ? ms + b.h * 0.03 : c.showName ? ns * 1.5 : 0;
+
+  const ss = c.showSunrise ? clamp(b.w * 0.038, 9, 14) : 0;
+  const sunriseH = c.showSunrise ? ss * 2.1 : 0;
+
+  const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
+  let ts = clamp(b.w * 0.4, 46, 160);
+  const markSize = () => ts * 0.24; // smaller than before — AM/PM read as loud beside a thin clock face
+  const clockW = () => approxWidth(c.clock.time, ts) + (markStr ? ts * 0.1 + approxWidth(markStr, markSize()) : 0);
+  if (clockW() > avail) ts *= avail / clockW();
+  const clockH = ts * 1.12;
+
+  const showDateLine = c.showDates && (!!c.hij || !!c.greg);
+  const showBar = showDateLine && !!c.hij && !!c.greg;
+  let ds = clamp(b.w * 0.09, 20, 34); // a bit larger than a quiet caption — it sits right under the clock
+  if (showDateLine) {
+    // Its own, nearly-full-width budget — it is the only thing on this line, unlike `avail`
+    // (95% of the box) which is sized to leave the clock and sunrise/sunset row a margin too.
+    // The separator is a drawn bar (below), not a character; ds*0.7 stands in for its width
+    // (bar + the gap either side) at this ds, close enough for the fit check.
+    const dateAvail = b.w * 0.99;
+    const dw = approxWidth(c.hij, ds) + approxWidth(c.greg, ds) + (showBar ? ds * 0.7 : 0); // bar + both gaps, roughly
+    if (dw > dateAvail) ds *= dateAvail / dw;
+  }
+  const dateH = showDateLine ? ds * 2 : 0;
+
+  const sec = Math.max(0, c.remainingSec);
+  const h = Math.floor(sec / 3600);
+  const mm = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const amount = sec < 60 ? `${s} sec` : h > 0 ? `${h}hr ${mm}min` : `${mm}min`;
+  const word = c.eventWord.charAt(0) + c.eventWord.slice(1).toLowerCase();
+  const nextLine = c.prohibited ? `Prohibited time — ${word.toLowerCase()} in ${amount}` : `Next ${word} in ${amount}`;
+  // The one sentence on the page that changes every minute, so it earns the accent — red while
+  // prayer is prohibited, which is the same signal the other layout's ring gives.
+  const nextFill = c.prohibited ? TICKER_RED : c.p.primary;
+  let ls = clamp(b.w * 0.058, 15, 26);
+  if (c.showCountdown) {
+    const lw = approxWidth(nextLine, ls);
+    if (lw > avail) ls *= avail / lw;
+  }
+  const nextH = c.showCountdown ? ls * 1.9 : 0;
+
+  const totalH = headerH + sunriseH + clockH + dateH + nextH;
+  let y = b.y + Math.max(0, (b.h - totalH) / 2);
+
+  // Logo above the name, both centred as one unit directly over the clock — not
+  // left-aligned the way the rest of the app's cards are.
+  if (c.showLogo && c.showName) {
+    out.push(mark(cx - ms / 2, y, ms, c.p.primary, c.logo));
+    out.push(text(cx, y + ms + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 500, anchor: 'middle', editId: 'masjidName' }));
+    y += headerH;
+  } else if (c.showLogo) {
+    out.push(mark(cx - ms / 2, y, ms, c.p.primary, c.logo));
+    y += headerH;
+  } else if (c.showName) {
+    out.push(text(cx, y + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 500, anchor: 'middle', editId: 'masjidName' }));
+    y += headerH;
+  }
+
+  // Sunrise and sunset as one centred line — plain text, no icons.
+  if (c.showSunrise) {
+    const sunriseStr = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}`;
+    const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
+    const gapW = ss * 2.4;
+    const rowY = y + ss;
+    const totalW = approxWidth(sunriseStr, ss) + gapW + approxWidth(sunsetStr, ss);
+    let x = cx - totalW / 2;
+    out.push(text(x, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'start', letter: 0.6 }));
+    x += approxWidth(sunriseStr, ss) + gapW;
+    out.push(text(x, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'start', letter: 0.6 }));
+    y += sunriseH;
+  }
+
+  // The big clock, centred as one unit — replacing the ring's job of "what time is
+  // it right now". A lighter weight than a typical display clock reads calmer at
+  // this size, not shoutier.
+  const tBase = y + ts * 0.82;
+  const clockX = cx - clockW() / 2;
+  out.push(text(clockX, tBase, c.clock.time, { size: ts, fill: c.p.text, family: FONT_DISPLAY, weight: 400, anchor: 'start', letter: -ts * 0.01, blink: true }));
+  const markX = clockX + approxWidth(c.clock.time, ts) + ts * 0.1;
+  const ss2 = markSize();
+  if (c.showSeconds) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
+  if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
+  y = tBase + ts * 0.3;
+
+  // One combined, centred date line (Hijri | Gregorian) rather than two stacked ones. The
+  // separator between them is a drawn bar, not a "|" glyph — a character at this weight (300,
+  // deliberately thin for the dates themselves) is too faint to read as a divider, so it's
+  // bolded by being a shape instead of relying on font weight.
+  if (showDateLine) {
+    y += ds * 1.2;
+    if (showBar) {
+      // Anchored against the bar itself (`end` on the left, `start` on the right) rather than
+      // positioned from `approxWidth` estimates on both sides — that measured the Hijri and
+      // Gregorian strings independently and any estimate error showed up as an uneven-looking
+      // gap around the bar, which is exactly the thing the eye catches on a divider. Anchoring
+      // to a fixed point either side of the bar makes that gap exact regardless of estimate
+      // error; only the whole line's centering (not the gap) can be off by a little now, which
+      // is far less noticeable.
+      const barW = ds * 0.18;
+      const barGap = ds * 0.26;
+      out.push(text(cx - barW / 2 - barGap, y, c.hij, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
+      out.push(rect(cx - barW / 2, y - ds * 0.8, barW, ds * 0.9, barW * 0.3, c.p.text));
+      out.push(text(cx + barW / 2 + barGap, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'start' }));
+    } else {
+      out.push(text(cx, y, c.hij || c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
+    }
+    y += ds * 0.8;
+  }
+
+  // A plain, centred sentence instead of the ring: "Next Iqamah in 6hr 24min."
+  if (c.showCountdown) {
+    y += ls * 1.9;
+    out.push(text(cx, y, nextLine, { size: ls, fill: nextFill, family: FONT_SANS, weight: 500, anchor: 'middle' }));
+  }
+  return out.join('');
+}
+
+/** Small flat glyphs for the "simple" table's rows — sunrise / sun / sun-behind-cloud /
+ *  sunset / crescent-moon / a small mosque dome for Jumu'ah, styled after the wall
+ *  display this layout was modelled on. Plain shapes, fixed colours — a decoration,
+ *  not something that needs to track the timetable's theme. */
+export function prayerIcon(key: string, cx: number, cy: number, r: number): string {
+  const SUN = '#f4a93a';
+  const CLOUD = '#9aa7ad';
+  const MOON = '#6f8fae';
+  const MOSQUE = '#5b8a7d';
+  const f = (n: number) => n.toFixed(1);
+  const rays = (n: number, from: number, to: number, color: string) =>
+    Array.from({ length: n }, (_, i) => {
+      const a = ((from + (to - from) * (n === 1 ? 0 : i / (n - 1))) * Math.PI) / 180;
+      const x1 = cx + Math.cos(a) * r * 1.2, y1 = cy + Math.sin(a) * r * 1.2;
+      const x2 = cx + Math.cos(a) * r * 1.6, y2 = cy + Math.sin(a) * r * 1.6;
+      return `<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${color}" stroke-width="${f(Math.max(1.2, r * 0.16))}" stroke-linecap="round"/>`;
+    }).join('');
+  switch (key) {
+    case 'fajr': // sunrise: half sun sitting on a horizon line, rays fanning up
+      return (
+        `<line x1="${f(cx - r * 1.4)}" y1="${f(cy)}" x2="${f(cx + r * 1.4)}" y2="${f(cy)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}"/>` +
+        `<path d="M${f(cx - r)} ${f(cy)} A${f(r)} ${f(r)} 0 0 1 ${f(cx + r)} ${f(cy)}Z" fill="${SUN}"/>` +
+        rays(3, -150, -30, SUN)
+      );
+    case 'dhuhr': // full sun, midday
+      return `<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(r * 0.7)}" fill="${SUN}"/>` + rays(8, 0, 315, SUN);
+    case 'asr': // sun tucked behind a cloud, afternoon haze
+      return (
+        `<circle cx="${f(cx - r * 0.15)}" cy="${f(cy - r * 0.3)}" r="${f(r * 0.55)}" fill="${SUN}"/>` +
+        `<ellipse cx="${f(cx)}" cy="${f(cy + r * 0.3)}" rx="${f(r)}" ry="${f(r * 0.5)}" fill="${CLOUD}"/>` +
+        `<circle cx="${f(cx - r * 0.55)}" cy="${f(cy + r * 0.18)}" r="${f(r * 0.38)}" fill="${CLOUD}"/>` +
+        `<circle cx="${f(cx + r * 0.55)}" cy="${f(cy + r * 0.18)}" r="${f(r * 0.38)}" fill="${CLOUD}"/>`
+      );
+    case 'maghrib': // sunset: the mirror of Fajr's icon, rays fanning down
+      return (
+        `<line x1="${f(cx - r * 1.4)}" y1="${f(cy)}" x2="${f(cx + r * 1.4)}" y2="${f(cy)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}"/>` +
+        `<path d="M${f(cx - r)} ${f(cy)} A${f(r)} ${f(r)} 0 0 0 ${f(cx + r)} ${f(cy)}Z" fill="${SUN}"/>` +
+        rays(3, 30, 150, SUN)
+      );
+    case 'isha': {
+      // A crescent moon: a TRUE boolean subtraction (outer disc minus the overlapping
+      // "bite" circle), not two full circles combined with fill-rule="evenodd". That
+      // distinction is the whole story of getting this icon right across three attempts:
+      //
+      // 1st attempt: one path shared a single chord between an outer arc and a smaller-
+      //    radius bite arc. That chord was exactly the outer circle's diameter — too long
+      //    for the smaller radius to span — so SVG silently rescaled the bite arc to match
+      //    the outer one, erasing the crescent entirely ("Isha lost its moon icon").
+      // 2nd attempt: switched to evenodd-subtracting two independent FULL circles, which
+      //    is only valid when the bite circle is entirely CONTAINED in the outer one. That
+      //    constrains the bite to modest sizes/offsets, and every proportion still read as
+      //    "a circle with a dent" rather than an actual crescent ("still circular" /
+      //    "still closes") — full containment just can't produce the deep, sharp-horned cut
+      //    a real crescent has.
+      // 3rd attempt (this one): the outer and bite circles genuinely INTERSECT — the bite
+      //    is centered on the far side, only partially overlapping — and the crescent is
+      //    the region bounded by the outer circle's MAJOR arc (the long way around, away
+      //    from the bite) and the bite circle's MAJOR arc (the long way around too, which
+      //    is the one that dips back through the overlap — the minor arc bulges the wrong
+      //    way, outward, and doesn't cut anything). One closed path, no fill-rule trick,
+      //    and no containment constraint to violate at any size. Proportions (offset 0.33,
+      //    bite radius 0.84, both of the outer radius) are fitted from a real reference
+      //    crescent-moon icon, not guessed.
+      const moonR = r * 0.95;
+      const off = moonR * 0.33;
+      const biteR = moonR * 0.84;
+      // Horn points: where the two circles actually cross. Standard circle-circle
+      // intersection for two circles a distance `off` apart along one axis.
+      const aa = (moonR * moonR - biteR * biteR + off * off) / (2 * off);
+      const hh = Math.sqrt(Math.max(0, moonR * moonR - aa * aa));
+      const h1x = cx + aa;
+      const h1y = cy + hh;
+      const h2x = cx + aa;
+      const h2y = cy - hh;
+      return (
+        `<path d="M${f(h1x)} ${f(h1y)} ` +
+        `A${f(moonR)} ${f(moonR)} 0 1 1 ${f(h2x)} ${f(h2y)} ` +
+        `A${f(biteR)} ${f(biteR)} 0 1 0 ${f(h1x)} ${f(h1y)} Z" fill="${MOON}"/>`
+      );
+    }
+    default: // jumu'ah: a small mosque dome + base + finial
+      return (
+        `<path d="M${f(cx - r * 0.85)} ${f(cy + r * 0.7)} a${f(r * 0.85)} ${f(r * 0.85)} 0 0 1 ${f(r * 1.7)} 0Z" fill="${MOSQUE}"/>` +
+        `<rect x="${f(cx - r * 0.9)}" y="${f(cy + r * 0.62)}" width="${f(r * 1.8)}" height="${f(r * 0.16)}" fill="${MOSQUE}"/>` +
+        `<circle cx="${f(cx)}" cy="${f(cy - r * 0.95)}" r="${f(r * 0.12)}" fill="${MOSQUE}"/>`
+      );
+  }
+}
+
+/** The prayer table for the "simple" layout: a title bar, then a flat, banded row per
+ *  prayer — an icon, the name in letter-spaced caps, and two right-aligned time
+ *  columns — with Jumu'ah folded in as the last row instead of a separate strip. No
+ *  inline Arabic gloss, no glass, no per-row highlight beyond a slightly deeper band
+ *  for the CURRENT prayer — just the alternating bands the reference photo used to
+ *  separate rows for the eye. */
+function simpleTable(b: Box, m: Model, c: Ctx): string {
+  const out: string[] = [];
+  const pad = b.w * 0.03;
+  const titleSize = clamp(b.h * 0.038, 14, 24);
+  // A filled band rather than dim text on the page. The flat look is the point of this layout,
+  // but "PRAYER TIMES" floating in grey was the one element carrying no colour at all, and a
+  // headed table is what the wall displays this is modelled on actually do.
+  const titleH = titleSize * 2.1;
+  out.push(rect(b.x, b.y, b.w, titleH, titleH * 0.22, c.p.primary));
+  out.push(
+    text(b.x + b.w / 2, b.y + titleH * 0.66, (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES', {
+      size: titleSize,
+      // Same rule, same numbers as the page-colour flip above: the primary is a colour input an
+      // admin can set to anything, so the text on it has to be chosen rather than assumed.
+      fill: relLuminance(c.p.primary) > 0.6 ? '#1c2620' : '#f2f6f3',
+      weight: 700,
+      anchor: 'middle',
+      letter: 4,
+    }),
+  );
+
+  type Line = { key: string; name: string; t1: number | null; t2: number | null; highlight?: boolean };
+  const lines: Line[] = m.rows
+    .filter((r) => r.key !== 'sunrise')
+    // `r.active` means "the last prayer whose Adhan has passed" — a broad daytime window that
+    // stays true for Dhuhr all the way until Asr's Adhan, long after Dhuhr's own Iqamah has
+    // come and gone. Highlighting on that too was the bug: Dhuhr and Asr both lit up at once,
+    // because Dhuhr was still "active" while Asr had already become "next". Only `next` — the
+    // one row the countdown sentence above is actually counting down to — should highlight.
+    .map((r) => ({ key: r.key, name: rowName(r, c.L).toUpperCase(), t1: r.adhan, t2: r.iqamah, highlight: !!r.next }));
+  if (m.jumuah.length) {
+    // The name is just "JUMU'AH". It used to carry a "1/2" suffix to explain that the two times in
+    // the row were the first and second jamā'ah rather than an Adhan and an Iqāmah — but "1/2"
+    // reads as a fraction, and the other layout had already solved this properly: it labels each
+    // TIME with its ordinal. So does this one now (see `ordinal` in the row draw).
+    const multi = m.jumuah.length > 1;
+    lines.push({
+      key: 'jumuah',
+      name: (c.L.jumuah ?? "Jumu'ah").toUpperCase(),
+      t1: multi ? m.jumuah[0] : null,
+      t2: m.jumuah[multi ? 1 : 0],
+    });
+  }
+
+  const listTop = b.y + titleSize * 2.6;
+  const listH = b.y + b.h - listTop;
+  const rowH = listH / Math.max(1, lines.length);
+  const colIq = b.x + b.w - pad;
+  const colAd = b.x + b.w * 0.62;
+  const iconR = rowH * 0.22 * 0.75; // 25% smaller than the first pass
+  const nameX = b.x + pad + iconR * 2 + pad;
+  // Every row gets the same faint green wash — barely a tint, just enough to read as
+  // "this is the table" rather than bare background. The next (or currently active)
+  // prayer gets a noticeably stronger one, plus its own text in the accent colour, so
+  // it reads as "this one" at a glance from across the room.
+  const bandBase = mixHex(c.p.bg, c.p.primary, c.p.light ? 0.06 : 0.1);
+  // Alternating, so the table reads as bands of colour rather than one flat wash. The step is
+  // small on a light page and larger on a dark one, matching how bandBase already scales.
+  const bandAlt = mixHex(c.p.bg, c.p.primary, c.p.light ? 0.13 : 0.2);
+  const bandHighlight = mixHex(c.p.bg, c.p.primary, c.p.light ? 0.26 : 0.36);
+  // Jumu'ah is not one of the day's five, and colouring it as the gold accent says so without a
+  // second strip. It is the theme's own gold, so it follows a custom accent like everything else.
+  // A gold BAND only on a light page. Gold over dark navy comes out olive at every alpha and with
+  // either gold in the palette — the blue channel wins — and it reads as a stain, not an accent.
+  // On a dark page the gold Iqamah time below carries the distinction on its own, which it does
+  // well: one amber number in a column of cyan ones is unmistakable.
+  const bandJumuah = c.p.light ? mixHex(c.p.bg, c.p.gold, 0.16) : bandAlt;
+
+  // A light gap between rows: the band is inset top/bottom rather than drawn edge-to-edge,
+  // so a sliver of the page shows between rows instead of one solid block of colour.
+  const rowGap = clamp(rowH * 0.08, 2, 10);
+  lines.forEach((line, i) => {
+    const ry = listTop + i * rowH;
+    const midY = ry + rowH * 0.64;
+    const band = line.highlight ? bandHighlight : line.key === 'jumuah' ? bandJumuah : i % 2 === 0 ? bandBase : bandAlt;
+    out.push(rect(b.x, ry + rowGap / 2, b.w, rowH - rowGap, rowGap * 0.6, band));
+    out.push(prayerIcon(line.key, b.x + pad + iconR, ry + rowH / 2, iconR));
+    const nameSize = clamp(rowH * 0.4, 16, 44);
+    const timeSize = nameSize * TIME_SCALE;
+    const mainColor = line.highlight ? c.p.primary : c.p.text;
+    // The Iqāmah is the number people are actually reading — it is when the jamā'ah starts — so
+    // it takes the accent on every row, not only the highlighted one. Jumu'ah takes the gold, to
+    // match its band. Adhan stays quiet: two coloured columns would compete.
+    const iqColor = line.highlight ? c.p.primary : line.key === 'jumuah' ? c.p.gold : mixHex(c.p.text, c.p.primary, 0.72);
+    out.push(text(nameX, midY, line.name, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 600 : 400, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
+    // A one-Jumu'ah masjid has nothing to put in the Adhan slot (Jumu'ah has no separate
+    // Adhan/Iqamah — `t1`/`t2` are just its 1st/2nd time, if there are two), so that slot
+    // is skipped entirely rather than drawn as an empty "—" beside a single time.
+    /**
+     * A time, with an ordinal label in front of it for Jumu'ah.
+     *
+     * Laid out left-to-right from a computed start rather than by stepping back from the column:
+     * `approxWidth` is calibrated for regular-weight Latin and these times are heavier, so
+     * positioning the ordinal from the measured width of the time is how it ends up sitting on
+     * top of it. Here only the GROUP's start comes from a measurement, so an error shifts the
+     * pair a pixel or two instead of overlapping it. Same shape as jumuahBar in the other layout.
+     */
+    const timeAt = (right: number, hours: number | null, size: number, fill: string, weight: number, ordinal: string) => {
+      const str = fmtShort(hours, c.timeFormat);
+      if (!ordinal) {
+        out.push(text(right, midY, str, { size, fill, family: FONT_DISPLAY, weight, anchor: 'end' }));
+        return;
+      }
+      const os = clamp(size * 0.46, 9, 22);
+      const ordBox = os * 2.1;
+      const ordGap = os * 0.5;
+      const groupW = ordBox + ordGap + approxWidth(str, size) * 1.12;
+      const gx = right - groupW;
+      out.push(text(gx + ordBox, midY, ordinal, { size: os, fill: hexToRgba(fill, 0.75), family: FONT_SANS, weight: 700, anchor: 'end' }));
+      out.push(text(gx + ordBox + ordGap, midY, str, { size, fill, family: FONT_DISPLAY, weight, anchor: 'start' }));
+    };
+    const jum = line.key === 'jumuah' && m.jumuah.length > 1;
+    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, c.p.textDim, 300, jum ? ordinalEn(1) : '');
+    timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, jum ? ordinalEn(2) : '');
+  });
+  return out.join('');
+}
+
 
 /** "Setup needed" frame when no location is configured. */
 /** Clean text copied from the web for on-screen rendering: drop invisible bidi /
@@ -2072,6 +2516,26 @@ function setupNeeded(p: Palette, W: number, H: number, masjidName: string): stri
 export interface RenderOpts {
   /** data: URI of a custom background image, or null for the themed scene */
   bg?: string | null;
+  /**
+   * `bg` has ALREADY been through the frost blur, so do not blur it again.
+   *
+   * The frost is an feGaussianBlur with a standard deviation of 14 across the whole canvas, and it
+   * is the single most expensive thing in this file. Measured with resvg on a Raspberry Pi 4, on a
+   * real masjid's 1080p timetable and its own wallpaper:
+   *
+   *   with the frost      4764 ms per frame
+   *   frost removed        966 ms
+   *   no wallpaper at all  758 ms
+   *
+   * So blurring costs about 3.8 seconds a frame, every frame — and the blur of a photograph that
+   * has not changed is the same blur it was a second ago. A screen that draws once a second was
+   * therefore drawing once every five, which is a clock that visibly lurches: setting a wallpaper
+   * made the screen worse in a way nothing in the panel would explain.
+   *
+   * A caller that can hold the blurred result — the Pi does, per background, in its asset cache —
+   * blurs once and sets this. The pixels are identical; only the timing changes.
+   */
+  bgPreblurred?: boolean;
   /** data: URI of an announcement image → timetable becomes a left sidebar, image fills the right */
   announcement?: string | null;
   /** data: URI of an uploaded masjid logo, or null for the built-in mark */
@@ -2090,7 +2554,28 @@ export interface RenderOpts {
   sink?: { hotspots: Hotspot[] };
 }
 
-// Burn-in rotation: Centered → Spotlight (id clockTop) → Split, every 5 min.
+// NOTE: `layoutCarousel` is stored and validated but nothing reads it — the burn-in rotation it
+// named was removed with the three arrangement presets in v0.37.0, and there is no switch for it in
+// the editor either. Left as it is rather than quietly given new behaviour: alternating two designs
+// this different every five minutes is a decision for a masjid to ask for, not one to inherit from
+// a dead field.
+
+/**
+ * The background layer on its own: the photograph, cropped as the scene crops it, frosted.
+ *
+ * Exists so a caller can pay for the blur once instead of once a frame — see RenderOpts.bgPreblurred
+ * for the measurement that makes this worth a function. It is deliberately the SAME element and the
+ * SAME filter as `build` emits, written once here, so the two cannot drift into producing different
+ * pixels: everything about the crop, the filter region and the deviation lives in this one place.
+ */
+export function frostedBackgroundSvg(bg: string, width: number, height: number): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
+    `<defs>${FROST_FILTER}</defs>` +
+    `<image href="${bg}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice" filter="url(#frost)"/>` +
+    `</svg>`
+  );
+}
 
 export function renderDisplaySvg(tt: Timetable, now: Date, opts: RenderOpts = {}): string {
   const prevHot = HOT;
@@ -2123,6 +2608,18 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   if (!tt.accent && opts.autoAccent && /^#?[0-9a-f]{6}$/i.test(opts.autoAccent)) {
     const a = opts.autoAccent.startsWith('#') ? opts.autoAccent : `#${opts.autoAccent}`;
     p = { ...p, primary: a, primarySoft: lighten(a, 0.2), pattern: a };
+  }
+  // The "simple" layout has no themed scene, no glass, no photo — just a flat colour (the
+  // admin's choice, default white) with text flipped light/dark to read on it. Keep the
+  // theme's accent/gold for the small touches that still use one (icons, the active row);
+  // everything else about `p` is replaced.
+  const isSimple = tt.layout === 'simple';
+  if (isSimple) {
+    const raw = (tt.simpleBg || '').trim();
+    const simpleBgHex = /^#?[0-9a-f]{6}$/i.test(raw) ? (raw.startsWith('#') ? raw : `#${raw}`) : '#ffffff';
+    const bgIsLight = relLuminance(simpleBgHex) > 0.6;
+    const dtxt = derivedText(bgIsLight ? '#1c2620' : '#f2f6f3');
+    p = { ...p, bg: simpleBgHex, bg2: simpleBgHex, surface: simpleBgHex, surface2: simpleBgHex, ...dtxt, light: bgIsLight };
   }
   const L = labels(tt.language, tt.labels);
   LIGHTUI = !!p.light;
@@ -2188,17 +2685,24 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   const cel = celestialPos(m.times, nowHours, W, H, P);
 
   const out: string[] = [];
-  out.push(defs(p, hasImage, cel, W, H));
+  // `hasImage` here is really "does the frost filter need defining" — a pre-blurred background
+  // needs no filter, and defining one costs nothing but says something untrue about the frame.
+  out.push(defs(p, hasImage && !opts.bgPreblurred, cel, W, H));
 
   // ── Background + sky ───────────────────────────────────────────────────────
-  if (hasImage) {
-    out.push(`<image href="${opts.bg}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice" filter="url(#frost)"/>`);
+  if (isSimple) {
+    // No scene, no photo, no sun/moon — a flat page, on purpose. That IS the "simple" look.
+    out.push(rect(0, 0, W, H, 0, p.bg));
+  } else if (hasImage) {
+    // The frost is skipped when the caller has already applied it — see RenderOpts.bgPreblurred.
+    const frost = opts.bgPreblurred ? '' : ' filter="url(#frost)"';
+    out.push(`<image href="${opts.bg}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"${frost}/>`);
     out.push(rect(0, 0, W, H, 0, 'url(#scrim)'));
   } else {
     out.push(rect(0, 0, W, H, 0, 'url(#scene)'));
   }
   // The sun/moon and the glow it casts can be turned off (showCelestial).
-  if (tt.showCelestial !== false) {
+  if (!isSimple && tt.showCelestial !== false) {
     out.push(rect(0, 0, W, H, 0, 'url(#cglow)')); // light from the sun/moon
     // Draw the hard disc + light shafts only in landscape, where they sit in the open
     // sky between the cards; portrait has no such gap, so keep just the soft glow (no
@@ -2209,8 +2713,9 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     }
   }
   // The geometric khatam texture belongs to the themed scene only — never lay it over a
-  // custom background photo (the scrim already handles the photo's readability).
-  if (!hasImage) out.push(rect(0, 0, W, H, 0, 'url(#khatam)'));
+  // custom background photo (the scrim already handles the photo's readability) or the
+  // simple layout's flat page.
+  if (!isSimple && !hasImage) out.push(rect(0, 0, W, H, 0, 'url(#khatam)'));
 
   // ── Full-takeover overlays (drawn over the scene, suppress the normal layout
   //    AND the scrolling ticker — see activeTicker) ─────────────────────────────
@@ -2242,7 +2747,12 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   const tkSep = iqNotice ? split.sep : null;
   const tkScroll = iqNotice ? split.scroll : null;
   const bandShown = !!tickerText || !!iqNotice;
-  const bottomCore = bandShown ? split.bandH : tt.showFooter ? clamp(H * 0.05, 24, 60) : P;
+  // An announcement fills the screen with the masjid's OWN artwork — which has its own footer, its
+  // own type and its own idea of where the bottom edge is. Our calculation-method footnote drawn
+  // across it is a watermark on somebody else's poster, so it is suppressed, and the strip it would
+  // have reserved goes back to the image instead of becoming an empty band under it.
+  const announcing = !!opts.announcement;
+  const bottomCore = bandShown ? split.bandH : tt.showFooter && !announcing ? clamp(H * 0.05, 24, 60) : P;
   const area: Box = { x: P, y: P, w: W - 2 * P, h: H - P - bottomCore };
   const ctx: Ctx = {
     p,
@@ -2267,15 +2777,34 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     showName: tt.showName !== false,
     showDates: tt.showDates,
     showCountdown: tt.showCountdown,
+    showSunrise: tt.showSunrise,
     prohibited: prohibitedRing,
     flash: Math.floor(now.getTime() / 1000) % 2 === 0,
   };
 
   if (opts.announcement) {
-    // Slideshow: the timetable becomes a left sidebar, the image fills the right.
-    out.push(announcementView(area, m, ctx, opts.announcement));
+    // Full screen — one layout for the normal timetable, a completely different one the
+    // moment a slideshow image is active — not the old sidebar composite, which squeezed an
+    // announcement image designed to be read on its own next to a shrunk timetable neither
+    // half did well.
+    //
+    // Cover-fit (slice): `announcements.images` is an admin's own upload — a flyer, a photo,
+    // whatever they picked — with no size or shape this app controls or can adapt to it, so
+    // there is no "fix the source" option the way there would be for something this app
+    // generates itself. A contain-fit pass was tried here, on the theory that showing the
+    // whole image beats cropping any of it; on a masjid's actual screen it did the opposite of
+    // what a wall display needs — an upload that isn't 16:9 (most aren't) shrank to a fraction
+    // of the screen, and its text went with it. Cover-fit crops whatever overflows, evenly
+    // from the centre outward, but keeps every slide filling the wall at full size — the
+    // trade-off a signage screen actually wants over a small, fully-intact image nobody at the
+    // back of the room can read.
+    //
+    // This also covers incorrect-parking alert cards from the volunteer page — they render
+    // as full-bleed 1920×1080 frames (see reportCard.ts) precisely so they fill the wall the
+    // same way, with no separate sidebar composite or glass panel needed.
+    out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`);
   } else {
-    out.push(layoutReference(area, m, ctx));
+    out.push(isSimple ? layoutSimple(area, m, ctx) : layoutReference(area, m, ctx));
   }
 
   // ── Footer (hidden whenever the bottom band is showing — they share that strip) ──
@@ -2283,7 +2812,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   //    scrolling ticker always did, and now the Iqāmah-change reminder does too. Keying this
   //    on `tickerText` alone left the footnote drawn straight over the red reminder whenever
   //    a masjid had no ticker configured.
-  if (tt.showFooter && !bandShown) {
+  // Not over an announcement — see `announcing`. The bottom BAND is different and deliberately
+  // still draws over the image: a red "Iqāmah times are changing" reminder is this app speaking
+  // about today, and it has to be visible whatever the slideshow is showing.
+  if (tt.showFooter && !bandShown && !announcing) {
     const methodNote =
       tt.method === 'Custom'
         ? `Custom ${tt.fajrAngle ?? 18}° / ${tt.ishaAngle ?? 17}° · Asr: ${tt.asrMadhab}`
@@ -2295,11 +2827,11 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   //    Drawn last, over everything — including the slideshow image, so the reminder stays
   //    readable while announcement pictures are cycling.
   if (tickerText) {
-    out.push(tickerBand(tickerText, now, p, W, H, !!opts.tickerBandOnly, prohibitedTickerOn, tkScroll));
+    out.push(tickerBand(tickerText, now, p, W, H, !!opts.tickerBandOnly, prohibitedTickerOn, tkScroll, isSimple));
   } else if (iqNotice) {
     // No ticker to share with: paint the band ourselves so the reminder has the same strip
-    // a ticker would have occupied.
-    out.push(rect(0, split.y, W, split.bandH, 0, hexToRgba(p.bg, 0.6)));
+    // a ticker would have occupied. Same "simple has no scene to darken" fix as tickerBand.
+    out.push(rect(0, split.y, W, split.bandH, 0, isSimple ? mixHex(p.bg, p.primary, p.light ? 0.08 : 0.14) : hexToRgba(p.bg, 0.6)));
   }
   if (iqReserve > 0) {
     out.push(iqamahReminderPanel(iqNotice, split.fs, split.y, split.bandH, iqReserve));

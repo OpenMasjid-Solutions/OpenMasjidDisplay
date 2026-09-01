@@ -10,8 +10,18 @@
 
 export type Quality = '720p' | '1080p';
 export type Orientation = 'landscape' | 'portrait';
-/** Arrangement preset for the on-screen layout (see render/svg.ts). */
-export type TimetableLayout = 'centered' | 'clockTop' | 'split';
+/**
+ * Which on-screen design a timetable draws with (see render/svg.ts).
+ *
+ * `modern` is the themed design — glass panels, the countdown ring, a scene behind everything.
+ * `simple` is the flat page modelled on a real installed wall display.
+ *
+ * It used to be `centered | clockTop | split | simple`, where the first three were arrangements of
+ * one look that v0.37.0 collapsed into a single design. They drew identical pixels for thirty
+ * releases and were kept only so stored timetables still rendered; `modern` is that same design
+ * under the name it has always deserved, and normLayout migrates all three onto it.
+ */
+export type TimetableLayout = 'modern' | 'simple';
 export type Lang = 'en' | 'ar' | 'ur';
 export type CalcMethod = 'MWL' | 'ISNA' | 'Egypt' | 'Makkah' | 'Karachi' | 'Custom';
 export type AsrMadhab = 'Standard' | 'Hanafi';
@@ -196,6 +206,10 @@ export interface Timetable {
   layout: TimetableLayout;
   /** rotate through the layouts over the day to avoid screen burn-in */
   layoutCarousel: boolean;
+  /** flat page background colour (hex) for the `simple` layout only — that layout has no
+   *  themed scene/glass, just this colour with the text auto-flipped light/dark to read on
+   *  it. '' = white, matching the plain wall-mounted displays it was modelled on. */
+  simpleBg: string;
   masjidName: string;
   /** optional location line under the name (e.g. "Lansdale, Pennsylvania"); '' hides it */
   location: string;
@@ -293,6 +307,187 @@ export interface ContentRef {
 }
 
 /** A physical screen, addressed by a stable RTSP path its decoder connects to. */
+/**
+ * How a screen receives its picture.
+ *
+ * `rtsp` (the default, and everything before v0.70) is a decoder box pulling an H.264 stream
+ * we encode continuously — about 1.5 Mbit/s per screen, forever, whether anything changed or
+ * not. `web` is a browser opening an HTTPS page that renders the SAME SVG locally from a
+ * ~0.5 KB payload, so the network carries data instead of video.
+ */
+export type TvKind = 'rtsp' | 'web' | 'pi';
+
+/**
+ * A paired display device — a Raspberry Pi running the agent.
+ *
+ * ## Why the device calls US, rather than the dashboard calling it
+ *
+ * The setup reads as "the screen shows its address, you type it into the dashboard", and that
+ * is what an installer sees. But the server cannot be the side that connects: the Pi sits on
+ * the masjid's LAN behind NAT, on an address DHCP is free to move, and the entire point of
+ * this design is that the display server may live in the cloud. A cloud server can never reach
+ * 192.168.1.x.
+ *
+ * So the agent learns the server's address from its own install command and polls OUTWARD, and
+ * what the admin types is a short pairing CODE. The code is doing real work rather than
+ * ceremony: it is proof that whoever is adopting this device can physically see the screen it
+ * is plugged into. The IP is still shown, because it is how you tell two Pis apart — but
+ * nothing ever connects to it.
+ */
+export interface PiDevice {
+  id: string;
+  /** Short and human-readable, shown on the screen until adopted (e.g. "K7M2QX"). Read off a
+   *  television across a room, so the alphabet excludes anything that can be misread. */
+  code: string;
+  /** Issued at adoption; the capability the agent authenticates with from then on. Absent
+   *  while the device is still pending, which is what makes "pending" a real state. */
+  token?: string;
+  /** SHA-256 of the secret the agent minted at install. Proof that a device claiming an id
+   *  really is that device — which is what makes the id safe to accept from a client. */
+  secretHash?: string;
+  /** What the agent told us about itself, so an admin can tell two Pis apart. Treated as
+   *  display text only — it is unauthenticated at enrolment time. */
+  hostname: string;
+  /** The LAN address it printed on screen. Informational: nothing ever connects to it. */
+  ip: string;
+  model: string;
+  agentVersion: string;
+  lastSeenAt: string;
+  /** The screen this device drives, once adopted. */
+  tvId?: string;
+  /** What this device should do next, left for it to collect on its own poll. Cleared as soon
+   *  as it acknowledges — see ackCommand for why that must happen BEFORE it acts. */
+  /** NOTE: the list of actions is PI_COMMANDS in piAgent.ts, which is the closed set the device
+   *  checks against. It is spelled out again here because this file must not import from there, and
+   *  `piAgentCommandsMatchTypes` in piAgent.test.ts fails if the two ever drift apart. */
+  command?: {
+    id: string;
+    action:
+      | 'restart'
+      | 'update'
+      | 'reboot'
+      | 'reinstall'
+      | 'logs'
+      | 'wifi-on'
+      | 'wifi-off'
+      | 'wifi-join'
+      | 'wifi-forget'
+      | 'wifi-rescan'
+      | 'shell'
+      | 'shell-session'
+      | 'display-off'
+      | 'display-on'
+      | 'set-timezone'
+      | 'screenshot'
+      | 'set-video-mode'
+      | 'keep-video-mode';
+    issuedAt: number;
+    /** Only for 'wifi-join', and deleted as soon as the device acknowledges the command. */
+    wifi?: { ssid: string; psk: string };
+    /** Only for 'shell': one line for the device to run as its own unprivileged user. */
+    shell?: string;
+    /** Only for 'shell-session': where the device should dial in, and the one-time secret it must
+     *  present. Same life as the Wi-Fi passphrase — gone the moment the device acknowledges. */
+    shellSession?: { id: string; secret: string; rows: number; cols: number };
+    /** Only for 'set-timezone' / 'set-video-mode'. Validated on the way in, and again by root on
+     *  the device — which is the check that matters. */
+    text?: string;
+  };
+  /** The last lines the agent logged, as IT saw them — sent on check-in so the panel can show
+   *  what a screen is doing without anybody opening a shell on it. Display text only. */
+  recentLog?: string[];
+  /** when that log was collected, so the panel can say how stale it is */
+  logAt?: string;
+  /** When an install was last asked for from the panel. Used only to say "updating" while the
+   *  device is busy doing it — the command is acknowledged within seconds, long before it finishes. */
+  updateAskedAt?: number;
+  /**
+   * Whether the screen's OUTPUT is currently off — the DPMS state of its HDMI connector, as the
+   * device reads it rather than as we last commanded it. A masjid that pulls the plug on a
+   * television, or a schedule that fired while the panel was closed, both have to show correctly.
+   */
+  displayOff?: boolean;
+  /**
+   * Turn the output off overnight. Held here rather than on the timetable because it belongs to the
+   * SCREEN — two screens on one timetable can keep different hours — and enforced by the agent from
+   * its own clock, so a masjid whose internet drops at midnight still gets its screens back at Fajr.
+   */
+  displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
+  /**
+   * Reboot this screen nightly.
+   *
+   * A blunt instrument, and it is here because it is the one that works: a board that has been up
+   * for eleven months with a slow leak somewhere in a camera pipeline is fixed by a reboot at 3am
+   * and by nothing anybody wants to debug from another city. Enforced by the agent from its own
+   * clock, so it happens whether or not the internet does.
+   */
+  rebootSchedule?: { enabled: boolean; at: string };
+  /**
+   * The forced HDMI mode from the device's own kernel command line, or 'auto'.
+   *
+   * Reported BY the device rather than remembered from what was asked, because a mode nobody
+   * confirmed reverts itself on the device — see the video-revert unit in the installer — and the
+   * panel has to show what is true after that, not what somebody once pressed.
+   */
+  videoMode?: string;
+  /** True while a forced mode is provisional: it goes back on its own in a few minutes unless
+   *  somebody confirms the picture is fine. */
+  videoModePending?: boolean;
+  /** What root last said about a mode change, including that it was reverted. */
+  videoModeResult?: string;
+  /** The screen's own idea of its timezone and hostname, so the panel shows what IS, not what was
+   *  asked for. Both are settings an admin can also change from the console or the card. */
+  timezone?: string;
+  /**
+   * When the screen last sent a picture of itself.
+   *
+   * The timestamp only — the image is a file under /data/screenshots named after this device, for
+   * the reasons in piScreenshot.ts. This field is what the panel renders ("taken 4 seconds ago")
+   * and how it knows the picture it is about to fetch is the one it asked for.
+   */
+  screenshotAt?: string;
+  /** Load, memory and temperature, as the screen last reported them. */
+  stats?: {
+    load1: number; cores: number; cpuPercent: number;
+    memUsedMb: number; memTotalMb: number; memPercent: number;
+    tempC: number; uptimeSec: number;
+  };
+  statsAt?: string;
+  /** The answer to the last console command, overwritten each time.
+   *
+   *  One answer, not a transcript, for the same reason `journal` is one bundle: this file is
+   *  persisted on the masjid's own volume, and somebody debugging a screen types a lot of commands.
+   *  The scrollback belongs in the browser that is showing it, which is where it is kept. */
+  shellResult?: { id: string; cmd: string; out: string; code: number | null; ms: number; at: string };
+  /** The full journal for this screen's own units, collected by root on the device when asked.
+   *  One bundle, overwritten each time — a history would become the largest thing in the store. */
+  journal?: string;
+  /** when that journal was collected, so the panel can say how stale it is */
+  journalAt?: string;
+  /** The Wi-Fi networks this screen can see. Self-reported, for the panel to offer a choice. */
+  networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
+  /** What the device's root side reported about the last join. `ok: null` means it joined but
+   *  nothing proved the display server was still reachable over it — not a success. */
+  wifiResult?: { ok: boolean | null; detail: string; at: string; kind?: 'join' | 'forget' };
+  /** How this screen is attached to the network, as IT sees it. Self-reported and sanitised on
+   *  arrival like every other device fact — this is decoration for the panel, never a decision. */
+  net?: DeviceNet;
+}
+
+/** How a screen is attached to the network. Mirrors pi/network.ts, which is what fills it in. */
+export interface DeviceNet {
+  /** Ethernet wins when both are up, because a cable is what carries the traffic. */
+  link: 'ethernet' | 'wifi' | 'none';
+  /** The Wi-Fi network it is associated with, if any. */
+  ssid: string;
+  /** 0-100. */
+  signal: number;
+  /** Whether the radio is switched on — distinct from whether there IS a radio. */
+  radio: boolean;
+  /** Whether the device has Wi-Fi hardware at all. */
+  hasWifi: boolean;
+}
+
 export interface Tv {
   id: string;
   name: string;
@@ -300,6 +495,19 @@ export interface Tv {
   defaultContent: ContentRef;
   /** Manual override set by a volunteer; until = epoch ms (null = until changed). */
   override?: { content: ContentRef; until: number | null } | null;
+  /** absent = 'rtsp', so every screen that existed before web screens keeps working */
+  kind?: TvKind;
+  /** for kind 'pi': the paired device driving this screen */
+  piDeviceId?: string;
+  /**
+   * Unguessable id for a `web` screen's public URL (/s/<token>).
+   *
+   * A TV browser cannot sign in, so the page is unauthenticated and the token IS the
+   * capability — the same trade the website widget makes. It is separate from `tv.id`
+   * because `id` appears in the admin API and in logs, and a screen URL that leaks should be
+   * revocable by reissuing the token without renumbering the screen.
+   */
+  webToken?: string;
   createdAt: string;
 }
 
@@ -361,10 +569,59 @@ export interface WhatsAppLogEntry {
   recipient: string;
   /** the date the announced change takes effect, "YYYY-MM-DD" */
   effectiveFrom: string;
-  outcome: 'queued' | 'failed';
+  /**
+   * Where this message got to.
+   *
+   * `queued` is the platform accepting it and nothing more. `sent` means the platform has
+   * since told us it went to WhatsApp — still not a delivery receipt, because WhatsApp gives
+   * none. `failed` and `expired` are the platform's verdicts, and both mean it did not go.
+   *
+   * A `queued` entry only ever moves on when the platform is asked (see whatsappMessageStatus);
+   * on an older platform, or one that has forgotten the id, it stays `queued` for good, which
+   * is the honest record of what we actually know.
+   */
+  outcome: 'queued' | 'sent' | 'failed' | 'expired';
+  /** the platform's message id, so what became of it can be asked later. Absent on a platform
+   *  older than 0.51.1, and on entries written before this app could store it. */
+  id?: string;
+  /** when the platform's verdict was recorded, ISO — so the panel can distinguish "waiting"
+   *  from "asked, and this is the answer". */
+  settledAt?: string;
+  /**
+   * The platform later said its own `sent` for this message cannot be trusted.
+   *
+   * A masjid's WhatsApp session expired the way WhatsApp Desktop signs itself out, and nothing
+   * noticed: the gateway kept accepting messages and the platform kept recording them `sent` while
+   * none arrived. It detects that within about ten minutes now, but the messages already inside
+   * that window keep their `sent` record — and the platform cannot resend them, because it deletes
+   * a message's contents the moment it hands it over. This app still has the source data, so it is
+   * the only thing that can.
+   *
+   * `outcome` is deliberately left at `sent`: that IS what the platform reported, and rewriting it
+   * to `failed` would be putting words in its mouth. This field records what we later learned about
+   * the report, and the three states are what we then did about it:
+   *
+   *  - `pending`  — identified, and the change is still ahead, so it should go out again. The
+   *                 dedupe stops treating it as handled, and the ordinary paced announce path picks
+   *                 it up when that change is next in range.
+   *  - `resent`   — a later entry for the same change exists. Set when that entry is written, so a
+   *                 suspect message cannot re-open itself for ever.
+   *  - `stale`    — the change it announced is already in effect. Re-sending "from Friday, Asr will
+   *                 be at 5:30" after Friday is not a correction, it is confusing, so this is left
+   *                 for an admin to look at rather than acted on.
+   */
+  suspect?: 'pending' | 'resent' | 'stale';
+  /**
+   * Why the link was down, in the platform's words: 'session-expired', 'needs-relink',
+   * 'key-rejected' or 'unknown'. Stored as a plain string rather than a union, because the platform
+   * said more may be added and a stored value from a newer platform must not fail to parse on an
+   * older build of this app. The panel words its own sentence from it and falls back to saying
+   * nothing specific.
+   */
+  suspectCause?: string;
   /** true when the poster image went with it, false/absent when only the text did */
   asImage?: boolean;
-  /** why the platform refused; never contains the message */
+  /** why the platform refused, or why it later failed; never contains the message */
   error?: string;
   /** true when an admin pressed "Send now" rather than the schedule firing */
   manual?: boolean;
@@ -382,6 +639,15 @@ export interface Settings {
   volunteerRemote: boolean;
   /** posting the Iqāmah-change notice to a WhatsApp group (all off by default) */
   whatsapp: WhatsAppSettings;
+  /**
+   * BETA: offer browser screens (`Tv.kind = 'web'`) as an alternative to an RTSP decoder.
+   *
+   * Off by default and gated deliberately. It is a genuinely different way to drive a wall —
+   * an HTTPS page a Raspberry Pi or a smart TV opens in a browser — and a masjid whose
+   * screens work should not be shown a second option until they choose to try it. Turning it
+   * off again does not delete web screens; they simply stop being offered for new ones.
+   */
+  webScreensBeta: boolean;
 }
 
 /** A hashed credential (scrypt). Used for the admin password and the volunteer PIN. */
@@ -398,6 +664,28 @@ export interface AdminAccount {
   createdAt: string;
 }
 
+/** An incorrect-parking report, filed by a volunteer on the volunteer page. Each
+ *  report becomes a full-screen red alert card that rotates in the announcement
+ *  slideshow of the timetable(s) it targets (['*'] = every timetable). Its optional
+ *  photo is stored under /data/uploads as `<id>.report.<ext>`. */
+export interface ParkingReport {
+  id: string;
+  /** license plate (may be empty if only a description is given) */
+  plate: string;
+  /** the car — colour, make, model */
+  description: string;
+  /** where it is */
+  location: string;
+  /** why it's being reported */
+  reason: string;
+  /** uploaded photo filenames under /data/uploads (0..several); the card renders one
+   *  frame per photo so the slideshow scrolls through them */
+  images: string[];
+  /** timetable ids to show this on; ['*'] = all timetables */
+  targets: string[];
+  createdAt: string;
+}
+
 export interface DB {
   version: number;
   /** null until first-run setup creates the admin. */
@@ -409,10 +697,14 @@ export interface DB {
   sources: Source[];
   tvs: Tv[];
   schedules: ScheduleRule[];
+  /** Raspberry Pi agents that have announced themselves, adopted or not. */
+  piDevices?: PiDevice[];
   /** what we handed to the platform's WhatsApp queue, newest last. Doubles as the
    *  "already announced" record, which is why it is persisted rather than in-memory:
    *  a restart must not re-post a change the group has already been told about. */
   whatsappLog?: WhatsAppLogEntry[];
+  /** incorrect-parking reports filed on the volunteer page (rotated as alert cards) */
+  reports?: ParkingReport[];
 }
 
 /** Live status for one screen, pushed to the UI over WebSocket. */
@@ -422,7 +714,12 @@ export interface TvStatus {
   source: 'override' | 'schedule' | 'default';
   /** the schedule rule currently driving it, if any */
   ruleId?: string;
-  /** is a screen currently pulling this RTSP stream (online); false = offline/no decoder */
+  /** Is a screen currently receiving this content (online)?
+   *
+   *  For an `rtsp` screen this is "MediaMTX reports ≥1 reader on the path". A `web` screen has
+   *  no RTSP path at all, so the equivalent is "a browser has checked in recently" — see
+   *  `webSeenAt`. Same field, so every consumer (the panel badge, the offline alert) is
+   *  unchanged. */
   streamReady: boolean;
   /** The timetable on this screen is publishing an OUT-OF-DATE picture — the renderer
    *  stopped producing frames, so the times shown are not current. `streamReady` can

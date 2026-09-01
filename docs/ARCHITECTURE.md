@@ -33,8 +33,12 @@ All state is a single JSON document in the data volume (`/data/db.json`, written
 - **Credentials** — the admin's scrypt hash and the volunteer PIN hash. The session-cookie HMAC key lives
   beside the document in `session.secret` (`0600`), generated on first run.
 
-Uploaded images (backgrounds, logos, announcement slides) are files under `/data/uploads`, referenced from
-the document by filename and inlined into the rendered SVG as `data:` URIs.
+- **Parking reports** — what a volunteer submitted from the mobile page about an incorrectly parked car,
+  with the photos they attached. Persisted state, and it renders **on screen** (the notice a driver sees),
+  so it is part of the model rather than a log.
+
+Uploaded images (backgrounds, logos, announcement slides, volunteer report photos) are files under
+`/data/uploads`, referenced from the document by filename and inlined into the rendered SVG as `data:` URIs.
 
 ## What each screen shows (content resolution)
 
@@ -77,13 +81,20 @@ Per active timetable, one pipeline runs (`render/renderer.ts`):
    often instead of stalling. Control-panel previews share a second worker (so editing never stalls a live
    stream). Only a small **curated set of base fonts** is loaded (`render/fonts.ts`) — loading every per-script
    Noto file made each render parse far more data and could even hang resvg on glyph fallback.
-   Without a ticker the frame is rasterised at a **capped** longest side (`RENDER_CAP`, 1280) and ffmpeg
-   upscales, which keeps each render comfortably inside its one-second slot on a two-core box; the upscale
-   is a `scale` filter set once at spawn, so changing SVG content never respawns ffmpeg.
+   Without a ticker the frame is rasterised at the screen's **full** resolution by default. The 1280
+   cap (`RENDER_CAP`) is now a *fallback*, not the rule: the renderer measures its own cost and only
+   drops to the cap on a box that cannot keep up (`RENDER_BUDGET_MS`, 650 ms at the median — a
+   one-way, process-wide verdict). Capping unconditionally was what made a high-quality announcement
+   poster look soft on a 1080p decoder screen, and measurement showed full resolution costs about
+   1.25x, not the 2.25x the pixel count suggests, because parsing and tessellating the SVG dominates.
+   When the cap does apply, ffmpeg upscales with a `scale` filter set once at spawn, so changing SVG
+   content never respawns ffmpeg.
 3. The RGBA frame is piped to **ffmpeg**, which encodes H.264: `libx264 -preset veryfast -tune zerolatency
    -profile baseline`, one keyframe per second, in-band SPS/PPS (`repeat-headers=1`), CBR at the
    timetable's configured bitrate cap, `yuv420p`, no audio — then publishes to MediaMTX over RTSP/TCP.
-   Output is 15 fps normally; **with a scrolling ticker it is 20 fps** and the pipeline repeats the last
+   Output is **8 fps** normally (`STATIC_FPS` — a still frame needs no more, and the 15 it used to be
+   was a plausible ratio nobody had measured); **with a scrolling ticker it is 20 fps**
+   (`TICKER_FPS`) and the pipeline repeats the last
    render in real time so ffmpeg receives genuinely evenly-paced CFR frames (a once-a-second burst made
    hardware decoders play "move, stop, move").
 
@@ -175,8 +186,10 @@ A bone-simple mobile page, gated by a hashed 4–8-digit PIN and a **separate** 
 token audience (`aud: 'vol'`), so a volunteer token can never be replayed as an admin one. It serves the
 *same* SPA bundle but injects `window.__OMD_VOLUNTEER__=true` (and the base path it is served under) into the
 HTML, so the app boots into `VolunteerApp` instead of the admin dashboard. It exposes only
-`/api/volunteer/{session,login,logout,tvs,tvs/:id/set,tvs/:id/resume}` — never an admin endpoint — and stays
-inert (403) until an admin enables it and sets a PIN.
+`/api/volunteer/{session,login,logout,tvs,tvs/:id/set,tvs/:id/resume}` plus the incorrect-parking report
+routes (`reports`, and `reports/:id/image[/:n]`, which serve a volunteer's uploaded photo back with
+`nosniff` and a sandboxing CSP) — never an admin endpoint — and stays inert (403) until an admin enables it
+and sets a PIN.
 
 It is reachable two ways, from **one** handler instance (so both share a single PIN rate-limiter):
 
@@ -213,7 +226,8 @@ behaves exactly as a standalone install. Full contract in [`FABRIC.md`](FABRIC.m
   admin's Cloudflare tunnel, so the widget embed code and the volunteer link can point at it instead of a
   LAN address. Authoritative (the platform only answers when it is actually routing this app's path) and
   fails soft to the LAN link.
-- **Admin commands** (`commands:`) — the ONLY inbound Fabric route. OpenMasjidOS calls
+- **Admin commands** (`commands:`) — one of **two** kinds of inbound Fabric route, and the only one that
+  can **write**. OpenMasjidOS calls
   `POST /fabric/commands/run` (`fabricCommands.ts`) when an admin picks one of this app's commands from a
   WhatsApp menu, presenting *our own* app secret plus `X-OpenMasjid-Caller-App: omos:platform`; both are
   required, and a request carrying any `x-forwarded-*` is refused, because a genuine platform call is
@@ -242,6 +256,104 @@ orchestrator relays an **offline** alert through the Fabric, and a **back-online
 screen that is *lit up but stale* raises the same alert, worded for that fault — wrong times on the wall are
 worse than a blank screen. Screens intentionally set to **Off** are not monitored. The panel shows the badge
 from the same signal. Alerts never affect streaming.
+
+## Browser screens (beta)
+
+A screen may be `kind: 'web'` instead of `'rtsp'` — a browser opening `/s/<token>` rather than a
+decoder pulling `rtsp://…/tv_xxxx`. The saving is the whole point: an RTSP screen costs a resvg raster
+and an ffmpeg encode every second forever (~1.5 Mbit/s), while a browser screen is sent ~1 KB of JSON
+and renders locally.
+
+- **One renderer.** `render/svg.ts` is a pure string builder — no `fs`, no `Buffer`, and it never reads
+  the clock (`now` is always a parameter) — so the *same file* bundles into `web/src/screen.tsx` and
+  returns byte-identical SVG. `webScreen.test.ts` asserts that purity, because an `fs` import added
+  there would blank every browser screen and no server test would notice.
+- **The token is the access control.** A television cannot sign in, so `/s/<token>` is unauthenticated
+  and `Tv.webToken` is 16 random bytes (`store.screenToken`, not `rid()`). An unknown token is a 404,
+  never a 403. Assets are served under the same token.
+- **Tunnel-aware.** The route accepts the platform's `/<basePath>/s/<token>` form and `serveScreenPage`
+  rewrites the bundle's asset URLs under that prefix, exactly as the volunteer page does — which is
+  what makes a remote TV work over HTTPS with nothing configured.
+- **Not in the video path.** `orchestrator.ts` skips MediaMTX paths for web screens, and a timetable
+  shown *only* on web screens is not counted as active — so no ffmpeg pipeline and no render loop start
+  for it at all.
+- **Liveness is a heartbeat**, since there is no RTSP reader count: the page POSTs `/s/<token>/seen` and
+  `webScreenOnline()` fills the same `streamReady` field, so the panel badge and the offline alert are
+  unchanged.
+- **Four things live outside the SVG** and are handled in `screen.tsx`: the announcement slideshow phase
+  (`activeAnnouncementImage`, reused), the ticker's *motion* (ffmpeg's `drawtext` in the video path, CSS
+  here, with the lane geometry from the shared `bottomBandSplit`), the stale mark (pixel arithmetic in
+  the video path, DOM here), and *deciding* it is stale — which for a browser means losing contact with
+  the server or disagreeing with its clock.
+
+## Raspberry Pi screens (beta)
+
+A screen may be `kind: 'pi'`: a device rather than a page. The agent lives in `server/src/pi/` and
+is bundled by `npm run build:agent` (esbuild → one file, `@resvg/resvg-js` external) into
+`server/assets/pi/agent.js`, served at `/pi/agent.js`. It ships to the Pi over `curl | sh`.
+
+The single field this whole feature exists for is `PiState.stream`: the camera's **own** address,
+handed to the device so it opens the stream itself. A browser screen has to be fed video *through*
+the server, which with the server in the cloud means the picture crosses the internet twice and
+arrives as a slideshow (measured: about a frame every couple of minutes). The Pi is on the camera's
+network, so the server carries none of it — which is what makes a cloud-hosted display server
+possible at all.
+
+- **The device polls outward, always.** It is behind the masjid's NAT on a DHCP address and the
+  server may be off-site, so an inbound connection was never an option. Enrolment is therefore
+  unauthenticated *and* bounded: rate-limited, capped in number, and it can only create a PENDING
+  row.
+- **The id is not a credential.** The agent mints a `deviceSecret` at install; the server keeps a
+  SHA-256 of it and compares in constant time. An id that exists but cannot be proved is enrolled
+  as a NEW pending row rather than refused — refusing would confirm the id is real, and leaves the
+  genuine device's row untouched either way. The token is returned only to a device that proved
+  itself.
+- **Same renderer, again.** `drawFrame` calls `renderDisplaySvg` with the same options the still
+  preview uses — notably **not** `tickerBandOnly`, which exists for pipelines where something else
+  composites the moving text (ffmpeg for video, CSS for a browser screen). There is no compositor
+  here, so the renderer draws the ticker itself.
+- **Images must be `data:` URIs**, because resvg embeds those and deliberately fetches nothing. A
+  browser screen lets the browser load the URLs; the agent fetches and caches to
+  `/var/lib/openmasjid-screen/cache`. The state's asset and font paths are root-relative, so the
+  agent resolves them against its configured server — and **only** if root-relative, since a state
+  that could name an arbitrary host would be a way to make a credentialed device talk to one.
+- **Fonts travel with the state** (`PiState.fonts`, served by basename from the same curated list
+  `fontOptions()` chose). resvg picks one font per run and does not fall back per glyph, so a
+  device drawing with the distro's fonts renders Arabic as tofu.
+- **The frame rate is measured, not assumed** (`pi/cadence.ts`). A 1080p raster measured ~110 ms on
+  a desktop; a Cortex-A53 is far slower. The agent holds the *duty cycle* constant instead of the
+  frame rate, so there is headroom left for ffmpeg — and it follows the timetable's quality setting
+  when that changes underneath it.
+- **Cameras keep the server's posture**: array-form `spawn`, `-protocol_whitelist` of stream
+  protocols only, output to `-f fbdev` (a decoded 1080p frame is 8 MB — 200 MB/s through a pipe is
+  not happening on a Pi 3). `video.test.ts` reads `renderer.ts` and asserts the two protocol lists
+  are literally equal.
+- **Exactly one of the camera and the timetable may run**, because they are the same pixels; the
+  draw loop yields while ffmpeg owns the framebuffer.
+- **Not in the video path.** `orchestrator.ts` excludes `kind: 'pi'` at four sites — and unlike a
+  web screen it also skips the *source* pull, since the device opens the camera itself.
+- **Updates are a separate root unit**, never the agent: it cannot write `/opt`. A process that can
+  rewrite its own code is a much larger thing to trust. The updater keeps the previous build and
+  restores it if the new one does not stay up.
+- **Anything the agent cannot do itself goes through a PRIVILEGED SPOOL, and that spool names verbs.**
+  The unprivileged agent writes a file whose *name* is a verb into `/var/lib/openmasjid-screen/control`;
+  a root systemd `.path` unit notices it and `control.sh` dispatches on a **closed set**, reading the
+  verb through `head -c 32 | tr -dc 'a-z-'` so nothing arriving over the network can widen it. That is
+  how the dashboard reboots a screen, sets its timezone, forces a video mode, joins Wi-Fi, blanks the
+  television, installs system updates, and opens a terminal.
+  - **No verb carries a command string.** The one payload-bearing verb (`shell-session`) carries a
+    session id, a one-time secret and a terminal size; the one-shot console *does* carry a command
+    string and is therefore deliberately **not** a root verb — its bound is the account it runs as.
+  - **Root never adopts the agent's inode.** `$STATEDIR` belongs to the agent, so it can replace any
+    name there with a symlink — and `rename(2)` dereferences neither end while `chown`/`chmod` do. Root
+    therefore reads the fields out, deletes the file, and writes a fresh one under `$PREFIX`
+    (`handover()` is the same rule in the outbound direction).
+  - **The terminal is root, and dials OUT.** Nothing listens on a Pi. The panel mints the session, the
+    device is offered it once on its own state poll, and the address it connects to comes from
+    `trust.env` — root-owned, and the one file the agent cannot write — never from the agent's own
+    `config.json`, which it can.
+
+See [PI_SCREENS.md](PI_SCREENS.md) for setting one up and for troubleshooting.
 
 ## Release channels
 

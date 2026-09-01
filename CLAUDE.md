@@ -33,7 +33,8 @@ If it prints anything else, `git checkout dev` first. Do not start work until it
 4. **`main` moves only when Hasan says the words "merge to main."** Nothing else authorises
    it: not a green CI run, not an urgent-looking bug, not an inference that he'd obviously
    want it.
-5. **That merge is a release**, not a merge. It carries the full release chain in §5 below.
+5. **That merge is a release**, not a merge. It carries the full release chain in
+   *On "merge to main"* below.
 
 ### The push protocol — every turn, without being asked
 
@@ -46,7 +47,7 @@ Work on `dev`, push to `dev`, and then **ask**:
 So the loop is: change → commit on `dev` → push `dev` → *"Do you want me to push this to `main`?"* → carry on
 on `dev`. The question is a prompt for a decision, never permission you can assume you already have: an
 unanswered ask, or silence, means the answer is still no. When the answer does come, treat it as the release
-in §5 — not a fast-forward of `main`.
+in *On "merge to main"* below — not a fast-forward of `main`.
 
 Dependabot is wired the same way: every entry in [`.github/dependabot.yml`](.github/dependabot.yml) sets
 `target-branch: dev`, so automated bumps arrive where work belongs instead of as PRs against a branch nobody
@@ -408,25 +409,121 @@ this file.
   whether to warn that the secret is crossing a public network in cleartext.)
 - Behind the OS proxy you may trust `X-Forwarded-*` **only because the platform's ingress now
   sanitises them** — never trust them when the app is reached directly.
-- **`POST /fabric/commands/run` is the only INBOUND Fabric route** (v0.69.0): the platform calling
-  *us* to run an admin's WhatsApp command, with no session cookie, and it can write prayer times.
+- **There are exactly TWO inbound Fabric routes, and they are different trust boundaries** sharing
+  the `/fabric/` prefix. That prefix is not a permission. Both are authenticated the same single
+  way — by the caller presenting **our own** `OPENMASJID_APP_SECRET` back to us, constant-time
+  compared, length-checked first — and everything else about them differs. The shared primitives
+  live in `fabricInbound.ts`; **what they must never share is a handler or a caller rule.**
+- **`POST /fabric/commands/run`** (v0.69.0) is the PLATFORM calling *us* to run an admin's WhatsApp
+  command, with no session cookie, and **it is the only inbound route that can write prayer times**.
   Three things hold it shut and all three are load-bearing:
   - **Both headers, never one.** `X-OpenMasjid-App-Secret` must equal our own `OPENMASJID_APP_SECRET`
-    (constant-time, length-checked first) **and** `X-OpenMasjid-Caller-App` must be exactly
-    `omos:platform` — a value no app id can be, since the colon is outside the app-id charset. The
-    secret alone is not enough: anything that ever learned it could otherwise drive the wizard.
-  - **The exact path only.** Behind the tunnel this app is served under `/<basePath>/…` and the
-    platform does not strip the prefix, so a tunnelled request arrives as
-    `/display/fabric/commands/run` and matches nothing. *Not registering the prefixed form IS the
-    LAN-only enforcement* — there is no header to trust for it. Never add one.
+    **and** `X-OpenMasjid-Caller-App` must be exactly `omos:platform` — a value no app id can be,
+    since the colon is outside the app-id charset. The secret alone is not enough: anything that
+    ever learned it could otherwise drive the wizard.
+  - **The exact path, plus no forwarding headers.** Not registering the tunnel's `/<basePath>/…`
+    form is *most* of the LAN-only enforcement, but **not all of it**, and the difference has bitten
+    once: the router derives `pathname` with `new URL()`, which **normalises**, so
+    `/display/../fabric/commands/run` collapses onto the bare path and matches. This route closes
+    that by refusing any request carrying `x-forwarded-*`/`forwarded` — the platform builds its
+    header set from scratch, so a genuine call never has them. Keep both tests.
   - **Nothing is written before `save`.** The exchange can end without us (idle, turn cap, an exit
     word, a new `!` command) and we are never told, so a half-answered flow must leave a draft that
     expires, never a partial change.
-- **WhatsApp is queued, never sent.** `202 {queued:true}` means accepted for later delivery; there is
-  no delivery receipt and nothing may claim one. The platform owns the pacing (one queue shared by
-  every app) because ban risk attaches to the masjid's *number* — never build a second path around
-  it. Nothing auth-critical may ever go this way. Message bodies, captions and image bytes are never
-  logged; the app's own log keeps event + group id + timestamp + the change's date.
+- **`POST /fabric/timetable/{list,get,logo}`** (v0.70.0) is ANOTHER APP — OpenMasjidCompanion
+  first — reading this masjid's prayer times through the platform's app-to-app broker, the
+  `timetable` capability in `manifest.yaml`'s `fabric.provides`. `fabricTimetable.ts`, and see
+  `docs/USING_THE_FABRIC.md` §8. What holds here:
+  - **Read-only, and asserted rather than intended.** Nothing in the module calls `store.update`
+    **or any fs writer** — it reads the disk for the logo, so "read-only" has to mean the disk
+    too — and a test reads the file to prove both. A provider that can write turns a leaked
+    secret into an attacker repointing every prayer time in the masjid.
+  - **`logo` serves RASTER ONLY, by allowlist** (`image/png`, `image/jpeg`, `image/gif`), and the
+    type comes from `sniffImageMime`'s magic bytes, never the file extension — so an SVG saved as
+    `logo.png` is still refused. SVG is excluded on purpose even though the screens render it:
+    it is a script container, and this image becomes an app icon on a phone after a consumer has
+    parsed and re-encoded it. Never turn that allowlist into "anything but SVG".
+  - **The path is the authorisation.** The broker maps `…/app/display/<capability>/<method>` onto
+    `/fabric/<capability>/<method>`, so the capability the admin granted **is** the path segment and
+    one grant cannot reach another's handler. The grant list stays with the platform; **never keep a
+    second copy** — it would only drift, and it would fail closed and silently the first time the
+    platform used a caller id we had not thought of. Hence the caller header is checked for **shape
+    only**: it is required (a genuine broker call always has one) and logged, but it is not a
+    security control, because anything holding the secret can spell it however it likes.
+  - **LAN-only is enforced on the RAW request line**, not on `pathname` and *not* by refusing
+    `x-forwarded-*`. The commands route's header test does not transfer: the broker **is** a proxy,
+    so if it ever adds `X-Forwarded-For` that route would be dead on arrival, silently, and only on
+    a real box. Comparing the raw target instead is strictly stronger — `%2e%2e`, `.%2e`, an
+    absolute-form target, a protocol-relative `//host/…`, and a backslash **all** normalise onto the
+    route, and none of them can be spelled with the raw target equal to the bare path. The table is
+    in `fabricInbound.ts` and pinned in `fabricTimetable.test.ts`. **Never "simplify" that check to
+    `new URL(...).pathname`** — that is the very normalisation it exists to undo, and it reopens
+    every row at once.
+  - **Bounded, because this process also draws the screens.** `days` is capped at 45 *server-side*
+    (400, never a clamp) and the route has its own socket-keyed 60/min limiter. Every day is a fresh
+    solar computation in the same process as the 1 fps render loop. `logo` is capped at 175 KB
+    decoded, **derived** from the broker's 256 KB ceiling (base64 costs a third more) rather than
+    picked — over the ceiling the answer arrives truncated, which is a corrupt image that nothing
+    in the chain reports as corrupt. Re-derive the arithmetic if you ever raise it; a test does.
+  - **`widget.enabled` is the wrong gate here and must not be copied.** It governs whether the
+    masjid publishes times on their own *website*; this is a different, admin-granted, same-box
+    channel. Applying it would hide timetables the admin meant to share — and dropping it from the
+    *public* `/w/<id>` route would expose ones they never published.
+- **WhatsApp is queued, never sent.** `202 {queued:true}` means accepted for later delivery. The 202
+  now carries an `id` and `/api/fabric/whatsapp/status/<id>` answers `queued`/`sent`/`failed`/
+  `expired` (OpenMasjidOS **0.51.1+**, advertised as `outcomes` — absent must read as false; per-app
+  history from **0.51.1-dev.8**). Even `sent` means "handed to WhatsApp": there is no delivery receipt
+  anywhere and nothing may claim one. **A verdict we could not obtain — a 404, a timeout, an older
+  platform — is not a failure**; treating it as one re-announces a change the group already has.
+  **Keep asking for as long as the platform will answer** (**7 days**, `WA_OUTCOME_WINDOW_MS` —
+  deliberately longer than the platform's own 24h outcome retention, because the platform now HOLDS
+  messages while the WhatsApp link is down and releases them when an admin re-links, so a verdict can
+  arrive days later; a test floors it at 3 days): `expired` is
+  the verdict that re-opens a retry, and an entry left `queued` reads as *handled*, so giving up early
+  strands the announcement silently and for ever.
+- **The platform no longer paces us, so this app has to** (0.51.1 removed quiet hours, the caps, the
+  cooldowns, the warm-up and the random gap). Ban risk still attaches to the masjid's *number*, it is
+  shared by every app on the box, and a blocked number cannot be recovered. What holds here is
+  structural and must stay that way: **one approved group and never a per-person send**, one message
+  per Iqamah change deduped through the persisted log (where `sent` counts as handled just as
+  `queued` does, or a confirmed message becomes a duplicate — **with one exception**: a `sent` the
+  platform has since DISOWNED, `suspect === 'pending'`, is *not* handled and rejoins the ordinary
+  paced path, because there the report of success is the thing that turned out to be wrong), five
+  attempts thirty minutes apart timed
+  from the *verdict*, one post in flight, and **no retry around a 202**. Never add a loop over a
+  roster. Nothing auth-critical may ever go this way. Message bodies, captions and image bytes are
+  never logged; the app's own log keeps event + group id + timestamp + the change's date + the
+  platform's id.
 - **Read `media`/`maxMediaBytes` from the platform before rendering a poster**, and never fall back to
   the caption alone: the caption is written to sit under an image and, delivered by itself, is an
   announcement with no timetable in it. Every media failure falls back to the full text notice.
+- **An alert that fires on an EXTERNAL failure needs its own floor.** The screen-offline alert is the
+  one of these this app has, and the shape is a decoder that FLAPS rather than one that dies: the
+  notified flag latches, so a screen that stays down is reported once, but every recovery re-arms it —
+  around 950 email-and-webhook pairs a day at a 90-second debounce. The platform gates on whether the
+  admin wants that alert type, not on how often it arrives, and the per-recipient cooldown that used
+  to absorb this class of thing was removed in 0.51.1. `ALERT_MIN_GAP_MS` in orchestrator.ts floors the
+  DOWN alert only — a recovery can only follow a down alert already sent, and suppressing one would
+  leave an admin believing a screen is dead. Delay such an alert, never drop it.
+- **The Pi terminal is a ROOT shell, and that was a deliberate change.** It used to run as the
+  screen's own unprivileged account under `NoNewPrivileges`, which made `sudo` unusable and
+  `reboot` impossible — a debugging window rather than a terminal. It is now the whole machine, to
+  match what OpenMasjidOS's own dashboard offers. Understand what that means before touching it: a
+  stolen dashboard session is root on every screen the masjid owns. Four things hold it shut and
+  all four are load-bearing:
+  - **The panel mints, the device dials OUT.** Nothing connects to a Pi and no port is opened on
+    one. The session is offered on the device’s own state poll and it opens the socket.
+  - **The secret never reaches a browser.** `openShellSession` returns it so the API can put it on
+    the COMMAND for the device; the panel is given the id alone. Single-use, and a wrong secret
+    ends the session rather than allowing another try.
+  - **Three clocks, on the server:** 60s to claim, 10 idle minutes, one hour maximum. The agent
+    keeps its own backstop (`SHELL_SESSION_MAX_MS`) for a socket that wedges rather than closes.
+  - **The spool still names verbs, it does not run strings.** The `shell-session` verb carries a
+    session id, a one-time secret and a terminal size — never command text. That distinction is
+    what keeps the rest of the closed verb set worth anything, and `piConsole.test.ts` asserts it
+    in both directions: `shell` (which DOES carry a string) must never become a root verb, and the
+    root terminal's arm must never interpolate a field from its request into a command line.
+  Nothing about a session is ever logged — not the keystrokes, not the output, not a sample. The
+  one-shot console (`shell`) is deliberately still unprivileged; it is the fallback for a screen
+  whose agent is too old to offer a terminal, and the panel says so rather than letting it look
+  broken.

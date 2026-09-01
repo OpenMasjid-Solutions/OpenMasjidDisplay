@@ -8,3 +8,29 @@ dist/
 .env
 data/
 server/public/
+# Built by `npm run build:agent` and served to Raspberry Pi screens at /pi/agent.js.
+# Generated from server/src/pi/, so the source is in the tree and the bundle is not.
+server/assets/pi/agent.js
+
+# Throwaway patch scripts used to apply edits. They are deleted on success, so any that
+# survive are ones whose run failed part-way — and those are exactly the ones that get
+# committed by accident. Three have.
+.*.mjs
+
+# Output from probing a real Raspberry Pi over ssh — captured framebuffers, journal dumps, the
+# throwaway script that fetched them. Same reasoning as the patch scripts above: they are debugging
+# residue that is only ever left behind when something went wrong mid-investigation, which is
+# exactly when nobody is looking at `git status` carefully.
+.fb*
+.pi.sh
+.pish.txt
+.logsres.txt
+.st.json
+# Rendered comparisons from a measurement — dither variants, preview sizes, rotated frames. Same
+# residue as the captures above, and three of them reached a commit before this line existed.
+.d-*.png
+.p-*.png
+.rot.png
+.shot.png
+.final.png
+.preview*.png

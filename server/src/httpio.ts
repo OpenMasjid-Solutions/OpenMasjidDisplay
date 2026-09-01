@@ -49,18 +49,33 @@ export function sendJson(res: ServerResponse, status: number, obj: unknown): voi
  * The size cap is applied to BYTES as they arrive (not to the decoded string), so it still
  * bounds memory before anything is decoded.
  */
+/** Thrown when a body exceeds its cap. Carries a CODE, so a caller can answer 413 without
+ *  string-matching a message — the same brittleness the camera-error handling already refuses. */
+export const BODY_TOO_LARGE = 'BODY_TOO_LARGE';
+
 export function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let over = false;
     req.on('data', (c: Buffer) => {
       size += c.length;
       if (size > maxBytes) {
-        reject(new Error('body too large'));
-        req.destroy();
+        // Reject once, then keep DISCARDING rather than destroying the request.
+        //
+        // It used to call req.destroy() here, and that made the failure invisible to both ends: the
+        // socket went away, so no 413 could be written, and the caller's `.catch(() => null)` then
+        // answered 200 as though the body had been accepted. A device sending a slightly-too-large
+        // check-in was told everything was fine, forever. Memory is still bounded because nothing
+        // more is retained — which is what the cap was actually for.
+        if (!over) {
+          over = true;
+          chunks.length = 0;
+          reject(Object.assign(new Error('body too large'), { code: BODY_TOO_LARGE }));
+        }
         return;
       }
-      chunks.push(c);
+      if (!over) chunks.push(c);
     });
     req.on('end', () => {
       try {
