@@ -10,6 +10,8 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
+## Unreleased
+
 ## 0.70.0
 
 The Raspberry Pi release. A cheap computer behind a television is now a full screen — it shows the
