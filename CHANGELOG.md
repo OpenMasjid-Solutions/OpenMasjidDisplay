@@ -12,6 +12,21 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Changed
+- The release procedure in `CLAUDE.md` now has publishing the GitHub release as a numbered step,
+  with a verification step after it. A tag is not a release, and OpenMasjidOS shows an admin the
+  release notes as "What’s new" once it has updated the app in the background — so a tag with no
+  release meant a masjid got new software on its screens and no explanation of what changed. It
+  was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
+
+### Fixed
+- Three tests were reading the real system clock against a hardcoded date, so they went red on
+  2026-09-04 having been touched by nobody — the Iqamah wizard refuses a date in the past, and the
+  date they typed had stopped being next week. They now pin the clock the way the wizard’s own
+  tests already did. Nothing shipped was wrong; the tests were.
+- Updated a build-time dependency (`browserslist`) to clear a newly published high-severity
+  advisory. It is a development tool, never part of the running app.
+
 ## 0.70.0
 
 The Raspberry Pi release. A cheap computer behind a television is now a full screen — it shows the

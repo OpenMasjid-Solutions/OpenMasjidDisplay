@@ -166,8 +166,50 @@ Only when Hasan has said it. In order:
    git tag -a v<version> <digest-pin SHA> -m "…"     # not `git tag v<version>` on a stale HEAD
    git rev-list -n1 v<version>                        # must print the digest-pin SHA
    ```
-5. Propose the catalog change in **OpenMasjidAPPS** — §0c below, which is a PR against its `dev`,
+5. **Publish the GitHub release.** A tag is *not* a release.
+
+   ```sh
+   gh release create v<version> --verify-tag \
+     --title "OpenMasjid Display <version> — <the headline>" \
+     --notes-file <notes>.md
+   gh release view v<version>            # must print your notes, draft:false
+   ```
+
+   **Why this is a step and not a nicety: OpenMasjidOS shows the admin these notes as "What's
+   new" after it has updated the app in the background.** So a tag with no release means a
+   masjid's screens get new software and the person responsible for them gets no explanation —
+   which is worse than a silent update, because they can see *that* something changed. This was
+   missed for `v0.70.0` and had to be published afterwards; at the same moment four of the five
+   OpenMasjid apps had no release for their newest tag, and two had never published one at all.
+   It keeps happening because the chain used to stop at the tag.
+
+   **There are TWO "What's new" surfaces and they must agree.** The in-app one is
+   `CHANGELOG.md`, which ships inside the image and is parsed by `/api/changelog` (§0b). The
+   platform's is *this* release body, fetched from GitHub. Write the release as the fuller,
+   friendlier telling of the same `## X.Y.Z` section — never a contradiction of it, and never
+   a paste of `git log`.
+
+   Write it **for a masjid volunteer**: what they can now do that they could not, what got
+   fixed, and — say this explicitly — that updating is all they need to do. `##` sections, plain
+   language, point at where a thing lives in the UI ("Screens → Add screen"). `gh release view
+   v0.69.0` is the house style. `--verify-tag` is there so you cannot publish notes against a
+   tag that does not exist, which silently creates one on the default branch instead.
+6. Propose the catalog change in **OpenMasjidAPPS** — §0c below, which is a PR against its `dev`,
    never a push to its `main`.
+7. **Verify it actually shipped.** Both checks, every time — they fail in different ways:
+
+   ```sh
+   gh release view v<version>                                   # notes are live, not a draft
+   curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidAPPS/main/catalog.json \
+     | grep '"display"' -A 30 | grep '"version"'                # what STABLE actually serves
+   ```
+
+   **A merged PR against the catalog's `dev` is not shipped.** `main` moves only when a catalog
+   maintainer cuts a release (§0c), so if that second command still reports the old version, your
+   half is complete and you are waiting on them — **report exactly that** rather than calling the
+   release done or assuming it failed. When it does report the new version, check the `commit:` on
+   the catalog's `main` is the digest-pin SHA from step 3; anything else means a masjid is being
+   offered a different tree than the one you tagged.
 
 > ### ⚠ Tag the digest-pin commit, not the commit before it
 >
@@ -277,6 +319,12 @@ us, and they are the ones in §0's dev rules:
 and the panel's account menu renders it as *"What's new"*). So it is not a developer artefact:
 a masjid admin whose app was updated in the background by OpenMasjidOS reads this file to find
 out what changed. That is the whole reason it exists offline.
+
+**It is one of two places that admin is told, and the other is the GitHub release** — OpenMasjidOS
+surfaces the release body as its own "What's new". Same audience, same release, two renderings:
+the `## X.Y.Z` section here is the condensed record that travels with the image, and the release
+body is the fuller telling for someone deciding what changed. Neither may contradict the other,
+and publishing the release is step 5 of the chain in §0 — not an afterthought.
 
 Two sections, two jobs, and **they are not written to the same standard**:
 
