@@ -20,6 +20,20 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **On Fridays a screen counted down to a Dhuhr Iqamah that nobody was praying, and ignored
+  Jumu’ah entirely.** Three things on the screen ask "is a congregation about to pray?", and all
+  three were looking at the daily prayer table — which carries Dhuhr every day, because a masjid
+  still wants to see the Dhuhr time on a Friday. But on Friday the jama’ah is Jumu’ah. So the
+  full-screen "line up for prayer" countdown announced **Dhuhr Iqamah** while the ring beside it
+  correctly said Jumu’ah — the screen contradicting itself — then the screen blacked out for that
+  same prayer, and the actual Jumu’ah got nothing: no countdown before it and no blackout during
+  it, at the fullest the hall gets all week.
+
+  Now every Jumu’ah gets its own full-screen countdown — **"JUMU’AH 1 IN 04:12"**, numbered when
+  you hold more than one — and the quiet screen (or the hadith, if you show one) runs through each
+  Jumu’ah rather than through a Dhuhr that is not happening. A masjid with no Jumu’ah time set
+  still prays Dhuhr on a Friday and keeps its countdown, and every other day of the week is
+  unchanged. It applies to Raspberry Pi screens, decoder screens and the editor preview alike.
 - Three tests were reading the real system clock against a hardcoded date, so they went red on
   2026-09-04 having been touched by nobody — the Iqamah wizard refuses a date in the past, and the
   date they typed had stopped being next week. They now pin the clock the way the wizard’s own

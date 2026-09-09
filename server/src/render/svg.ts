@@ -565,6 +565,27 @@ export function labels(lang: string, overrides?: Record<string, string>): Record
   return merged;
 }
 
+/**
+ * One jamā'ah of THIS day — the moment a congregation actually lines up.
+ *
+ * Not the same list as `rows`, and the difference is the whole point. `rows` is the daily
+ * TABLE: five prayers, every day, Dhuhr included on a Friday (a masjid still wants to see the
+ * Dhuhr time on the wall). But on Friday there is no Dhuhr *jamā'ah* — Jumu'ah stands in for
+ * it — and there may be several Jumu'ah jamā'āt. Anything that acts on "a congregation is
+ * about to pray / is praying" must key on this, never on `rows`.
+ */
+export interface Jamaah {
+  /** a prayer key, or `'jumuah'` */
+  key: string;
+  /** when the congregation lines up, decimal hours */
+  at: number;
+  /** the call that precedes it — a pre-jamā'ah countdown only opens once this has passed.
+   *  For Jumu'ah this is the Dhuhr adhan, which is what is called on a Friday. */
+  adhan: number | null;
+  /** 1-based, set only when the day holds more than one of this key (several Jumu'ah) */
+  ordinal?: number;
+}
+
 interface Model {
   parts: ReturnType<typeof localParts>;
   times: PrayerTimes;
@@ -580,6 +601,9 @@ interface Model {
   /** configured Jumu'ah time(s), decimal hours, sorted — shown as a separate strip
    *  on every day (NOT part of the daily prayer rows). */
   jumuah: number[];
+  /** Today's jamā'āt in order — see `Jamaah`. On Friday, Dhuhr is replaced by the Jumu'ah
+   *  times. This is what the pre-jamā'ah countdown and the during-salah window key on. */
+  jamaah: Jamaah[];
   /** on Friday, the upcoming Jumu'ah the ring counts down to; null on other days or once
    *  every Jumu'ah time has passed. `adhan` marks the FIRST phase — counting to the Dhuhr
    *  adhan (labeled "Jumu'ah", never "Dhuhr") — before the Jumu'ah jamā'ah countdowns
@@ -706,6 +730,45 @@ export function buildModel(tt: Timetable, now: Date): Model {
   const dhuhrAdhan = adj('dhuhr');
   const asrAdhan = eff['asr'];
 
+  /**
+   * The jamā'āt of this day, which on a Friday are NOT the five rows.
+   *
+   * Derived here, once, because three different things acted on "a congregation is about to
+   * pray" and all of them read `rows` — so on a Friday all three were wrong in the same way:
+   * the full-screen pre-Iqāmah countdown announced DHUHR IQĀMAH while the ring beside it
+   * correctly said Jumu'ah, the salah blackout blacked the wall out for a Dhuhr jamā'ah that
+   * was not happening, and neither of them fired for the actual Jumu'ah — not the first one,
+   * and not the second. Measured on a real Friday before this existed: 12:57–13:07 the screen
+   * counted down to a Dhuhr Iqāmah, 13:08–13:22 it went black for it, and the two Jumu'ah
+   * jamā'āt at 13:15 and 14:00 got nothing at all.
+   *
+   * Dhuhr is dropped only when there is a Jumu'ah to stand in for it: a masjid with no Jumu'ah
+   * configured still prays Dhuhr on a Friday, and must keep its countdown.
+   *
+   * Deliberately NOT bounded to the midday window the way the ring bounds `nextJumuah`. The
+   * ring makes an exclusive claim about the next event, so a mistyped 03:00 Jumu'ah there would
+   * hide Asr, Maghrib and Isha for the rest of the day; this list only opens a window a few
+   * minutes wide, so the same typo shows a brief overlay at the wrong time — visible, and
+   * obviously the configuration rather than the app.
+   */
+  const jamaah: Jamaah[] = [];
+  for (const r of rows) {
+    if (r.adhan == null || r.iqamah == null) continue; // Sunrise has no jamā'ah
+    if (isFriday && r.key === 'dhuhr' && jumuah.length) continue;
+    jamaah.push({ key: r.key, at: r.iqamah, adhan: r.adhan });
+  }
+  if (isFriday && jumuah.length) {
+    for (let i = 0; i < jumuah.length; i++) {
+      jamaah.push({
+        key: 'jumuah',
+        at: jumuah[i],
+        adhan: dhuhrAdhan,
+        ...(jumuah.length > 1 ? { ordinal: i + 1 } : {}),
+      });
+    }
+  }
+  jamaah.sort((a, b) => a.at - b.at);
+
   // On Friday, Jumu'ah stands in for the Dhuhr jamā'ah, so the next-prayer ring counts down —
   // in order — to the Dhuhr ADHAN (labeled "Jumu'ah"), then the 1st Jumu'ah jamā'ah, then the
   // 2nd, … and NEVER shows "Dhuhr". This holds even inside the zawāl (prohibited) window just
@@ -757,7 +820,7 @@ export function buildModel(tt: Timetable, now: Date): Model {
     // When the ring is counting to a Jumu'ah, no daily row is the "next" one.
     if (!nextJumuah && r.key === nextKey) r.next = true;
   }
-  return { parts, times, rows, activeKey, nextKey, nextHours, countdownToIqamah, isFriday, jumuah, nextJumuah };
+  return { parts, times, rows, activeKey, nextKey, nextHours, countdownToIqamah, isFriday, jumuah, jamaah, nextJumuah };
 }
 
 /** One prayer line for the public web widget. */
@@ -2086,7 +2149,7 @@ function wrapLines(s: string, size: number, maxW: number, maxLines = 6): string[
 
 /** A full-screen takeover that suppresses the normal layout (and the ffmpeg ticker). */
 type Overlay =
-  | { kind: 'iqamah'; secs: number; key: string }
+  | { kind: 'iqamah'; secs: number; key: string; ordinal?: number }
   | { kind: 'hadith'; item: HadithItem }
   | { kind: 'blackout' };
 
@@ -2377,21 +2440,24 @@ export function pickSalahHadith(sh: SalahHadith, prayerKey: string, parts: { yea
 function activeOverlay(tt: Timetable, m: Model, nowHours: number): Overlay | null {
   // (The zawāl prohibited notice is no longer a full-screen takeover — it lives in the
   //  next-prayer ring as a "Prohibited time" countdown; see panelRing / prohibitedRing.)
-  // 2) Full-screen countdown for the last minutes before any Iqāmah.
+  // 2) Full-screen countdown for the last minutes before any jamā'ah.
+  //
+  // `m.jamaah`, never `m.rows`: on a Friday the jamā'ah is Jumu'ah, so the rows would announce
+  // a Dhuhr Iqāmah nobody is praying and stay silent for the Jumu'ah that everybody is.
   const ic = tt.iqamahCountdown;
   if (ic?.enabled) {
     const win = Math.max(1, ic.minutes) / 60;
-    const row = m.rows.find(
-      (r) =>
-        r.adhan != null && r.iqamah != null &&
-        r.adhan <= nowHours && nowHours >= r.iqamah - win && nowHours < r.iqamah,
+    const j = m.jamaah.find(
+      (x) => x.adhan != null && x.adhan <= nowHours && nowHours >= x.at - win && nowHours < x.at,
     );
-    if (row) return { kind: 'iqamah', secs: Math.max(0, (row.iqamah! - nowHours) * 3600), key: row.key };
+    if (j) return { kind: 'iqamah', secs: Math.max(0, (j.at - nowHours) * 3600), key: j.key, ordinal: j.ordinal };
   }
   // 3) During salah (the minutes after each Iqāmah): either black the screen out or show a
   //    rotating hadith. Which prayer's post-Iqāmah window we're in is `inSalah(win)`.
-  const inSalah = (win: number): Row | undefined =>
-    m.rows.find((r) => r.iqamah != null && r.iqamah <= nowHours && nowHours < r.iqamah + win);
+  // Same list as the countdown above, for the same reason: on Friday this window belongs to
+  // Jumu'ah, and there is one per jamā'ah.
+  const inSalah = (win: number): Jamaah | undefined =>
+    m.jamaah.find((x) => x.at <= nowHours && nowHours < x.at + win);
   // Blackout wins over the hadith when both are enabled — a distraction-free black screen.
   const bo = tt.salahBlackout;
   if (bo?.enabled && inSalah(Math.max(1, bo.minutes) / 60)) return { kind: 'blackout' };
@@ -2486,15 +2552,19 @@ function blackoutView(W: number, H: number): string {
 }
 
 /** Full-screen countdown to a prayer's Iqāmah ("line up for prayer"). */
-function iqamahCountdownView(secsLeft: number, prayerKey: string, p: Palette, L: Record<string, string>, W: number, H: number): string {
+function iqamahCountdownView(secsLeft: number, prayerKey: string, p: Palette, L: Record<string, string>, W: number, H: number, ordinal?: number): string {
   const out: string[] = [];
   out.push(rect(0, 0, W, H, 0, 'rgba(0,0,0,0.72)'));
   const cx = W / 2;
   const mm = Math.floor(secsLeft / 60);
   const ss = Math.floor(secsLeft % 60);
   const counter = `${pad2(mm)}:${pad2(ss)}`;
-  const pname = (L[prayerKey] ?? prayerKey).toUpperCase();
-  out.push(text(cx, H * 0.34, `${pname} ${(L.iqamah ?? 'Iqamah').toUpperCase()} IN`, { size: clamp(W * 0.02, 18, 44), fill: p.primarySoft, weight: 700, anchor: 'middle', letter: 4 }));
+  // "JUMU'AH 2 IN 04:12", not "JUMU'AH 2 IQĀMAH IN": a Jumu'ah time IS the jamā'ah, and nobody
+  // in a masjid says "the Jumu'ah Iqamah". Every daily prayer keeps its "<PRAYER> IQĀMAH IN",
+  // because there the Iqāmah is a separate moment from the Adhan that already sounded.
+  const pname = (L[prayerKey] ?? prayerKey).toUpperCase() + (ordinal ? ` ${ordinal}` : '');
+  const heading = prayerKey === 'jumuah' ? `${pname} IN` : `${pname} ${(L.iqamah ?? 'Iqamah').toUpperCase()} IN`;
+  out.push(text(cx, H * 0.34, heading, { size: clamp(W * 0.02, 18, 44), fill: p.primarySoft, weight: 700, anchor: 'middle', letter: 4 }));
   out.push(text(cx, H * 0.6, counter, { size: clamp(W * 0.16, 90, 360), fill: p.light ? p.text : 'url(#clockg)', family: FONT_DISPLAY, weight: 700, anchor: 'middle', blink: true }));
   out.push(text(cx, H * 0.74, 'Please line up for prayer', { size: clamp(W * 0.016, 14, 30), fill: p.textDim, anchor: 'middle' }));
   return out.join('');
@@ -2724,7 +2794,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     // Full-screen overlays always dim to a dark scrim, so use light text even on a light
     // theme (dark-on-dark would be unreadable).
     const pS = p.light ? { ...p, text: '#f2f6f3', textDim: '#c8d3cc', textFaint: '#96a69d' } : p;
-    if (overlay.kind === 'iqamah') out.push(iqamahCountdownView(overlay.secs, overlay.key, pS, L, W, H));
+    if (overlay.kind === 'iqamah') out.push(iqamahCountdownView(overlay.secs, overlay.key, pS, L, W, H, overlay.ordinal));
     else if (overlay.kind === 'blackout') out.push(blackoutView(W, H));
     else out.push(salahHadithView(overlay.item, clock, pS, W, H));
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${out.join('')}</svg>`;
