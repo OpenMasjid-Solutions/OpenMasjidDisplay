@@ -13,7 +13,7 @@
  * day to avoid screen burn-in. No sacred/Arabic text appears in decorative chrome.
  */
 import type { Timetable, HadithItem, SalahHadith, TimeFormat, Lang } from '../types';
-import { getPalette, type Palette } from './theme';
+import { getPalette, simplePage, type Palette } from './theme';
 import { DEFAULT_SALAH_HADITH } from './defaultHadith';
 import { resolveSchedule } from '../iqamahSchedule';
 import {
@@ -166,6 +166,63 @@ function relLuminance(hex: string): number {
   const n = parseInt(m[1], 16);
   const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+/**
+ * WCAG relative luminance — the sRGB one, with the gamma curve.
+ *
+ * `relLuminance` above is a different thing and both are wanted: that one is a cheap
+ * perceived-brightness number used to answer "is this colour light or dark", this one is the
+ * quantity the contrast ratio is defined in terms of. Using the cheap one for a ratio gives
+ * numbers that look right and are not the standard's.
+ */
+function wcagLum(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return 1;
+  const n = parseInt(m[1], 16);
+  const ch = (v: number) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * ch((n >> 16) & 255) + 0.7152 * ch((n >> 8) & 255) + 0.0722 * ch(n & 255);
+}
+
+/** WCAG contrast ratio between two opaque colours: 1 (identical) to 21 (black on white). */
+export function contrastRatio(a: string, b: string): number {
+  const la = wcagLum(a);
+  const lb = wcagLum(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/**
+ * `fg` nudged toward black or white until it clears AA against `bg`, and left alone if it
+ * already does.
+ *
+ * The Simple design puts the ACCENT on text — the Iqamah times, the Jumu'ah times, the
+ * "next prayer in" line — and the accent is a colour an admin picks. Several of the ready-made
+ * ones are pale by design (Graphite's slate, Sunset's yellow, the golds), and a pale accent on
+ * this design's flat page is the exact pairing that fails: Sunset's #facc15 Jumu'ah time on its
+ * own pale band is 1.8:1, which on a wall read from the back of a hall is not a colour choice,
+ * it is an unreadable time. Modern never had this because its accent text sits on dark glass
+ * over a scene, never on the page.
+ *
+ * So the hue is kept and the lightness gives way. AA (4.5) rather than the large-text 3.0 that
+ * these sizes would technically allow: this is a sign read from across a room, and CLAUDE.md
+ * puts WCAG AA among the things this app holds to.
+ */
+function readableOn(fg: string, bg: string, min = 4.5): string {
+  if (!/^#?[0-9a-f]{6}$/i.test(fg.trim()) || !/^#?[0-9a-f]{6}$/i.test(bg.trim())) return fg;
+  if (contrastRatio(fg, bg) >= min) return fg;
+  // Toward whichever end the background is NOT, so a pale accent darkens on a light page and a
+  // deep one lightens on a dark page. Stepped rather than solved because the ratio is not
+  // monotone in a linear mix for every pair — stepping and stopping at the first pass is.
+  const target = wcagLum(bg) > 0.18 ? '#000000' : '#ffffff';
+  let out = fg;
+  for (let t = 0.1; t <= 1.0001; t += 0.1) {
+    out = mixHex(fg, target, t);
+    if (contrastRatio(out, bg) >= min) return out;
+  }
+  return out;
 }
 
 /** Derive the dim/faint text shades from a chosen main text colour. We blend toward
@@ -1870,18 +1927,32 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   let clockH = ts * 1.12;
 
   const showDateLine = c.showDates && (!!c.hij || !!c.greg);
-  const showBar = showDateLine && !!c.hij && !!c.greg;
-  let ds = clamp(b.w * 0.09, 20, 34); // a bit larger than a quiet caption — it sits right under the clock
+  const twoDates = showDateLine && !!c.hij && !!c.greg;
+  /**
+   * The two dates are STACKED — Hijri above, Gregorian below — not set on one line with a bar
+   * between them.
+   *
+   * On one line they shared the column's width, and the fit was against their SUM: "Rabi' I 29,
+   * 1448 AH" and "Friday, September 11, 2026" together are about 770px of type at full size in a
+   * column with 480 to give, so the line was shrunk by 38% and the date came out at 21px under a
+   * 160px clock. It read as a caption for the clock rather than as the date. In Arabic and Urdu,
+   * where both forms are longer, it was smaller still.
+   *
+   * A line each means each is fitted against the WIDER of the two instead of their sum, and
+   * neither needs shrinking at all on a 1080p column. The cap goes up with it, because the reason
+   * it was 34 was that two dates at 34 did not fit — one does.
+   */
+  let ds = clamp(b.w * 0.105, 20, 46);
   if (showDateLine) {
-    // Its own, nearly-full-width budget — it is the only thing on this line, unlike `avail`
+    // Its own, nearly-full-width budget — it is the only thing on its line, unlike `avail`
     // (95% of the box) which is sized to leave the clock and sunrise/sunset row a margin too.
-    // The separator is a drawn bar (below), not a character; ds*0.7 stands in for its width
-    // (bar + the gap either side) at this ds, close enough for the fit check.
+    // Both lines take the SAME size, fitted to the wider: two dates at different sizes under one
+    // clock read as a mistake rather than as a hierarchy.
     const dateAvail = b.w * 0.94;
-    const dw = approxWidth(c.hij, ds) + approxWidth(c.greg, ds) + (showBar ? ds * 0.7 : 0); // bar + both gaps, roughly
+    const dw = Math.max(approxWidth(c.hij, ds), approxWidth(c.greg, ds));
     if (dw > dateAvail) ds *= dateAvail / dw;
   }
-  let dateH = showDateLine ? ds * 2 : 0;
+  let dateH = showDateLine ? ds * (twoDates ? 3.5 : 2) : 0;
 
   const sec = Math.max(0, c.remainingSec);
   const h = Math.floor(sec / 3600);
@@ -1892,8 +1963,14 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   const nextLine = c.prohibited ? `Prohibited time — ${word.toLowerCase()} in ${amount}` : `Next ${word} in ${amount}`;
   // The one sentence on the page that changes every minute, so it earns the accent — red while
   // prayer is prohibited, which is the same signal the other layout's ring gives.
-  const nextFill = c.prohibited ? TICKER_RED : c.p.primary;
-  let ls = clamp(b.w * 0.058, 15, 26);
+  // Against the page, because on this design it IS on the page — see `readableOn`. The
+  // prohibited red is left alone: it is a fixed warning colour, not the admin's accent.
+  const nextFill = c.prohibited ? TICKER_RED : readableOn(c.p.primary, c.p.bg);
+  // Bigger than it was (the cap was 26). This column is mostly empty on a landscape screen —
+  // about half its height on 1080p — and this is the one line on it that changes minute to
+  // minute, so it is what the spare room should go to. It is still fitted to the column below,
+  // so a long sentence in Arabic or Urdu shrinks rather than overflowing.
+  let ls = clamp(b.w * 0.078, 16, 40);
   if (c.showCountdown) {
     const lw = approxWidth(nextLine, ls);
     if (lw > avail) ls *= avail / lw;
@@ -1968,32 +2045,14 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   // deliberately thin for the dates themselves) is too faint to read as a divider, so it's
   // bolded by being a shape instead of relying on font weight.
   if (showDateLine) {
+    // Both centred on the column, so there is nothing to anchor against and nothing to get
+    // wrong: the divider bar this replaces had to be POSITIONED from a width estimate, and
+    // putting it on the column's centre line centred the divider rather than the line — which
+    // is how a date ran out past the edge of its column into the prayer table.
     y += ds * 1.2;
-    if (showBar) {
-      // Anchored against the bar (`end` on the left, `start` on the right) so the gap either
-      // side of it is EXACT regardless of estimate error — that part was right and is kept.
-      //
-      // What was wrong was where the bar went. It sat on the column's centre line, which centres
-      // the DIVIDER rather than the line: "Rabi' I 29, 1448 AH" and "Friday, September 11, 2026"
-      // are nowhere near the same width, so the line hung off-centre by half their difference
-      // and ran out past the right edge of the column into the prayer table. That is the "date
-      // gets cut off" — it was never clipped, it was overflowing, and only in this layout
-      // because only this layout centres the date under a narrow column.
-      //
-      // So the bar is placed where it falls WITHIN a centred line instead. The estimate is only
-      // used to position it; the gap is still exact, and an estimate error now shifts the whole
-      // line slightly rather than pushing one end of it off the box.
-      const barW = ds * 0.18;
-      const barGap = ds * 0.26;
-      const hw = approxWidth(c.hij, ds);
-      const gw = approxWidth(c.greg, ds);
-      const barX = cx - (hw + barGap + barW + barGap + gw) / 2 + hw + barGap;
-      out.push(text(barX - barGap, y, c.hij, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
-      out.push(rect(barX, y - ds * 0.8, barW, ds * 0.9, barW * 0.3, c.p.text));
-      out.push(text(barX + barW + barGap, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'start' }));
-    } else {
-      out.push(text(cx, y, c.hij || c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
-    }
+    if (c.hij) out.push(text(cx, y, c.hij, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
+    if (twoDates) y += ds * 1.5;
+    if (c.greg) out.push(text(cx, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
     y += ds * 0.8;
   }
 
@@ -2174,14 +2233,42 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
    * are anchored to the very same edges the times are, or a header that named the wrong column
    * would be worse than no header at all.
    */
-  const onPrimary = relLuminance(c.p.primary) > 0.6 ? '#1c2620' : '#f2f6f3';
+  // Whichever of the two reads better ON the accent, not whichever the accent is nearer to.
+  // A mid-tone accent is near neither: Emerald's #1fa37a took light text at 2.93:1, because the
+  // old test was a perceived-brightness threshold and a threshold cannot tell you that BOTH
+  // candidates are poor. Measured both ways and then held to AA, it takes dark text at 5.15:1.
+  const onPrimary = readableOn(
+    contrastRatio('#1c2620', c.p.primary) >= contrastRatio('#f2f6f3', c.p.primary) ? '#1c2620' : '#f2f6f3',
+    c.p.primary,
+  );
   const titleH = titleSize * 2.1;
   const headY = b.y + titleH * 0.66;
-  const colLabelSize = clamp(titleSize * 0.8, 9, 20);
-  const colLabel = (s: string) => approxWidth(s, colLabelSize) + Math.max(0, s.length - 1) * 1.2;
   const adhanLbl = (c.L.athan ?? 'Adhan').toUpperCase();
   const iqamahLbl = (c.L.iqamah ?? 'Iqamah').toUpperCase();
   const titleStr = (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES';
+  /**
+   * The column labels are fitted to the columns they name, and they are fitted FIRST.
+   *
+   * Sizing them from the box height alone was enough for "ADHAN" and "IQĀMAH" and for the Arabic
+   * and Urdu forms this app ships — and not enough for anything else. Every one of these three
+   * strings is an admin-editable label (`normLabels` takes up to 40 characters, and the row names
+   * carry `editId`s so they can be retyped straight on the live preview), so "Congregation Time"
+   * in the Iqamah slot simply ran left out of its column and across ADHAN.
+   *
+   * The tracking is a FIXED number of pixels per gap, not a fraction of the size, so it comes out
+   * of the room before the division rather than scaling with the answer.
+   */
+  const headGap = titleSize * 0.5;
+  const labelFit = (str: string, room: number, size: number) => {
+    const track = Math.max(0, str.length - 1) * 1.2;
+    const u = Math.max(0.01, approxWidth(str, 100) / 100);
+    return Math.min(size, Math.max(7, (room - track) / u));
+  };
+  const colLabelSize = Math.min(
+    labelFit(iqamahLbl, colIq - colAd - headGap, clamp(titleSize * 0.8, 9, 20)),
+    labelFit(adhanLbl, colAd - nameX - headGap, clamp(titleSize * 0.8, 9, 20)),
+  );
+  const colLabel = (s: string) => approxWidth(s, colLabelSize) + Math.max(0, s.length - 1) * 1.2;
   // The title is the one thing here that can be shrunk without misnaming anything, so it is what
   // gives way when a narrow column cannot hold all three at full size — the column labels are the
   // point of the change and must stay legible.
@@ -2190,32 +2277,40 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   // the tracking is nearly a third of this title's width at full size, so a fixed 4px both breaks
   // the solve — a shrunk title still carrying full tracking can overflow the room it was just
   // fitted into — and reads as separate letters rather than a word once the type is small.
-  const titleRoom = colAd - colLabel(adhanLbl) - colLabelSize * 1.6 - nameX;
+  //
+  // And if what is left will not hold it even at the 9px floor, it is DROPPED rather than drawn
+  // through the labels. A shrinking floor plus a fixed minimum is how a "this one gives way"
+  // rule turns into an overlap: something has to be allowed to disappear, and of the three
+  // strings here the title is the one that names nothing.
+  const titleRoom = colAd - colLabel(adhanLbl) - headGap - nameX;
   const titleFull = approxWidth(titleStr, titleSize) + Math.max(0, titleStr.length - 1) * 4;
   // Everything in `titleFull` is proportional to the size, so this is exact rather than iterated.
-  // The 9px floor can only bite in a box far below the size anything on it would be legible at.
   const titleFit = titleFull > titleRoom ? Math.max(9, (titleSize * Math.max(0, titleRoom)) / titleFull) : titleSize;
+  const titleFits = titleRoom > 0 && (titleFull * titleFit) / titleSize <= titleRoom + 0.5;
   out.push(rect(b.x, b.y, b.w, titleH, titleH * 0.22, c.p.primary));
-  out.push(
-    text(nameX, headY, titleStr, {
-      size: titleFit,
-      // Same rule, same numbers as the page-colour flip above: the primary is a colour input an
-      // admin can set to anything, so the text on it has to be chosen rather than assumed.
-      fill: onPrimary,
-      weight: 700,
-      anchor: 'start',
-      letter: (4 * titleFit) / titleSize,
-    }),
-  );
+  if (titleFits) {
+    out.push(
+      text(nameX, headY, titleStr, {
+        size: titleFit,
+        fill: onPrimary,
+        weight: 700,
+        anchor: 'start',
+        letter: (4 * titleFit) / titleSize,
+      }),
+    );
+  }
   for (const [x, label] of [
-    [colAd, adhanLbl],
-    [colIq, iqamahLbl],
+    [colAd, ellipsize(adhanLbl, colLabelSize, colAd - nameX - headGap, 1.2)],
+    [colIq, ellipsize(iqamahLbl, colLabelSize, colIq - colAd - headGap, 1.2)],
   ] as const) {
+    if (!label) continue;
     out.push(
       text(x, headY, label, {
         size: colLabelSize,
-        // Dimmer than the title, so the band still reads as one heading rather than three.
-        fill: hexToRgba(onPrimary, 0.82),
+        // The same solid colour as the title rather than a translucent version of it: at 82%
+        // over the accent these dropped below AA, and the smaller size and wider tracking
+        // already say "secondary" without spending any contrast on saying it.
+        fill: onPrimary,
         weight: 700,
         anchor: 'end',
         letter: 1.2,
@@ -2270,6 +2365,11 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     const iqStr = fmtShort(l.t2, c.timeFormat);
     return {
       nameU: unit(l.name),
+      // The name is drawn with `letter: 1` — a FIXED pixel per gap, which does not scale with the
+      // size and so cannot live in `nameU`. Leaving it out of the budget is what let a renamed
+      // prayer ("Maghrib / Sunset", typed straight onto the live preview) run into its own Adhan
+      // time: the solve spends the row's room down to `pad`, and the tracking then eats `pad`.
+      nameTrack: Math.max(0, l.name.length - 1) * 1,
       ord,
       adStr,
       iqStr,
@@ -2282,12 +2382,14 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   const nameRoom = Math.max(1, colAd - nameX - pad);
   const iqRoom = Math.max(1, colIq - colAd - pad);
   const longestName = shape.reduce((w, r) => Math.max(w, r.nameU), 0.01);
+  const longestTrack = shape.reduce((w, r) => Math.max(w, r.nameTrack), 0);
   const widestAd = shape.reduce((w, r) => Math.max(w, r.adU), 0.01);
   const widestIq = shape.reduce((w, r) => Math.max(w, r.iqU), 0.01);
   const nameSize = clamp(
     Math.min(
       rowH * 0.4,
-      nameRoom / (longestName + MIN_TIME_RATIO * widestAd), // the name plus the time it reserves for
+      // The tracking comes out of the room, not out of the ratio — see `nameTrack`.
+      Math.max(1, nameRoom - longestTrack) / (longestName + MIN_TIME_RATIO * widestAd),
       iqRoom / (MIN_TIME_RATIO * widestIq),
     ),
     11,
@@ -2302,7 +2404,7 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     Math.min(
       rowH * 0.5,
       iqRoom / widestIq,
-      ...shape.filter((r) => r.adU > 0).map((r) => (nameRoom - r.nameU * nameSize) / (r.adU * 0.92)),
+      ...shape.filter((r) => r.adU > 0).map((r) => (nameRoom - r.nameU * nameSize - r.nameTrack) / (r.adU * 0.92)),
     ),
     11,
     80,
@@ -2313,7 +2415,7 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   for (let i = 0; i < 3; i++) {
     let over = 1;
     for (const r of shape) {
-      if (r.adStr) over = Math.max(over, slotW(r.adStr, timeSize * 0.92, r.ord) / Math.max(1, nameRoom - r.nameU * nameSize));
+      if (r.adStr) over = Math.max(over, slotW(r.adStr, timeSize * 0.92, r.ord) / Math.max(1, nameRoom - r.nameU * nameSize - r.nameTrack));
       over = Math.max(over, slotW(r.iqStr, timeSize, r.ord) / iqRoom);
     }
     if (over <= 1.001) break;
@@ -2332,12 +2434,25 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     const band = line.highlight ? bandHighlight : line.key === 'jumuah' ? bandJumuah : i % 2 === 0 ? bandBase : bandAlt;
     out.push(rect(b.x, ry + rowGap / 2, b.w, rowH - rowGap, rowGap * 0.6, band));
     out.push(prayerIcon(line.key, b.x + pad + iconR, ry + rowH / 2, iconR));
-    const mainColor = line.highlight ? c.p.primary : c.p.text;
+    const mainColor = readableOn(line.highlight ? c.p.primary : c.p.text, band);
     // The Iqāmah is the number people are actually reading — it is when the jamā'ah starts — so
     // it takes the accent on every row, not only the highlighted one. Jumu'ah takes the gold, to
     // match its band. Adhan stays quiet: two coloured columns would compete.
-    const iqColor = line.highlight ? c.p.primary : line.key === 'jumuah' ? c.p.gold : mixHex(c.p.text, c.p.primary, 0.72);
-    out.push(text(nameX, midY, line.name, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 600 : 400, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
+    //
+    // Each is measured against its OWN row band rather than against the page: the bands are mixes
+    // of the page toward the accent, so the Jumu'ah row's gold text sits on a gold-tinted band and
+    // is the tightest pairing on the table.
+    const iqColor = readableOn(
+      line.highlight ? c.p.primary : line.key === 'jumuah' ? c.p.gold : mixHex(c.p.text, c.p.primary, 0.72),
+      band,
+    );
+    // Cut to what this row actually leaves once its Adhan slot is taken out — the size solve
+    // above fits every name a masjid is likely to type, and this is the backstop for one it is
+    // not: a forty-character label cannot be made to fit a 399px column by shrinking without
+    // becoming unreadable, so it is shortened instead of run over the time beside it.
+    const nameRoomHere = (shape[i].adU > 0 ? colAd - slotW(shape[i].adStr!, timeSize * 0.92, shape[i].ord) : colIq) - nameX - pad;
+    const nameStr = ellipsize(line.name, nameSize, nameRoomHere, 1);
+    if (nameStr) out.push(text(nameX, midY, nameStr, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 600 : 400, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
     // A one-Jumu'ah masjid has nothing to put in the Adhan slot (Jumu'ah has no separate
     // Adhan/Iqamah — `t1`/`t2` are just its 1st/2nd time, if there are two), so that slot
     // is skipped entirely rather than drawn as an empty "—" beside a single time.
@@ -2392,6 +2507,29 @@ function sanitizeText(s: string): string {
     .replace(/[^\t\n -~ -ɏ؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/g, '')
     .replace(/[ \t]{2,}/g, ' ') // collapse runs of spaces left by stripped marks
     .trim();
+}
+
+/**
+ * `str` at `size`, cut short with an ellipsis if it will not fit `maxW`, and '' if not even one
+ * character will.
+ *
+ * Every string in the prayer table is an admin-editable label — `normLabels` takes up to forty
+ * characters for any of them and the live preview lets them be retyped in place — so "MAGHRIB"
+ * and "ADHAN" are the defaults, not the range. Fitting by SIZE alone cannot cover that: a size
+ * has to have a floor or the text becomes unreadable, and a floor is exactly where the fit turns
+ * back into an overflow. Something has to be allowed to not fit, and for a label the honest
+ * answer is to show as much of it as there is room for.
+ *
+ * "..." rather than "…": the bundled Arabic face has no glyph for the single-character ellipsis
+ * (the same reason `sanitizeText` folds it), and a label is exactly the kind of text that gets
+ * truncated in Arabic and Urdu.
+ */
+function ellipsize(str: string, size: number, maxW: number, letter = 0): string {
+  const w = (t: string) => approxWidth(t, size) + Math.max(0, t.length - 1) * letter;
+  if (w(str) <= maxW) return str;
+  let cut = str;
+  while (cut.length > 0 && w(`${cut}...`) > maxW) cut = cut.slice(0, -1);
+  return cut.length ? `${cut.trimEnd()}...` : '';
 }
 
 /** Greedy word-wrap: break `s` into lines that each fit within `maxW` at `size`. */
@@ -2956,8 +3094,15 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   // everything else about `p` is replaced.
   const isSimple = tt.layout === 'simple';
   if (isSimple) {
+    // Resolved HERE, after the accent has been settled — including a custom one and the
+    // wallpaper-matched one above — so a themed page tracks the colour it is meant to match.
     const raw = (tt.simpleBg || '').trim();
-    const simpleBgHex = /^#?[0-9a-f]{6}$/i.test(raw) ? (raw.startsWith('#') ? raw : `#${raw}`) : '#ffffff';
+    const simpleBgHex =
+      raw === 'theme-light' || raw === 'theme-dark'
+        ? simplePage(p.primary, raw === 'theme-dark' ? 'dark' : 'light')
+        : /^#?[0-9a-f]{6}$/i.test(raw)
+          ? (raw.startsWith('#') ? raw : `#${raw}`)
+          : '#ffffff';
     const bgIsLight = relLuminance(simpleBgHex) > 0.6;
     const dtxt = derivedText(bgIsLight ? '#1c2620' : '#f2f6f3');
     p = { ...p, bg: simpleBgHex, bg2: simpleBgHex, surface: simpleBgHex, surface2: simpleBgHex, ...dtxt, light: bgIsLight };

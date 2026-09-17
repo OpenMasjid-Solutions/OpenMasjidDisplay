@@ -297,11 +297,21 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
   const textColor = /^#?[0-9a-fA-F]{6}$/.test(tcRaw)
     ? (tcRaw.startsWith('#') ? tcRaw : `#${tcRaw}`).toLowerCase()
     : '';
-  // "simple" layout's flat page background: '' = white. Falls back to base like the others.
-  const sbgRaw = (o.simpleBg === undefined ? base?.simpleBg ?? '' : str(o.simpleBg, '', 7)).trim();
+  // "simple" layout's flat page background. Three kinds of value, and '' (= white) is still the
+  // default, which is what keeps every Simple screen already out there looking exactly as it did:
+  //   ''             white
+  //   'theme-light'  a page tinted with whatever accent is in play — resolved at RENDER time, so
+  //   'theme-dark'   it follows a preset, a custom accent and a wallpaper-matched one alike
+  //   '#rrggbb'      the admin's own colour
+  // The tokens are stored rather than the colour they resolve to precisely so that changing the
+  // accent later moves the page with it; storing the hex would freeze the pairing at the moment
+  // the admin happened to click.
+  const sbgRaw = (o.simpleBg === undefined ? base?.simpleBg ?? '' : str(o.simpleBg, '', 12)).trim();
   const simpleBg = /^#?[0-9a-fA-F]{6}$/.test(sbgRaw)
     ? (sbgRaw.startsWith('#') ? sbgRaw : `#${sbgRaw}`).toLowerCase()
-    : '';
+    : sbgRaw === 'theme-light' || sbgRaw === 'theme-dark'
+      ? sbgRaw
+      : '';
   const jumuahIn = Array.isArray(o.jumuah) ? o.jumuah : base?.jumuah ?? ['13:30'];
   const jumuah = jumuahIn.slice(0, 8).map((x) => hhmmOrNull(x)).filter((x): x is string => x != null);
   return {

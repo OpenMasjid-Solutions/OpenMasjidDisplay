@@ -177,38 +177,40 @@ test("the composite's timetable column follows the design the masjid chose", () 
 // ── the date line, which is what "the date gets cut off" was ─────────────────
 
 /**
- * The two halves of Simple's combined date line, with the extent each one actually occupies.
+ * The extent Simple's two date lines occupy between them, and the baseline of the lower one.
  *
- * They are the only pair of `<text>` elements sharing a baseline with anchors `end` then `start`
- * — the sunrise/sunset pair above them are both `start`. Identifying them that way rather than by
- * their content keeps this test working in every language, which matters because Urdu and Arabic
- * are where it overflowed.
+ * The dates are STACKED now — Hijri above, Gregorian below, both centred — where they used to
+ * share one line with a drawn bar between them. They are found by content rather than by
+ * position: each carries its year in Latin digits in every language this app ships, including
+ * Arabic and Urdu, which is where the old one-line form overflowed worst and so the languages
+ * this most needs to keep checking.
  */
 function dateExtent(svg: string): { left: number; right: number; y: number } {
-  const rows = new Map<string, { x: number; y: number; size: number; anchor: string; body: string }[]>();
+  let left = Infinity;
+  let right = -Infinity;
+  let y = -Infinity;
   for (const m of svg.matchAll(/<text ([^>]*)>([^<]*)<\/text>/g)) {
-    const at = (k: string) => new RegExp(`${k}="([^"]*)"`).exec(m[1])?.[1] ?? '';
-    const y = at('y');
-    const row = rows.get(y) ?? [];
-    row.push({ x: Number(at('x')), y: Number(y), size: Number(at('font-size')), anchor: at('text-anchor'), body: m[2] });
-    rows.set(y, row);
+    const at = (k: string) => new RegExp(`(?:^|\\s)${k}="([^"]*)"`).exec(m[1])?.[1] ?? '';
+    const body = m[2];
+    if (at('text-anchor') !== 'middle' || !/\b(1448|2026)\b/.test(body)) continue;
+    const size = Number(at('font-size'));
+    const w = approxWidth(body, size);
+    const x = Number(at('x'));
+    left = Math.min(left, x - w / 2);
+    right = Math.max(right, x + w / 2);
+    y = Math.max(y, Number(at('y')));
   }
-  for (const row of rows.values()) {
-    if (row.length !== 2 || row[0].anchor !== 'end' || row[1].anchor !== 'start') continue;
-    return {
-      left: row[0].x - approxWidth(row[0].body, row[0].size),
-      right: row[1].x + approxWidth(row[1].body, row[1].size),
-      y: row[0].y,
-    };
-  }
-  assert.fail('no Hijri-bar-Gregorian date line found');
+  if (!Number.isFinite(left)) assert.fail('no stacked date lines found');
+  return { left, right, y };
 }
 
-test('the date line stays inside the brand column in every language', () => {
+test('the date stays inside the brand column in every language', () => {
   // It was never clipped — it OVERFLOWED, and only in Simple, because only Simple centres a long
   // date under a narrow column. The bar sat on the column's centre line, which centres the
   // divider rather than the line: the two halves are nowhere near equal in width, so the whole
-  // line hung off-centre by half their difference and ran out past the edge into the table.
+  // line hung off-centre by half their difference and ran out past the edge into the table. The
+  // stack that replaced it cannot reproduce that — each line is centred on its own — so what is
+  // held here now is the consequence rather than the mechanism.
   const { width: W, height: H } = dimsFor('landscape', '1080p');
   const P = Math.round(Math.min(W, H) * 0.05);
   const area = { x: P, w: W - 2 * P };

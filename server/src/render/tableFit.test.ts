@@ -205,6 +205,97 @@ test('the header costs the rows no height — it is the band, not a line under i
   assert.ok(top - header.y < (runs(svg).find((r) => r.body === 'FAJR')!.size) * 4, 'no extra strip was inserted');
 });
 
+// ── labels an admin can retype ───────────────────────────────────────────────
+
+test('a renamed prayer or column still fits — the labels are an input, not a constant', () => {
+  /**
+   * Every string in this table is editable. `normLabels` takes up to 40 characters for any of
+   * them, the prayer names carry `editId`s so they can be retyped straight on the live preview,
+   * and the panel writes whatever is typed. So "ADHAN" and "MAGHRIB" are the DEFAULTS, not the
+   * range, and two things sized against the defaults were wrong the moment somebody used the
+   * feature:
+   *
+   *  - the prayer name's fixed 1px-per-gap tracking was left out of the row's width budget, so a
+   *    renamed prayer spent room the solve had already given to its Adhan time and ran into it;
+   *  - the ADHAN / IQĀMAH column labels were sized from the box HEIGHT and never measured against
+   *    their own columns, so a long Iqamah label ran left across ADHAN.
+   *
+   * Both were found by review rather than by looking at frames, because the frames all used the
+   * defaults. This walks the shapes where the columns are tightest with the labels at and near
+   * the validator's own limit.
+   */
+  const LABELS: Record<string, string>[] = [
+    { maghrib: 'Maghrib / Sunset' },
+    { maghrib: 'Salatul Maghrib' },
+    { maghrib: 'Maghrib (Sunset Prayer)' },
+    { maghrib: 'M'.repeat(40) },
+    { iqamah: 'Congregation Time' },
+    { iqamah: 'Jamaah Starting Time For Today Insha Allah' },
+    { athan: 'Call to Prayer' },
+    { prayer: 'Prayer Schedule For The Whole Week' },
+    { prayer: 'P'.repeat(40), athan: 'A'.repeat(40), iqamah: 'I'.repeat(40), maghrib: 'G'.repeat(40) },
+  ];
+  const hits: string[] = [];
+  for (const labels of LABELS) {
+    for (const quality of ['1080p', '720p']) {
+      for (const orientation of ['landscape', 'portrait']) {
+        for (const ann of [null, IMG]) {
+          const t = normTimetable({ ...BASE, layout: 'simple', jumuah: ['13:30', '14:30'], quality, orientation, labels }) as Timetable;
+          const svg = renderDisplaySvg(t, NOW, ann ? { announcement: IMG } : {});
+          const bs = runs(svg).map(box);
+          for (let i = 0; i < bs.length; i++) {
+            for (let j = i + 1; j < bs.length; j++) {
+              const a = bs[i];
+              const b = bs[j];
+              const ox = Math.min(a.r, b.r) - Math.max(a.l, b.l);
+              const oy = Math.min(a.b, b.b) - Math.max(a.t, b.t);
+              if (ox > 0.5 && oy > 0.5) {
+                hits.push(`${JSON.stringify(labels).slice(0, 44)} ${quality} ${orientation}${ann ? ' +pic' : ''}: "${a.body}" over "${b.body}" by ${ox.toFixed(0)}px`);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(hits.slice(0, 8), [], `${hits.length} overlapping pairs with renamed labels`);
+});
+
+test('when the band runs out of room the title goes first, and the labels last', () => {
+  /**
+   * The order of sacrifice, which is the whole design of this header. The title shrinks; then the
+   * title is DROPPED; and only in a column too narrow for even that does a label get shortened.
+   * The title names nothing, while ADHAN and IQĀMAH are the reason the band exists at all.
+   *
+   * Worth pinning as an order rather than as "it all fits": a rule where every string shrinks to
+   * its own floor is not a fit, it is an overlap waiting for a long enough label, which is exactly
+   * how this went wrong the first time.
+   */
+  const LABELS = { athan: 'Call to Prayer Adhan Time', iqamah: 'Congregation Starting Time' };
+  /** The strings sharing the header's baseline — the title and the two column labels. */
+  const header = (quality: string, beside: boolean): string[] => {
+    const t = normTimetable({ ...BASE, layout: 'simple', quality, jumuah: ['13:30', '14:30'], labels: LABELS }) as Timetable;
+    const svg = renderDisplaySvg(t, NOW, beside ? { announcement: IMG } : {});
+    const heads = runs(svg).filter((r) => svg.indexOf(r.body) > 0 && r.body === r.body.toUpperCase());
+    const band = heads.filter((r) => /PRAYER|CALL|CONGREGATION/.test(r.body));
+    const top = Math.min(...band.map((r) => r.y));
+    return band.filter((r) => r.y === top).map((r) => r.body);
+  };
+
+  const roomy = header('1080p', false);
+  assert.ok(roomy.includes('PRAYER TIMES'), 'with room, the title stays');
+  assert.ok(roomy.includes('CALL TO PRAYER ADHAN TIME'), 'and both labels are in full');
+  assert.ok(roomy.includes('CONGREGATION STARTING TIME'));
+
+  // The tightest column this app draws: the timetable beside a slideshow image on a 720p screen.
+  const tight = header('720p', true);
+  assert.ok(!tight.includes('PRAYER TIMES'), 'the title is what goes');
+  assert.ok(tight.some((s) => s.startsWith('CALL TO PRAYER')), 'the Adhan column is still named');
+  const iq = tight.find((s) => s.startsWith('CONGREGATION'));
+  assert.ok(iq, 'and so is the Iqamah column');
+  assert.ok(iq!.endsWith('...'), `shortened rather than run across its neighbour — got ${JSON.stringify(iq)}`);
+});
+
 // ── the sizes themselves ─────────────────────────────────────────────────────
 
 /** The largest prayer-name and clock-time sizes in a frame's table. */

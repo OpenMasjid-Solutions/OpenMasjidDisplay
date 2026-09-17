@@ -180,6 +180,13 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const previewBody = formBody(f);
 
   const themePrimary = state.themes.find((t) => t.id === f.themeId)?.palette.primary ?? '#22D3EE';
+  // What the Simple page's two theme options are tinted with — the same accent the screen uses,
+  // so the swatches here show the page the renderer will actually draw. The mixes match
+  // `simplePage()` in server/src/render/theme.ts, which is what resolves 'theme-light' /
+  // 'theme-dark' at render time; these are only the preview dots, and the stored value is the
+  // token, never the colour, so changing the accent moves the real page with it.
+  const simpleAccent = f.accent ?? themePrimary;
+  const simpleBgIsHex = /^#[0-9a-f]{6}$/i.test(f.simpleBg || '');
   const themeGold = state.themes.find((t) => t.id === f.themeId)?.palette.gold ?? '#D4AF37';
 
   const save = async () => {
@@ -668,11 +675,29 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             </select>
           </Field>
           {f.layout === 'simple' && (
-            <Field label="Background colour" hint="The Simple layout's flat page colour. Text switches automatically between light and dark to stay readable on whatever you pick.">
-              <div className="row" style={{ gap: '0.6rem', alignItems: 'center' }}>
-                <input type="color" className="color-input" value={f.simpleBg || '#ffffff'} onChange={(e) => set('simpleBg', e.target.value)} />
-                <span className="hint">{f.simpleBg ? f.simpleBg : 'White (default)'}</span>
-                {f.simpleBg && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('simpleBg', '')}>Reset to white</button>}
+            <Field
+              label="Page colour"
+              hint="Simple is a flat page and an accent colour, so this is most of how it looks. The two theme options tint the page with whatever accent colour is set below — pick a different theme and the page follows it. Text, the table's bands and the times all adjust themselves to stay readable on whatever you choose."
+            >
+              <div className="chips">
+                <button type="button" className={`chip${!f.simpleBg ? ' is-active' : ''}`} onClick={() => set('simpleBg', '')} title="White (default)">
+                  <span className="chip-dot" style={{ background: '#ffffff', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
+                  White
+                </button>
+                <button type="button" className={`chip${f.simpleBg === 'theme-light' ? ' is-active' : ''}`} onClick={() => set('simpleBg', 'theme-light')} title="A light page tinted with the theme colour">
+                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #ffffff 94%, ${simpleAccent})`, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
+                  Theme — light
+                </button>
+                <button type="button" className={`chip${f.simpleBg === 'theme-dark' ? ' is-active' : ''}`} onClick={() => set('simpleBg', 'theme-dark')} title="A dark page tinted with the theme colour">
+                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #0b0f10 84%, ${simpleAccent})` }} />
+                  Theme — dark
+                </button>
+              </div>
+              <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.55rem' }}>
+                <label className="row" style={{ gap: '0.45rem' }}>
+                  <input type="color" className="color-input" value={simpleBgIsHex ? f.simpleBg : '#ffffff'} onChange={(e) => set('simpleBg', e.target.value)} />
+                  <span className="hint">{simpleBgIsHex ? f.simpleBg : 'Custom colour'}</span>
+                </label>
               </div>
             </Field>
           )}
@@ -681,7 +706,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
       <div className="card section">
         <h3 className="section-title">Theme & colours</h3>
-        <Field label="Theme colour" hint="Drives the accent colour throughout — the highlighted next-prayer row, the countdown ring (Classic), icons and the Jumu'ah bar. A ready-made palette (dark is default), or pick a custom accent colour below.">
+        <Field label="Theme colour" hint="Drives the accent colour throughout — the highlighted next-prayer row, the countdown ring (Modern), icons, the Jumu'ah times and, on Simple, the prayer-table header and the page itself when its colour is set to one of the theme options. A ready-made palette (dark is default), or pick a custom accent colour below.">
           <div className="chips">
             {state.themes.map((th) => (
               <button

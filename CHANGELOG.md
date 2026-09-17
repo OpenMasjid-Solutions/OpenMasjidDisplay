@@ -13,6 +13,19 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Changed
+- **The Simple design now takes the theme colours, not just an accent.** Cycling through the
+  ready-made palettes barely changed a Simple screen: it has no scene or photo to theme, and its
+  page colour was a separate setting that defaulted to white and stayed white. Under Layout →
+  Page colour there are now two theme options — a light page and a dark one — each tinted with
+  whatever accent colour the screen is using, so picking a different palette (or your own colour)
+  moves the whole design with it. White is still the default, so screens already on a wall look
+  exactly as they did until somebody changes them.
+- **The dates under the clock on the Simple design are stacked and much larger.** The Hijri date
+  now sits on its own line above the Gregorian one. Sharing a line meant they were shrunk to fit
+  together — about 21px under a 160px clock, and smaller still in Arabic and Urdu; a line each
+  means neither has to shrink at all on a full-size screen.
+- **The "next prayer in…" line on the Simple design is bigger too** — that column is mostly empty
+  on a landscape screen, and this is the one line on it that changes minute to minute.
 - The release procedure in `CLAUDE.md` now has publishing the GitHub release as a numbered step,
   with a verification step after it. A tag is not a release, and OpenMasjidOS shows an admin the
   release notes as "What’s new" once it has updated the app in the background — so a tag with no
@@ -20,6 +33,16 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **Accent colours on the Simple design are now guaranteed to be readable.** Several of the
+  ready-made palettes are deliberately pale, and Simple puts the accent on text — the Iqamah
+  times, the Jumu'ah times, the "next prayer in" line. Sunset's yellow Jumu'ah time on its own
+  pale band was well below the readable threshold. Each of them now darkens or lightens as far as
+  it has to, keeping the colour but not the problem. The green header bar was picking its text
+  colour the same too-simple way and has been fixed with it.
+- Prayer names and column headings that a masjid has renamed are now fitted properly. A long
+  custom name could run into the time beside it, and a long custom "Iqamah" heading could run
+  across "Adhan"; names and headings are now measured against the room they actually have, and
+  shortened rather than overlapped when there is not enough.
 - **The Simple design's prayer table now names its two time columns.** It showed two times on
   every row — the Adhan and the jamā'ah — and said nowhere which was which. ADHAN and IQĀMAH now
   sit in the green header bar, above the columns they belong to, in whichever language the screen

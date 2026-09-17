@@ -113,7 +113,22 @@ test("Jumu'ah is marked out from the day's five prayers", () => {
   assert.match(svg, /JUMU/, "Jumu'ah is in the table");
   // Its Iqāmah time takes the theme's gold, which is what distinguishes it on a dark page where a
   // gold BAND cannot work — gold over dark navy comes out olive at every alpha.
-  assert.ok(svg.includes('#F59E0B') || svg.includes('#f59e0b'), "the Jumu'ah time carries the gold");
+  //
+  // What is asserted is that the colour is its OWN, not that it is one particular hex: the gold
+  // is now darkened or lightened as far as it must be to clear WCAG AA against the band it sits
+  // on (`readableOn` in svg.ts), because several themes ship a pale accent and Sunset's yellow on
+  // its own pale band was 1.8:1. Pinning the literal #F59E0B would pin the arithmetic instead of
+  // the intent, and would go red the first time a palette moved.
+  const timeFills = (s: string) =>
+    [...s.matchAll(/<text [^>]*fill="([^"]+)"[^>]*>\d{1,2}:\d{2}(?: [AP]M)?<\/text>/g)].map((m) => m[1]);
+  const i = svg.indexOf('JUMU');
+  const others = new Set(timeFills(svg.slice(0, i)));
+  const jumuah = timeFills(svg.slice(i));
+  assert.ok(jumuah.length > 0, "the Jumu'ah row draws a time");
+  assert.ok(
+    jumuah.some((f) => !others.has(f)),
+    `the Jumu'ah time should carry a colour no other row's does; saw ${JSON.stringify(jumuah)}`,
+  );
 });
 
 // ── how Jumu'ah reads in the Simple table ───────────────────────────────────
