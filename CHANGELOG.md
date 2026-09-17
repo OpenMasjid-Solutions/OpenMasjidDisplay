@@ -20,6 +20,24 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **A slideshow announcement image no longer takes the whole screen — the prayer times stay
+  beside it.** When an image came up, the timetable disappeared for as long as it was showing, on
+  both the Modern and the Simple design. Anyone walking in during those seconds saw a flyer and no
+  prayer times at all. Now the screen splits: the timetable on the left and the picture on the
+  right on a landscape screen, the picture above the timetable on a portrait one.
+- **Announcement images are shown whole rather than cropped to fill.** A poster that is not the
+  shape of the screen used to have its edges cut off. In its own box it fits almost entirely, so
+  nothing is trimmed.
+- **The scrolling ticker no longer runs across an announcement image.** The band now has its own
+  strip at the bottom of the screen and the picture sits above it, so a masjid's own message and
+  its own poster are both readable at once instead of one being printed over the other.
+- **The Simple design now has a real portrait layout.** Choosing Simple and hanging the screen
+  portrait silently gave you the Modern design instead — the setting did nothing. Portrait Simple
+  is now Simple: the masjid name, clock and date above its banded prayer table.
+- **The date under the clock on the Simple design no longer runs off the edge.** The Hijri and
+  Gregorian halves are different lengths, and the line was centred on the divider between them
+  rather than on the line itself, so it hung off to one side and spilled out of its column. Most
+  visible in Arabic and Urdu, where the date is longer, but it was happening in English too.
 - **On Fridays a screen counted down to a Dhuhr Iqamah that nobody was praying, and ignored
   Jumu’ah entirely.** Three things on the screen ask "is a congregation about to pray?", and all
   three were looking at the daily prayer table — which carries Dhuhr every day, because a masjid

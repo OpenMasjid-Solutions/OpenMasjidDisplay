@@ -1731,16 +1731,41 @@ function layoutReference(a: Box, m: Model, c: Ctx): string {
 }
 
 /**
+ * The Simple design in a TALL, NARROW box — brand block on top, the banded table beneath.
+ *
+ * Simple used to have no such arrangement, and the consequence was not a rough portrait: it was
+ * NO Simple layout at all. `layoutSimple` returned `portraitStack` — the Modern widget stack —
+ * so a masjid that chose Simple and hung the screen portrait got Modern, element for element,
+ * differing only in palette. The setting silently did nothing.
+ *
+ * It is the same shape the announcement composite needs for its timetable column, so it is one
+ * function rather than two: a narrow box is a narrow box, whether it is a portrait screen or the
+ * third of a landscape one left over beside a poster.
+ */
+function simpleStack(a: Box, m: Model, c: Ctx): string {
+  const out: string[] = [];
+  const gap = Math.min(a.w, a.h) * 0.03;
+  // The brand block sizes its own contents off the box WIDTH and centres them vertically, so it
+  // is given a slice proportional to the height rather than a fixed one — on a 1080x1920 screen
+  // that is ~650px for logo, name, clock and date, which is the half of this design that is
+  // meant to be read from the back of a hall.
+  const headH = clamp(a.h * 0.38, 240, 760);
+  out.push(brandColumn({ x: a.x, y: a.y, w: a.w, h: headH }, m, c));
+  const tableY = a.y + headH + gap;
+  out.push(simpleTable({ x: a.x, y: tableY, w: a.w, h: a.y + a.h - tableY }, m, c));
+  return out.join('');
+}
+
+/**
  * The "simple" layout, modelled directly on a real installed wall display: a plain
  * flat page (no themed scene, no glass, no sun/moon), a brand column on the left —
  * logo/name, a small sunrise/sunset line, the big clock, one date line, and a plain
  * "next prayer in…" sentence instead of a countdown ring — and one wide banded prayer
  * table on the right, Jumu'ah as its own last row rather than a separate strip.
  * Nothing here is inherited from the classic look; it is its own, simpler thing.
- * Portrait falls back to the reference layout's stack for now.
  */
 function layoutSimple(a: Box, m: Model, c: Ctx): string {
-  if (a.w < a.h) return portraitStack(a, m, c);
+  if (a.w < a.h) return simpleStack(a, m, c);
   const out: string[] = [];
   const gap = Math.min(a.w, a.h) * 0.03;
   const leftFrac = 0.3;
@@ -1748,6 +1773,61 @@ function layoutSimple(a: Box, m: Model, c: Ctx): string {
   out.push(brandColumn({ x: a.x, y: a.y, w: leftW, h: a.h }, m, c));
   const rightX = a.x + leftW + gap;
   out.push(simpleTable({ x: rightX, y: a.y, w: a.x + a.w - rightX, h: a.h }, m, c));
+  return out.join('');
+}
+
+/**
+ * A slideshow image BESIDE the timetable, rather than instead of it.
+ *
+ * The history matters, because this is the second time round. v0.10.0 had a sidebar composite;
+ * v0.70.0 (an outside contributor's PR, deliberately, not by accident) replaced it with a
+ * full-bleed image and no timetable at all, on the reasoning that a poster "designed to be read
+ * on its own" was being squeezed next to a shrunk prayer table and neither half did well. That
+ * reasoning is sound about the OLD composite and wrong about the requirement: a prayer screen
+ * whose prayer times vanish for twenty seconds in every forty-five is not showing prayer times,
+ * and the times are the reason the screen is on the wall. So the composite comes back, built to
+ * answer the objection rather than to ignore it:
+ *
+ *  - The image gets the LARGER share and a whole box of its own — about two thirds of a
+ *    landscape screen — not the leftover margin.
+ *  - CONTAIN-fit inside that box, never cover-fit. Cover-fit is right when the image owns the
+ *    whole screen (it was measured: a contain-fitted poster on a 16:9 wall shrank to a fraction
+ *    of it). It is wrong here for the opposite reason: the box is already close to square, so a
+ *    portrait poster fits it nearly whole, and cropping half of somebody's flyer to fill a box
+ *    that did not need filling is the worse trade. A 900x1400 poster keeps all 900x1400 of
+ *    itself.
+ *  - The timetable column is the layout's own narrow form — `portraitStack` for Modern,
+ *    `simpleStack` for Simple — so it is a real timetable, not a squeezed landscape one.
+ *
+ * Portrait puts the image on top and the timetable under it, for the same reason landscape puts
+ * it to the side: it is the axis with room to spare.
+ */
+function announcementView(a: Box, m: Model, c: Ctx, image: string, isSimple: boolean): string {
+  const out: string[] = [];
+  const gap = Math.min(a.w, a.h) * 0.025;
+  const stack = (b: Box) => (isSimple ? simpleStack(b, m, c) : portraitStack(b, m, c));
+  const radius = Math.min(a.w, a.h) * 0.02;
+
+  /** The image, whole, centred in its box, on a backdrop so the letterboxing reads as a frame
+   *  rather than as the page showing through a gap. */
+  const picture = (b: Box) =>
+    rect(b.x, b.y, b.w, b.h, radius, c.p.light ? 'rgba(20,32,28,0.06)' : 'rgba(0,0,0,0.28)') +
+    `<image href="${image}" x="${b.x.toFixed(1)}" y="${b.y.toFixed(1)}" width="${b.w.toFixed(1)}" height="${b.h.toFixed(1)}" preserveAspectRatio="xMidYMid meet"/>`;
+
+  if (a.w >= a.h) {
+    // Landscape: timetable column left, image right. The column is a THIRD, clamped so it is
+    // neither a sliver on an ultrawide nor most of the screen on a small one.
+    const colW = clamp(a.w * 0.33, 280, 620);
+    out.push(stack({ x: a.x, y: a.y, w: colW, h: a.h }));
+    const imgX = a.x + colW + gap;
+    out.push(picture({ x: imgX, y: a.y, w: a.x + a.w - imgX, h: a.h }));
+  } else {
+    // Portrait: image on top, timetable beneath it.
+    const imgH = a.h * 0.44;
+    out.push(picture({ x: a.x, y: a.y, w: a.w, h: imgH }));
+    const stackY = a.y + imgH + gap;
+    out.push(stack({ x: a.x, y: stackY, w: a.w, h: a.y + a.h - stackY }));
+  }
   return out.join('');
 }
 
@@ -1762,24 +1842,24 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   // Sizes only depend on the box width, so they can all be worked out up front —
   // which is what lets the whole block be centred vertically: the total height has
   // to be known before the first thing is drawn, not discovered as we go.
-  const ms = c.showLogo || c.showName ? clamp(b.w * 0.3, 46, 110) : 0;
+  let ms = c.showLogo || c.showName ? clamp(b.w * 0.3, 46, 110) : 0;
   let ns = 0;
   if (c.showName) {
     ns = clamp(b.w * 0.1, 18, 38);
     const nw = approxWidth(c.masjidName, ns);
     if (nw > avail) ns = Math.max(12, ns * (avail / nw));
   }
-  const headerH = c.showLogo && c.showName ? ms + ns * 1.5 : c.showLogo ? ms + b.h * 0.03 : c.showName ? ns * 1.5 : 0;
+  let headerH = c.showLogo && c.showName ? ms + ns * 1.5 : c.showLogo ? ms + b.h * 0.03 : c.showName ? ns * 1.5 : 0;
 
-  const ss = c.showSunrise ? clamp(b.w * 0.038, 9, 14) : 0;
-  const sunriseH = c.showSunrise ? ss * 2.1 : 0;
+  let ss = c.showSunrise ? clamp(b.w * 0.038, 9, 14) : 0;
+  let sunriseH = c.showSunrise ? ss * 2.1 : 0;
 
   const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
   let ts = clamp(b.w * 0.4, 46, 160);
   const markSize = () => ts * 0.24; // smaller than before — AM/PM read as loud beside a thin clock face
   const clockW = () => approxWidth(c.clock.time, ts) + (markStr ? ts * 0.1 + approxWidth(markStr, markSize()) : 0);
   if (clockW() > avail) ts *= avail / clockW();
-  const clockH = ts * 1.12;
+  let clockH = ts * 1.12;
 
   const showDateLine = c.showDates && (!!c.hij || !!c.greg);
   const showBar = showDateLine && !!c.hij && !!c.greg;
@@ -1789,11 +1869,11 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     // (95% of the box) which is sized to leave the clock and sunrise/sunset row a margin too.
     // The separator is a drawn bar (below), not a character; ds*0.7 stands in for its width
     // (bar + the gap either side) at this ds, close enough for the fit check.
-    const dateAvail = b.w * 0.99;
+    const dateAvail = b.w * 0.94;
     const dw = approxWidth(c.hij, ds) + approxWidth(c.greg, ds) + (showBar ? ds * 0.7 : 0); // bar + both gaps, roughly
     if (dw > dateAvail) ds *= dateAvail / dw;
   }
-  const dateH = showDateLine ? ds * 2 : 0;
+  let dateH = showDateLine ? ds * 2 : 0;
 
   const sec = Math.max(0, c.remainingSec);
   const h = Math.floor(sec / 3600);
@@ -1810,9 +1890,29 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     const lw = approxWidth(nextLine, ls);
     if (lw > avail) ls *= avail / lw;
   }
-  const nextH = c.showCountdown ? ls * 1.9 : 0;
+  let nextH = c.showCountdown ? ls * 1.9 : 0;
 
-  const totalH = headerH + sunriseH + clockH + dateH + nextH;
+  /**
+   * Everything above is sized from the box WIDTH, which is right while this column is the full
+   * height of a landscape screen — the shape it was written for. It is not the only shape any
+   * more: the same block now heads a portrait screen and the timetable column beside a slideshow
+   * image, and in a box that is wide but short the block simply ran off the bottom of it —
+   * straight through the "PRAYER TIMES" band under it, with the date and the next-prayer line
+   * drawn over the table.
+   *
+   * `y` starting at `Math.max(0, ...)` was the tell: it clamps the CENTRING when the content is
+   * too tall, which quietly accepts the overflow instead of preventing it. So the block is
+   * scaled to fit first, and then centred — one factor across every size, so the proportions the
+   * design depends on are unchanged and it simply gets smaller.
+   */
+  let totalH = headerH + sunriseH + clockH + dateH + nextH;
+  const room = b.h * 0.98;
+  if (totalH > room && totalH > 0) {
+    const k = room / totalH;
+    ms *= k; ns *= k; ss *= k; ts *= k; ds *= k; ls *= k;
+    headerH *= k; sunriseH *= k; clockH *= k; dateH *= k; nextH *= k;
+    totalH = room;
+  }
   let y = b.y + Math.max(0, (b.h - totalH) / 2);
 
   // Logo above the name, both centred as one unit directly over the clock — not
@@ -1862,18 +1962,27 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   if (showDateLine) {
     y += ds * 1.2;
     if (showBar) {
-      // Anchored against the bar itself (`end` on the left, `start` on the right) rather than
-      // positioned from `approxWidth` estimates on both sides — that measured the Hijri and
-      // Gregorian strings independently and any estimate error showed up as an uneven-looking
-      // gap around the bar, which is exactly the thing the eye catches on a divider. Anchoring
-      // to a fixed point either side of the bar makes that gap exact regardless of estimate
-      // error; only the whole line's centering (not the gap) can be off by a little now, which
-      // is far less noticeable.
+      // Anchored against the bar (`end` on the left, `start` on the right) so the gap either
+      // side of it is EXACT regardless of estimate error — that part was right and is kept.
+      //
+      // What was wrong was where the bar went. It sat on the column's centre line, which centres
+      // the DIVIDER rather than the line: "Rabi' I 29, 1448 AH" and "Friday, September 11, 2026"
+      // are nowhere near the same width, so the line hung off-centre by half their difference
+      // and ran out past the right edge of the column into the prayer table. That is the "date
+      // gets cut off" — it was never clipped, it was overflowing, and only in this layout
+      // because only this layout centres the date under a narrow column.
+      //
+      // So the bar is placed where it falls WITHIN a centred line instead. The estimate is only
+      // used to position it; the gap is still exact, and an estimate error now shifts the whole
+      // line slightly rather than pushing one end of it off the box.
       const barW = ds * 0.18;
       const barGap = ds * 0.26;
-      out.push(text(cx - barW / 2 - barGap, y, c.hij, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
-      out.push(rect(cx - barW / 2, y - ds * 0.8, barW, ds * 0.9, barW * 0.3, c.p.text));
-      out.push(text(cx + barW / 2 + barGap, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'start' }));
+      const hw = approxWidth(c.hij, ds);
+      const gw = approxWidth(c.greg, ds);
+      const barX = cx - (hw + barGap + barW + barGap + gw) / 2 + hw + barGap;
+      out.push(text(barX - barGap, y, c.hij, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
+      out.push(rect(barX, y - ds * 0.8, barW, ds * 0.9, barW * 0.3, c.p.text));
+      out.push(text(barX + barW + barGap, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'start' }));
     } else {
       out.push(text(cx, y, c.hij || c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
     }
@@ -2054,14 +2163,44 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   // A light gap between rows: the band is inset top/bottom rather than drawn edge-to-edge,
   // so a sliver of the page shows between rows instead of one solid block of colour.
   const rowGap = clamp(rowH * 0.08, 2, 10);
+
+  /**
+   * One type size for every row, fitted to the NARROWEST thing it has to clear.
+   *
+   * `clamp(rowH * 0.4, 16, 44)` per row was height-only, and that holds exactly as long as the
+   * table is the wide two-thirds of a landscape screen. Give it a narrow column — the timetable
+   * beside a slideshow image — and the rows get TALLER (same six rows, less width), so the type
+   * grows while the space for it shrinks: "MAGHRIB" ran straight into "7:16 PM".
+   *
+   * So the width each column actually has is measured, and the size is the smallest of the three
+   * budgets. Measured once for the whole table rather than per row, because rows of a table with
+   * different type sizes read as a mistake.
+   */
+  const unit = (str: string) => approxWidth(str, 100) / 100; // width per 1px of size
+  const longestName = lines.reduce((w, l) => Math.max(w, unit(l.name)), 0);
+  // Every width here is linear in the one unknown size, so the budgets are solved rather than
+  // guessed at with a reserve. The widest thing a time slot ever holds is the Jumu'ah row's
+  // ORDINAL GROUP — "1st 1:30 PM" — not a bare time, and sizing against a bare time is how the
+  // ordinal ended up printed on top of the word JUMU'AH.
+  const timeU = unit('12:57 PM');
+  const ordU = TIME_SCALE * (0.46 * 2.1 + 0.46 * 0.5 + timeU * 1.12); // ordinal group, per 1px of name size
+  const nameSize = clamp(
+    Math.min(
+      rowH * 0.4,
+      (colAd - nameX - pad) / Math.max(0.01, longestName + ordU), // name + the Adhan slot beside it
+      (colIq - colAd - pad) / Math.max(0.01, ordU), // the Iqamah slot on its own
+    ),
+    11,
+    44,
+  );
+  const timeSize = nameSize * TIME_SCALE;
+
   lines.forEach((line, i) => {
     const ry = listTop + i * rowH;
     const midY = ry + rowH * 0.64;
     const band = line.highlight ? bandHighlight : line.key === 'jumuah' ? bandJumuah : i % 2 === 0 ? bandBase : bandAlt;
     out.push(rect(b.x, ry + rowGap / 2, b.w, rowH - rowGap, rowGap * 0.6, band));
     out.push(prayerIcon(line.key, b.x + pad + iconR, ry + rowH / 2, iconR));
-    const nameSize = clamp(rowH * 0.4, 16, 44);
-    const timeSize = nameSize * TIME_SCALE;
     const mainColor = line.highlight ? c.p.primary : c.p.text;
     // The Iqāmah is the number people are actually reading — it is when the jamā'ah starts — so
     // it takes the accent on every row, not only the highlighted one. Jumu'ah takes the gold, to
@@ -2606,7 +2745,8 @@ export interface RenderOpts {
    * blurs once and sets this. The pixels are identical; only the timing changes.
    */
   bgPreblurred?: boolean;
-  /** data: URI of an announcement image → timetable becomes a left sidebar, image fills the right */
+  /** data: URI of a slideshow image. The timetable keeps a column and the picture takes the
+   *  rest — landscape side by side, portrait stacked. See `announcementView`. */
   announcement?: string | null;
   /** data: URI of an uploaded masjid logo, or null for the built-in mark */
   logo?: string | null;
@@ -2817,10 +2957,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   const tkSep = iqNotice ? split.sep : null;
   const tkScroll = iqNotice ? split.scroll : null;
   const bandShown = !!tickerText || !!iqNotice;
-  // An announcement fills the screen with the masjid's OWN artwork — which has its own footer, its
+  // An announcement puts the masjid's OWN artwork on the screen — which has its own footer, its
   // own type and its own idea of where the bottom edge is. Our calculation-method footnote drawn
   // across it is a watermark on somebody else's poster, so it is suppressed, and the strip it would
-  // have reserved goes back to the image instead of becoming an empty band under it.
+  // have reserved goes back to the picture instead of becoming an empty band under it.
   const announcing = !!opts.announcement;
   const bottomCore = bandShown ? split.bandH : tt.showFooter && !announcing ? clamp(H * 0.05, 24, 60) : P;
   const area: Box = { x: P, y: P, w: W - 2 * P, h: H - P - bottomCore };
@@ -2853,26 +2993,17 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   };
 
   if (opts.announcement) {
-    // Full screen — one layout for the normal timetable, a completely different one the
-    // moment a slideshow image is active — not the old sidebar composite, which squeezed an
-    // announcement image designed to be read on its own next to a shrunk timetable neither
-    // half did well.
+    // The timetable STAYS, beside the picture — see announcementView for why this replaced the
+    // full-bleed image, and why it is contain-fit where the full-bleed one was cover-fit.
     //
-    // Cover-fit (slice): `announcements.images` is an admin's own upload — a flyer, a photo,
-    // whatever they picked — with no size or shape this app controls or can adapt to it, so
-    // there is no "fix the source" option the way there would be for something this app
-    // generates itself. A contain-fit pass was tried here, on the theory that showing the
-    // whole image beats cropping any of it; on a masjid's actual screen it did the opposite of
-    // what a wall display needs — an upload that isn't 16:9 (most aren't) shrank to a fraction
-    // of the screen, and its text went with it. Cover-fit crops whatever overflows, evenly
-    // from the centre outward, but keeps every slide filling the wall at full size — the
-    // trade-off a signage screen actually wants over a small, fully-intact image nobody at the
-    // back of the room can read.
-    //
-    // This also covers incorrect-parking alert cards from the volunteer page — they render
-    // as full-bleed 1920×1080 frames (see reportCard.ts) precisely so they fill the wall the
-    // same way, with no separate sidebar composite or glass panel needed.
-    out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`);
+    // Drawn into `area`, which is the same box every other layout gets: that is what keeps the
+    // picture out from under the bottom band. The band used to be painted straight over the
+    // image — a scrolling ticker across somebody's poster — and the fix is not to silence the
+    // ticker (on a decoder screen the moving text is an ffmpeg filter, so changing it every time
+    // the slideshow phase flips would respawn ffmpeg and drop the RTSP stream twice a minute).
+    // The fix is to stop putting the picture underneath it. The red Iqāmah-change reminder
+    // still draws over everything, deliberately: that one is this app speaking about today.
+    out.push(announcementView(area, m, ctx, opts.announcement, isSimple));
   } else {
     out.push(isSimple ? layoutSimple(area, m, ctx) : layoutReference(area, m, ctx));
   }

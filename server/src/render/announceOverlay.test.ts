@@ -14,6 +14,11 @@
  * The bottom BAND is the deliberate exception and is pinned here too, because the two look alike
  * and the difference is easy to lose: a red "Iqāmah times are changing" reminder is this app
  * speaking about today, and it has to be readable whatever the slideshow happens to be showing.
+ *
+ * "Readable over it" is no longer the same as "painted on top of it". Since the picture stopped
+ * filling the frame (see announceComposite.test.ts) the band has its own strip and the image is
+ * drawn above it. What these tests hold is that the band is still THERE with a slideshow up —
+ * suppressing it was the other way this could have been fixed, and it is the wrong one.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -88,12 +93,18 @@ test('the Iqāmah-change reminder DOES still draw over an announcement', () => {
   assert.ok(!svg.includes(NOTE));
 });
 
-test('a ticker also still draws over an announcement', () => {
+test('a ticker is still shown while an announcement is up', () => {
   const withTicker = tt();
   withTicker.ticker = {
     enabled: true,
     messages: [{ id: 'm1', text: 'Fundraising dinner this Saturday', start: '', end: '' }],
   } as Timetable['ticker'];
   const svg = renderDisplaySvg(withTicker, NOW, { announcement: IMG });
-  assert.match(svg, /Fundraising dinner/, 'the ticker is the other thing that outranks the image');
+  // It no longer scrolls ACROSS the picture — the picture is kept out of its strip instead, which
+  // is what announceComposite.test.ts measures. Silencing the ticker whenever a slideshow image
+  // was up would have been the other way to stop the overlap, and it is the wrong one twice over:
+  // a masjid's own message would go unread for most of every cycle, and on a decoder screen the
+  // moving text is an ffmpeg drawtext filter, so changing it as the phase flips would respawn
+  // ffmpeg and drop the RTSP stream roughly twice a minute.
+  assert.match(svg, /Fundraising dinner/, "the masjid's own message is not silenced by a picture");
 });

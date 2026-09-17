@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * Renders one incorrect-parking report to a full-bleed (1920×1080) red alert card as
- * an SVG string. reportFrames.ts rasterizes it (resvg) into an announcement frame
- * that rotates on the timetable(s) the report targets. A report with several photos
- * produces one frame per photo (same details, different photo) so the slideshow
- * scrolls through them. The photo is embedded as a data URI (rendered locally, so
- * there's no size limit). Read from far away, so labels/values are large.
+ * Renders one incorrect-parking report to a 1920×1080 red alert card as an SVG string.
+ * reportFrames.ts rasterizes it (resvg) into an announcement frame that rotates on the
+ * timetable(s) the report targets. A report with several photos produces one frame per photo
+ * (same details, different photo) so the slideshow scrolls through them. The photo is embedded
+ * as a data URI (rendered locally, so there's no size limit). Read from far away, so
+ * labels/values are large.
+ *
+ * The card used to fill the wall, because a slideshow image did. It no longer does: the screen
+ * keeps its prayer times beside whatever is showing, so this is contain-fitted into the picture's
+ * box like any other announcement (see `announcementView` in render/svg.ts). Nothing here needs
+ * to change for that — a card that reads from the back of a car park reads from a two-thirds box
+ * too — but it is why the type on it is deliberately large, and why shrinking it would be wrong.
  */
 import type { ParkingReport } from '../types';
 
