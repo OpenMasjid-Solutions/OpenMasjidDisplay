@@ -1474,13 +1474,21 @@ function panelRing(b: Box, c: Ctx): string {
  * ~880px wide — horizontal collision is nowhere near. But the size is a fraction of `rowH`
  * (`nameSize` is `rowH * 0.38`), and the text is centred on a baseline at `rowH * 0.66`, so
  * pushing the ratio far enough sends ascenders into the row above before anything overlaps
- * sideways. 1.1 is a deliberate nudge that leaves both alone: verified against a rendered
- * 1080p frame, not just the arithmetic.
+ * sideways.
  *
- * If this is ever raised much further, check the RENDERED frame at 720p portrait too — that
- * is the tightest `rowH`, so it is where the band runs out first.
+ * It was 1.1 and is now 1.25 — a masjid asked for larger times on both designs, and this is
+ * the "tiny bit" half of that (`simpleTable` solves its own, much larger, size from the room
+ * it has). The arithmetic says the band does not run out until about 2.1, so 1.25 is nowhere
+ * near it; what stops this going further is that the Modern table is a composed panel with a
+ * fixed look, not that it would collide.
+ *
+ * `tableFit.test.ts` now walks the RENDERED frames — every quality, both orientations, both
+ * designs, beside a picture and not, in three languages — and fails on an actual overlap, so
+ * this number no longer rests on having looked at one 1080p frame. Raise it and that test is
+ * what tells you whether it still fits; the tightest `rowH` is a 720p portrait column beside
+ * a slideshow image, which is a shape that did not exist when 1.1 was chosen.
  */
-const TIME_SCALE = 1.1;
+const TIME_SCALE = 1.25;
 
 /** The prayer table: PRAYER · ADHAN · IQAMAH, bilingual names (English + Arabic gloss)
  *  on the leading side, active prayer highlighted with a primary accent bar. */
@@ -2096,22 +2104,6 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   const out: string[] = [];
   const pad = b.w * 0.03;
   const titleSize = clamp(b.h * 0.038, 14, 24);
-  // A filled band rather than dim text on the page. The flat look is the point of this layout,
-  // but "PRAYER TIMES" floating in grey was the one element carrying no colour at all, and a
-  // headed table is what the wall displays this is modelled on actually do.
-  const titleH = titleSize * 2.1;
-  out.push(rect(b.x, b.y, b.w, titleH, titleH * 0.22, c.p.primary));
-  out.push(
-    text(b.x + b.w / 2, b.y + titleH * 0.66, (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES', {
-      size: titleSize,
-      // Same rule, same numbers as the page-colour flip above: the primary is a colour input an
-      // admin can set to anything, so the text on it has to be chosen rather than assumed.
-      fill: relLuminance(c.p.primary) > 0.6 ? '#1c2620' : '#f2f6f3',
-      weight: 700,
-      anchor: 'middle',
-      letter: 4,
-    }),
-  );
 
   type Line = { key: string; name: string; t1: number | null; t2: number | null; highlight?: boolean };
   const lines: Line[] = m.rows
@@ -2165,35 +2157,174 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   const rowGap = clamp(rowH * 0.08, 2, 10);
 
   /**
-   * One type size for every row, fitted to the NARROWEST thing it has to clear.
+   * The filled band at the top is the table's HEADER, not just its title.
    *
-   * `clamp(rowH * 0.4, 16, 44)` per row was height-only, and that holds exactly as long as the
-   * table is the wide two-thirds of a landscape screen. Give it a narrow column — the timetable
-   * beside a slideshow image — and the rows get TALLER (same six rows, less width), so the type
-   * grows while the space for it shrinks: "MAGHRIB" ran straight into "7:16 PM".
+   * It used to be a centred "PRAYER TIMES" and nothing else, which left the two time columns
+   * unlabelled: a masjid's own screen showed two times per row with no way to tell which was the
+   * Adhan and which the jamā'ah. The other design has named them from the start.
    *
-   * So the width each column actually has is measured, and the size is the smallest of the three
-   * budgets. Measured once for the whole table rather than per row, because rows of a table with
-   * different type sizes read as a mistake.
+   * They go INSIDE the band rather than on a dim line beneath it — the arrangement the other
+   * design uses — because that line would cost the rows the height it took, and the rows are
+   * where the times live. A filled header bar reading PRAYER TIMES · ADHAN · IQĀMAH is also
+   * exactly what the wall displays this layout is modelled on actually do. The title moves from
+   * the middle of the band to `nameX`, which is where the prayer names start, so it heads its own
+   * column instead of floating above all three.
+   *
+   * Drawn here, after the column geometry, because it needs `colAd`/`colIq`/`nameX` — the labels
+   * are anchored to the very same edges the times are, or a header that named the wrong column
+   * would be worse than no header at all.
    */
+  const onPrimary = relLuminance(c.p.primary) > 0.6 ? '#1c2620' : '#f2f6f3';
+  const titleH = titleSize * 2.1;
+  const headY = b.y + titleH * 0.66;
+  const colLabelSize = clamp(titleSize * 0.8, 9, 20);
+  const colLabel = (s: string) => approxWidth(s, colLabelSize) + Math.max(0, s.length - 1) * 1.2;
+  const adhanLbl = (c.L.athan ?? 'Adhan').toUpperCase();
+  const iqamahLbl = (c.L.iqamah ?? 'Iqamah').toUpperCase();
+  const titleStr = (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES';
+  // The title is the one thing here that can be shrunk without misnaming anything, so it is what
+  // gives way when a narrow column cannot hold all three at full size — the column labels are the
+  // point of the change and must stay legible.
+  //
+  // Its letter-spacing shrinks WITH the type rather than staying at 4px. That is not a nicety:
+  // the tracking is nearly a third of this title's width at full size, so a fixed 4px both breaks
+  // the solve — a shrunk title still carrying full tracking can overflow the room it was just
+  // fitted into — and reads as separate letters rather than a word once the type is small.
+  const titleRoom = colAd - colLabel(adhanLbl) - colLabelSize * 1.6 - nameX;
+  const titleFull = approxWidth(titleStr, titleSize) + Math.max(0, titleStr.length - 1) * 4;
+  // Everything in `titleFull` is proportional to the size, so this is exact rather than iterated.
+  // The 9px floor can only bite in a box far below the size anything on it would be legible at.
+  const titleFit = titleFull > titleRoom ? Math.max(9, (titleSize * Math.max(0, titleRoom)) / titleFull) : titleSize;
+  out.push(rect(b.x, b.y, b.w, titleH, titleH * 0.22, c.p.primary));
+  out.push(
+    text(nameX, headY, titleStr, {
+      size: titleFit,
+      // Same rule, same numbers as the page-colour flip above: the primary is a colour input an
+      // admin can set to anything, so the text on it has to be chosen rather than assumed.
+      fill: onPrimary,
+      weight: 700,
+      anchor: 'start',
+      letter: (4 * titleFit) / titleSize,
+    }),
+  );
+  for (const [x, label] of [
+    [colAd, adhanLbl],
+    [colIq, iqamahLbl],
+  ] as const) {
+    out.push(
+      text(x, headY, label, {
+        size: colLabelSize,
+        // Dimmer than the title, so the band still reads as one heading rather than three.
+        fill: hexToRgba(onPrimary, 0.82),
+        weight: 700,
+        anchor: 'end',
+        letter: 1.2,
+      }),
+    );
+  }
+
+  /**
+   * Two sizes for the whole table: one for the names, a LARGER one for the times.
+   *
+   * They used to be one number with a fixed ratio (`timeSize = nameSize * TIME_SCALE`), which
+   * meant the times inherited every limit the NAMES ran into — and the names hit their 44px cap
+   * on any large screen while the rows around them were 150px tall. A masjid asked for bigger
+   * times and they were right: the times are what the room is reading, the names are a label. On
+   * a 1080p landscape screen they now come out half as large again (48px to 76px) with the names
+   * untouched, because that space was there all along and the ratio was hiding it.
+   *
+   * So the names keep the budget they had and the times take what is actually left over. Two
+   * things make that safe rather than a guess:
+   *
+   *  - The name's budget still RESERVES room for a time at `MIN_TIME_RATIO`. That reserve is what
+   *    guarantees the times can never come out smaller than the names however tight the box gets
+   *    — the one outcome that would read as a bug rather than as a fit.
+   *  - The time's budget is worked out per ROW, not worst-name against worst-time. "MAGHRIB" is
+   *    the longest name and "JUMU'AH" is the only row carrying an ordinal ("1st 1:30 PM"), so
+   *    pairing the two shrinks the whole table to fit a row that does not exist.
+   */
+  /**
+   * The smallest the times may be relative to the names — and so how much of the Adhan column the
+   * name budget holds back for them.
+   *
+   * Deliberately this table's own number rather than `TIME_SCALE`: that one is the MODERN table's
+   * fixed name-to-time ratio, and tuning the look of that design must not quietly resize the
+   * NAMES on this one. They happen to be equal today; that is a coincidence, not a link.
+   */
+  const MIN_TIME_RATIO = 1.25;
   const unit = (str: string) => approxWidth(str, 100) / 100; // width per 1px of size
-  const longestName = lines.reduce((w, l) => Math.max(w, unit(l.name)), 0);
-  // Every width here is linear in the one unknown size, so the budgets are solved rather than
-  // guessed at with a reserve. The widest thing a time slot ever holds is the Jumu'ah row's
-  // ORDINAL GROUP — "1st 1:30 PM" — not a bare time, and sizing against a bare time is how the
-  // ordinal ended up printed on top of the word JUMU'AH.
-  const timeU = unit('12:57 PM');
-  const ordU = TIME_SCALE * (0.46 * 2.1 + 0.46 * 0.5 + timeU * 1.12); // ordinal group, per 1px of name size
+  /**
+   * The width of one time slot at size `t`. It mirrors `timeAt` below — the only thing that
+   * draws them — so the budget and the drawing cannot drift apart.
+   *
+   * Note it is NOT proportional to `t`: the ordinal's own size is clamped at both ends, so the
+   * group carries a constant in a very small box and again in a very large one. That is why the
+   * size is contracted onto this measurement below rather than solved from a ratio once.
+   */
+  const slotW = (str: string, t: number, ordinal: boolean) =>
+    ordinal ? clamp(t * 0.46, 9, 22) * 2.6 + approxWidth(str, t) * 1.12 : approxWidth(str, t);
+
+  const shape = lines.map((l) => {
+    const ord = l.key === 'jumuah' && m.jumuah.length > 1;
+    const adStr = l.t1 == null ? null : fmtShort(l.t1, c.timeFormat);
+    const iqStr = fmtShort(l.t2, c.timeFormat);
+    return {
+      nameU: unit(l.name),
+      ord,
+      adStr,
+      iqStr,
+      adU: adStr ? slotW(adStr, 100, ord) / 100 : 0, // per 1px of time size
+      iqU: slotW(iqStr, 100, ord) / 100,
+    };
+  });
+  // The name and the Adhan time share the room from `nameX` to `colAd`; the Iqamah slot has the
+  // room from `colAd` to `colIq` to itself.
+  const nameRoom = Math.max(1, colAd - nameX - pad);
+  const iqRoom = Math.max(1, colIq - colAd - pad);
+  const longestName = shape.reduce((w, r) => Math.max(w, r.nameU), 0.01);
+  const widestAd = shape.reduce((w, r) => Math.max(w, r.adU), 0.01);
+  const widestIq = shape.reduce((w, r) => Math.max(w, r.iqU), 0.01);
   const nameSize = clamp(
     Math.min(
       rowH * 0.4,
-      (colAd - nameX - pad) / Math.max(0.01, longestName + ordU), // name + the Adhan slot beside it
-      (colIq - colAd - pad) / Math.max(0.01, ordU), // the Iqamah slot on its own
+      nameRoom / (longestName + MIN_TIME_RATIO * widestAd), // the name plus the time it reserves for
+      iqRoom / (MIN_TIME_RATIO * widestIq),
     ),
     11,
     44,
   );
-  const timeSize = nameSize * TIME_SCALE;
+
+  // Half the row height is the ceiling: the baseline sits at 0.64 of the row, so type taller than
+  // this starts pushing ascenders into the band above. Measured on rendered frames, not derived.
+  // 80 is only a backstop against an absurdly tall box — on every real shape it is one of the
+  // three budgets below that binds, which is the point.
+  let timeSize = clamp(
+    Math.min(
+      rowH * 0.5,
+      iqRoom / widestIq,
+      ...shape.filter((r) => r.adU > 0).map((r) => (nameRoom - r.nameU * nameSize) / (r.adU * 0.92)),
+    ),
+    11,
+    80,
+  );
+  // `slotW` is affine rather than proportional (see above), so the estimate can be a little
+  // optimistic in a small box. Contract onto the real measurement: slot widths only grow with
+  // `t`, so dividing by the overshoot always moves toward fitting, and it settles in two passes.
+  for (let i = 0; i < 3; i++) {
+    let over = 1;
+    for (const r of shape) {
+      if (r.adStr) over = Math.max(over, slotW(r.adStr, timeSize * 0.92, r.ord) / Math.max(1, nameRoom - r.nameU * nameSize));
+      over = Math.max(over, slotW(r.iqStr, timeSize, r.ord) / iqRoom);
+    }
+    if (over <= 1.001) break;
+    timeSize /= over;
+  }
+  // A floor, and the one line here that can fight the fit above: it is reachable only when the
+  // name has been pushed UP by its own 11px clamp, i.e. in a box where the budget said the names
+  // should be smaller than 11px and legibility was already lost. Every real shape clears the
+  // floor by a wide margin — `tableFit.test.ts` walks 288 of them and asserts both that the
+  // times are the larger of the two and that nothing overlaps.
+  timeSize = Math.max(nameSize, timeSize);
 
   lines.forEach((line, i) => {
     const ry = listTop + i * rowH;

@@ -20,6 +20,15 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **The Simple design's prayer table now names its two time columns.** It showed two times on
+  every row — the Adhan and the jamā'ah — and said nowhere which was which. ADHAN and IQĀMAH now
+  sit in the green header bar, above the columns they belong to, in whichever language the screen
+  is set to. They cost the rows no height, so the times did not shrink to make room.
+- **The times in the prayer table are bigger, on both designs.** The Simple design's times are up
+  to half as large again on a 1080p screen: the type is now worked out from the room the table
+  actually has rather than from a fixed ratio to the prayer names, which had been capped and was
+  holding the times down with it. The Modern design's times are a step larger too. Prayer names
+  are unchanged on both — the times are what a room full of people is reading.
 - **A slideshow announcement image no longer takes the whole screen — the prayer times stay
   beside it.** When an image came up, the timetable disappeared for as long as it was showing, on
   both the Modern and the Simple design. Anyone walking in during those seconds saw a flyer and no
