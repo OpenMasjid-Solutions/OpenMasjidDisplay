@@ -13,6 +13,11 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Changed
+- **The control panel now follows the accent colour you picked on the OpenMasjidOS dashboard.**
+  It was already inheriting the dashboard's light/dark theme and wallpaper, but not its colour —
+  so four masjids in five were looking at a panel in a colour they had not chosen. All five
+  accents now come across, in both themes, and so does the dashboard's language, which sets the
+  panel's text direction for Arabic and Urdu.
 - **The Simple design now takes the theme colours, not just an accent.** Cycling through the
   ready-made palettes barely changed a Simple screen: it has no scene or photo to theme, and its
   page colour was a separate setting that defaulted to white and stayed white. Under Layout →
@@ -33,6 +38,11 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **Fixed unreadable text on coloured buttons in the panel.** The Delete button was white on a
+  light red — measured at 2.77:1, well under the readable threshold — and the same applied to the
+  active tab, the help button and the PIN keypad. Every one of them now takes an ink chosen for
+  the colour behind it. In the light theme this also fixes links, the active menu item and the
+  tag labels, which were below the threshold on a white card.
 - **Accent colours on the Simple design are now guaranteed to be readable.** Several of the
   ready-made palettes are deliberately pale, and Simple puts the accent on text — the Iqamah
   times, the Jumu'ah times, the "next prayer in" line. Sunset's yellow Jumu'ah time on its own

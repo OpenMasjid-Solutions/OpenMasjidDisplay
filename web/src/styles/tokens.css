@@ -79,6 +79,11 @@
   --color-btn: #22D3EE;
   --color-btn-hover: #67E8F9;
   --color-on-primary: #00131c;
+  /* The ink that goes on a DANGER fill, and the reason it is a token rather than white: this
+     theme's danger is a light red, and white on it measures 2.77:1 — under AA, on the delete
+     button. Light theme's danger is dark enough that white passes there (4.83:1), so the two
+     themes genuinely need different answers and neither of them is "always white". */
+  --color-on-danger: #00131c;
 
   --scene-base: #020912;
   --scene-gradient: linear-gradient(150deg, #0c3a4d 0%, #082230 48%, #020a12 100%);
@@ -103,8 +108,11 @@
   --color-surface-hover: rgba(2, 132, 199, 0.06);
   --color-surface-shimmer: #BAE6FD;
 
-  --color-primary: #0284C7;
-  --color-primary-hover: #0369A1;
+  /* #0284C7 measured 4.10:1 as TEXT on this theme's white card — under AA, on every link and
+     every active nav label. `--color-primary` is the text/border/ring colour; the FILL is
+     `--color-btn` below, which is where a brighter blue belongs. */
+  --color-primary: #0369A1;
+  --color-primary-hover: #075985;
   --color-primary-muted: #BAE6FD;
   --color-primary-subtle: rgba(2, 132, 199, 0.1);
 
@@ -150,6 +158,7 @@
   --color-btn: #0369A1;
   --color-btn-hover: #075985;
   --color-on-primary: #FFFFFF;
+  --color-on-danger: #FFFFFF;
 
   /* The ambient SCENE is light in light mode. It used to stay dark here — light mode
      lightened only the glass cards and left the backdrop near-black — because an earlier

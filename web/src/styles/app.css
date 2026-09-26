@@ -139,7 +139,9 @@ h1, h2, h3, p { margin: 0; }
 .btn--primary:hover { background: var(--color-btn-hover); }
 .btn--ghost { background: transparent; box-shadow: inset 0 0 0 1px var(--color-border); }
 .btn--ghost:hover { background: var(--color-surface-hover); }
-.btn--danger { background: var(--color-danger); color: #fff; }
+/* Ink for the FILL, not a fixed white — see --color-on-danger. This one was white on a light
+   red at 2.77:1, on the button that deletes a masjid's timetable. */
+.btn--danger { background: var(--color-danger); color: var(--color-on-danger); }
 .btn--sm { padding: 0.4rem 0.7rem; font-size: 0.85rem; }
 .btn--block { width: 100%; }
 .icon-btn {
@@ -166,7 +168,7 @@ h1, h2, h3, p { margin: 0; }
   position: relative; width: 2.7rem; height: 1.5rem; border-radius: 999px; border: 0;
   background: var(--color-surface-overlay); box-shadow: inset 0 0 0 1px var(--color-border); flex-shrink: 0;
 }
-.toggle.is-on { background: var(--color-primary); }
+.toggle.is-on { background: var(--color-btn); }
 .toggle::after {
   content: ""; position: absolute; inset-block-start: 0.15rem; inset-inline-start: 0.15rem;
   width: 1.2rem; height: 1.2rem; border-radius: 50%; background: #fff;
@@ -212,7 +214,7 @@ h1, h2, h3, p { margin: 0; }
 }
 .chip:hover { color: var(--color-ink); }
 .chip:active { transform: scale(0.96); }
-.chip.is-active { background: var(--color-primary); color: var(--color-on-primary); border-color: transparent; }
+.chip.is-active { background: var(--color-btn); color: var(--color-on-primary); border-color: transparent; }
 .chip-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; opacity: 0.7; }
 
 /* RTSP url box */
@@ -240,7 +242,7 @@ h1, h2, h3, p { margin: 0; }
   width: 2.2rem; height: 2.2rem; border-radius: 0.55rem; border: 1px solid var(--color-border);
   background: var(--glass-bg-inset); color: var(--color-ink-muted); font-weight: 600; font-size: 0.8rem;
 }
-.daygrid button.is-on { background: var(--color-primary); color: var(--color-on-primary); border-color: transparent; }
+.daygrid button.is-on { background: var(--color-btn); color: var(--color-on-primary); border-color: transparent; }
 
 /* List rows (sources, schedules) */
 .list { display: flex; flex-direction: column; }
@@ -465,7 +467,7 @@ span.tl--min:hover { filter: none; transform: none; }
   transition: background-color var(--dur-micro) ease, color var(--dur-micro) ease;
 }
 .tt-tab:hover { background: var(--color-surface-hover); color: var(--color-ink); }
-.tt-tab.is-active { background: var(--color-primary); color: #fff; }
+.tt-tab.is-active { background: var(--color-btn); color: var(--color-on-primary); }
 .tt-editor__panel { min-width: 0; overflow-y: auto; padding-inline-end: 0.35rem; }
 .tt-editor__panel .card.section {
   background: var(--glass-bg-inset); border: 1px solid var(--color-border);
@@ -482,7 +484,7 @@ span.tl--min:hover { filter: none; transform: none; }
   font-size: 0.68rem; font-weight: 700; line-height: 1; color: var(--color-ink-muted);
   cursor: help; position: relative; vertical-align: middle; user-select: none;
 }
-.help:hover, .help:focus-visible { background: var(--color-primary); color: #fff; border-color: transparent; outline: none; }
+.help:hover, .help:focus-visible { background: var(--color-btn); color: var(--color-on-primary); border-color: transparent; outline: none; }
 /* Rendered in a portal on <body> (see Help in ui.tsx) with fixed positioning so a
    scroll container can never clip it; JS sets left/top and flips it above/below. */
 .help-tip {
@@ -592,7 +594,7 @@ span.tl--min:hover { filter: none; transform: none; }
 /* PIN pad */
 .pin-dots { display: flex; justify-content: center; gap: 0.55rem; margin-block: 0.4rem 1.1rem; }
 .pin-dot { width: 0.8rem; height: 0.8rem; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--color-border); }
-.pin-dot.is-on { background: var(--color-primary); box-shadow: none; }
+.pin-dot.is-on { background: var(--color-btn); box-shadow: none; }
 .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
 .pin-key {
   height: 3.6rem; border: 0; border-radius: var(--radius-button); cursor: pointer;
@@ -602,7 +604,7 @@ span.tl--min:hover { filter: none; transform: none; }
 }
 .pin-key:active { transform: scale(0.93); }
 .pin-key--ghost { background: transparent; color: var(--color-ink-muted); font-size: 1.5rem; }
-.pin-key--ok { background: var(--color-primary); color: #fff; }
+.pin-key--ok { background: var(--color-btn); color: var(--color-on-primary); }
 .pin-key--ok:disabled { opacity: 0.5; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .pin-key:active { transform: none; } }
 

@@ -9,18 +9,30 @@
  * of the platform↔app layer). See docs/FABRIC.md.
  */
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { accentFor, DEFAULT_ACCENT } from './omosAccents';
 
 export interface Prefs {
   theme: 'system' | 'dark' | 'light';
   wallpaper: string;
   /** Optional custom wallpaper image URL — overrides the preset when set. */
   wallpaperImage: string;
-  /** Mirror OpenMasjidOS's theme + wallpaper (on by default under the platform). */
+  /** The dashboard's accent colour: one of the five in `omosAccents.ts`. */
+  accent: string;
+  /** BCP-47 language the dashboard is in — we use it only to decide text direction. */
+  lang: string;
+  /** Mirror OpenMasjidOS's appearance (on by default under the platform). */
   followOmos: boolean;
 }
 
 const KEY = 'omd-prefs';
-const DEFAULTS: Prefs = { theme: 'system', wallpaper: 'aurora', wallpaperImage: '', followOmos: true };
+const DEFAULTS: Prefs = {
+  theme: 'system',
+  wallpaper: 'aurora',
+  wallpaperImage: '',
+  accent: DEFAULT_ACCENT,
+  lang: 'en',
+  followOmos: true,
+};
 
 export const WALLPAPERS: Record<string, { label: string; preview: string }> = {
   aurora: { label: 'Aurora', preview: 'radial-gradient(circle at 30% 25%, #22D3EE, #0A1828 70%)' },
@@ -43,10 +55,85 @@ export function resolveTheme(theme: Prefs['theme']): 'dark' | 'light' {
 
 export function applyTheme(theme: Prefs['theme']): void {
   document.documentElement.setAttribute('data-theme', resolveTheme(theme));
+  // The accent's TEXT form depends on which page it is sitting on, so it is re-resolved here
+  // rather than only when the accent itself changes — otherwise a masjid whose dashboard is on
+  // `system` gets a dark-theme accent on a light page the moment their laptop switches at dusk.
+  applyAccent(accentOf());
+}
+
+/** The accent currently in force. Read from the store lazily so `applyTheme` can be called
+ *  before the store is hydrated (it is, on the very first paint). */
+function accentOf(): string {
+  try {
+    return state.accent;
+  } catch {
+    return DEFAULT_ACCENT;
+  }
 }
 
 export function applyWallpaper(id: string): void {
   document.documentElement.setAttribute('data-wallpaper', WALLPAPERS[id] ? id : 'aurora');
+}
+
+/** `#rrggbb` as an `rgba(...)` at `alpha`, for the accent's own tint. */
+function tint(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/**
+ * Paint the dashboard's accent over the stylesheet's.
+ *
+ * The properties move TOGETHER — a fill and the ink on it are one decision. These accents are
+ * chosen to be bright fills carrying dark ink, so setting a fill without its ink is how a button
+ * ends up with white on gold at 1.67:1, and light theme makes that worse rather than better: its
+ * stylesheet primary is a deep blue whose ink IS white.
+ *
+ * The split that matters is FILL versus TEXT, and it is why this is not four `setProperty` calls:
+ *
+ *  - `--color-btn` / `--color-btn-hover` take the raw accent. They are only ever backgrounds,
+ *    and `--color-on-primary` is the ink measured against them.
+ *  - `--color-primary` is the accent as a LETTERFORM — links, the brand, the active nav label —
+ *    and on a light page the raw accent is unreadable (1.67:1 to 2.72:1). There it takes the
+ *    accent's `textLight`, which is the same hue with the lightness given up.
+ *
+ * Because that choice depends on the theme, this has to run again whenever the theme changes,
+ * including when the OS flips under a `system` preference. `applyTheme` calls it.
+ */
+export function applyAccent(id: string): void {
+  const a = accentFor(id);
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  const root = document.documentElement.style;
+  root.setProperty('--color-btn', a.primary);
+  root.setProperty('--color-btn-hover', a.hover);
+  root.setProperty('--color-on-primary', a.onPrimary);
+  root.setProperty('--color-primary', light ? a.textLight : a.primary);
+  root.setProperty('--color-primary-hover', light ? a.textLight : a.hover);
+  // The tint behind accent-coloured text (active nav, tags). Always the RAW accent: it is a wash
+  // of the masjid's colour, and at 12% it is the page underneath that carries the contrast.
+  root.setProperty('--color-primary-subtle', tint(a.primary, light ? 0.1 : 0.12));
+}
+
+/**
+ * The languages this panel may be opened in that are written right-to-left.
+ *
+ * Deliberately a list of language subtags rather than a guess from the region: `ar-EG` and `ar`
+ * are both Arabic, and `Intl.Locale.textInfo` is not available everywhere this runs.
+ */
+const RTL = new Set(['ar', 'fa', 'he', 'ps', 'sd', 'ug', 'ur', 'yi']);
+
+/**
+ * Text direction from the dashboard's language.
+ *
+ * `dir` mirrors the LAYOUT — which side a label sits on, which way a toggle travels — and the
+ * panel's own copy is English either way. A volunteer whose dashboard is in Urdu should not have
+ * to cross a mirrored dashboard into an app laid out the other way round.
+ */
+export function applyLang(lang: string): void {
+  const tag = String(lang || 'en').toLowerCase();
+  const base = tag.split(/[-_]/)[0];
+  document.documentElement.lang = tag || 'en';
+  document.documentElement.dir = RTL.has(base) ? 'rtl' : 'ltr';
 }
 
 const THEME_VALUES = ['system', 'dark', 'light'] as const;
@@ -54,11 +141,19 @@ function normTheme(v: unknown): Prefs['theme'] {
   return (THEME_VALUES as readonly string[]).includes(String(v)) ? (v as Prefs['theme']) : 'system';
 }
 
-/** Appearance handed over by OpenMasjidOS — we use theme + wallpaper only. */
+/**
+ * Appearance handed over by OpenMasjidOS.
+ *
+ * `logo` is deliberately absent: it is a PATH to be resolved against the platform's origin, and
+ * this panel already shows the masjid's own uploaded logo from its own settings. Taking the
+ * dashboard's would be showing a masjid two different marks for the same building.
+ */
 interface OmosAppearance {
   theme?: string;
   wallpaper?: string;
   wallpaperImage?: string;
+  accent?: string;
+  lang?: string;
 }
 
 function appearancePatch(p: OmosAppearance): Partial<Prefs> {
@@ -66,6 +161,8 @@ function appearancePatch(p: OmosAppearance): Partial<Prefs> {
   if (p.theme != null) out.theme = normTheme(p.theme);
   if (typeof p.wallpaper === 'string') out.wallpaper = p.wallpaper;
   if (typeof p.wallpaperImage === 'string') out.wallpaperImage = p.wallpaperImage;
+  if (typeof p.accent === 'string' && p.accent) out.accent = p.accent;
+  if (typeof p.lang === 'string' && p.lang) out.lang = p.lang;
   return out;
 }
 
@@ -117,6 +214,8 @@ export const prefsStore = {
     persist();
     if (part.theme !== undefined) applyTheme(state.theme);
     if (part.wallpaper !== undefined) applyWallpaper(state.wallpaper);
+    if (part.accent !== undefined) applyAccent(state.accent);
+    if (part.lang !== undefined) applyLang(state.lang);
     for (const l of listeners) l();
   },
   /** Apply persisted prefs on first load, inherit any OpenMasjidOS hand-off, and
@@ -128,8 +227,11 @@ export const prefsStore = {
       state = { ...state, ...appearancePatch(omos), followOmos: true };
       persist();
     }
+    // applyTheme applies the accent too — it has to, because the accent's text form depends on
+    // the theme — so the order here is theme first, then everything that does not.
     applyTheme(state.theme);
     applyWallpaper(state.wallpaper);
+    applyLang(state.lang);
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
       if (state.theme === 'system') applyTheme('system');
     });
