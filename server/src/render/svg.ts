@@ -2184,6 +2184,11 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
       name: (c.L.jumuah ?? "Jumu'ah").toUpperCase(),
       t1: multi ? m.jumuah[0] : null,
       t2: m.jumuah[multi ? 1 : 0],
+      // On a Friday the countdown is counting to Jumu'ah, so `buildModel` leaves every DAILY row
+      // un-`next` — which left this table with no highlighted row at all from Fajr until the last
+      // jamā'ah, on the day the hall is fullest. The row the sentence above is counting down to is
+      // the row that should be lit, and on a Friday that is this one.
+      highlight: !!m.nextJumuah,
     });
   }
 
@@ -2450,7 +2455,15 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     // above fits every name a masjid is likely to type, and this is the backstop for one it is
     // not: a forty-character label cannot be made to fit a 399px column by shrinking without
     // becoming unreadable, so it is shortened instead of run over the time beside it.
-    const nameRoomHere = (shape[i].adU > 0 ? colAd - slotW(shape[i].adStr!, timeSize * 0.92, shape[i].ord) : colIq) - nameX - pad;
+    const nameRoomHere =
+      (shape[i].adU > 0
+        ? colAd - slotW(shape[i].adStr!, timeSize * 0.92, shape[i].ord)
+        : // No Adhan time on this row — a single Jumu'ah — so the name runs until the IQAMAH
+          // slot, which is drawn at `colIq`. Stopping at `colIq` itself was stopping at the time's
+          // right-hand edge rather than its left, i.e. not stopping at all.
+          colIq - slotW(shape[i].iqStr, timeSize, shape[i].ord)) -
+      nameX -
+      pad;
     const nameStr = ellipsize(line.name, nameSize, nameRoomHere, 1);
     if (nameStr) out.push(text(nameX, midY, nameStr, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 600 : 400, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
     // A one-Jumu'ah masjid has nothing to put in the Adhan slot (Jumu'ah has no separate
@@ -2480,7 +2493,9 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
       out.push(text(gx + ordBox + ordGap, midY, str, { size, fill, family: FONT_DISPLAY, weight, anchor: 'start' }));
     };
     const jum = line.key === 'jumuah' && m.jumuah.length > 1;
-    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, c.p.textDim, 300, jum ? ordinalEn(1) : '');
+    // Against the BAND, for the same reason `iqColor` is: the quiet Adhan ink is the one colour
+    // on this table that was still being chosen by a light-or-dark guess about the page.
+    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, readableOn(c.p.textDim, band), 300, jum ? ordinalEn(1) : '');
     timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, jum ? ordinalEn(2) : '');
   });
   return out.join('');
@@ -2837,7 +2852,18 @@ function hashStr(s: string): number {
  *  stateless per-frame render keeps showing the same one — yet varies day to day. */
 export function pickSalahHadith(sh: SalahHadith, prayerKey: string, parts: { year: number; month: number; day: number }): HadithItem | null {
   const pool = hadithPool(sh);
-  const specific = pool.filter((h) => h.prayers?.length && h.prayers.includes(prayerKey));
+  /**
+   * On a Friday the jamā'ah is Jumu'ah, so that is the key this is asked about — but the panel's
+   * prayer picker only offers the five daily ones, so NOTHING a masjid has configured can carry
+   * 'jumuah'. Without a second key to try, a masjid that had assigned every hadith to a prayer
+   * would fall through to the "no prayers set" pool, find it empty, and show no hadith at all
+   * through the jamā'ah with the largest attendance of the week.
+   *
+   * Jumu'ah stands in Dhuhr's place in the day, and Dhuhr is what these were targeted at before
+   * the screen learned the difference, so Dhuhr is what it falls back to.
+   */
+  const keys = prayerKey === 'jumuah' ? ['jumuah', 'dhuhr'] : [prayerKey];
+  const specific = pool.filter((h) => h.prayers?.length && keys.some((k) => h.prayers!.includes(k)));
   const eligible = specific.length ? specific : pool.filter((h) => !h.prayers?.length);
   if (!eligible.length) return null;
   return eligible[hashStr(`${parts.year}-${parts.month}-${parts.day}-${prayerKey}`) % eligible.length];
@@ -3105,7 +3131,30 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
           : '#ffffff';
     const bgIsLight = relLuminance(simpleBgHex) > 0.6;
     const dtxt = derivedText(bgIsLight ? '#1c2620' : '#f2f6f3');
-    p = { ...p, bg: simpleBgHex, bg2: simpleBgHex, surface: simpleBgHex, surface2: simpleBgHex, ...dtxt, light: bgIsLight };
+    /**
+     * `derivedText` answers "is this background light or dark" and picks one ink accordingly.
+     * That is the right question for white and for near-black — the two the Simple design shipped
+     * with — and the wrong one for everything between them, which is now reachable: the page is a
+     * colour picker, and an admin who lands on a mid grey gets a page where NEITHER answer works.
+     * Measured on #808080: the clock and the masjid name came out at 3.62:1 and the footer note at
+     * 2.46:1, while the accent-coloured text beside them was fine, because only that had been
+     * routed through `readableOn`.
+     *
+     * So the three page inks go through it too. They are the LAST thing to be decided, after the
+     * page colour is known, and every one of them is drawn straight onto that page — the row
+     * bands are the exception and are corrected where they are drawn.
+     */
+    p = {
+      ...p,
+      bg: simpleBgHex,
+      bg2: simpleBgHex,
+      surface: simpleBgHex,
+      surface2: simpleBgHex,
+      text: readableOn(dtxt.text, simpleBgHex),
+      textDim: readableOn(dtxt.textDim, simpleBgHex),
+      textFaint: readableOn(dtxt.textFaint, simpleBgHex),
+      light: bgIsLight,
+    };
   }
   const L = labels(tt.language, tt.labels);
   LIGHTUI = !!p.light;

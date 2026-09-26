@@ -51,6 +51,18 @@ export const ACCENTS: Record<string, Accent> = {
 /** What the dashboard ships with, and what an unknown value falls back to. */
 export const DEFAULT_ACCENT = 'cyan';
 
+/**
+ * Looked up through a Map, not by indexing the object.
+ *
+ * The id arrives from a URL fragment and from the platform, so it is a string this app does not
+ * control, and `ACCENTS['toString']` on a plain object literal returns a FUNCTION — truthy, so a
+ * `?? DEFAULT_ACCENT` fallback never fires, and the first read of `.primary` off it is
+ * `undefined`. That happens at module scope during `hydrate()`, before React mounts: a blank
+ * panel, and since the value has already been persisted to localStorage by then, a blank panel
+ * on every reload afterwards.
+ */
+const BY_ID = new Map(Object.entries(ACCENTS));
+
 export function accentFor(id: string | undefined): Accent {
-  return ACCENTS[String(id ?? '')] ?? ACCENTS[DEFAULT_ACCENT];
+  return BY_ID.get(String(id ?? '')) ?? BY_ID.get(DEFAULT_ACCENT)!;
 }

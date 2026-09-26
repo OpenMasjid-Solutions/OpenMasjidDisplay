@@ -125,10 +125,17 @@ test("Jumu'ah is marked out from the day's five prayers", () => {
   const others = new Set(timeFills(svg.slice(0, i)));
   const jumuah = timeFills(svg.slice(i));
   assert.ok(jumuah.length > 0, "the Jumu'ah row draws a time");
-  assert.ok(
-    jumuah.some((f) => !others.has(f)),
-    `the Jumu'ah time should carry a colour no other row's does; saw ${JSON.stringify(jumuah)}`,
-  );
+  const own = jumuah.filter((f) => !others.has(f));
+  assert.ok(own.length > 0, `the Jumu'ah time should carry a colour no other row's does; saw ${JSON.stringify(jumuah)}`);
+  // And that colour is still GOLD. "A colour nobody else uses" on its own would be satisfied by
+  // pure black, which is what a contrast correction bottoming out would produce — so the hue is
+  // checked the way panelContrast checks the accent's light form: the channel order survives.
+  // The theme's gold is #F59E0B: red leads, then green, then blue.
+  for (const f of own) {
+    const n = parseInt(f.slice(1), 16);
+    const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    assert.ok(r > g && g > b, `the Jumu'ah time ${f} is no longer a gold`);
+  }
 });
 
 // ── how Jumu'ah reads in the Simple table ───────────────────────────────────

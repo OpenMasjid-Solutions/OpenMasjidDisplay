@@ -234,13 +234,19 @@ test('a renamed prayer or column still fits — the labels are an input, not a c
     { athan: 'Call to Prayer' },
     { prayer: 'Prayer Schedule For The Whole Week' },
     { prayer: 'P'.repeat(40), athan: 'A'.repeat(40), iqamah: 'I'.repeat(40), maghrib: 'G'.repeat(40) },
+    // A renamed JUMU'AH row, which is the one row that may have no Adhan time at all — and so
+    // the one whose name is bounded by the Iqamah slot rather than the Adhan one. Getting that
+    // edge wrong let the name run straight under its own time.
+    { jumuah: "Jumu'ah Congregation Prayer Today Frid" },
+    { jumuah: 'J'.repeat(40) },
   ];
   const hits: string[] = [];
   for (const labels of LABELS) {
     for (const quality of ['1080p', '720p']) {
       for (const orientation of ['landscape', 'portrait']) {
         for (const ann of [null, IMG]) {
-          const t = normTimetable({ ...BASE, layout: 'simple', jumuah: ['13:30', '14:30'], quality, orientation, labels }) as Timetable;
+        for (const jumuah of [['13:30', '14:30'], ['13:30']]) {
+          const t = normTimetable({ ...BASE, layout: 'simple', jumuah, quality, orientation, labels }) as Timetable;
           const svg = renderDisplaySvg(t, NOW, ann ? { announcement: IMG } : {});
           const bs = runs(svg).map(box);
           for (let i = 0; i < bs.length; i++) {
@@ -250,10 +256,11 @@ test('a renamed prayer or column still fits — the labels are an input, not a c
               const ox = Math.min(a.r, b.r) - Math.max(a.l, b.l);
               const oy = Math.min(a.b, b.b) - Math.max(a.t, b.t);
               if (ox > 0.5 && oy > 0.5) {
-                hits.push(`${JSON.stringify(labels).slice(0, 44)} ${quality} ${orientation}${ann ? ' +pic' : ''}: "${a.body}" over "${b.body}" by ${ox.toFixed(0)}px`);
+                hits.push(`${JSON.stringify(labels).slice(0, 44)} ${quality} ${orientation}${ann ? ' +pic' : ''} j${jumuah.length}: "${a.body}" over "${b.body}" by ${ox.toFixed(0)}px`);
               }
             }
           }
+        }
         }
       }
     }
@@ -294,6 +301,34 @@ test('when the band runs out of room the title goes first, and the labels last',
   const iq = tight.find((s) => s.startsWith('CONGREGATION'));
   assert.ok(iq, 'and so is the Iqamah column');
   assert.ok(iq!.endsWith('...'), `shortened rather than run across its neighbour — got ${JSON.stringify(iq)}`);
+});
+
+test('a row is highlighted on Friday, the same as every other day', () => {
+  /**
+   * On a Friday the countdown is counting to Jumu'ah, so `buildModel` leaves every DAILY row
+   * un-`next` — and the Jumu'ah line appended to this table was pushed without a highlight at
+   * all. The result was a table with no lit row from Fajr until the last jamā'ah, on the day the
+   * hall is fullest: the "this one" signal the whole design rests on, absent for nine hours.
+   *
+   * The band is the observable: the highlighted row is the only one painted in `bandHighlight`,
+   * so it is the only band colour used exactly once.
+   */
+  // On a white page with the cyan theme the highlight band is `mixHex('#ffffff', '#22D3EE', 0.26)`
+  // — a fixed colour, so it can simply be looked for. Counting DISTINCT band colours would not
+  // work: highlighting the Jumu'ah row replaces its gold band, so the count legitimately differs
+  // between a Friday and a weekday even when both are correct.
+  const HIGHLIGHT = '#c6f4fb';
+  const hasHighlight = (when: Date) => {
+    const t = normTimetable({ ...BASE, layout: 'simple', jumuah: ['13:30', '14:30'], themeId: 'cyan' }) as Timetable;
+    return new RegExp(`<rect[^>]*fill="${HIGHLIGHT}"`, 'i').test(renderDisplaySvg(t, when, {}));
+  };
+  assert.ok(hasHighlight(new Date('2026-09-10T15:00:00Z')), 'sanity: a weekday lights the next prayer');
+  for (const [label, when] of [
+    ['Friday morning', new Date('2026-09-11T15:00:00Z')],
+    ["between the two Jumu'ahs", new Date('2026-09-11T17:50:00Z')],
+  ] as const) {
+    assert.ok(hasHighlight(when), `${label}: no row is lit`);
+  }
 });
 
 // ── the sizes themselves ─────────────────────────────────────────────────────

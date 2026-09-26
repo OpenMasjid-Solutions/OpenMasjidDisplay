@@ -38,6 +38,27 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **A custom page colour on the Simple design no longer makes the screen hard to read.** The
+  page's text colour was picked by asking whether the background was light or dark — the right
+  question for white and for near-black, and the wrong one for anything between. On a mid grey
+  the clock, the masjid name, the dates, the Adhan times and the footer all fell below the
+  readable threshold. Every one of them now adjusts to whatever page colour is set.
+- **On Fridays the prayer table now highlights the Jumu'ah row.** Because the countdown is
+  counting to Jumu'ah, no daily prayer counts as "next", and the Jumu'ah row was never marked —
+  so from Fajr until the last jamā'ah no row was highlighted at all, on the day the hall is
+  fullest.
+- **A hadith set to show during Dhuhr now also shows during Jumu'ah.** Only the five daily
+  prayers can be picked in the panel, so once the screen learned that Friday's jamā'ah is
+  Jumu'ah, a masjid that had assigned every hadith to a prayer got no hadith at all on Fridays.
+- **The panel no longer blanks if the dashboard sends an accent colour it doesn't recognise.**
+  Certain values slipped past the fallback and broke the page before it drew anything — and the
+  bad value was remembered, so it stayed broken on every reload.
+- **A standalone panel keeps its own light-theme colours.** Reading the dashboard's accent was
+  overriding them even when no dashboard had sent one.
+- **The volunteer PIN keypad stays 1-2-3 when the panel is mirrored** for an Arabic or Urdu
+  dashboard. Digits read left to right in every language; the keypad was flipping with the rest
+  of the layout.
+- A renamed Jumu'ah row on a masjid with a single jamā'ah could run over its own time.
 - **Fixed unreadable text on coloured buttons in the panel.** The Delete button was white on a
   light red — measured at 2.77:1, well under the readable threshold — and the same applied to the
   active tab, the help button and the PIN keypad. Every one of them now takes an ink chosen for

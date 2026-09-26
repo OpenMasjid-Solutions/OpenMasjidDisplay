@@ -29,6 +29,7 @@ const read = (p: string) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
 const TOKENS = read('web/src/styles/tokens.css');
 const APP_CSS = read('web/src/styles/app.css');
+const GLASS = read('web/src/styles/glass.css');
 const ACCENTS_TS = read('web/src/omosAccents.ts');
 const SPEC = read('docs/design-system/APP_UI_SPEC.md');
 
@@ -153,10 +154,19 @@ test('the light text form keeps the accent it came from', () => {
 // ── the theme's own filled elements ──────────────────────────────────────────
 
 test('the ink on every filled element clears AA, in both themes', () => {
+  /**
+   * `--color-on-primary` is NOT paired with `--color-primary` here, and that is the point rather
+   * than an omission: `applyAccent` decouples them in light theme, where `--color-primary`
+   * becomes the accent's readable TEXT form while the ink stays the one measured against the
+   * FILL. Asserting that pair would bless something the runtime does not produce — for cyan it is
+   * 3.80:1 and for gold 3.35:1 — and would go quietly green while a real rule shipped below AA.
+   *
+   * So the invariant is stated where it is true: ink belongs on `--color-btn`. The lint below
+   * keeps rules from reaching for the text token as a fill.
+   */
   const PAIRS: [string, string][] = [
     ['--color-on-primary', '--color-btn'],
     ['--color-on-primary', '--color-btn-hover'],
-    ['--color-on-primary', '--color-primary'],
     ['--color-on-danger', '--color-danger'],
   ];
   const bad: string[] = [];
@@ -194,13 +204,36 @@ test('no rule paints a fixed white on a themed fill', () => {
    * `var(--color-…)` fill, which is a colour that moves.
    */
   const bad: string[] = [];
-  for (const m of APP_CSS.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
-    const body = m[2];
-    if (!/color:\s*#fff\b/i.test(body)) continue;
-    const bg = /background(?:-color)?:\s*([^;]+);?/i.exec(body)?.[1] ?? '';
-    if (/var\(--color-/.test(bg)) bad.push(`${m[1].trim().slice(0, 60)} — white on ${bg.trim()}`);
+  // Every stylesheet, not just app.css: the guard exists to catch a habit, and the habit does not
+  // know which file it is in.
+  for (const [file, css] of [['app.css', APP_CSS], ['tokens.css', TOKENS], ['glass.css', GLASS]] as const) {
+    for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      const body = m[2];
+      if (!/color:\s*#fff\b/i.test(body)) continue;
+      const bg = /background(?:-color)?:\s*([^;]+);?/i.exec(body)?.[1] ?? '';
+      if (/var\(--color-/.test(bg)) bad.push(`${file}: ${m[1].trim().slice(0, 50)} — white on ${bg.trim()}`);
+    }
   }
   assert.deepEqual(bad, [], 'fixed white on a fill that changes with the theme or the accent');
+});
+
+test('a filled rule takes the FILL token, never the text one', () => {
+  /**
+   * The other half of the pair above. `--color-primary` is the accent as a LETTERFORM and
+   * `--color-btn` is the accent as a BACKGROUND, and in light theme they are deliberately
+   * different colours — so a rule that paints `--color-primary` and then puts
+   * `--color-on-primary` on it is pairing an ink with a fill it was never measured against.
+   * Five rules were doing exactly that, at 4.10:1.
+   */
+  const bad: string[] = [];
+  for (const [file, css] of [['app.css', APP_CSS], ['glass.css', GLASS]] as const) {
+    for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      const body = m[2];
+      if (!/background(?:-color)?:\s*var\(--color-primary\)/.test(body)) continue;
+      if (/color:\s*var\(--color-on-primary\)/.test(body)) bad.push(`${file}: ${m[1].trim().slice(0, 50)}`);
+    }
+  }
+  assert.deepEqual(bad, [], 'ink for the fill painted on the text colour — use var(--color-btn)');
 });
 
 test('the accent table in the code and the one in the spec are the same table', () => {

@@ -9,14 +9,17 @@
  * of the platform↔app layer). See docs/FABRIC.md.
  */
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { accentFor, DEFAULT_ACCENT } from './omosAccents';
+import { accentFor } from './omosAccents';
 
 export interface Prefs {
   theme: 'system' | 'dark' | 'light';
   wallpaper: string;
   /** Optional custom wallpaper image URL — overrides the preset when set. */
   wallpaperImage: string;
-  /** The dashboard's accent colour: one of the five in `omosAccents.ts`. */
+  /**
+    * The dashboard's accent colour: one of the five in `omosAccents.ts`, or '' for "none handed
+    * over", which leaves the stylesheet's own primary alone.
+    */
   accent: string;
   /** BCP-47 language the dashboard is in — we use it only to decide text direction. */
   lang: string;
@@ -29,7 +32,12 @@ const DEFAULTS: Prefs = {
   theme: 'system',
   wallpaper: 'aurora',
   wallpaperImage: '',
-  accent: DEFAULT_ACCENT,
+  // NOT `DEFAULT_ACCENT`. An empty accent means "nobody has told us one", and the difference
+  // matters: `applyAccent` writes INLINE custom properties on <html>, which beat every
+  // [data-theme] block, so defaulting to cyan would make the light theme's own designed primary
+  // and button colours unreachable on every standalone install — including on a masjid that
+  // never opens OpenMasjidOS at all.
+  accent: '',
   lang: 'en',
   followOmos: true,
 };
@@ -67,7 +75,7 @@ function accentOf(): string {
   try {
     return state.accent;
   } catch {
-    return DEFAULT_ACCENT;
+    return '';
   }
 }
 
@@ -101,9 +109,18 @@ function tint(hex: string, alpha: number): string {
  * including when the OS flips under a `system` preference. `applyTheme` calls it.
  */
 export function applyAccent(id: string): void {
+  const root = document.documentElement.style;
+  if (!id) {
+    // Nothing handed over: take the inline overrides back off so the stylesheet's own theme
+    // colours apply again. Removing rather than re-setting, so turning "follow OpenMasjidOS" off
+    // genuinely restores the panel rather than freezing it on the last accent it saw.
+    for (const prop of ['--color-btn', '--color-btn-hover', '--color-on-primary', '--color-primary', '--color-primary-hover', '--color-primary-subtle']) {
+      root.removeProperty(prop);
+    }
+    return;
+  }
   const a = accentFor(id);
   const light = document.documentElement.getAttribute('data-theme') === 'light';
-  const root = document.documentElement.style;
   root.setProperty('--color-btn', a.primary);
   root.setProperty('--color-btn-hover', a.hover);
   root.setProperty('--color-on-primary', a.onPrimary);
@@ -130,9 +147,11 @@ const RTL = new Set(['ar', 'fa', 'he', 'ps', 'sd', 'ug', 'ur', 'yi']);
  * to cross a mirrored dashboard into an app laid out the other way round.
  */
 export function applyLang(lang: string): void {
-  const tag = String(lang || 'en').toLowerCase();
-  const base = tag.split(/[-_]/)[0];
-  document.documentElement.lang = tag || 'en';
+  const base = String(lang || 'en').toLowerCase().split(/[-_]/)[0];
+  // `dir` only. `lang` is a claim about what language the CONTENT is in, and this panel's copy is
+  // English whatever the dashboard is set to — telling a screen reader it is Arabic would have it
+  // pronounce English words with Arabic rules. The spec asks for the direction, and direction is
+  // what a mirrored dashboard needs its apps to match.
   document.documentElement.dir = RTL.has(base) ? 'rtl' : 'ltr';
 }
 

@@ -681,15 +681,15 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             >
               <div className="chips">
                 <button type="button" className={`chip${!f.simpleBg ? ' is-active' : ''}`} onClick={() => set('simpleBg', '')} title="White (default)">
-                  <span className="chip-dot" style={{ background: '#ffffff', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
+                  <span className="chip-dot" style={{ background: '#ffffff', opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
                   White
                 </button>
                 <button type="button" className={`chip${f.simpleBg === 'theme-light' ? ' is-active' : ''}`} onClick={() => set('simpleBg', 'theme-light')} title="A light page tinted with the theme colour">
-                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #ffffff 94%, ${simpleAccent})`, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
+                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #ffffff 94%, ${simpleAccent})`, opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
                   Theme — light
                 </button>
                 <button type="button" className={`chip${f.simpleBg === 'theme-dark' ? ' is-active' : ''}`} onClick={() => set('simpleBg', 'theme-dark')} title="A dark page tinted with the theme colour">
-                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #0b0f10 84%, ${simpleAccent})` }} />
+                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #0b0f10 84%, ${simpleAccent})`, opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.25)' }} />
                   Theme — dark
                 </button>
               </div>

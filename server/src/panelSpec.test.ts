@@ -87,6 +87,21 @@ test('Arabic and Urdu are in the right-to-left set', () => {
   assert.ok(!tags.includes('en'), 'English is not right-to-left');
 });
 
+test('the accent is looked up through a Map, not by indexing the table', () => {
+  /**
+   * The id comes off a URL fragment and off the platform, so it is a string this app does not
+   * control — and `ACCENTS['toString']` on a plain object literal returns a function, which is
+   * truthy, so a `?? DEFAULT_ACCENT` fallback never fires. The first `.primary` read off it is
+   * `undefined`, that throws inside `hydrate()` before React mounts, and the bad value is already
+   * in localStorage by then: a blank panel on every reload until site data is cleared.
+   */
+  const src = read('web/src/omosAccents.ts');
+  assert.match(src, /new Map\(Object\.entries\(ACCENTS\)\)/, 'the lookup should go through a Map');
+  // Comments stripped first — the explanation above this very rule names `ACCENTS['toString']`.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/Object\.entries\(ACCENTS\)/g, '');
+  assert.ok(!/ACCENTS\[/.test(code), 'no direct indexing of the accent table');
+});
+
 // ── §8 no CDNs ───────────────────────────────────────────────────────────────
 
 test('the panel asks the internet for nothing', () => {

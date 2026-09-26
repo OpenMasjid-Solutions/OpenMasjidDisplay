@@ -138,6 +138,32 @@ function painted(svg: string, page: string): Painted[] {
   return out;
 }
 
+test('a page colour BETWEEN the presets is readable too', () => {
+  /**
+   * The gap that let a real bug through. The test below walks the presets and the two theme
+   * pages, all of which are near-white or near-black — and `derivedText` picks the page's ink by
+   * asking whether the background is light or dark, which is exactly right at those two ends and
+   * has no good answer in the middle.
+   *
+   * The page is a colour picker, so the middle is reachable. On #808080 the clock and the masjid
+   * name measured 3.62:1 and the footer note 2.46:1, while the accent-coloured text beside them
+   * was fine — because only that had been routed through `readableOn`. 1,988 runs across the
+   * palettes were below AA and nothing was red.
+   */
+  const bad: string[] = [];
+  for (const simpleBg of ['#666666', '#707070', '#808080', '#8a8a8a', '#999999', '#b0b0b0', '#4a5a52', '#7a6a55', '#33414d']) {
+    for (const themeId of ['emerald', 'cyan', 'sunset', 'graphite']) {
+      const t = tt({ themeId, simpleBg });
+      const svg = renderDisplaySvg(t, NOW, {});
+      for (const p of painted(svg, pageOf(svg))) {
+        if (!/^#[0-9a-f]{6}$/i.test(p.fill)) continue;
+        if (p.ratio < 4.5) bad.push(`${themeId}/${simpleBg}: "${p.body}" ${p.fill} on ${p.bg} = ${p.ratio.toFixed(2)}:1`);
+      }
+    }
+  }
+  assert.deepEqual(bad.slice(0, 10), [], `${bad.length} runs below AA on a mid-tone page`);
+});
+
 test('every string on a Simple screen clears WCAG AA against what is behind it', () => {
   // The guarantee the colour options rest on. Walked over every preset, both page modes, both
   // orientations and the three languages, because the pairing that fails is an accent against a
