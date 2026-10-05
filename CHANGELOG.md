@@ -13,6 +13,17 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Changed
+- **The Simple design's left column has been rebuilt.** Sunrise and sunset are now on a line
+  each and more than twice the size they were — they shared one line before, which meant both had
+  to shrink to fit beside each other, and the result was unreadable from the back of a hall. In
+  place of the "Next Iqamah in 6hr 24min" sentence there is now a small countdown wheel, the same
+  one the Modern design uses: the ring fills as the wait passes, the prayer's name sits inside it,
+  and the time left reads underneath. On a portrait screen, where that part of the column is wide
+  and short, the wheel turns on its side and the countdown sits beside the ring instead.
+- **You can now choose where the seconds go.** Under Elements → Where the seconds go, "Beside the
+  clock" is the original and stays the default; "In the clock" sets them in the time itself
+  (6:22:05), the same size as the hours and minutes. The clock shrinks a little to make room for
+  the extra digits. It applies to both designs.
 - **The control panel now follows the accent colour you picked on the OpenMasjidOS dashboard.**
   It was already inheriting the dashboard's light/dark theme and wallpaper, but not its colour —
   so four masjids in five were looking at a panel in a colour they had not chosen. All five
@@ -38,6 +49,8 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- The Jumu'ah row could be shortened to "JUMU'..." on a portrait screen. It fitted — it missed by
+  a fifth of a pixel, and the shortening was taking two letters off the word to save it.
 - **A custom page colour on the Simple design no longer makes the screen hard to read.** The
   page's text colour was picked by asking whether the background was light or dark — the right
   question for white and for near-black, and the wrong one for anything between. On a mid grey

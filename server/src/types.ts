@@ -242,8 +242,17 @@ export interface Timetable {
   showCountdown: boolean;
   showDates: boolean;
   showLogo: boolean;
-  /** show seconds on the big clock (HH:MM:SS) */
+  /** show seconds on the big clock */
   showSeconds: boolean;
+  /**
+   * WHERE the seconds go when `showSeconds` is on.
+   *
+   * 'stacked' is the original and the default: two small digits above the AM/PM, beside the
+   * clock. 'inline' sets them in the clock's own face — same font, same size, one more colon
+   * ("6:22:05") — which reads from further away but is about a third wider, so the clock shrinks
+   * to keep its column.
+   */
+  secondsStyle: 'stacked' | 'inline';
   /** show the small footer line (custom note, or the calculation-method note) */
   showFooter: boolean;
   /** show the sun/moon arcing across the sky (and the soft glow it casts on the glass) */

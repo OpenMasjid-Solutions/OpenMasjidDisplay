@@ -161,17 +161,26 @@ test('Simple in portrait is Simple, not Modern wearing its colours', () => {
   // every particular except the palette — the countdown ring included.
   const simple = renderDisplaySvg(tt({ layout: 'simple', orientation: 'portrait' }), NOW);
   const modern = renderDisplaySvg(tt({ layout: 'modern', orientation: 'portrait' }), NOW);
-  assert.ok(modern.includes('stroke-dasharray'), 'Modern portrait keeps its countdown ring');
-  assert.ok(!simple.includes('stroke-dasharray'), 'Simple has no ring, in any orientation');
+  // The marker is the themed SCENE, not the countdown ring. The ring used to be the clearest
+  // difference between the two designs and is not one any more: Simple now carries a small
+  // countdown wheel of its own, because a sentence that reads the same whether a prayer is six
+  // hours off or ninety seconds away was not telling a hall anything. What still separates them
+  // is what it always really was — Modern paints a scene, a pattern and glass cards; Simple is a
+  // flat page.
+  assert.ok(modern.includes('url(#scene)'), 'Modern portrait keeps its themed scene');
+  assert.ok(!simple.includes('url(#scene)'), 'Simple is a flat page, in any orientation');
   assert.ok(simple.includes('PRAYER TIMES'), "and it has Simple's banded table");
-  assert.match(simple, /Next .* in /, 'plus the plain sentence Simple uses instead of the ring');
+  // The countdown is a wheel on this design now, not a sentence — ring, the prayer's name inside
+  // it, and the amount beside or beneath. "UNTIL <PRAYER>" is the wording both designs share.
+  assert.match(simple, /UNTIL /, 'and its own countdown');
+  assert.ok(!/Next .* in /.test(simple), 'the sentence the wheel replaced is gone');
 });
 
 test("the composite's timetable column follows the design the masjid chose", () => {
   const simple = renderDisplaySvg(tt({ layout: 'simple' }), NOW, { announcement: IMG });
   const modern = renderDisplaySvg(tt({ layout: 'modern' }), NOW, { announcement: IMG });
-  assert.ok(!simple.includes('stroke-dasharray'), 'a Simple screen stays Simple beside a picture');
-  assert.ok(modern.includes('stroke-dasharray'), 'a Modern one stays Modern');
+  assert.ok(!simple.includes('url(#scene)'), 'a Simple screen stays Simple beside a picture');
+  assert.ok(modern.includes('url(#scene)'), 'a Modern one stays Modern');
 });
 
 // ── the date line, which is what "the date gets cut off" was ─────────────────

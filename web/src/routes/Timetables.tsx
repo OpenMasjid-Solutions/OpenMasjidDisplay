@@ -135,7 +135,7 @@ function toForm(tt: Timetable | null, state: AppState): Form {
     method: 'MWL', fajrAngle: 18, ishaAngle: 17, asrMadhab: 'Hanafi', timezone: state.settings.scheduleTimezone ?? '',
     timeFormat: '12h', language: 'en', hijriOffset: 0, gregorianOffset: 0,
     iqamah: { fajr: { mode: 'offset', offset: 20 }, dhuhr: { mode: 'offset', offset: 10 }, asr: { mode: 'offset', offset: 10 }, maghrib: { mode: 'offset', offset: 5 }, isha: { mode: 'offset', offset: 10 } },
-    jumuah: ['13:30'], showSunrise: true, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, showFooter: true, showCelestial: true, showName: true,
+    jumuah: ['13:30'], showSunrise: true, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
     backgroundImage: '', logoImage: '', footerNote: '', tickerSpeed: 5, createdAt: '',
   };
 }
@@ -818,6 +818,23 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />
           <ToggleRow label="Calculation-method footnote" checked={f.showFooter} onChange={(v) => set('showFooter', v)} />
         </div>
+        {f.showSeconds && (
+          <div style={{ marginBlockStart: '0.9rem' }}>
+            <Field
+              label="Where the seconds go"
+              hint="Beside the clock keeps the seconds small, above the AM/PM — the way they have always been shown. In the clock puts them in the time itself (6:22:05), same size as the hours and minutes, which reads from further away. The clock shrinks a little to make room for the extra digits."
+            >
+              <div className="chips">
+                <button type="button" className={`chip${f.secondsStyle !== 'inline' ? ' is-active' : ''}`} onClick={() => set('secondsStyle', 'stacked')}>
+                  Beside the clock
+                </button>
+                <button type="button" className={`chip${f.secondsStyle === 'inline' ? ' is-active' : ''}`} onClick={() => set('secondsStyle', 'inline')}>
+                  In the clock (6:22:05)
+                </button>
+              </div>
+            </Field>
+          </div>
+        )}
         <div style={{ marginBlockStart: '0.9rem' }}>
           <Field label="Footer note (optional)" hint="A small custom line along the bottom. Leave blank to show the calculation-method note instead."><input className="input" value={f.footerNote} onChange={(e) => set('footerNote', e.target.value)} placeholder="e.g. Jumu'ah khutbah at 1:15pm" /></Field>
         </div>

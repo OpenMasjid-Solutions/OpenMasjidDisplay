@@ -1307,6 +1307,15 @@ interface Ctx {
   clock: ClockText;
   secStr: string;
   showSeconds: boolean;
+  /**
+   * The seconds are IN `clock.time` already, so nothing should draw `secStr` beside it.
+   *
+   * Both halves of this are load-bearing and they are set together in `build`: `clock` is
+   * formatted with seconds only when this is true, and every site that draws the small stacked
+   * seconds checks it. Setting one without the other either loses the seconds or prints them
+   * twice.
+   */
+  secondsInline: boolean;
   greg: string;
   hij: string;
   nextLabel: string;
@@ -1370,7 +1379,10 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
   out.push(glass(b.x, b.y, b.w, b.h, clamp(Math.min(b.w, b.h) * 0.12, 10, 30), { raised: true }));
   const pad = b.w * 0.07;
   const showDates = c.showDates && (!!c.greg || !!c.hij);
-  const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
+  // Stacked seconds are a separate little block beside the clock; inline ones are part of the
+  // clock's own string and must not be drawn again.
+  const stackedSec = c.showSeconds && !c.secondsInline;
+  const markStr = stackedSec ? c.secStr : c.clock.period || '';
 
   // Wide, short panels (the landscape top clock): time on the LEFT, the date block on
   // the RIGHT at a comfortable size — fills the space instead of leaving it empty.
@@ -1385,8 +1397,8 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
     const leftX = b.x + pad;
     out.push(text(leftX, tBase, c.clock.time, { size: ts, fill: 'url(#clockg)', family: FONT_DISPLAY, weight: 700, anchor: 'start', letter: -ts * 0.01, blink: true }));
     const markX = leftX + approxWidth(c.clock.time, ts) + ts * 0.1;
-    if (c.showSeconds) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
-    if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
+    if (stackedSec) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
+    if (c.clock.period) out.push(text(markX, tBase - (stackedSec ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
     const rightX = b.x + b.w - pad;
     const dateMax = b.w - timeMax - pad * 2.5;
     // Split the long Gregorian line ("Wednesday, January 7, 2026") on its first comma
@@ -1424,8 +1436,8 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
   const timeX = align === 'end' ? edge - mW - gap : edge;
   const markX = align === 'end' ? edge : edge + timeW + gap;
   out.push(text(timeX, tBase, c.clock.time, { size: ts, fill: 'url(#clockg)', family: FONT_DISPLAY, weight: 700, anchor: align, letter: -ts * 0.01, blink: true }));
-  if (c.showSeconds) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
-  if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
+  if (stackedSec) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
+  if (c.clock.period) out.push(text(markX, tBase - (stackedSec ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
   if (showDates) {
     let ds = clamp(b.h * 0.11, 12, 26);
     // Shrink to fit, exactly as the clock above already does.
@@ -1500,7 +1512,10 @@ function panelRing(b: Box, c: Ctx): string {
     const segs = sec < 60 ? [seg(s, 'SECOND')] : h === 0 ? [seg(mm, 'MINUTE')] : mm === 0 ? [seg(h, 'HOUR')] : [seg(h, 'HOUR'), seg(mm, 'MINUTE')];
     let numSize = clamp(b.h * 0.14, 22, 84);
     const usz = () => clamp(numSize * 0.32, 11, 30);
-    const width = () => segs.reduce((a, p, i) => a + approxWidth(p.n, numSize) + numSize * 0.12 + approxWidth(p.w, usz()) + (i < segs.length - 1 ? numSize * 0.3 : 0), 0);
+    // The unit word is drawn with `letter: 1`; counting its width without that tracking under-
+    // reserves by a pixel per letter, which is what put "44" on top of "HOURS" in the mini ring.
+    const unitW = (w: string) => approxWidth(w, usz()) + Math.max(0, w.length - 1);
+    const width = () => segs.reduce((a, p, i) => a + approxWidth(p.n, numSize) + numSize * 0.12 + unitW(p.w) + (i < segs.length - 1 ? numSize * 0.3 : 0), 0);
     if (width() > b.w * 0.9) numSize *= (b.w * 0.9) / width();
     const us = usz();
     const ringBottom = ringCy + R + sw;
@@ -1510,7 +1525,7 @@ function panelRing(b: Box, c: Ctx): string {
       out.push(text(x, numBase, segs[i].n, { size: numSize, fill: c.p.text, family: FONT_DISPLAY, weight: 800, anchor: 'start' }));
       x += approxWidth(segs[i].n, numSize) + numSize * 0.12;
       out.push(text(x, numBase, segs[i].w, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
-      x += approxWidth(segs[i].w, us) + (i < segs.length - 1 ? numSize * 0.3 : 0);
+      x += approxWidth(segs[i].w, us) + Math.max(0, segs[i].w.length - 1) + (i < segs.length - 1 ? numSize * 0.3 : 0);
     }
     // In a prohibited window the countdown runs to the Dhuhr adhan, so name it plainly.
     const untilWord = c.prohibited ? `UNTIL ${c.nextLabel} ${c.eventWord}`.toUpperCase() : `UNTIL ${c.eventWord}`;
@@ -1814,7 +1829,11 @@ function simpleStack(a: Box, m: Model, c: Ctx): string {
   // is given a slice proportional to the height rather than a fixed one — on a 1080x1920 screen
   // that is ~650px for logo, name, clock and date, which is the half of this design that is
   // meant to be read from the back of a hall.
-  const headH = clamp(a.h * 0.38, 240, 760);
+  // A little more than the third it was: the block beneath the logo now carries a readable
+  // sunrise/sunset pair and a countdown wheel, and the table under it still has six rows in the
+  // rest. Bounded below so the SHORT form of this box — the column beside a slideshow image —
+  // keeps the share it had rather than eating its own table.
+  const headH = clamp(a.h * 0.42, 240, 860);
   out.push(brandColumn({ x: a.x, y: a.y, w: a.w, h: headH }, m, c));
   const tableY = a.y + headH + gap;
   out.push(simpleTable({ x: a.x, y: tableY, w: a.w, h: a.y + a.h - tableY }, m, c));
@@ -1896,9 +1915,148 @@ function announcementView(a: Box, m: Model, c: Ctx, image: string, isSimple: boo
   return out.join('');
 }
 
-/** Left column for the "simple" layout: brand, a small sunrise/sunset line, the big
- *  clock, one combined date line, and a plain sentence for the next prayer — sitting
- *  directly on the flat page, no card behind any of it. */
+/**
+ * The Modern layout's countdown ring, shrunk for the Simple column.
+ *
+ * It replaces a sentence — "Next Jumu'ah in 50min" — and the reason a wheel beats that sentence
+ * on a wall is that a ring is read without reading: the arc says how much of the wait is gone
+ * before any word is. The sentence stayed the same shape whether the prayer was six hours off or
+ * ninety seconds.
+ *
+ * What is kept from `panelRing` and what is dropped is the whole design of a "mini" version:
+ *
+ *  - KEPT: the arc, its direction and its progress; the prayer name in the middle; the amount
+ *    below it as a big number and a small unit word; the "UNTIL …" line; the red-and-pulsing
+ *    treatment during the zawāl window.
+ *  - DROPPED: the glass card (this design has no cards), the "NEXT PRAYER" eyebrow (the
+ *    "UNTIL …" line below already names the event), and the Arabic gloss — Simple deliberately
+ *    carries no inline Arabic, which is the one thing that most distinguishes it from Modern.
+ *
+ * It is sized from BOTH axes. `panelRing` sizes from its card, which is a known shape; this has
+ * to sit in whatever the column has left after the clock and the dates, and that is a third of a
+ * portrait screen in one case and a short strip beside a slideshow image in another.
+ */
+function miniRing(b: Box, c: Ctx): string {
+  const out: string[] = [];
+  const sec = Math.max(0, c.remainingSec);
+  const h = Math.floor(sec / 3600);
+  const mm = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  // The same vocabulary panelRing uses, so the two designs do not name the same wait differently.
+  const seg = (n: number, w: string) => ({ n: String(n), w: n === 1 ? w : w + 'S' });
+  const segs = sec < 60 ? [seg(s, 'SECOND')] : h === 0 ? [seg(mm, 'MINUTE')] : mm === 0 ? [seg(h, 'HOUR')] : [seg(h, 'HOUR'), seg(mm, 'MINUTE')];
+  const untilWord = c.prohibited ? `UNTIL ${c.nextLabel} ${c.eventWord}`.toUpperCase() : `UNTIL ${c.eventWord}`;
+
+  /**
+   * Two arrangements, because this slot arrives as two very different shapes.
+   *
+   * On a landscape screen the column is TALL and narrow, and the wheel reads the way the Modern
+   * one does: ring above, the amount beneath it. On a portrait screen the same block is a wide,
+   * short strip — and a circle stacked over two lines of type in a 972x198 box comes out a 130px
+   * dot with 800px of width left empty beside it. So a wide box turns the wheel on its side: ring
+   * on the leading edge, the amount and what it counts to set next to it.
+   *
+   * Either way the RING is sized first and the type fits what is left over. Sizing the numbers
+   * first and giving the ring the remainder produced a circle smaller than the number under it,
+   * which reads as a caption with a doodle over it — and the arc is the part that is recognised
+   * from the back of a hall without being read.
+   */
+  const wide = b.w > b.h * 1.7;
+  const R = wide ? Math.min(b.h * 0.4, b.w * 0.2) : Math.min(b.w * 0.3, b.h * 0.33);
+  const sw = Math.max(4, R * 0.14);
+  const span = 2 * (R + sw);
+  let numSize = wide
+    ? clamp(Math.min(b.w * 0.11, b.h * 0.44), 13, 72)
+    : clamp(Math.min(b.w * 0.165, (b.h - span) * 0.52), 13, 72);
+  let us = clamp(numSize * 0.34, 9, 26);
+
+  // Everything is placed before anything is drawn: in the wide form the ring's own centre depends
+  // on how much room the text beside it needs, so a draw-then-shift would have to move the ring
+  // AND the name inside it, which is the kind of pair that comes apart later.
+  // `unitW` carries the unit word's TRACKING. It is drawn with `letter: 1`, which is four more
+  // pixels on "HOURS" than `approxWidth` reports — and a budget that leaves them out puts the
+  // next segment's number on top of the word before it. (panelRing had the same omission, with
+  // bigger gaps hiding it.)
+  const unitW = (w: string) => approxWidth(w, us) + Math.max(0, w.length - 1);
+  const amountW = () => segs.reduce((a, p, i2) => a + approxWidth(p.n, numSize) + numSize * 0.12 + unitW(p.w) + (i2 < segs.length - 1 ? numSize * 0.26 : 0), 0);
+  const untilW = () => approxWidth(untilWord, us) + Math.max(0, untilWord.length - 1) * 3;
+  const gap = wide ? R * 0.4 : 0;
+  const textRoom = wide ? Math.max(1, b.w * 0.98 - span - gap) : b.w * 0.94;
+  const need = c.showCountdown ? Math.max(amountW(), untilW()) : 0;
+  if (need > textRoom) {
+    const k = textRoom / need;
+    numSize *= k;
+    us *= k;
+  }
+  const block = c.showCountdown ? Math.max(amountW(), untilW()) : 0;
+  const groupW = wide ? span + (block ? gap + block : 0) : b.w;
+  const groupX = b.x + (b.w - groupW) / 2;
+  const cx = wide ? groupX + span / 2 : b.x + b.w / 2;
+  const ringCy = wide ? b.y + b.h / 2 : b.y + R + sw;
+  const textLeft = wide ? groupX + span + gap : cx - block / 2;
+
+  // A ring is a graphic, not a letterform, so it is held to the 3:1 that non-text is held to —
+  // enough that the arc is unmistakably there on any page colour, without darkening the masjid's
+  // accent as far as a word would need.
+  const ringCol = c.prohibited ? TICKER_RED : readableOn(c.p.primary, c.p.bg, 3);
+  const C = 2 * Math.PI * R;
+  const cxs = cx.toFixed(1), cys = ringCy.toFixed(1), rs = R.toFixed(1), sws = sw.toFixed(1);
+  const ringOpacity = c.prohibited && !c.flash ? 0.35 : 1;
+  const off = C * (1 - clamp(c.ringProgress, 0.001, 1));
+  out.push(`<g opacity="${ringOpacity}">`);
+  out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${hexToRgba(ringCol, 0.18)}" stroke-width="${sws}"/>`);
+  out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${ringCol}" stroke-width="${sws}" stroke-linecap="round" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 ${cxs} ${cys})"/>`);
+  out.push(`</g>`);
+
+  // Inside: the prayer name, fitted to the ring's INNER width rather than the box's — a word that
+  // fits the box but not the circle is a word written across the arc.
+  const inner = (R - sw) * 1.72;
+  let lbl = clamp(R * 0.34, 10, 40);
+  const raw = c.nextLabel.toUpperCase();
+  const lblW = () => approxWidth(raw, lbl) + Math.max(0, raw.length - 1) * 2;
+  if (lblW() > inner) lbl = Math.max(8, (lbl * inner) / lblW());
+  // And then SHORTENED if even the floor will not hold it. The prayer names are admin-editable —
+  // `normLabels` takes forty characters — and a shrink with a floor is not a fit: at 8px a
+  // forty-character Jumu'ah label is still three times the width of the circle, so it was drawn
+  // straight across the arc and into the countdown beside it.
+  const label = ellipsize(raw, lbl, inner, 2);
+  if (c.nextOrdinal) {
+    // Two lines, the ordinal above the name — the same split panelRing makes, for the same
+    // reason: "2ND JUMU'AH" on one line does not fit inside a circle.
+    out.push(text(cx, ringCy - lbl * 0.15, c.nextOrdinal.toUpperCase(), { size: lbl * 0.82, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 2 }));
+    out.push(text(cx, ringCy + lbl * 0.95, label, { size: lbl, fill: c.p.text, family: FONT_DISPLAY, weight: 700, anchor: 'middle', letter: 2 }));
+  } else {
+    out.push(text(cx, ringCy + lbl * 0.36, label, { size: lbl, fill: c.p.text, family: FONT_DISPLAY, weight: 700, anchor: 'middle', letter: 2 }));
+  }
+
+  if (c.showCountdown) {
+    // The amount, then what it is counting to: under the ring, or beside it.
+    const numBase = wide ? ringCy + numSize * 0.08 : ringCy + R + sw + numSize;
+    let x = wide ? textLeft : cx - amountW() / 2;
+    for (let i2 = 0; i2 < segs.length; i2++) {
+      out.push(text(x, numBase, segs[i2].n, { size: numSize, fill: c.p.text, family: FONT_DISPLAY, weight: 800, anchor: 'start' }));
+      x += approxWidth(segs[i2].n, numSize) + numSize * 0.12;
+      out.push(text(x, numBase, segs[i2].w, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
+      x += unitW(segs[i2].w) + (i2 < segs.length - 1 ? numSize * 0.26 : 0);
+    }
+    out.push(
+      text(wide ? textLeft : cx, numBase + us * 1.75, untilWord, {
+        size: us,
+        fill: c.prohibited ? TICKER_RED : c.p.textDim,
+        family: FONT_SANS,
+        weight: 600,
+        anchor: wide ? 'start' : 'middle',
+        letter: 3,
+      }),
+    );
+  }
+  return out.join('');
+
+}
+
+/** Left column for the "simple" layout: brand, a sunrise/sunset pair, the big clock,
+ *  the two dates, and a small countdown wheel — sitting directly on the flat page, no
+ *  card behind any of it. */
 function brandColumn(b: Box, m: Model, c: Ctx): string {
   const out: string[] = [];
   const avail = b.w * 0.95;
@@ -1916,10 +2074,30 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   }
   let headerH = c.showLogo && c.showName ? ms + ns * 1.5 : c.showLogo ? ms + b.h * 0.03 : c.showName ? ns * 1.5 : 0;
 
-  let ss = c.showSunrise ? clamp(b.w * 0.038, 9, 14) : 0;
-  let sunriseH = c.showSunrise ? ss * 2.1 : 0;
+  /**
+   * Sunrise and sunset, STACKED — and much larger than they were.
+   *
+   * They used to share one line, which meant the fit was against their SUM: two ~15-character
+   * strings plus the gap between them is about 19 times the type size, so a 510px column could
+   * only carry about 25px, and the cap was 14 anyway. At the back of a hall that is not small
+   * text, it is absent text — which is what a masjid reported.
+   *
+   * A line each is fitted against the WIDER of the two instead, so the same column carries 34.
+   * It costs height, and the height is there: this column is vertically centred and was running
+   * about half empty, which is the same spare room the countdown wheel below now uses.
+   */
+  const sunriseStr = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}`;
+  const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
+  let ss = c.showSunrise ? clamp(b.w * 0.07, 12, 34) : 0;
+  if (c.showSunrise) {
+    const track = Math.max(sunriseStr.length, sunsetStr.length) * 0.6;
+    const widest = Math.max(approxWidth(sunriseStr, ss), approxWidth(sunsetStr, ss)) + track;
+    if (widest > avail) ss *= avail / widest;
+  }
+  let sunriseH = c.showSunrise ? ss * 3.3 : 0;
 
-  const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
+  const stackedSec = c.showSeconds && !c.secondsInline;
+  const markStr = stackedSec ? c.secStr : c.clock.period || '';
   let ts = clamp(b.w * 0.4, 46, 160);
   const markSize = () => ts * 0.24; // smaller than before — AM/PM read as loud beside a thin clock face
   const clockW = () => approxWidth(c.clock.time, ts) + (markStr ? ts * 0.1 + approxWidth(markStr, markSize()) : 0);
@@ -1954,28 +2132,25 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   }
   let dateH = showDateLine ? ds * (twoDates ? 3.5 : 2) : 0;
 
-  const sec = Math.max(0, c.remainingSec);
-  const h = Math.floor(sec / 3600);
-  const mm = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  const amount = sec < 60 ? `${s} sec` : h > 0 ? `${h}hr ${mm}min` : `${mm}min`;
-  const word = c.eventWord.charAt(0) + c.eventWord.slice(1).toLowerCase();
-  const nextLine = c.prohibited ? `Prohibited time — ${word.toLowerCase()} in ${amount}` : `Next ${word} in ${amount}`;
-  // The one sentence on the page that changes every minute, so it earns the accent — red while
-  // prayer is prohibited, which is the same signal the other layout's ring gives.
-  // Against the page, because on this design it IS on the page — see `readableOn`. The
-  // prohibited red is left alone: it is a fixed warning colour, not the admin's accent.
-  const nextFill = c.prohibited ? TICKER_RED : readableOn(c.p.primary, c.p.bg);
-  // Bigger than it was (the cap was 26). This column is mostly empty on a landscape screen —
-  // about half its height on 1080p — and this is the one line on it that changes minute to
-  // minute, so it is what the spare room should go to. It is still fitted to the column below,
-  // so a long sentence in Arabic or Urdu shrinks rather than overflowing.
-  let ls = clamp(b.w * 0.078, 16, 40);
-  if (c.showCountdown) {
-    const lw = approxWidth(nextLine, ls);
-    if (lw > avail) ls *= avail / lw;
-  }
-  let nextH = c.showCountdown ? ls * 1.9 : 0;
+  /**
+   * The countdown wheel's slot: whatever the column has LEFT once everything above it is placed.
+   *
+   * Everything else here is sized from the box width, which keeps the design's proportions as the
+   * column narrows. The wheel is the one element that should instead absorb the slack, because
+   * the slack is what this column had too much of — about half its height on a 1080p screen,
+   * which is why a masjid could see it was empty. Bounded either side so a very wide column does
+   * not grow a wheel out of proportion, and a short one still gets a circle big enough to read an
+   * arc on rather than a dot.
+   */
+  const above = headerH + sunriseH + clockH + dateH;
+  // The bounds are the smaller of what the WIDTH and the HEIGHT allow. Width alone is wrong for
+  // this one: a portrait column is wide and short, so a width-derived floor demanded a 408px
+  // wheel in a box with 80px left, and the block's fit-to-height pass then shrank the clock, the
+  // dates and the masjid name by a third to pay for it. A floor is meant to stop the wheel
+  // becoming a dot, not to outrank everything above it.
+  const lo = Math.min(b.w * 0.42, b.h * 0.26);
+  const hi = Math.max(lo, Math.min(b.w * 0.95, b.h * 0.52));
+  let nextH = c.showCountdown ? clamp(b.h * 0.98 - above, lo, hi) : 0;
 
   /**
    * Everything above is sized from the box WIDTH, which is right while this column is the full
@@ -1994,7 +2169,7 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   const room = b.h * 0.98;
   if (totalH > room && totalH > 0) {
     const k = room / totalH;
-    ms *= k; ns *= k; ss *= k; ts *= k; ds *= k; ls *= k;
+    ms *= k; ns *= k; ss *= k; ts *= k; ds *= k;
     headerH *= k; sunriseH *= k; clockH *= k; dateH *= k; nextH *= k;
     totalH = room;
   }
@@ -2014,17 +2189,11 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     y += headerH;
   }
 
-  // Sunrise and sunset as one centred line — plain text, no icons.
+  // Sunrise above sunset, both centred — plain text, no icons.
   if (c.showSunrise) {
-    const sunriseStr = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}`;
-    const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
-    const gapW = ss * 2.4;
     const rowY = y + ss;
-    const totalW = approxWidth(sunriseStr, ss) + gapW + approxWidth(sunsetStr, ss);
-    let x = cx - totalW / 2;
-    out.push(text(x, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'start', letter: 0.6 }));
-    x += approxWidth(sunriseStr, ss) + gapW;
-    out.push(text(x, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'start', letter: 0.6 }));
+    out.push(text(cx, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: 0.6 }));
+    out.push(text(cx, rowY + ss * 1.35, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: 0.6 }));
     y += sunriseH;
   }
 
@@ -2036,8 +2205,8 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   out.push(text(clockX, tBase, c.clock.time, { size: ts, fill: c.p.text, family: FONT_DISPLAY, weight: 400, anchor: 'start', letter: -ts * 0.01, blink: true }));
   const markX = clockX + approxWidth(c.clock.time, ts) + ts * 0.1;
   const ss2 = markSize();
-  if (c.showSeconds) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
-  if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
+  if (stackedSec) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
+  if (c.clock.period) out.push(text(markX, tBase - (stackedSec ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
   y = tBase + ts * 0.3;
 
   // One combined, centred date line (Hijri | Gregorian) rather than two stacked ones. The
@@ -2056,11 +2225,8 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     y += ds * 0.8;
   }
 
-  // A plain, centred sentence instead of the ring: "Next Iqamah in 6hr 24min."
-  if (c.showCountdown) {
-    y += ls * 1.9;
-    out.push(text(cx, y, nextLine, { size: ls, fill: nextFill, family: FONT_SANS, weight: 500, anchor: 'middle' }));
-  }
+  // The wheel, in the room the sentence used to take a single line of.
+  if (nextH > 0) out.push(miniRing({ x: b.x, y, w: b.w, h: nextH }, c));
   return out.join('');
 }
 
@@ -2423,8 +2589,11 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
       if (r.adStr) over = Math.max(over, slotW(r.adStr, timeSize * 0.92, r.ord) / Math.max(1, nameRoom - r.nameU * nameSize - r.nameTrack));
       over = Math.max(over, slotW(r.iqStr, timeSize, r.ord) / iqRoom);
     }
-    if (over <= 1.001) break;
-    timeSize /= over;
+    if (over <= 1) break;
+    // Contracted slightly PAST the overshoot rather than exactly onto it. Stopping at "within a
+    // tenth of a percent" left the widest row a fifth of a pixel over its budget, which is
+    // invisible in itself and was not invisible at all once `ellipsize` acted on it.
+    timeSize /= over * 1.002;
   }
   // A floor, and the one line here that can fight the fit above: it is reachable only when the
   // name has been pushed UP by its own 11px clamp, i.e. in a box where the budget said the names
@@ -2539,9 +2708,15 @@ function sanitizeText(s: string): string {
  * (the same reason `sanitizeText` folds it), and a label is exactly the kind of text that gets
  * truncated in Arabic and Urdu.
  */
-function ellipsize(str: string, size: number, maxW: number, letter = 0): string {
+function ellipsize(str: string, size: number, maxW: number, letter = 0, tol = 1): string {
   const w = (t: string) => approxWidth(t, size) + Math.max(0, t.length - 1) * letter;
-  if (w(str) <= maxW) return str;
+  // `tol` is why this is not `> maxW`. Shortening is a CLIFF — the ellipsis itself costs about
+  // three characters, so the first cut to "JUMU'AH" loses "AH" — and the budgets feeding `maxW`
+  // are iterative solves that settle to a fraction of a pixel rather than to zero. Without a
+  // tolerance, a 0.2px shortfall took two letters off the word Jumu'ah on a portrait screen.
+  // One pixel is far inside the padding already held back from `maxW`, so nothing can collide
+  // in that pixel.
+  if (w(str) <= maxW + tol) return str;
   let cut = str;
   while (cut.length > 0 && w(`${cut}...`) > maxW) cut = cut.slice(0, -1);
   return cut.length ? `${cut.trimEnd()}...` : '';
@@ -3204,7 +3379,11 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   let end2 = m.nextHours;
   if (end2 < prevH) end2 += 24;
   const ringProgress = clamp((now2 - prevH) / Math.max(0.001, end2 - prevH), 0, 1);
-  const clockDisp = fmtClock(nowHours, tt.timeFormat, false);
+  // The clock carries its own seconds only in the inline style; in the stacked style they are a
+  // separate little block drawn beside it, and formatting them into the string too would print
+  // them twice.
+  const secondsInline = tt.showSeconds && tt.secondsStyle === 'inline';
+  const clockDisp = fmtClock(nowHours, tt.timeFormat, secondsInline);
   const secStr = pad2(m.parts.second);
 
   const greg = gregorian(m.parts, tt.language, tt.gregorianOffset ?? 0);
@@ -3300,6 +3479,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     clock: clockDisp,
     secStr,
     showSeconds: tt.showSeconds,
+    secondsInline,
     greg,
     hij,
     nextLabel,

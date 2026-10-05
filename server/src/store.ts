@@ -92,6 +92,7 @@ function seededTimetable(): Timetable {
     showDates: true,
     showLogo: true,
     showSeconds: false,
+    secondsStyle: 'stacked',
     showFooter: true,
     showCelestial: true,
     showName: true,
@@ -119,6 +120,8 @@ function migrateTimetable(t: Timetable): Timetable {
     showDates: t.showDates ?? true,
     showLogo: t.showLogo ?? true,
     showSeconds: t.showSeconds ?? false,
+    // Every timetable stored before this field existed reads back as the original look.
+    secondsStyle: t.secondsStyle === 'inline' ? 'inline' : 'stacked',
     showFooter: t.showFooter ?? true,
     showCelestial: t.showCelestial ?? true,
     showName: t.showName ?? true,

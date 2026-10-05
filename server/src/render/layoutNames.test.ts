@@ -67,11 +67,17 @@ test('modern draws the themed design and simple draws the flat one', () => {
   const modern = renderDisplaySvg(tt({ layout: 'modern' }), NOW);
   const simple = renderDisplaySvg(tt({ layout: 'simple' }), NOW);
   assert.notEqual(modern, simple);
-  assert.ok(modern.includes('stroke-dasharray'), 'modern keeps the countdown ring');
-  assert.ok(!simple.includes('stroke-dasharray'), 'simple has no ring');
+  // The marker is the themed SCENE, not the countdown ring. The ring used to be the clearest
+  // difference between the two designs and is not one any more: Simple now carries a small
+  // countdown wheel of its own, because a sentence that reads the same whether a prayer is six
+  // hours off or ninety seconds away was not telling a hall anything. What still separates them
+  // is what it always really was — Modern paints a scene, a pattern and glass cards; Simple is a
+  // flat page.
+  assert.ok(modern.includes('url(#scene)'), 'modern keeps its themed scene');
+  assert.ok(!simple.includes('url(#scene)'), 'simple is a flat page');
   // And a migrated legacy value lands on the themed one, not on the flat one.
   const migrated = renderDisplaySvg(normTimetable({}, { ...tt(), layout: 'clockTop' as unknown as Timetable['layout'] }), NOW);
-  assert.ok(migrated.includes('stroke-dasharray'), 'a migrated timetable keeps the design it had');
+  assert.ok(migrated.includes('url(#scene)'), 'a migrated timetable keeps the design it had');
 });
 
 // ── the colour pass on the simple layout ───────────────────────────────────

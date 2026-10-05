@@ -92,6 +92,8 @@ export interface Timetable {
   showDates: boolean;
   showLogo: boolean;
   showSeconds: boolean;
+  /** where the seconds sit when they are shown: small beside the clock, or in its face */
+  secondsStyle: 'stacked' | 'inline';
   showFooter: boolean;
   showCelestial: boolean;
   showName: boolean;

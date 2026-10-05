@@ -351,6 +351,9 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     showDates: o.showDates === undefined ? base?.showDates ?? true : bool(o.showDates, true),
     showLogo: o.showLogo === undefined ? base?.showLogo ?? true : bool(o.showLogo, true),
     showSeconds: o.showSeconds === undefined ? base?.showSeconds ?? false : bool(o.showSeconds, false),
+    // Defaults to 'stacked', which is what every screen already does — so turning the seconds on
+    // after this change looks exactly as it did before it.
+    secondsStyle: oneOf(o.secondsStyle === undefined ? base?.secondsStyle : o.secondsStyle, ['stacked', 'inline'] as const, 'stacked'),
     showFooter: o.showFooter === undefined ? base?.showFooter ?? true : bool(o.showFooter, true),
     showCelestial: o.showCelestial === undefined ? base?.showCelestial ?? true : bool(o.showCelestial, true),
     bitrate720: o.bitrate720 === undefined ? base?.bitrate720 : intIn(o.bitrate720, base?.bitrate720 ?? 4000, 500, 20000),
