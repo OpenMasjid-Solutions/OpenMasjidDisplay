@@ -353,7 +353,10 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     showSeconds: o.showSeconds === undefined ? base?.showSeconds ?? false : bool(o.showSeconds, false),
     // Defaults to 'stacked', which is what every screen already does — so turning the seconds on
     // after this change looks exactly as it did before it.
-    secondsStyle: oneOf(o.secondsStyle === undefined ? base?.secondsStyle : o.secondsStyle, ['stacked', 'inline'] as const, 'stacked'),
+    // The fallback is the STORED value, not the default — the same shape every other enum here
+    // uses. Falling back to 'stacked' would silently undo a masjid's choice the first time a
+    // save carried a malformed value for this one field.
+    secondsStyle: oneOf(o.secondsStyle === undefined ? base?.secondsStyle : o.secondsStyle, ['stacked', 'inline'] as const, base?.secondsStyle === 'inline' ? 'inline' : 'stacked'),
     showFooter: o.showFooter === undefined ? base?.showFooter ?? true : bool(o.showFooter, true),
     showCelestial: o.showCelestial === undefined ? base?.showCelestial ?? true : bool(o.showCelestial, true),
     bitrate720: o.bitrate720 === undefined ? base?.bitrate720 : intIn(o.bitrate720, base?.bitrate720 ?? 4000, 500, 20000),

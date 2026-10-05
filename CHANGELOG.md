@@ -49,6 +49,22 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **The clock no longer shows the wrong second.** With the seconds displayed, the digit repeated
+  and then skipped about twice a minute — the time was being rebuilt from a decimal that had
+  already lost a fraction, so flooring it landed on the second before. It affected the
+  full-screen hadith clock too, where it had always been.
+- **The countdown wheel keeps the prayer's name.** "MAGHRIB" was being shortened to "MAGHR..."
+  inside the ring on nearly every screen shape, and beside a slideshow image at 720p the name
+  disappeared altogether — the space allowed for it was measured 14% short of the circle.
+- **On a screen too small for a readable wheel, the countdown goes back to being a sentence.**
+  Beside a slideshow image on a 720p screen the wheel came out a 25px circle with 8px type,
+  which is not a countdown anybody can read.
+- **The countdown could spill out of the left column and across the prayer table.** The spacing
+  between letters does not shrink when the type does, and the fit assumed it did.
+- **The words "Prohibited time" are back on the Simple design** during the zawāl window. The wheel
+  turned red but never said what the red meant.
+- Sunset now has a translation. It had never had one, so Arabic and Urdu screens showed the
+  English word — which the larger sunrise/sunset line made obvious.
 - The Jumu'ah row could be shortened to "JUMU'..." on a portrait screen. It fitted — it missed by
   a fifth of a pixel, and the shortening was taking two letters off the word to save it.
 - **A custom page colour on the Simple design no longer makes the screen hard to read.** The

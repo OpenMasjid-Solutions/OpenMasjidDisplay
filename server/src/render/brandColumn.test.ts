@@ -211,6 +211,111 @@ test('a renamed prayer cannot write across the wheel', () => {
   }
 });
 
+// ── the invariants the first version of these tests could not see ────────────
+
+test('no empty <text> element is ever emitted', () => {
+  /**
+   * The lesson from the review, and the reason this is its own test rather than a stronger
+   * version of the overlap sweep.
+   *
+   * The wheel's centre label was coming out as `<text …></text>` — the prayer name wholly absent
+   * from the ring — beside a slideshow image at 720p. The test written to guard that exact
+   * string, with that exact configuration, PASSED: its `runs()` helper skips runs with no body,
+   * so the one run it existed to check was the one it could not see. A measurement that discards
+   * the failure case is not a measurement.
+   *
+   * An empty text element is never correct. It is what a fit-with-a-floor produces when the floor
+   * is still too big for the room, and it is silent on screen and in every geometric check.
+   */
+  const bad: string[] = [];
+  for (const layout of ['simple', 'modern']) {
+    for (const quality of ['1080p', '720p']) {
+      for (const orientation of ['landscape', 'portrait']) {
+        for (const language of ['en', 'ar', 'ur']) {
+          for (const ann of [null, IMG]) {
+            for (const over of [{}, { showLogo: false, showName: false, showSunrise: false }, { jumuah: ['13:30', '14:30'] }, { jumuah: [] }]) {
+              const t = tt({ layout, quality, orientation, language, ...over });
+              const svg = renderDisplaySvg(t, FRI, ann ? { announcement: IMG } : {});
+              for (const m of svg.matchAll(/<text ([^>]*)>([\s\S]*?)<\/text>/g)) {
+                if (!m[2].replace(/<[^>]*>/g, '').trim()) {
+                  bad.push(`${layout}/${quality}/${orientation}/${language}${ann ? ' +pic' : ''}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(bad.slice(0, 6), [], `${bad.length} empty text elements`);
+});
+
+test("the labels this app ships with are never shortened", () => {
+  // Shortening is the backstop for a forty-character rename, not something a masjid that has
+  // changed nothing should ever see. "MAGHRIB" was coming out as "MAGHR..." inside the wheel on
+  // every shape but one, because the label's budget was a guess at the ring's chord that fell 14%
+  // short of it.
+  const bad: string[] = [];
+  for (const quality of ['1080p', '720p']) {
+    for (const orientation of ['landscape', 'portrait']) {
+      for (const language of ['en', 'ar', 'ur']) {
+        for (const ann of [null, IMG]) {
+          const svg = renderDisplaySvg(tt({ layout: 'simple', quality, orientation, language }), FRI, ann ? { announcement: IMG } : {});
+          for (const r of runs(svg)) {
+            if (r.body.endsWith('...')) bad.push(`${quality}/${orientation}/${language}${ann ? ' +pic' : ''}: "${r.body}"`);
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(bad.slice(0, 6), [], `${bad.length} default labels shortened`);
+});
+
+test('a slot too small for a legible wheel gets the sentence back', () => {
+  // Beside a slideshow image on a 720p screen the wheel's slot is about 399x31 — a 25px circle
+  // carrying 8px type, which is not a countdown anybody can read. The one-line sentence the wheel
+  // replaced fits there and says the same thing.
+  const small = renderDisplaySvg(tt({ layout: 'simple', quality: '720p' }), FRI, { announcement: IMG });
+  assert.match(small, /Next .* in /, 'the sentence is the fallback in a box too small for a ring');
+  const roomy = renderDisplaySvg(tt({ layout: 'simple', quality: '1080p' }), FRI, {});
+  assert.ok(!/Next .* in /.test(roomy), 'and is not used where the wheel fits');
+  assert.match(roomy, /stroke-dasharray/, 'which is where there is room for one');
+});
+
+test('the prohibited window still says so in words, not only in red', () => {
+  // The sentence the wheel replaced read "Prohibited time — adhan in 5min". The wheel said it
+  // only in colour, and a red ring alone does not tell a volunteer which red thing is happening.
+  for (const quality of ['1080p', '720p']) {
+    for (const orientation of ['landscape', 'portrait']) {
+      const svg = renderDisplaySvg(
+        tt({ layout: 'simple', quality, orientation, prohibitedNotice: { enabled: true, minutes: 10 } }),
+        new Date('2026-09-11T16:52:00Z'),
+        {},
+      );
+      assert.match(svg, /PROHIBITED|Prohibited/, `${quality}/${orientation}: the state is not named`);
+    }
+  }
+});
+
+test('the clock shows the second it is actually on', () => {
+  /**
+   * `nowHours` is `hour + minute/60 + second/3600`, and multiplying that float back up lands a
+   * hair BELOW the whole number about one second in twenty-five. Flooring it then showed the
+   * PREVIOUS second: a wall clock whose seconds digit repeats and then skips, twice a minute.
+   *
+   * It is tested over a whole hour because the error depends on which minute and second the
+   * float happens to land on, so a handful of samples proves nothing.
+   */
+  const t = tt({ layout: 'simple', showSeconds: true, secondsStyle: 'inline' });
+  let wrong = 0;
+  for (let s = 0; s < 3600; s++) {
+    const svg = renderDisplaySvg(t, new Date(Date.UTC(2026, 8, 11, 14, 0, s)), {}).replace(/<\/?tspan[^>]*>/g, '');
+    const m = /<text [^>]*>(\d{1,2}:\d{2}:\d{2})<\/text>/.exec(svg);
+    if (!m || m[1].slice(-2) !== String(s % 60).padStart(2, '0')) wrong++;
+  }
+  assert.equal(wrong, 0, `${wrong} of 3600 seconds showed the wrong value`);
+});
+
 // ── and the thing that broke while this was being built ──────────────────────
 
 test('a prayer name is never shortened to save a fraction of a pixel', () => {

@@ -258,19 +258,31 @@ interface ClockText {
   period: string;
 }
 
+/**
+ * `hours` arrives as `hour + minute/60 + second/3600`, which is a float that has already lost
+ * the exactness of the integers it was built from: multiplying it back up lands a hair BELOW
+ * the whole number about one second in twenty-five, and flooring that shows the previous second.
+ * On a wall clock with the seconds displayed, that is a digit that visibly repeats and then
+ * skips. EPS is smaller than any real sub-second this is ever called with and larger than the
+ * round-trip error.
+ */
+const CLOCK_EPS = 1e-6;
+
 function fmtClock(hours: number, timeFormat: string, withSeconds = false): ClockText {
   let h: number, m: number, s = 0;
   if (withSeconds) {
     // Second precision (floor) — a live wall clock shouldn't round the minute up.
-    let total = Math.floor(hours * 3600);
+    let total = Math.floor(hours * 3600 + CLOCK_EPS);
     total = ((total % 86400) + 86400) % 86400;
     h = Math.floor(total / 3600);
     m = Math.floor((total % 3600) / 60);
     s = total % 60;
   } else {
     // Minute precision — FLOOR, never round: a wall clock must not show the next
-    // minute early (rounding made 10:53:40 read as 10:54, i.e. up to a minute fast).
-    let total = Math.floor(hours * 60);
+    // minute early (rounding made 10:53:40 read as 10:54, i.e. up to a minute fast). The same
+    // round-trip epsilon as above: without it the clock sits on the previous minute for a
+    // fraction of a second at the turn.
+    let total = Math.floor(hours * 60 + CLOCK_EPS);
     total = ((total % 1440) + 1440) % 1440;
     h = Math.floor(total / 60);
     m = total % 60;
@@ -608,9 +620,12 @@ function ordinalEn(n: number): string {
 }
 
 export const PRAYER_LABELS: Record<string, Record<string, string>> = {
-  en: { fajr: 'Fajr', sunrise: 'Sunrise', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha', jumuah: "Jumu'ah", iqamah: 'Iqāmah', athan: 'Adhan', next: 'Next prayer', prayer: 'Prayer' },
-  ar: { fajr: 'الفجر', sunrise: 'الشروق', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
-  ur: { fajr: 'فجر', sunrise: 'طلوع', dhuhr: 'ظہر', asr: 'عصر', maghrib: 'مغرب', isha: 'عشاء', jumuah: 'جمعہ', iqamah: 'اقامہ', athan: 'اذان', next: 'اگلی نماز', prayer: 'نماز' },
+  en: { fajr: 'Fajr', sunrise: 'Sunrise', sunset: 'Sunset', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha', jumuah: "Jumu'ah", iqamah: 'Iqāmah', athan: 'Adhan', next: 'Next prayer', prayer: 'Prayer' },
+  // `sunset` was missing from all three until the Simple column started setting it at 34px
+  // directly under an Arabic date — the English word had always been there, just too small to
+  // notice.
+  ar: { fajr: 'الفجر', sunrise: 'الشروق', sunset: 'الغروب', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
+  ur: { fajr: 'فجر', sunrise: 'طلوع', sunset: 'غروب', dhuhr: 'ظہر', asr: 'عصر', maghrib: 'مغرب', isha: 'عشاء', jumuah: 'جمعہ', iqamah: 'اقامہ', athan: 'اذان', next: 'اگلی نماز', prayer: 'نماز' },
 };
 
 export function labels(lang: string, overrides?: Record<string, string>): Record<string, string> {
@@ -1936,6 +1951,33 @@ function announcementView(a: Box, m: Model, c: Ctx, image: string, isSimple: boo
  * to sit in whatever the column has left after the clock and the dates, and that is a third of a
  * portrait screen in one case and a short strip beside a slideshow image in another.
  */
+/**
+ * The one-line sentence the wheel replaced, kept for the boxes a wheel does not fit in.
+ *
+ * "Next Jumu'ah in 50min" says the same thing in one line that can be set large enough to read,
+ * which is the right trade the moment the circle would be smaller than the words inside it.
+ */
+function countdownSentence(b: Box, c: Ctx): string {
+  if (!c.showCountdown) return '';
+  const sec = Math.max(0, c.remainingSec);
+  const h = Math.floor(sec / 3600);
+  const mm = Math.floor((sec % 3600) / 60);
+  const amount = sec < 60 ? `${sec % 60} sec` : h > 0 ? `${h}hr ${mm}min` : `${mm}min`;
+  const word = c.eventWord.charAt(0) + c.eventWord.slice(1).toLowerCase();
+  const line = c.prohibited
+    ? `${c.L.prohibitedTime ?? 'Prohibited time'} — ${word.toLowerCase()} in ${amount}`
+    : `Next ${word} in ${amount}`;
+  const avail = b.w * 0.95;
+  let ls = clamp(b.h * 0.42, 12, 40);
+  const w = () => approxWidth(line, ls);
+  if (w() > avail) ls = Math.max(9, (ls * avail) / w());
+  const fill = c.prohibited ? TICKER_RED : readableOn(c.p.primary, c.p.bg);
+  const fitted = ellipsize(line, ls, avail);
+  return fitted
+    ? text(b.x + b.w / 2, b.y + b.h * 0.5 + ls * 0.36, fitted, { size: ls, fill, family: FONT_SANS, weight: 500, anchor: 'middle' })
+    : '';
+}
+
 function miniRing(b: Box, c: Ctx): string {
   const out: string[] = [];
   const sec = Math.max(0, c.remainingSec);
@@ -1945,7 +1987,12 @@ function miniRing(b: Box, c: Ctx): string {
   // The same vocabulary panelRing uses, so the two designs do not name the same wait differently.
   const seg = (n: number, w: string) => ({ n: String(n), w: n === 1 ? w : w + 'S' });
   const segs = sec < 60 ? [seg(s, 'SECOND')] : h === 0 ? [seg(mm, 'MINUTE')] : mm === 0 ? [seg(h, 'HOUR')] : [seg(h, 'HOUR'), seg(mm, 'MINUTE')];
-  const untilWord = c.prohibited ? `UNTIL ${c.nextLabel} ${c.eventWord}`.toUpperCase() : `UNTIL ${c.eventWord}`;
+  // The words "Prohibited time" are back in it. The sentence this wheel replaced said them; the
+  // wheel said only the colour, and a red ring on its own does not tell a volunteer which of the
+  // several things that could be red is happening.
+  const untilWord = c.prohibited
+    ? `${c.L.prohibitedTime ?? 'Prohibited time'} — until ${c.nextLabel} ${c.eventWord}`.toUpperCase()
+    : `UNTIL ${c.eventWord}`;
 
   /**
    * Two arrangements, because this slot arrives as two very different shapes.
@@ -1963,12 +2010,22 @@ function miniRing(b: Box, c: Ctx): string {
    */
   const wide = b.w > b.h * 1.7;
   const R = wide ? Math.min(b.h * 0.4, b.w * 0.2) : Math.min(b.w * 0.3, b.h * 0.33);
+  /**
+   * Below this the wheel stops being one. Beside a slideshow image on a 720p screen the slot is
+   * 399x31, which gives a 25px circle carrying 8px type — an arc nobody can read a position off
+   * and a name nobody can read at all. A countdown that cannot be read is worse than the sentence
+   * it replaced, so in a box that small the sentence comes back. It is one line, it always fits,
+   * and it says the same thing.
+   */
+  if (2 * R < 84) return countdownSentence(b, c);
   const sw = Math.max(4, R * 0.14);
   const span = 2 * (R + sw);
   let numSize = wide
     ? clamp(Math.min(b.w * 0.11, b.h * 0.44), 13, 72)
     : clamp(Math.min(b.w * 0.165, (b.h - span) * 0.52), 13, 72);
-  let us = clamp(numSize * 0.34, 9, 26);
+  // A little larger than a caption: these words are all that names what the number means, and the
+  // sentence they replaced was set at 40px.
+  let us = clamp(numSize * 0.4, 10, 32);
 
   // Everything is placed before anything is drawn: in the wide form the ring's own centre depends
   // on how much room the text beside it needs, so a draw-then-shift would have to move the ring
@@ -1982,13 +2039,27 @@ function miniRing(b: Box, c: Ctx): string {
   const untilW = () => approxWidth(untilWord, us) + Math.max(0, untilWord.length - 1) * 3;
   const gap = wide ? R * 0.4 : 0;
   const textRoom = wide ? Math.max(1, b.w * 0.98 - span - gap) : b.w * 0.94;
-  const need = c.showCountdown ? Math.max(amountW(), untilW()) : 0;
-  if (need > textRoom) {
-    const k = textRoom / need;
+  /**
+   * Letter-spacing is a fixed number of PIXELS per gap, so it does not shrink when the type does
+   * — and `k = room / width` assumes everything shrinks. Scaling by that k leaves the constant
+   * behind, so the block stays over budget by it; and because the group is CENTRED, the overshoot
+   * is split both ways and escapes both edges at once — the ring off the left of its column, the
+   * "UNTIL …" line off the right and onto the prayer table.
+   *
+   * So the constant comes out of the room before the division, which is the same correction the
+   * prayer table needed for the same reason. The floor stops a pathological label driving the
+   * type to nothing; `ellipsize` below is what handles that case instead.
+   */
+  if (c.showCountdown) {
+    const trackA = segs.reduce((a, p) => a + Math.max(0, p.w.length - 1), 0);
+    const trackU = Math.max(0, untilWord.length - 1) * 3;
+    const kA = amountW() - trackA > 0 ? (textRoom - trackA) / (amountW() - trackA) : 1;
+    const kU = untilW() - trackU > 0 ? (textRoom - trackU) / (untilW() - trackU) : 1;
+    const k = clamp(Math.min(1, kA, kU), 0.35, 1);
     numSize *= k;
     us *= k;
   }
-  const block = c.showCountdown ? Math.max(amountW(), untilW()) : 0;
+  const block = c.showCountdown ? Math.min(textRoom, Math.max(amountW(), untilW())) : 0;
   const groupW = wide ? span + (block ? gap + block : 0) : b.w;
   const groupX = b.x + (b.w - groupW) / 2;
   const cx = wide ? groupX + span / 2 : b.x + b.w / 2;
@@ -2010,7 +2081,10 @@ function miniRing(b: Box, c: Ctx): string {
 
   // Inside: the prayer name, fitted to the ring's INNER width rather than the box's — a word that
   // fits the box but not the circle is a word written across the arc.
-  const inner = (R - sw) * 1.72;
+  // The widest line that fits inside a circle of inner radius `R - sw` is its DIAMETER, less a
+  // hair so the glyphs do not touch the arc. 1.72 was a guess at that and it was 14% short, which
+  // is why the shipped default "MAGHRIB" came out as "MAGHR..." on nearly every shape.
+  const inner = (R - sw) * 1.96;
   let lbl = clamp(R * 0.34, 10, 40);
   const raw = c.nextLabel.toUpperCase();
   const lblW = () => approxWidth(raw, lbl) + Math.max(0, raw.length - 1) * 2;
@@ -2039,16 +2113,22 @@ function miniRing(b: Box, c: Ctx): string {
       out.push(text(x, numBase, segs[i2].w, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
       x += unitW(segs[i2].w) + (i2 < segs.length - 1 ? numSize * 0.26 : 0);
     }
-    out.push(
-      text(wide ? textLeft : cx, numBase + us * 1.75, untilWord, {
-        size: us,
-        fill: c.prohibited ? TICKER_RED : c.p.textDim,
-        family: FONT_SANS,
-        weight: 600,
-        anchor: wide ? 'start' : 'middle',
-        letter: 3,
-      }),
-    );
+    // The floor above can leave the line still too wide — a long renamed prayer, or the
+    // prohibited wording in a narrow column — and a line that cannot shrink any further has to
+    // give up characters rather than cross into the prayer table.
+    const untilFit = ellipsize(untilWord, us, textRoom, 3);
+    if (untilFit) {
+      out.push(
+        text(wide ? textLeft : cx, numBase + us * 1.75, untilFit, {
+          size: us,
+          fill: c.prohibited ? TICKER_RED : c.p.textDim,
+          family: FONT_SANS,
+          weight: 600,
+          anchor: wide ? 'start' : 'middle',
+          letter: 3,
+        }),
+      );
+    }
   }
   return out.join('');
 
@@ -2090,9 +2170,12 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
   let ss = c.showSunrise ? clamp(b.w * 0.07, 12, 34) : 0;
   if (c.showSunrise) {
+    // The tracking is a constant per gap and does not shrink with the type, so it comes out of
+    // the room BEFORE the division — scaling by `avail / widest` would leave it behind and the
+    // line would still overshoot, by about 13px on a renamed label.
     const track = Math.max(sunriseStr.length, sunsetStr.length) * 0.6;
-    const widest = Math.max(approxWidth(sunriseStr, ss), approxWidth(sunsetStr, ss)) + track;
-    if (widest > avail) ss *= avail / widest;
+    const widest = Math.max(approxWidth(sunriseStr, ss), approxWidth(sunsetStr, ss));
+    if (widest + track > avail) ss *= Math.max(0.2, (avail - track) / widest);
   }
   let sunriseH = c.showSunrise ? ss * 3.3 : 0;
 
