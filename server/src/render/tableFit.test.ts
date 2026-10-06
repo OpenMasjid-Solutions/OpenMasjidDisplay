@@ -389,3 +389,42 @@ test('a narrow column shrinks the times rather than letting them collide', () =>
   assert.ok(beside.time < wide.time, 'the timetable column beside a picture has less room and takes less');
   assert.ok(beside.time > beside.name, 'and the times are still the larger of the two');
 });
+
+// ── the highlighted row, and a single Jumu'ah ────────────────────────────────
+
+test('the highlighted row is bold across — name, Adhan and Iqāmah', () => {
+  // A masjid saw Isha's name and Iqāmah lit up and its Adhan left thin: two places of three reads
+  // as a mistake rather than as "this one". 11:00 on a Thursday: Dhuhr is the row that is next.
+  const t = normTimetable({ ...BASE, layout: 'simple', jumuah: ['13:30'] }) as Timetable;
+  const svg = renderDisplaySvg(t, new Date('2026-09-10T15:00:00Z'), {});
+  const texts = [...svg.matchAll(/<text ([^>]*)>(.*?)<\/text>/g)].map((m) => ({
+    y: Number(/(?:^|\s)y="([^"]*)"/.exec(m[1])![1]),
+    weight: Number(/font-weight="(\d+)"/.exec(m[1])?.[1] ?? 400),
+    body: m[2],
+  }));
+  const name = texts.find((r) => r.body === 'DHUHR');
+  assert.ok(name, 'the Dhuhr row is drawn');
+  const row = texts.filter((r) => Math.abs(r.y - name!.y) < 0.5);
+  const times = row.filter((r) => /^\d{1,2}:\d{2}/.test(r.body));
+  assert.equal(times.length, 2, 'Adhan and Iqāmah on the same baseline as the name');
+  for (const r of [name!, ...times]) assert.ok(r.weight >= 600, `"${r.body}" is weight ${r.weight}`);
+  // …and an ordinary row is not.
+  const fajr = texts.find((r) => r.body === 'FAJR')!;
+  const fajrAdhan = texts.filter((r) => Math.abs(r.y - fajr.y) < 0.5 && /^\d/.test(r.body))[0];
+  assert.ok(fajrAdhan.weight < 600, 'an un-highlighted Adhan stays light');
+});
+
+test("a single Jumu'ah is centred between the two time columns", () => {
+  for (const orientation of ['landscape', 'portrait']) {
+    const t = normTimetable({ ...BASE, layout: 'simple', orientation, jumuah: ['13:30'] }) as Timetable;
+    const rs = runs(renderDisplaySvg(t, new Date('2026-09-10T15:00:00Z'), {}));
+    const jum = rs.find((r) => r.body === '1:30 PM');
+    assert.ok(jum, `${orientation}: the Jumu'ah time is drawn`);
+    assert.equal(jum!.anchor, 'middle', `${orientation}: centred, not right-aligned under Iqāmah`);
+    // The Fajr row's two times mark where the columns are.
+    const fajr = rs.find((r) => r.body === 'FAJR')!;
+    const [ad, iq] = rs.filter((r) => Math.abs(r.y - fajr.y) < 0.5 && /^\d/.test(r.body)).map(box).sort((a, b) => a.l - b.l);
+    const mid = ((ad.l + ad.r) / 2 + (iq.l + iq.r) / 2) / 2;
+    assert.ok(Math.abs(jum!.x - mid) < 12, `${orientation}: ${jum!.x.toFixed(0)} is not near the midpoint ${mid.toFixed(0)}`);
+  }
+});

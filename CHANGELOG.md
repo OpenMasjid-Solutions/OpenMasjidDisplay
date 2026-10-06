@@ -17,13 +17,16 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
-- **The Simple design's left column has been rebuilt.** Sunrise and sunset are now on a line
-  each and more than twice the size they were — they shared one line before, which meant both had
-  to shrink to fit beside each other, and the result was unreadable from the back of a hall. In
-  place of the "Next Iqamah in 6hr 24min" sentence there is now a small countdown wheel, the same
-  one the Modern design uses: the ring fills as the wait passes, the prayer's name sits inside it,
-  and the time left reads underneath. On a portrait screen, where that part of the column is wide
-  and short, the wheel turns on its side and the countdown sits beside the ring instead.
+- **The Simple design's left column is calmer.** Sunrise and sunset now sit side by side on one
+  small line under the date, instead of crowding the top of the column above the clock. The
+  countdown has gone from this design altogether: the highlighted row in the prayer table already
+  shows which salah is next. During the prohibited time, if the notice is on and the ticker is
+  off, a single red line under sunrise and sunset still says so in words. On a portrait screen,
+  and beside a slideshow image, the prayer table gets back the height the countdown used to take.
+- **In the Simple design, the row for the upcoming salah is now bold all the way across.** The
+  name and Iqamah time were bold but the Adhan time was not, so the row looked only half lit.
+- **A masjid with a single Jumu'ah now sees its time centred** between the Adhan and Iqamah
+  columns in the Simple design, rather than sitting under Iqamah next to an empty Adhan space.
 - **You can now choose where the seconds go.** Under Elements → Where the seconds go, "Beside the
   clock" is the original and stays the default; "In the clock" sets them in the time itself
   (6:22:05), the same size as the hours and minutes. The clock shrinks a little to make room for
