@@ -6,10 +6,9 @@
  * Three things a masjid asked for, and each of them is the kind that a screenshot of one screen
  * says nothing about:
  *
- *  - the sunrise/sunset pair was unreadable from the back of a hall, because it shared one line
- *    and so was fitted against the SUM of two strings;
- *  - the "Next Iqāmah in 6hr 24min" sentence read the same whether the prayer was six hours off
- *    or ninety seconds away, so it became a countdown wheel — the Modern ring, shrunk;
+ *  - the head of the column read as cluttered, so the sunrise/sunset pair moved under the date as
+ *    one small row, and the countdown (a sentence, then a wheel) went altogether — the
+ *    highlighted table row already says which prayer is next;
  *  - the seconds, when shown, were two small digits stacked over the AM/PM, and a masjid wanted
  *    them in the clock's own face instead.
  *
@@ -148,58 +147,37 @@ test('nothing leaves the frame with the seconds in the clock', () => {
 
 // ── the sunrise/sunset pair ──────────────────────────────────────────────────
 
-test('sunrise and sunset are stacked, and far bigger than they were', () => {
-  /**
-   * They shared a line and were fitted against the SUM of two ~15-character strings plus the gap
-   * between them — about nineteen times the type size — so a 510px column could only carry about
-   * 25px, and the cap was 14 anyway. A line each is fitted against the WIDER of the two instead.
-   */
+test('sunrise and sunset sit side by side, under the date', () => {
   const svg = renderDisplaySvg(tt({ layout: 'simple' }), FRI, {});
-  const sun = runs(svg).filter((r) => /^SUN(RISE|SET) /.test(r.body));
-  assert.equal(sun.length, 2, 'both lines are drawn');
+  const rs = runs(svg);
+  const sun = rs.filter((r) => /^SUN(RISE|SET) /.test(r.body));
+  assert.equal(sun.length, 2, 'both are drawn');
   assert.ok(Math.abs(sun[0].size - sun[1].size) < 0.01, 'at the same size — two sizes would read as a mistake');
-  assert.ok(sun[0].size >= 24, `the old cap was 14px; this is ${sun[0].size.toFixed(1)}`);
-  assert.ok(Math.abs(sun[0].t - sun[1].t) > sun[0].size * 0.8, 'stacked, not side by side');
+  assert.ok(Math.abs(sun[0].t - sun[1].t) < 0.5, 'on one row, not stacked');
+  assert.ok(sun[0].r <= sun[1].l, 'sunrise first, and the two do not touch');
+  const greg = rs.find((r) => /2026/.test(r.body) && /September/.test(r.body));
+  assert.ok(greg, 'the Gregorian date is drawn');
+  assert.ok(sun[0].t > greg!.b, 'below the date, not above the clock');
+  const clock = clockRun(svg);
+  assert.ok(sun[0].size < clock.size * 0.25, 'and small — reference, not headline');
 });
 
-// ── the countdown wheel ──────────────────────────────────────────────────────
+// ── no countdown on Simple ───────────────────────────────────────────────────
 
-test('the Simple column counts down with a wheel, not a sentence', () => {
-  const svg = renderDisplaySvg(tt({ layout: 'simple' }), FRI, {});
-  assert.match(svg, /stroke-dasharray/, 'there is an arc');
-  assert.match(svg, /UNTIL JUMU/, 'and it says what it is counting to');
-  assert.ok(!/Next .* in \d/.test(svg), 'the sentence it replaced is gone');
-  // The prayer's name sits inside the ring, as it does on the Modern one.
-  assert.ok(runs(svg).some((r) => r.body === "JUMU'AH" && r.anchor === 'middle'), 'the name is in the ring');
+test('the Simple column has no countdown wheel or sentence', () => {
+  for (const orientation of ['landscape', 'portrait']) {
+    for (const extra of [{}, { announcement: IMG }]) {
+      const svg = renderDisplaySvg(tt({ layout: 'simple', orientation }), FRI, extra);
+      assert.ok(!/stroke-dasharray/.test(svg), `${orientation}: no arc`);
+      assert.ok(!/UNTIL /.test(svg), `${orientation}: no "UNTIL …"`);
+      assert.ok(!/Next .* in /.test(svg), `${orientation}: no sentence either`);
+    }
+  }
 });
 
-test('the wheel turns on its side in a wide, short slot', () => {
-  /**
-   * A landscape column is tall and narrow; a portrait one is the same block as a wide strip. A
-   * circle stacked over two lines of type in a 972x198 box is a small dot with most of the width
-   * empty beside it, so the wide form puts the ring on the leading edge and the amount next to
-   * it. The observable difference: in the wide form the amount shares the ring's baseline band
-   * instead of sitting below the whole circle.
-   */
-  const amountY = (orientation: string) => {
-    const svg = renderDisplaySvg(tt({ layout: 'simple', orientation }), FRI, {});
-    const rs = runs(svg);
-    const num = rs.filter((r) => /^\d+$/.test(r.body) && rs.some((o) => /^(MINUTE|HOUR|SECOND)S?$/.test(o.body) && Math.abs(o.t - r.t) < r.size));
-    assert.ok(num.length, `${orientation}: no countdown amount found`);
-    const arcs = [...svg.matchAll(/<circle cx="([-\d.]+)" cy="([-\d.]+)" r="([-\d.]+)"/g)].map((m) => ({ cy: +m[2], r: +m[3] }));
-    const ring = arcs.sort((a, b) => b.r - a.r)[0];
-    return { amount: num[0].t, ringBottom: ring.cy + ring.r, ringCy: ring.cy };
-  };
-  const land = amountY('landscape');
-  assert.ok(land.amount > land.ringBottom, 'landscape stacks the amount under the ring');
-  const port = amountY('portrait');
-  assert.ok(port.amount < port.ringBottom, 'portrait sets it beside the ring, not under it');
-});
-
-test('a renamed prayer cannot write across the wheel', () => {
-  // Every prayer name is an admin-editable label and `normLabels` takes forty characters. Inside
-  // a circle that is three times the width available even at the smallest legible size, so the
-  // name is shortened — the alternative is a word drawn over the arc and into the countdown.
+test('a forty-character prayer name overlaps nothing in the narrowest column', () => {
+  // Every prayer name is an admin-editable label and `normLabels` takes forty characters, so the
+  // name is shortened rather than drawn over its own times.
   const svg = renderDisplaySvg(tt({ layout: 'simple', quality: '720p', labels: { jumuah: 'J'.repeat(40) } }), FRI, { announcement: IMG });
   const rs = runs(svg);
   for (let i = 0; i < rs.length; i++) {
@@ -271,20 +249,9 @@ test("the labels this app ships with are never shortened", () => {
   assert.deepEqual(bad.slice(0, 6), [], `${bad.length} default labels shortened`);
 });
 
-test('a slot too small for a legible wheel gets the sentence back', () => {
-  // Beside a slideshow image on a 720p screen the wheel's slot is about 399x31 — a 25px circle
-  // carrying 8px type, which is not a countdown anybody can read. The one-line sentence the wheel
-  // replaced fits there and says the same thing.
-  const small = renderDisplaySvg(tt({ layout: 'simple', quality: '720p' }), FRI, { announcement: IMG });
-  assert.match(small, /Next .* in /, 'the sentence is the fallback in a box too small for a ring');
-  const roomy = renderDisplaySvg(tt({ layout: 'simple', quality: '1080p' }), FRI, {});
-  assert.ok(!/Next .* in /.test(roomy), 'and is not used where the wheel fits');
-  assert.match(roomy, /stroke-dasharray/, 'which is where there is room for one');
-});
-
 test('the prohibited window still says so in words, not only in red', () => {
-  // The sentence the wheel replaced read "Prohibited time — adhan in 5min". The wheel said it
-  // only in colour, and a red ring alone does not tell a volunteer which red thing is happening.
+  // With the countdown gone, the one red line in its place is the only thing that names the
+  // window when the ticker is off — a red tint alone does not tell a volunteer what is happening.
   for (const quality of ['1080p', '720p']) {
     for (const orientation of ['landscape', 'portrait']) {
       const svg = renderDisplaySvg(
