@@ -153,6 +153,8 @@ CLAUDE.md § *The changelog has two audiences*.
   tests already did. Nothing shipped was wrong; the tests were.
 - Updated a build-time dependency (`browserslist`) to clear a newly published high-severity
   advisory. It is a development tool, never part of the running app.
+- Updated another build-time dependency (`source-map-js`) for the same reason: a newly published
+  high-severity advisory. It is only used while building the control panel, never at run time.
 
 ## 0.70.0
 
