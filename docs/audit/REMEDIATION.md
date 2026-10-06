@@ -6,6 +6,20 @@
 Companion to [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md). Branch:
 **`audit/security-2026-08-04`**, based on `c1080cd` (tree identical to `v0.61.0`).
 
+> ## ⚠ HISTORICAL — read the banner before acting on anything below
+>
+> This is the record of the **2026-08-04 audit**, kept because it is the only account of what was
+> found and why. It is **not** current instruction, and it is annotated where later evidence
+> contradicted it (look for *SUPERSEDED* notes). Two things in particular:
+>
+> - **Do not follow any release or rollback procedure in this file.** The authoritative chain is
+>   [`../../CLAUDE.md`](../../CLAUDE.md) § *On "merge to main"*. Where this file and CLAUDE.md
+>   disagree, CLAUDE.md is right and this file is the reason it says what it says.
+> - **`main` moves only when Hasan says so**, never autonomously — including for a finding in here.
+>
+> Reviewed against the tree on **2026-09-01** (v0.70.0).
+
+
 **Autonomous push to `main` is disabled** — `build-image.yml` publishes a production
 container image on every push to `main`. Everything below lands on the audit branch and
 merges only through a reviewed PR.
@@ -95,6 +109,17 @@ git log --oneline --merges -5                 # identify the audit merge commit 
 git revert -m 1 <MERGE_SHA>                   # -m 1 keeps main's first parent
 git push origin main
 ```
+
+> **⚠ SUPERSEDED — this is written for a `main` anyone may push to, and that is no longer the case.**
+> The branching policy in [`../../CLAUDE.md`](../../CLAUDE.md) § 0 now says `main` moves **only** when
+> Hasan says "merge to main", and never autonomously — not for a Critical finding, which is what a
+> fast `dev` → *"merge to main"* turnaround is for. A rollback is a release like any other and carries
+> the same chain.
+>
+> There is also a second hazard this snippet cannot see: a revert on `main` that touches
+> `.github/` can undo CI fixes that landed after the merge being reverted. Diff `.github/` before
+> pushing one — a tree-level revert has already deadlocked the required `cla` check for every open PR
+> once.
 
 **If CI fails on `main` after the merge, do this immediately** — a broken `main` is worse
 than any finding in the report. Then confirm the follow-up `Build image` run goes green.

@@ -155,8 +155,3 @@ export function appVersion(): string {
   }
   return 'unknown';
 }
-
-/** Test seam — the template is cached for the life of the process. */
-export function __resetInstallerCacheForTests(): void {
-  templateCache = null;
-}

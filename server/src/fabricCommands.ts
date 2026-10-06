@@ -5,8 +5,8 @@
  *
  * Every other Fabric call in this app goes outward: we present our secret to OpenMasjidOS.
  * This one is the reverse — the platform presents *our own* secret back to us and asks us to
- * run a command an admin picked from a WhatsApp menu. It is the only inbound Fabric surface
- * this app has, so the envelope is written once, here, and carefully:
+ * run a command an admin picked from a WhatsApp menu. It is the only inbound route that can
+ * WRITE (it drives the Iqamah wizard), so the envelope is the strictest one here:
  *
  *  - **Both headers, or nothing.** `X-OpenMasjid-App-Secret` must equal our own
  *    `OPENMASJID_APP_SECRET`, compared in constant time, and `X-OpenMasjid-Caller-App` must be
@@ -28,15 +28,19 @@
  *
  * `commands` must NOT appear in the manifest's `fabric.provides`: that is a reserved capability
  * and would expose this same handler to other apps through the app-to-app broker, which is a
- * different trust boundary sharing a path prefix.
+ * different trust boundary sharing a path prefix. That broker is no longer hypothetical —
+ * `fabricTimetable.ts` serves the `timetable` capability over it, one directory along and under
+ * the same `/fabric/` prefix, so the two envelopes now sit side by side and must stay distinct.
+ * The primitives they share (the constant-time compare, the header flattening) live in
+ * `fabricInbound.ts`; what they must never share is a handler or a caller rule.
  */
-import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from './config';
 import { makeLog } from './logger';
 import { sendJson } from './httpio';
 import type { Store } from './store';
 import { IqamahCommand } from './iqamahWizard';
+import { header, secretMatches } from './fabricInbound';
 
 const log = makeLog('commands');
 
@@ -51,22 +55,6 @@ const FORWARDED_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-p
 /** The command ids we declare in manifest.yaml. Anything else is a 404 `unknown_command`,
  *  which the platform turns into "that isn't one of the options". */
 export const COMMAND_IDS = ['iqamah-change'] as const;
-
-/** Compare two secrets without leaking their contents through timing. Lengths are compared
- *  first because timingSafeEqual throws on a mismatch — and the length of a secret is not
- *  what an attacker is missing. */
-function secretMatches(presented: string | undefined, expected: string): boolean {
-  if (!presented || !expected) return false;
-  const a = Buffer.from(presented, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-
-function header(req: IncomingMessage, name: string): string | undefined {
-  const v = req.headers[name];
-  return Array.isArray(v) ? v[0] : v;
-}
 
 export interface CommandDeps {
   store: Store;

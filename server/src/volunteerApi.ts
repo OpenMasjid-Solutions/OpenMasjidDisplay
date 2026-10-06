@@ -260,7 +260,17 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
         const idx = repImg[2] ? Number(repImg[2]) : 0;
         const f = rep && rep.images[idx] ? reportImageFile(rep.images[idx]) : null;
         if (!f) return sendJson(res, 404, { error: 'No image.' });
-        res.writeHead(200, { 'content-type': f.mime, 'cache-control': 'no-store' });
+        // These are bytes a VOLUNTEER uploaded from a phone, served back with a content type
+        // taken from the stored file's extension — and the extension came from the data URI the
+        // uploader declared, not from the bytes. So the same defence the announcement-thumbnail
+        // route already carries applies here and was missing: `nosniff` so a browser cannot
+        // decide the "image/png" is really HTML, and a CSP that makes it inert if it ever does.
+        res.writeHead(200, {
+          'content-type': f.mime,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        });
         return void fs.createReadStream(f.path).pipe(res);
       }
 

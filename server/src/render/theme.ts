@@ -157,6 +157,47 @@ function hex6(c: string | undefined): string | null {
   return t.startsWith('#') ? t : `#${t}`;
 }
 
+/** Mix `a` toward `b` by `amt` (0..1). Both #rrggbb. */
+function mixTo(a: string, b: string, amt: number): string {
+  const pa = /^#?([0-9a-f]{6})$/i.exec(a.trim());
+  const pb = /^#?([0-9a-f]{6})$/i.exec(b.trim());
+  if (!pa || !pb) return a;
+  const na = parseInt(pa[1], 16);
+  const nb = parseInt(pb[1], 16);
+  const ch = (sh: number) => {
+    const x = (na >> sh) & 255;
+    const y = (nb >> sh) & 255;
+    return Math.round(x + (y - x) * amt);
+  };
+  return `#${((1 << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).slice(1)}`;
+}
+
+/** Which of the two page colours a Simple screen takes. */
+export type SimplePageMode = 'light' | 'dark';
+
+/**
+ * The flat page colour the SIMPLE design takes for a given accent.
+ *
+ * Simple has no scene, no glass and no photo — a page colour and an accent is the whole of it —
+ * so cycling the theme presets did almost nothing to it: they change `bg`, and Simple replaces
+ * `bg` with its own flat colour, which defaulted to white and stayed white. A masjid could pick
+ * Twilight and get a white screen with purple numbers on it.
+ *
+ * Rather than hand-picking twenty more hex values, the page is DERIVED from the accent already
+ * in play, which means it follows a custom accent and the wallpaper-matched one exactly as it
+ * follows a preset. Two modes because both are wanted for real reasons: a masjid with a bright
+ * hall wants the light one, and a dark hall (or a screen left on overnight) wants the dark one.
+ *
+ * The amounts are small on purpose. This is the page behind big text, not a feature: 6% of the
+ * accent over white is a tint you notice only next to plain white, and 16% over near-black keeps
+ * it clearly the accent's hue without turning the wall into a colour field. `#0b0f10` rather than
+ * pure black so the dark page has some warmth and the row bands have somewhere to go.
+ */
+export function simplePage(primary: string, mode: SimplePageMode): string {
+  const a = hex6(primary) ?? THEMES[0].palette.primary;
+  return mode === 'light' ? mixTo('#ffffff', a, 0.06) : mixTo('#0b0f10', a, 0.16);
+}
+
 export function getPalette(themeId: string, accent?: string, gold?: string): Palette {
   const base = (BY_ID.get(themeId) ?? THEMES[0]).palette;
   let p = base;

@@ -915,8 +915,36 @@ for req in "$SPOOL"/*; do
             # halfway is exactly the thing somebody will need to be able to read afterwards.
             if systemd-run --collect --quiet --unit=omd-reinstall \
               --description='OpenMasjidDisplay: re-run the screen installer' \
-              /bin/sh -c 'sh "$1" 2>&1 | logger -t omd-reinstall; rm -f "$1"' sh "$TMP"; then
-              echo 'control: re-running the installer at the dashboard request'
+              /bin/sh -c '
+                # The OPERATING SYSTEM first, then this app.
+                #
+                # One button updates both, and they have to be sequential rather than two jobs:
+                # the installer runs apt-get itself to fetch its dependencies, and two apt
+                # processes means one of them loses the dpkg lock and fails. So it is one chain in
+                # one transient unit, which holds the lock once.
+                #
+                # This order, specifically. The installer re-applies the boot settings, the
+                # service units and the agent, so it lands LAST and puts right anything the
+                # upgrade disturbed. The other way round, an apt upgrade that replaced a unit file
+                # would leave the screen running whatever it replaced it with.
+                #
+                # --force-confold keeps OUR files where a package ships its own, and
+                # DEBIAN_FRONTEND=noninteractive is what stops apt asking a question nobody is
+                # here to answer.
+                export DEBIAN_FRONTEND=noninteractive
+                # -o DPkg::Lock::Timeout, for the reason APT_OPTS carries it in the installer: a Pi
+                # that booted a minute ago is running unattended-upgrades and holding the lock. This
+                # chain ends in `|| true`, so without a timeout it would block for as long as that
+                # takes and then report success either way.
+                apt-get -o DPkg::Lock::Timeout=900 update 2>&1 | logger -t omd-reinstall || true
+                apt-get -y -o DPkg::Lock::Timeout=900 -o Dpkg::Options::=--force-confold upgrade 2>&1 | logger -t omd-reinstall || true
+                # Not conditional on apt succeeding. A masjid with a broken mirror or no internet
+                # route to Debian still has to be able to update the app, which is the half of
+                # this anybody presses the button for.
+                sh "$1" 2>&1 | logger -t omd-reinstall
+                rm -f "$1"
+              ' sh "$TMP"; then
+              echo 'control: updating the system packages and re-running the installer at the dashboard request'
             else
               echo 'control: could not start the installer'
               rm -f "$TMP" 2>/dev/null || true
@@ -958,48 +986,391 @@ for req in "$SPOOL"/*; do
         echo 'control: refusing to turn Wi-Fi off — there is no cable, so it is the only way back'
       fi
       ;;
+    display-off|display-on)
+      # Turn the screen's OUTPUT off, so a masjid is not lighting a television at 2am.
+      #
+      # `vcgencmd display_power 0` is what every guide says and it is a NO-OP on this board.
+      # Measured on a Pi 4 with `dtoverlay=vc4-kms-v3d`, which is what the installer sets:
+      #
+      #   vcgencmd display_power 0   ->  power=1  dpms=On    (nothing happened)
+      #   echo 1 > fb0/blank         ->  power=1  dpms=Off   (the display slept)
+      #
+      # vcgencmd talks to the legacy firmware display stack; under KMS the kernel owns the
+      # connector and the framebuffer's blank knob is what reaches it. So this writes the knob,
+      # and reads DPMS back rather than vcgencmd, because DPMS is the thing that tracked reality.
+      #
+      # Also measured: the blank SURVIVES the agent drawing. It writes a frame to /dev/fb0 every
+      # second and the display stayed asleep for the whole test — so this does not need the agent
+      # to stop, though it does stop anyway to save the work (see the agent's own draw loop).
+      _want=0
+      [ "$action" = display-off ] && _want=1
+      if [ -w /sys/class/graphics/fb0/blank ]; then
+        echo "$_want" > /sys/class/graphics/fb0/blank 2>/dev/null || true
+        # Settle, then report what actually happened rather than what was asked for.
+        sleep 1
+        _dpms=$(cat /sys/class/drm/card*-HDMI-A-1/dpms 2>/dev/null | head -1)
+        echo "control: display ${action#display-} requested; connector is now ${_dpms:-unknown}"
+      else
+        echo "control: cannot reach the framebuffer blank control on this board"
+      fi
+      ;;
+
+    shell-session)
+      # ── A ROOT terminal on this screen, dialled out to a session the panel minted. ──
+      #
+      # This is the one arm that hands over the whole machine, so it is worth being exact about what
+      # it is and what still holds it shut.
+      #
+      # It used to be the AGENT's own job, and the terminal it gave you ran as omdscreen under
+      # NoNewPrivileges — so `sudo` was not merely absent, it was unusable, and `reboot` could not
+      # work however you asked for it. That is a debugging window, not a terminal. A screen on a wall
+      # in another city needs the real thing, and OpenMasjidOS's own dashboard offers exactly that.
+      #
+      # What this verb does NOT take is a command. It takes a session id and a one-time secret, and
+      # starts an interactive shell — so the spool still carries no attacker-chosen command text and
+      # the dispatcher's filter is still what decides which verb runs. What moved is the privilege
+      # of the shell at the far end of a socket the panel already controlled.
+      #
+      # What still holds:
+      #   * the session is minted by the panel, offered to this device ONCE, and single-use;
+      #   * the secret goes only to the device, never to the browser;
+      #   * the device DIALS OUT — nothing can connect to it — so no port is opened here;
+      #   * the server expires it: 60s to claim, 10 idle minutes, one hour maximum;
+      #   * every session start and end is in the journal, and nothing typed is ever logged.
+      _req=$STATEDIR/shell-request
+      _run=$PREFIX/shell-request
+      if [ -L "$_req" ]; then
+        # A symlink here is NEVER legitimate — the agent writes a plain four-line file — and it is
+        # refused rather than followed, because it used to be followed. The arm did `mv` the request
+        # into $PREFIX and then chown/chmod it, reasoning that rename(2) does not dereference a
+        # symlink. True of the DESTINATION; not true of the SOURCE. A link planted here therefore
+        # BECAME $PREFIX/shell-request, and the chown/chmod that followed dereferenced it — and
+        # `chmod 600` through a link to /usr/bin/sudo strips a setuid bit permanently. handover()'s
+        # comment describes this hazard in the other direction; this arm claimed to be covered by
+        # the same reasoning and was not. Nothing below moves the agent's inode anywhere.
+        rm -f "$_req"
+        echo 'control: refusing a terminal request that is a symlink'
+      elif [ ! -f "$_req" ]; then
+        # Two sessions asked for at once, and the second payload replaced the first. Not worth
+        # aborting the rest of the spool for.
+        echo 'control: a terminal was asked for with no session details; ignoring'
+      elif [ -z "$SERVER" ]; then
+        # The address a ROOT pty dials out to has to come from trust.env — root-owned, and the one
+        # file the agent cannot write — and never from the agent's own config.json, which it CAN
+        # (the installer chowns $CONFDIR to the service account, and the unit grants it
+        # ReadWritePaths, because the agent rewrites it on adoption). Without a trusted address
+        # there is nothing safe to dial, so nothing starts.
+        rm -f "$_req"
+        echo 'control: refusing a terminal session with no trusted server address'
+      else
+        # READ the four fields, DELETE the agent's file, then write a fresh root-created one. The
+        # only thing that crosses the boundary is four validated strings — never an inode.
+        _sid=$(sed -n 1p "$_req" 2>/dev/null | tr -d '\n\r')
+        _ssec=$(sed -n 2p "$_req" 2>/dev/null | tr -d '\n\r')
+        _srow=$(sed -n 3p "$_req" 2>/dev/null | tr -d '\n\r')
+        _scol=$(sed -n 4p "$_req" 2>/dev/null | tr -d '\n\r')
+        rm -f "$_req"
+        # A field is valid when stripping everything but its allowed characters leaves it unchanged.
+        # `tr -dc` rather than a `case` pattern for one specific reason: a nested case arm inside this
+        # one carries its own terminator, and a test that reads an arm up to its first terminator then
+        # sees half of it. That has now cost two debugging sessions in this file, so the arms that
+        # matter most are written without nesting at all.
+        _ok=1
+        [ -n "$_sid" ]  && [ "$_sid"  = "$(printf '%s' "$_sid"  | tr -dc 'A-Za-z0-9_-')" ] || _ok=0
+        [ -n "$_ssec" ] && [ "$_ssec" = "$(printf '%s' "$_ssec" | tr -dc 'A-Za-z0-9_-')" ] || _ok=0
+        [ -n "$_srow" ] && [ "$_srow" = "$(printf '%s' "$_srow" | tr -dc '0-9')" ] || _ok=0
+        [ -n "$_scol" ] && [ "$_scol" = "$(printf '%s' "$_scol" | tr -dc '0-9')" ] || _ok=0
+        if [ "$_ok" = 0 ]; then
+          echo 'control: refusing a terminal session whose details are not a plain id, secret and size'
+        else
+          # FIVE lines now, and the fifth is the point: root's own copy of the server address, so
+          # the agent cannot choose where a root terminal connects. Written by root into $PREFIX
+          # (which the agent cannot write) behind a umask, rather than chmod'ing an inode it gave us.
+          rm -f "$_run"
+          (umask 077; printf '%s\n%s\n%s\n%s\n%s\n' "$_sid" "$_ssec" "$_srow" "$_scol" "$SERVER" > "$_run")
+          # The agent's own TLS trust, read out of its unit rather than duplicated in a second file.
+          # A masjid whose display server has a self-signed certificate has exactly one setting for
+          # this and it lives there; a copy would be one more thing to keep in step, and the failure
+          # of getting it wrong is a terminal that never connects and says nothing about why.
+          # The two NAMED variables, not NODE_*. Matching any NODE_ variable picks up
+          # `Environment=NODE_ENV=production`, which the unit also carries, and `head -1` then
+          # discards whatever followed. Measured on a real Pi 4: the unit has two such lines, the
+          # loose pattern returned NODE_ENV and the setting that mattered —
+          # NODE_TLS_REJECT_UNAUTHORIZED=0, for a display server with a self-signed certificate — was
+          # dropped. The terminal would simply have failed to connect, with nothing saying why.
+          # The installer sets exactly one of these two, never both.
+          _tls=$(sed -n \
+            -e 's/^Environment=\(NODE_EXTRA_CA_CERTS=.*\)$/\1/p' \
+            -e 's/^Environment=\(NODE_TLS_REJECT_UNAUTHORIZED=.*\)$/\1/p' \
+            /etc/systemd/system/openmasjid-screen.service 2>/dev/null | head -1 || true)
+          # No --unit: two terminals open at once would collide on a fixed name, and systemd's own
+          # generated name plus --collect cleans itself up either way. Detached for the same reason
+          # the reinstall is — this dispatcher's cgroup goes down when it exits, and a terminal has
+          # to outlive it by up to an hour.
+          if [ -n "$_tls" ]; then
+            systemd-run --collect --quiet --setenv="$_tls" \
+              --description='OpenMasjidDisplay: terminal session' \
+              /usr/bin/node "$PREFIX/agent.js" --shell-session "$_run" >/dev/null 2>&1 \
+              && echo 'control: started a terminal session' \
+              || { rm -f "$_run"; echo 'control: could not start a terminal session'; }
+          else
+            systemd-run --collect --quiet \
+              --description='OpenMasjidDisplay: terminal session' \
+              /usr/bin/node "$PREFIX/agent.js" --shell-session "$_run" >/dev/null 2>&1 \
+              && echo 'control: started a terminal session' \
+              || { rm -f "$_run"; echo 'control: could not start a terminal session'; }
+          fi
+        fi
+      fi
+      ;;
+
+    set-video-mode)
+      # FORCE the HDMI mode, for a television that negotiates a bad one.
+      #
+      # The only setting here that needs the boot partition and a reboot, and it is worth saying
+      # why the alternatives were not taken. `hdmi_group`/`hdmi_mode` in config.txt belong to the
+      # legacy firmware display stack; this image sets `disable_fw_kms_setup=1` and the KMS driver
+      # owns the connector, so they do nothing — measured on this very board, where
+      # `framebuffer_depth=32` sits in config.txt and the framebuffer is 16bpp regardless. Rotation
+      # and overscan escape all of this because the agent draws the pixels itself and can simply
+      # turn them; a MODE is negotiated by the kernel before any of our code runs, so the kernel
+      # command line is the only place to say it.
+      #
+      # Which makes this the one change that can leave a masjid looking at a black television. So it
+      # is reversible without anyone visiting: the old command line is kept, a marker is left, and a
+      # boot-time timer puts it all back unless somebody says the picture is fine. See
+      # omd-video-revert.service.
+      _vmreq=$STATEDIR/video-mode-request
+      _vm=$(head -c 32 "$_vmreq" 2>/dev/null | tr -d '\n\r' || true)
+      rm -f "$_vmreq"
+      _cmdline=/boot/firmware/cmdline.txt
+      [ -f "$_cmdline" ] || _cmdline=/boot/cmdline.txt
+      if [ -f "$STATEDIR/video-mode-pending" ]; then
+        # Refused, not queued. A second change while the first is unconfirmed would back up the
+        # ALREADY-CHANGED command line, and the revert would then restore a mode nobody wanted.
+        echo 'control: a display mode is already waiting to be confirmed; confirm or wait for it to revert first'
+      elif [ ! -f "$_cmdline" ]; then
+        echo 'control: cannot find the kernel command line on this board'
+      else
+        case "$_vm" in
+          auto|[0-9][0-9][0-9]x[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]x[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]x[0-9][0-9][0-9][0-9]|\
+[0-9][0-9][0-9]x[0-9][0-9][0-9]@[0-9][0-9]|[0-9][0-9][0-9][0-9]x[0-9][0-9][0-9]@[0-9][0-9]|[0-9][0-9][0-9][0-9]x[0-9][0-9][0-9][0-9]@[0-9][0-9]) ;;
+          *) _vm='' ;;
+        esac
+        if [ -z "$_vm" ]; then
+          echo 'control: refusing a display mode that is not WIDTHxHEIGHT or WIDTHxHEIGHT@RATE'
+        else
+          cp -f "$_cmdline" "$_cmdline.omd-bak"
+          # One line, whatever else is on it: strip any video= we put there before, then add ours.
+          # sed rather than an editor because this file is one line by definition and a stray
+          # newline in it stops the board booting.
+          _new=$(tr -d '\n' < "$_cmdline" | sed 's/ *video=HDMI-A-1:[^ ]*//g')
+          [ "$_vm" = auto ] || _new="$_new video=HDMI-A-1:$_vm"
+          printf '%s\n' "$_new" > "$_cmdline"
+          # Staged in $PREFIX and renamed in, never redirected into $STATEDIR — the agent owns that
+          # directory and could leave a symlink at this name, which a root redirect would follow.
+          # Exactly the escalation handover() exists to close, and the same reasoning applies to a
+          # marker file as to a result file.
+          printf '%s\n' "$_vm" > "$PREFIX/.video-mode-pending"
+          handover "$PREFIX/.video-mode-pending" "$STATEDIR/video-mode-pending"
+          systemctl enable omd-video-revert.timer >/dev/null 2>&1 || true
+          echo "control: display mode set to $_vm; rebooting, and reverting in four minutes unless it is confirmed"
+          # Detached for the same reason the reinstall is: this dispatcher's own cgroup goes down
+          # with it, and a reboot started inside it can be killed before it takes.
+          systemd-run --collect --quiet --on-active=3 /sbin/reboot >/dev/null 2>&1 || reboot
+        fi
+      fi
+      ;;
+
+    keep-video-mode)
+      # Somebody has looked at the screen and it is fine. Drop the marker and stand the timer down.
+      rm -f "$STATEDIR/video-mode-pending"
+      systemctl disable omd-video-revert.timer >/dev/null 2>&1 || true
+      echo 'control: keeping the display mode'
+      ;;
+
+    set-timezone)
+      # The single most consequential setting on a prayer-times screen: get it wrong and every time
+      # on the wall is wrong, confidently. Validated HERE as well as in the panel, because this is
+      # the side that runs the command.
+      _tzreq=$STATEDIR/tz-request
+      _tz=$(head -c 128 "$_tzreq" 2>/dev/null | tr -d '\n\r' || true)
+      rm -f "$_tzreq"
+      # An IANA name and nothing else: letters, digits, and the few separators they use. No spaces,
+      # no dots that could climb, nothing shell-special — this string reaches a command line.
+      case "$_tz" in
+        ''|*[!A-Za-z0-9_/+-]*|/*|*/) echo "control: refusing a timezone that is not a plain IANA name"; ;;
+        *..*) echo "control: refusing a timezone containing .." ;;
+        *)
+          # And it has to be one this system actually has, which is the check that makes the
+          # character filter above sufficient rather than merely narrow.
+          if [ -f "/usr/share/zoneinfo/$_tz" ]; then
+            timedatectl set-timezone "$_tz" 2>/dev/null && echo "control: timezone set to $_tz" || echo "control: could not set the timezone"
+          else
+            echo "control: this system has no timezone called $_tz"
+          fi
+          ;;
+      esac
+      ;;
+
     logs)
-      # Collect the journal for OUR units, for somebody reading it in the dashboard.
+      # Collect a SCREEN REPORT, not a log dump.
       #
-      # The agent already keeps its own last eighty lines in memory, and that is not the same thing:
-      # it holds what the agent chose to say, and misses everything the agent is not the author of —
-      # the root dispatcher's decisions, the installer's nine steps, and the ffmpeg exit that the
-      # agent only summarises. That is exactly the material somebody debugging a screen needs.
+      # This used to be 800 lines of `journalctl -u` for our three units and nothing else, which is
+      # the agent narrating itself: "showing X", "frosted the background", the cadence advice. All
+      # true, none of it the thing you want first. Somebody opening this is asking "why is that
+      # screen wrong", and the answers to that are mostly FACTS, not lines — a wrong timezone, a
+      # brown-out, a full card, a service that has restarted forty times, a camera that will not
+      # open. So the facts come first, then the errors, then the narration.
       #
-      # It has to come through root because the agent is not in systemd-journal, and putting it there
-      # would hand it every OTHER unit's output on the machine as well. Collecting our three units
-      # here keeps the privilege where it already is.
+      # The one that earns its place most is `get_throttled`. It is a bitmask nobody remembers, and
+      # under-voltage is the single commonest cause of a Raspberry Pi behaving oddly — a screen that
+      # freezes for a few seconds a day, or drops its camera, usually has a phone charger on the end
+      # of it rather than a bug. Decoded into words here, because a raw 0x50005 in a log is a fact
+      # nobody acts on.
       #
-      # Bounded twice on purpose: -n caps the LINES, and tail -c caps the BYTES, because one
-      # pathological line (a filter graph, a stack trace) can be enormous on its own and a line cap
-      # alone would not save us.
-      # THREE -u flags, and not `-t` for the installer. Measured on a real Pi:
-      #
-      #   -u agent -u control              -> 39 lines
-      #   -t omd-reinstall                 -> 50 lines
-      #   -u agent -u control -t omd-...   ->  0 lines   <-- what this first shipped as
-      #   -u agent -u control -u omd-...   -> 50 lines
-      #
-      # journalctl ORs repeated matches on the SAME field and ANDs across different fields, so mixing
-      # `-u` with `-t` asks for entries that are both in those units and carry that identifier —
-      # nothing is. It produced a file containing the words "-- No entries --" and nothing else, which
-      # is the worst kind of wrong: a log collection that succeeds and returns emptiness.
-      #
-      # The installer's output is reachable by unit anyway: it runs under the transient
-      # omd-reinstall.service, so `-u omd-reinstall` catches what `logger -t omd-reinstall` wrote.
-      journalctl --no-pager --output=short-iso -n 800 \
+      # Everything is bounded: each section has its own line or byte cap, so one enormous ffmpeg
+      # filter-graph line cannot push the facts out of the file. POSIX sh throughout, like the rest
+      # of this script.
+      : > "$PREFIX/.journal.stage"
+      _sec() { printf '\n== %s ==\n' "$1" >> "$PREFIX/.journal.stage"; }
+      _kv() { printf '%-22s %s\n' "$1" "$2" >> "$PREFIX/.journal.stage"; }
+
+      printf 'SCREEN REPORT  %s\n' "$(date -Is 2>/dev/null || date)" >> "$PREFIX/.journal.stage"
+
+      _sec 'This device'
+      _kv 'model' "$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)"
+      _kv 'serial' "$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null | tail -1)"
+      # READ the field, never source the file: this runs as root, and sourcing executes whatever
+      # is in it. It is also why the static check in piInstaller.test.ts flagged $PRETTY_NAME as a
+      # variable nothing sets — it was right to.
+      _kv 'os' "$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '\"')"
+      _kv 'kernel' "$(uname -r 2>/dev/null)"
+      # The build inlines this with esbuild's --define, so the __AGENT_VERSION__ token is not in
+      # the bundle to match on — grep the version literal it was replaced BY.
+      _kv 'agent' "$(grep -oE '[0-9]+[.][0-9]+[.][0-9]+(-dev[.][0-9]+)?' /opt/openmasjid-screen/agent.js 2>/dev/null | head -1)"
+      _kv 'hostname' "$(hostname 2>/dev/null)"
+      _kv 'uptime' "$(uptime -p 2>/dev/null || cut -d. -f1 /proc/uptime)"
+      # A wrong clock makes EVERY prayer time on the screen wrong, so the timezone is a headline fact.
+      _kv 'local time' "$(date 2>/dev/null)"
+      _kv 'timezone' "$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)"
+      _kv 'clock synced' "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+
+      _sec 'Health'
+      _kv 'temperature' "$(vcgencmd measure_temp 2>/dev/null | sed 's/temp=//' || echo n/a)"
+      # The bitmask, in words. Bits 0-3 are happening NOW, bits 16-19 have happened since boot.
+      _thr=$(vcgencmd get_throttled 2>/dev/null | sed 's/throttled=//')
+      if [ -n "$_thr" ]; then
+        _t=$(( $_thr ))
+        _kv 'throttling' "$_thr"
+        [ $(( _t & 1 )) -ne 0 ] && printf '  !! UNDER-VOLTAGE RIGHT NOW - the power supply is not keeping up\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 2 )) -ne 0 ] && printf '  !! ARM frequency capped right now\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 4 )) -ne 0 ] && printf '  !! THROTTLED RIGHT NOW\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 8 )) -ne 0 ] && printf '  !! at the soft temperature limit right now\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 65536 )) -ne 0 ] && printf '  !  under-voltage HAS happened since boot - suspect the power supply or cable\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 131072 )) -ne 0 ] && printf '  !  ARM frequency has been capped since boot\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 262144 )) -ne 0 ] && printf '  !  throttling has happened since boot - check airflow\n' >> "$PREFIX/.journal.stage"
+        [ $(( _t & 524288 )) -ne 0 ] && printf '  !  the soft temperature limit has been hit since boot\n' >> "$PREFIX/.journal.stage"
+        [ "$_t" -eq 0 ] && printf '  ok - no under-voltage or throttling since boot\n' >> "$PREFIX/.journal.stage"
+      fi
+      _kv 'load' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
+      free -m 2>/dev/null | sed -n '1,2p' >> "$PREFIX/.journal.stage"
+      df -h / 2>/dev/null | sed -n '1,2p' >> "$PREFIX/.journal.stage"
+      _kv 'framebuffer' "$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null) @ $(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null)bpp"
+
+      _sec 'Display'
+      # Added because "the screen is flickering" came up twice, and answering it took an SSH session
+      # both times. These are the facts that separate the three causes: the Pi not drawing (frames),
+      # the HDMI link renegotiating (hotplug events, mode), and everything downstream of the socket —
+      # a capture device, a KVM, a cable, the television — which shows up here as *nothing wrong*.
+      for _c in /sys/class/drm/card*-HDMI-A-*; do
+        [ -e "$_c" ] || continue
+        _kv "$(basename "$_c")" "$(cat "$_c/status" 2>/dev/null) / $(cat "$_c/enabled" 2>/dev/null) / dpms=$(cat "$_c/dpms" 2>/dev/null)"
+        _m=$(cat "$_c/modes" 2>/dev/null | head -1)
+        [ -n "$_m" ] && _kv '  preferred mode' "$_m"
+      done
+      _kv 'fb blank' "$(cat /sys/class/graphics/fb0/blank 2>/dev/null)"
+      # A link that is renegotiating logs every time. A stable one logs at boot and never again, so a
+      # count is enough to tell them apart without reading the whole kernel log.
+      _kv 'hotplug events' "$(journalctl -k -b --no-pager -q 2>/dev/null | grep -ciE 'hdmi.*(hotplug|connected|disconnected)|drm.*hotplug')"
+      # Is the agent actually putting frames on it? Two reads a second apart: if these differ the Pi
+      # is drawing, whatever the television is doing.
+      _h1=$(dd if=/dev/fb0 bs=4096 count=64 skip=200 2>/dev/null | cksum | cut -d' ' -f1)
+      sleep 1
+      _h2=$(dd if=/dev/fb0 bs=4096 count=64 skip=200 2>/dev/null | cksum | cut -d' ' -f1)
+      if [ "$_h1" != "$_h2" ]; then
+        _kv 'frames' 'the framebuffer changed within a second — this Pi IS drawing'
+      else
+        _kv 'frames' 'no change in one second — expected only if the screen is off or idle'
+      fi
+
+      _sec 'Services'
+      for _u in openmasjid-screen openmasjid-screen-control.path; do
+        _kv "$_u" "$(systemctl is-active "$_u" 2>/dev/null) / $(systemctl is-enabled "$_u" 2>/dev/null)"
+      done
+      # A restart count is the difference between "it is running" and "it is crash-looping".
+      _kv 'agent restarts' "$(systemctl show -p NRestarts --value openmasjid-screen 2>/dev/null)"
+      _kv 'agent since' "$(systemctl show -p ActiveEnterTimestamp --value openmasjid-screen 2>/dev/null)"
+      _kv 'agent cpu total' "$(systemctl show -p CPUUsageNSec --value openmasjid-screen 2>/dev/null | awk '{ if ($1 != "") printf "%.0f s", $1/1000000000 }')"
+      _failed=$(systemctl list-units --state=failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+      _kv 'failed units' "${_failed:-none}"
+
+      _sec 'Network'
+      _kv 'addresses' "$(hostname -I 2>/dev/null)"
+      _kv 'default route' "$(ip route show default 2>/dev/null | head -1)"
+      _kv 'dns' "$(awk '/^nameserver/{printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)"
+      nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null | sed 's/^/  /' >> "$PREFIX/.journal.stage"
+      _kv 'wifi signal' "$(nmcli -t -f IN-USE,SSID,SIGNAL device wifi list 2>/dev/null | sed -n 's/^\*://p' | head -1)"
+      # Can it actually reach the display server? The question every other fact is a proxy for.
+      if [ -n "$SERVER" ]; then
+        if curl -fsS --max-time 8 $CURL_OPTS "$SERVER/pi.sh" -o /dev/null 2>/dev/null; then
+          _kv 'display server' "reachable ($SERVER)"
+        else
+          _kv 'display server' "NOT REACHABLE ($SERVER)"
+        fi
+      fi
+
+      # Errors from EVERY unit, not just ours: the thing that broke the screen is often something
+      # else on the box (the network manager, the card, the kernel).
+      # ERRORS ONLY (-p 3), and the most recent of them. With warnings included (-p 4) this filled
+      # with boot-time udev and pci-regulator noise — "supply vpcie3v3 not found", alsa rules with
+      # no matching label — which is the very "technically a log, no use to anybody" problem this
+      # rewrite exists to end. The warning COUNT is kept, so nothing is dropped in silence.
+      _sec 'Errors this boot (all units)'
+      journalctl -b -p 3 --no-pager --output=short-iso -n 120 2>/dev/null \
+        | grep -v 'MediaMTX API unreachable' >> "$PREFIX/.journal.stage" 2>/dev/null || true
+      _kv 'warnings (not listed)' "$(journalctl -b -p 4..4 --no-pager -q 2>/dev/null | wc -l)"
+
+      # Kernel lines that matter on this board specifically. `-k` cannot be combined with `-u`
+      # (journalctl ANDs across different fields), which is why this is its own pass.
+      _sec 'Kernel messages worth seeing'
+      journalctl -k -b --no-pager --output=short-iso 2>/dev/null \
+        | grep -iE 'voltage|throttl|hdmi|cec|oom|i/o error|mmc0: |ext4-fs error|usb .*disconnect' \
+        | tail -60 >> "$PREFIX/.journal.stage" 2>/dev/null || true
+
+      _sec "The screen's own log"
+      # Last, and given the rest of the budget: it is the narration, and the facts above are what
+      # somebody needs first. THREE -u flags and not `-t` for the installer — journalctl ORs
+      # repeated matches on the same field and ANDs across different fields, so `-u X -t Y` asks for
+      # entries that are both, and nothing is. Measured on a real Pi: that combination returned a
+      # file containing the words "-- No entries --" and nothing else, which is the worst kind of
+      # wrong. The installer is reachable by unit anyway (it runs as omd-reinstall.service).
+      journalctl --no-pager --output=short-iso -n 600 \
         -u openmasjid-screen -u openmasjid-screen-control -u omd-reinstall 2>/dev/null \
-        | sed -E 's#([a-z][a-z0-9+.-]*://)[^@[:space:]/]+@#\1***@#g' \
-        | tail -c 180000 > "$PREFIX/.journal.stage" 2>/dev/null || true
-      # The credential scrub above is belt-and-braces: the agent already redacts camera URLs before
-      # it logs them (redactCreds), and no code path logs a Wi-Fi passphrase or the device token. But
-      # this file is about to leave the device, so anything shaped like user:pass@ dies here rather
-      # than being trusted not to exist.
+        | tail -c 120000 >> "$PREFIX/.journal.stage" 2>/dev/null || true
+
+      # One scrub over the WHOLE report, last. Belt-and-braces: the agent already redacts camera
+      # URLs before it logs them (redactCreds) and no code path logs a Wi-Fi passphrase or the
+      # device token — but this file is about to leave the device, so anything shaped like
+      # user:pass@ dies here rather than being trusted not to exist.
+      sed -E -i 's#([a-z][a-z0-9+.-]*://)[^@[:space:]/]+@#\1***@#g' "$PREFIX/.journal.stage" 2>/dev/null || true
+      # And a final byte cap, because every section above is bounded but the sum is not.
+      tail -c 180000 "$PREFIX/.journal.stage" > "$PREFIX/.journal.stage.cut" 2>/dev/null && mv -f "$PREFIX/.journal.stage.cut" "$PREFIX/.journal.stage"
       # Counted while it is still ours, then handed over. Reading a size back out of $STATEDIR
       # afterwards would be reading a path the agent can have swapped.
       _n=$(wc -c < "$PREFIX/.journal.stage" 2>/dev/null || echo 0)
       handover "$PREFIX/.journal.stage" "$STATEDIR/journal.txt"
-      echo "control: collected $_n bytes of log for the dashboard"
+      echo "control: collected $_n bytes of screen report for the dashboard"
       ;;
     wifi-rescan)
       # Reading the list NetworkManager already has needs no privilege and the agent does it for
@@ -1009,12 +1380,55 @@ for req in "$SPOOL"/*; do
       echo 'control: asked for a fresh Wi-Fi scan'
       ;;
     wifi-forget)
-      # Only ever the saved profile for a network we are NOT currently relying on.
+      # Every SAVED wireless profile, not merely the one currently active.
+      #
+      # It used to read the connection active on wlan0 and delete that. On a screen whose Wi-Fi is
+      # switched off, or that has a saved network it is not presently associated with — which is the
+      # normal state of a screen running on its cable — that name comes back EMPTY, nothing was
+      # deleted, and the arm still printed "forgot the saved Wi-Fi network". So the button reported
+      # success and changed nothing, which is exactly what it was reported as doing. Measured on a
+      # real Pi 4: `nmcli -t -f GENERAL.CONNECTION device show wlan0` returned "GENERAL.CONNECTION:"
+      # and the box had one saved profile, for its cable.
+      #
+      # "Forget network" means the screen must stop knowing how to join Wi-Fi at all, so it is every
+      # 802-11-wireless profile. And the outcome is reported back through the same result file a join
+      # uses, because a button whose only feedback was a line in a journal nobody opened is how this
+      # went unnoticed.
+      STAGE="$PREFIX/.wifi-result.stage"
+      RES="$STATEDIR/wifi-result"
       if nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | grep -q '^[^:]*:ethernet:connected'; then
-        cur=$(nmcli -t -f GENERAL.CONNECTION device show wlan0 2>/dev/null | cut -d: -f2- || true)
-        [ -n "$cur" ] && nmcli connection delete "$cur" >/dev/null 2>&1 || true
-        echo 'control: forgot the saved Wi-Fi network'
+        # The type is matched at the END of the line rather than as the second field: nmcli's terse
+        # output backslash-escapes a colon inside a name, so splitting on ':' would drop a network
+        # called "Guest: 5G". sed prints only the wireless lines, with the type removed, which leaves
+        # exactly the names to delete.
+        nmcli -t -f NAME,TYPE connection show 2>/dev/null | sed -n 's/:802-11-wireless$//p' |
+          while IFS= read -r _name; do
+            nmcli connection delete "$_name" >/dev/null 2>&1 || true
+          done
+        # Counted AFTER, from what is left, because the loop above runs in a subshell and cannot
+        # hand a counter back out of it. An `if` rather than a `case`, because a nested case arm
+        # inside this one truncates it for the test that reads an arm up to its first terminator —
+        # which is how the refusal below stopped being checked.
+        _left=$(nmcli -t -f TYPE connection show 2>/dev/null | grep -c '^802-11-wireless' || true)
+        [ -n "$_left" ] || _left=0
+        if [ "$_left" -eq 0 ]; then
+          printf 'yes
+This screen no longer has a saved Wi-Fi network.
+forget
+' > "$STAGE"; handover "$STAGE" "$RES"
+          echo 'control: deleted every saved Wi-Fi network'
+        else
+          printf 'no
+%s saved network(s) could not be removed.
+forget
+' "$_left" > "$STAGE"; handover "$STAGE" "$RES"
+          echo "control: $_left saved Wi-Fi network(s) could not be removed"
+        fi
       else
+        printf 'no
+There is no cable, so the saved network is the only way back to this screen.
+forget
+' > "$STAGE"; handover "$STAGE" "$RES"
         echo 'control: refusing to forget Wi-Fi — there is no cable, so it is the only way back'
       fi
       ;;
@@ -1159,6 +1573,71 @@ for req in "$SPOOL"/*; do
 done
 CTL
 chmod 700 "$PREFIX/control.sh"
+
+# ── putting a bad display mode back ─────────────────────────────────────────
+#
+# A forced HDMI mode is the one change on this device that can leave a television black, and a
+# black television cannot be used to undo it. So the change is provisional: set-video-mode leaves a
+# marker and enables this timer, and four minutes into the NEXT boot this runs. If the marker is
+# still there — nobody confirmed, because nobody could see anything — the old kernel command line
+# goes back and the board reboots again. If it is gone, this simply stands itself down.
+#
+# Four minutes because it has to be longer than a boot plus the agent's first poll plus somebody
+# noticing, and shorter than anybody's patience with a dark screen in a prayer hall.
+cat > "$PREFIX/video-revert.sh" <<'REV'
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+set -eu
+PREFIX=/opt/openmasjid-screen
+STATEDIR=/var/lib/openmasjid-screen
+CMDLINE=/boot/firmware/cmdline.txt
+[ -f "$CMDLINE" ] || CMDLINE=/boot/cmdline.txt
+if [ ! -f "$STATEDIR/video-mode-pending" ]; then
+  # Confirmed, or never set. Either way this must not fire again.
+  systemctl disable omd-video-revert.timer >/dev/null 2>&1 || true
+  exit 0
+fi
+rm -f "$STATEDIR/video-mode-pending"
+systemctl disable omd-video-revert.timer >/dev/null 2>&1 || true
+if [ -f "$CMDLINE.omd-bak" ]; then
+  cp -f "$CMDLINE.omd-bak" "$CMDLINE"
+  # Left where the agent can read it, so the panel can say what happened rather than just showing a
+  # screen that rebooted for no visible reason. Staged and renamed, not redirected: $STATEDIR is the
+  # agent's, and a root redirect into a name it controls follows a symlink left there. This script
+  # runs standalone so it carries its own two lines of handover rather than sharing the dispatcher's.
+  printf 'the display mode was not confirmed, so the previous one was put back\n' > "$PREFIX/.video-mode-result"
+  chown omdscreen "$PREFIX/.video-mode-result" 2>/dev/null || true
+  chmod 600 "$PREFIX/.video-mode-result" 2>/dev/null || true
+  mv -f "$PREFIX/.video-mode-result" "$STATEDIR/video-mode-result" 2>/dev/null || true
+  reboot
+fi
+REV
+chmod 700 "$PREFIX/video-revert.sh"
+
+cat > /etc/systemd/system/omd-video-revert.service <<'UNIT'
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=OpenMasjidDisplay: put an unconfirmed display mode back
+
+[Service]
+Type=oneshot
+ExecStart=/opt/openmasjid-screen/video-revert.sh
+UNIT
+
+cat > /etc/systemd/system/omd-video-revert.timer <<'UNIT'
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=OpenMasjidDisplay: check an unconfirmed display mode
+
+[Timer]
+OnBootSec=4min
+# Not Persistent: this is about THIS boot. A missed run from a boot that happened while the board
+# was off is meaningless, and replaying it would revert a mode somebody confirmed weeks ago.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+UNIT
 
 cat > /etc/systemd/system/openmasjid-screen-control.service <<'UNIT'
 # SPDX-License-Identifier: AGPL-3.0-only

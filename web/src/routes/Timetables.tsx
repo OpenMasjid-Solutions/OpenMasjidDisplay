@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
-import type { AppState, Timetable, TimetableLayout, IqamahRule, IqamahConfig, IqamahYear, IqamahScheduleEntry, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
+import type { AppState, Timetable, IqamahRule, IqamahConfig, IqamahYear, IqamahScheduleEntry, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, IconDownload, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 import { readImageForUpload } from '../image';
@@ -128,14 +128,14 @@ function toForm(tt: Timetable | null, state: AppState): Form {
   }
   return {
     id: '', name: 'New timetable', themeId: 'emerald', accent: undefined, textColor: '',
-    orientation: 'landscape', quality: state.settings.defaultQuality, layout: 'centered', layoutCarousel: false, simpleBg: '',
+    orientation: 'landscape', quality: state.settings.defaultQuality, layout: 'modern', layoutCarousel: false, simpleBg: '',
     masjidName: state.timetables[0]?.masjidName ?? 'Our Masjid',
     location: '',
     latitude: '', longitude: '',
     method: 'MWL', fajrAngle: 18, ishaAngle: 17, asrMadhab: 'Hanafi', timezone: state.settings.scheduleTimezone ?? '',
     timeFormat: '12h', language: 'en', hijriOffset: 0, gregorianOffset: 0,
     iqamah: { fajr: { mode: 'offset', offset: 20 }, dhuhr: { mode: 'offset', offset: 10 }, asr: { mode: 'offset', offset: 10 }, maghrib: { mode: 'offset', offset: 5 }, isha: { mode: 'offset', offset: 10 } },
-    jumuah: ['13:30'], showSunrise: true, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, showFooter: true, showCelestial: true, showName: true,
+    jumuah: ['13:30'], showSunrise: true, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
     backgroundImage: '', logoImage: '', footerNote: '', tickerSpeed: 5, createdAt: '',
   };
 }
@@ -166,22 +166,27 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const [previewDate, setPreviewDate] = useState('');
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((p) => ({ ...p, [k]: v }));
 
-  // The screens rotate the layout every 5 min when "Rotate layouts" is on; in the
-  // editor we can't wait 5 min, so cycle the preview through the three layouts
-  // quickly so you can see what it'll do. (The live display still uses the 15-min clock.)
-  const CAROUSEL_LAYOUTS: TimetableLayout[] = ['centered', 'clockTop', 'split'];
-  const [demoIdx, setDemoIdx] = useState(0);
-  useEffect(() => {
-    if (!f.layoutCarousel) return;
-    const t = setInterval(() => setDemoIdx((i) => (i + 1) % CAROUSEL_LAYOUTS.length), 4000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [f.layoutCarousel]);
-  const previewBody = f.layoutCarousel
-    ? { ...formBody(f), layout: CAROUSEL_LAYOUTS[demoIdx], layoutCarousel: false }
-    : formBody(f);
+  // The preview shows the design that is SET, and nothing else.
+  //
+  // It used to swap every four seconds whenever `layoutCarousel` was on, to demonstrate a
+  // five-minute burn-in rotation on the screens. That rotation was removed with the three
+  // arrangement presets in v0.37.0 and nothing has read the flag since — so the swap was
+  // advertising behaviour the screen does not have. It went unnoticed for as long as it did
+  // because the three values it cycled all drew identical pixels; the moment two real designs
+  // existed it became a preview flipping between them while the wall showed one.
+  //
+  // There is no switch for the flag in the editor either, so a timetable can only still carry it
+  // from before. Left in the data and ignored here, which is what the renderer does.
+  const previewBody = formBody(f);
 
   const themePrimary = state.themes.find((t) => t.id === f.themeId)?.palette.primary ?? '#22D3EE';
+  // What the Simple page's two theme options are tinted with — the same accent the screen uses,
+  // so the swatches here show the page the renderer will actually draw. The mixes match
+  // `simplePage()` in server/src/render/theme.ts, which is what resolves 'theme-light' /
+  // 'theme-dark' at render time; these are only the preview dots, and the stored value is the
+  // token, never the colour, so changing the accent moves the real page with it.
+  const simpleAccent = f.accent ?? themePrimary;
+  const simpleBgIsHex = /^#[0-9a-f]{6}$/i.test(f.simpleBg || '');
   const themeGold = state.themes.find((t) => t.id === f.themeId)?.palette.gold ?? '#D4AF37';
 
   const save = async () => {
@@ -663,18 +668,36 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       <div className="card section">
         <h3 className="section-title">Layout</h3>
         <div className="grid2">
-          <Field label="Layout" hint="Classic is the themed design (glass panels, the countdown ring, a scene behind everything). Simple is a plain flat page — a logo/clock/date column beside one banded prayer table, modelled on a real wall display — with larger prayer names and times and no inline Arabic gloss.">
-            <select className="select" value={f.layout === 'simple' ? 'simple' : 'centered'} onChange={(e) => set('layout', e.target.value as Form['layout'])}>
-              <option value="centered">Classic</option>
+          <Field label="Layout" hint="Modern is the themed design (glass panels, the countdown ring, a scene behind everything) and is the default. Simple is a plain flat page — a logo/clock/date column beside one banded prayer table, modelled on a real wall display — with larger prayer names and times and no inline Arabic gloss.">
+            <select className="select" value={f.layout === 'simple' ? 'simple' : 'modern'} onChange={(e) => set('layout', e.target.value as Form['layout'])}>
+              <option value="modern">Modern (default)</option>
               <option value="simple">Simple (flat, larger text)</option>
             </select>
           </Field>
           {f.layout === 'simple' && (
-            <Field label="Background colour" hint="The Simple layout's flat page colour. Text switches automatically between light and dark to stay readable on whatever you pick.">
-              <div className="row" style={{ gap: '0.6rem', alignItems: 'center' }}>
-                <input type="color" className="color-input" value={f.simpleBg || '#ffffff'} onChange={(e) => set('simpleBg', e.target.value)} />
-                <span className="hint">{f.simpleBg ? f.simpleBg : 'White (default)'}</span>
-                {f.simpleBg && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('simpleBg', '')}>Reset to white</button>}
+            <Field
+              label="Page colour"
+              hint="Simple is a flat page and an accent colour, so this is most of how it looks. The two theme options tint the page with whatever accent colour is set below — pick a different theme and the page follows it. Text, the table's bands and the times all adjust themselves to stay readable on whatever you choose."
+            >
+              <div className="chips">
+                <button type="button" className={`chip${!f.simpleBg ? ' is-active' : ''}`} onClick={() => set('simpleBg', '')} title="White (default)">
+                  <span className="chip-dot" style={{ background: '#ffffff', opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
+                  White
+                </button>
+                <button type="button" className={`chip${f.simpleBg === 'theme-light' ? ' is-active' : ''}`} onClick={() => set('simpleBg', 'theme-light')} title="A light page tinted with the theme colour">
+                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #ffffff 94%, ${simpleAccent})`, opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
+                  Theme — light
+                </button>
+                <button type="button" className={`chip${f.simpleBg === 'theme-dark' ? ' is-active' : ''}`} onClick={() => set('simpleBg', 'theme-dark')} title="A dark page tinted with the theme colour">
+                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #0b0f10 84%, ${simpleAccent})`, opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.25)' }} />
+                  Theme — dark
+                </button>
+              </div>
+              <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.55rem' }}>
+                <label className="row" style={{ gap: '0.45rem' }}>
+                  <input type="color" className="color-input" value={simpleBgIsHex ? f.simpleBg : '#ffffff'} onChange={(e) => set('simpleBg', e.target.value)} />
+                  <span className="hint">{simpleBgIsHex ? f.simpleBg : 'Custom colour'}</span>
+                </label>
               </div>
             </Field>
           )}
@@ -683,7 +706,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
       <div className="card section">
         <h3 className="section-title">Theme & colours</h3>
-        <Field label="Theme colour" hint="Drives the accent colour throughout — the highlighted next-prayer row, the countdown ring (Classic), icons and the Jumu'ah bar. A ready-made palette (dark is default), or pick a custom accent colour below.">
+        <Field label="Theme colour" hint="Drives the accent colour throughout — the highlighted next-prayer row, the countdown ring (Modern), icons, the Jumu'ah times and, on Simple, the prayer-table header and the page itself when its colour is set to one of the theme options. A ready-made palette (dark is default), or pick a custom accent colour below.">
           <div className="chips">
             {state.themes.map((th) => (
               <button
@@ -795,6 +818,23 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />
           <ToggleRow label="Calculation-method footnote" checked={f.showFooter} onChange={(v) => set('showFooter', v)} />
         </div>
+        {f.showSeconds && (
+          <div style={{ marginBlockStart: '0.9rem' }}>
+            <Field
+              label="Where the seconds go"
+              hint="Beside the clock keeps the seconds small, above the AM/PM — the way they have always been shown. In the clock puts them in the time itself (6:22:05), same size as the hours and minutes, which reads from further away. The clock shrinks a little to make room for the extra digits."
+            >
+              <div className="chips">
+                <button type="button" className={`chip${f.secondsStyle !== 'inline' ? ' is-active' : ''}`} onClick={() => set('secondsStyle', 'stacked')}>
+                  Beside the clock
+                </button>
+                <button type="button" className={`chip${f.secondsStyle === 'inline' ? ' is-active' : ''}`} onClick={() => set('secondsStyle', 'inline')}>
+                  In the clock (6:22:05)
+                </button>
+              </div>
+            </Field>
+          </div>
+        )}
         <div style={{ marginBlockStart: '0.9rem' }}>
           <Field label="Footer note (optional)" hint="A small custom line along the bottom. Leave blank to show the calculation-method note instead."><input className="input" value={f.footerNote} onChange={(e) => set('footerNote', e.target.value)} placeholder="e.g. Jumu'ah khutbah at 1:15pm" /></Field>
         </div>

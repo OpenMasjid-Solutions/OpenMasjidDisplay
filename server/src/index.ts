@@ -3,6 +3,7 @@
 /** Entry point: wires the store, renderer, orchestrator, HTTP API and WebSocket
  *  hub together, waits for MediaMTX, and keeps schedules ticking. */
 import http from 'node:http';
+import type { IncomingMessage } from 'node:http';
 import { config } from './config';
 import { makeLog } from './logger';
 import { Store } from './store';
@@ -12,6 +13,8 @@ import { createApi } from './api';
 import { createVolunteerApi } from './volunteerApi';
 import { WsHub } from './ws';
 import { hasValidSession } from './auth';
+import { attachShellAdmin, attachShellDevice, sweepShellSessions } from './piShell';
+import { findDeviceByToken } from './piAgent';
 import { ping } from './mediamtx';
 import { MediaMtxServer } from './mediamtxServer';
 import { notify } from './fabric';
@@ -76,7 +79,44 @@ async function main(): Promise<void> {
       }
     });
   });
-  hub = new WsHub(server, (req) => hasValidSession(req, store.secret));
+  /**
+   * The two halves of a Pi terminal, both dialled IN to us — see piShell.ts for why it is built
+   * that way and what holds it shut. Authentication differs per half and neither is the panel
+   * cookie by default: the device presents its own token and a one-time secret.
+   */
+  const shellRoutes = (
+    path: string,
+    req: IncomingMessage,
+    upgrade: (onOpen: (ws: import('ws').WebSocket) => void) => void,
+  ): boolean => {
+    // The panel's viewer. Same session check as every other admin surface.
+    const admin = /^\/api\/pi\/shell\/([A-Za-z0-9_-]{16,64})$/.exec(path);
+    if (admin) {
+      if (!hasValidSession(req, store.secret)) return false;
+      upgrade((ws) => {
+        if (!attachShellAdmin(admin[1], ws)) ws.close(1008, 'no such session');
+      });
+      return true;
+    }
+    // The device. Behind the platform tunnel the app is served under /<basePath>/…, and the
+    // platform does not strip the prefix — so the optional segment is what lets a tunnelled screen
+    // reach this at all, exactly as the polling routes allow it.
+    const dev = /^(?:\/[a-z0-9-]+)?\/pi\/([A-Za-z0-9_-]{16,64})\/shell\/([A-Za-z0-9_-]{16,64})$/.exec(path);
+    if (dev) {
+      const device = findDeviceByToken(store.db, dev[1]);
+      const secret = req.headers['x-openmasjid-shell-secret'];
+      if (!device || typeof secret !== 'string') return false;
+      upgrade((ws) => {
+        if (!attachShellDevice(dev[2], device.id, secret, ws)) ws.close(1008, 'not accepted');
+      });
+      return true;
+    }
+    return false;
+  };
+  hub = new WsHub(server, (req) => hasValidSession(req, store.secret), shellRoutes);
+  // Owned here rather than inside piShell so that module holds no timer of its own and a test can
+  // drive the clock directly.
+  setInterval(() => sweepShellSessions(), 30_000).unref?.();
 
   server.listen(config.port, () => {
     log.info(`OpenMasjid Display control panel listening on :${config.port}`);

@@ -273,8 +273,22 @@ test('apt is not silenced, and cannot wait forever', () => {
   const tpl = installerTemplate() as string;
   // A freshly booted Pi runs unattended-upgrades, which holds the dpkg lock. With -qq and
   // >/dev/null the installer sat there printing nothing for over fifteen minutes.
-  assert.ok(!/apt-get[^\n]*-qq[^\n]*install/.test(tpl), 'apt install must not be quiet');
-  assert.ok(!/apt-get[^\n]*install[^\n]*>\s*\/dev\/null/.test(tpl), 'nor have its output discarded');
+  // `install` has to be a WORD here, not a substring. It matched the "install" inside the log tag
+  // `omd-reinstall` the first time an apt call was piped to logger — a guard that fails on an
+  // unrelated line is a guard somebody loosens, so it now means what it says.
+  const aptInstall = /apt-get(?:\s+-{1,2}[^\s]+|\s+-o\s+[^\s]+)*\s+install\b[^\n]*/g;
+  const invocations = tpl.match(aptInstall) ?? [];
+  assert.ok(invocations.length > 0, 'the installer does install packages — has this been rewritten?');
+  assert.deepEqual(
+    invocations.filter((l) => /(^|\s)-qq(\s|$)/.test(l)),
+    [],
+    'apt install must not be quiet',
+  );
+  assert.deepEqual(
+    invocations.filter((l) => />\s*\/dev\/null/.test(l)),
+    [],
+    'nor have its output discarded',
+  );
   assert.ok(tpl.includes('DPkg::Lock::Timeout'), 'apt must not block on the lock indefinitely');
   assert.ok(tpl.includes('wait_for_apt'), 'and should say who is holding it');
 });
@@ -442,6 +456,28 @@ test('reboot is rate limited, or a screen can be taken off the wall for good', (
   assert.ok(/\*\[!0-9\]\*/.test(ctl), 'a non-numeric stamp has to be handled');
 });
 
+/**
+ * Shell source with its comments removed.
+ *
+ * Shared, because every scan in this file that reads the installer as CODE needs it, and the ones
+ * that lacked it were each defeated by prose in turn: notes about req.destroy(), about gpu_mem, about
+ * the TLS environment variable, about why the os-release field must not be sourced — and finally a
+ * comment explaining why a nested case arm is avoided, which contained the very terminator the arm
+ * slicer stops at. Rewording prose to appease a regex is backwards; the next honest comment simply
+ * hits it again.
+ *
+ * Line-based and deliberately simple. A '#' inside a quoted string survives, which is the right
+ * trade: this exists to stop PROSE being read as code, and a false negative there is harmless where
+ * mangling a real command would not be.
+ */
+function stripShellComments(src: string): string {
+  const COMMENT = new RegExp('(^|[ \\t])#.*$');
+  return src
+    .split(String.fromCharCode(10))
+    .map((l) => l.replace(COMMENT, '$1'))
+    .join(String.fromCharCode(10));
+}
+
 test('the dispatcher still executes nothing outside its closed set', () => {
   // Adding a verb is exactly when this stops being true by accident.
   const tpl = installerTemplate() as string;
@@ -456,7 +492,25 @@ test('the dispatcher still executes nothing outside its closed set', () => {
   const verbs = [...ctl.matchAll(/^\s{4}([a-z|-]+)\)/gm)].map((m) => m[1]);
   assert.deepEqual(
     verbs.sort(),
-    ['logs', 'reboot', 'reinstall', 'update', 'wifi-forget', 'wifi-join', 'wifi-off', 'wifi-on', 'wifi-rescan'],
+    [
+      // display-off and display-on share one arm, so they appear as the alternation the case uses.
+      'display-off|display-on',
+      'keep-video-mode',
+      'logs',
+      'reboot',
+      'reinstall',
+      'set-timezone',
+      'set-video-mode',
+      // The one verb that hands over the whole machine — and it still carries no command, only a
+      // session id and a one-time secret. See its arm for the whole of what holds it shut.
+      'shell-session',
+      'update',
+      'wifi-forget',
+      'wifi-join',
+      'wifi-off',
+      'wifi-on',
+      'wifi-rescan',
+    ],
     `unexpected verbs: ${verbs.join(', ')}`,
   );
   const def = /\*\)([\s\S]*?);;/.exec(ctl)?.[1] ?? '';
@@ -569,12 +623,19 @@ test('control.sh can actually reach the server it is told to reinstall from', ()
   const assigned = new Set<string>();
   for (const m of ctl.matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/gm)) assigned.add(m[1]);
   for (const m of ctl.matchAll(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b/g)) assigned.add(m[1]);
+  // `read` binds a variable too, and this did not know it — so the first `while read -r _name` in
+  // the file was reported as a variable nothing sets. The same class of false positive as the
+  // comments handled below: the probe not recognising an ordinary construct.
+  for (const m of ctl.matchAll(/\bread\s+(?:-[A-Za-z]+\s+)*([A-Za-z_][A-Za-z0-9_]*)/g)) assigned.add(m[1]);
   // trust.env is the installer's own file; these are the two settings it is documented to carry.
   if (/trust\.env/.test(ctl)) { assigned.add('SERVER'); assigned.add('CURL_OPTS'); }
 
   const shellProvided = new Set(['PATH', 'HOME', 'IFS', 'PWD', '1', '2', '@', '*', '?', '#', '$', '!', '0']);
   const used = new Set<string>();
-  for (const m of ctl.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)) used.add(m[1]);
+  // COMMENTS STRIPPED FIRST. This reads CODE, and a comment that mentions a variable in order to
+  // explain it is not code — see stripShellComments for the tally of times that has bitten.
+  const code = stripShellComments(ctl);
+  for (const m of code.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)) used.add(m[1]);
 
   const undefinedVars = [...used].filter((v) => !assigned.has(v) && !shellProvided.has(v));
   assert.deepEqual(
@@ -631,8 +692,15 @@ test('turning Wi-Fi off, or forgetting it, is refused when it is the only way ba
   // button is a courtesy — this is the safeguard.
   const tpl = installerTemplate() as string;
   const ctl = tpl.slice(tpl.indexOf('cat > "$PREFIX/control.sh"'), tpl.indexOf('chmod 700 "$PREFIX/control.sh"'));
+  // COMMENTS STRIPPED FIRST, for the same reason the variable scan above does it: an arm is read up
+  // to its first terminator, and a comment that happens to contain one cuts the arm in half. That is
+  // the fifth time prose has defeated a scan in this file — and the last one was a comment explaining
+  // why a nested case arm is avoided here, which of course contained the token it named.
+  const code = stripShellComments(ctl);
   for (const verb of ['wifi-off', 'wifi-forget']) {
-    const branch = ctl.slice(ctl.indexOf(`${verb})`), ctl.indexOf(';;', ctl.indexOf(`${verb})`)));
+    const at = code.indexOf(`${verb})`);
+    assert.ok(at >= 0, `${verb} is not in the dispatcher at all`);
+    const branch = code.slice(at, code.indexOf(';;', at));
     assert.match(branch, /ethernet:connected/, `${verb} must check for a cable first`);
     assert.match(branch, /refusing/, `${verb} must say why it refused`);
   }
@@ -840,6 +908,49 @@ test('the device identity is flushed to disk, not just renamed into place', () =
   assert.ok(fsyncAt < renameAt, 'the flush must come BEFORE the rename, or it protects nothing');
 });
 
+test('the screen report leads with facts, not with the agent narrating itself', () => {
+  // This was 800 lines of `journalctl -u` for our own units and nothing else — the agent telling you
+  // it was showing a timetable. Somebody opening it is asking "why is that screen wrong", and most
+  // answers to that are FACTS: a wrong timezone, a brown-out, a full card, a service that has
+  // restarted forty times, a display server it cannot reach. So the facts come first now.
+  const ctl = installerTemplate() as string;
+  for (const section of ['This device', 'Health', 'Services', 'Network', 'Errors this boot', 'Kernel messages worth seeing']) {
+    assert.ok(ctl.includes(section), `the report must have a ${section} section`);
+  }
+  // The facts that answer the questions people actually ask.
+  assert.match(ctl, /timedatectl show -p Timezone/, 'a wrong timezone makes every prayer time wrong');
+  assert.match(ctl, /NTPSynchronized/, 'and an unsynced clock is the same fault one step back');
+  assert.match(ctl, /NRestarts/, 'a restart count separates "running" from "crash-looping"');
+  assert.match(ctl, /df -h/, 'a full card breaks a screen in ways nothing else explains');
+  assert.match(ctl, /list-units --state=failed/, 'and a failed unit elsewhere often IS the fault');
+  // The report is read by somebody deciding whether to drive to the masjid, so the question every
+  // other fact is a proxy for is asked outright.
+  assert.match(ctl, /display server/, 'it must say whether the screen can reach us');
+});
+
+test('get_throttled is decoded into words, because nobody acts on a bitmask', () => {
+  // Under-voltage is the commonest cause of a Pi behaving oddly — a screen that freezes for a few
+  // seconds a day, or drops its camera, usually has a phone charger on the end of it rather than a
+  // bug. A raw 0x50005 in a log is a fact nobody acts on; "under-voltage HAS happened since boot" is
+  // one somebody can act on without knowing the bit layout.
+  const ctl = installerTemplate() as string;
+  assert.match(ctl, /get_throttled/, 'it has to be read');
+  assert.match(ctl, /UNDER-VOLTAGE RIGHT NOW/i, 'the live bits are named');
+  assert.match(ctl, /under-voltage HAS happened since boot/i, 'and the sticky ones separately');
+  // Bit 16 is the sticky under-voltage flag — the one that explains yesterday's fault.
+  assert.ok(ctl.includes(String(1 << 16)), 'the sticky bits must actually be tested for');
+  assert.ok(ctl.includes(String(1 << 18)), 'including the throttling one');
+});
+
+test('the report is bounded section by section, not only at the end', () => {
+  // One enormous ffmpeg filter-graph line must not be able to push the facts out of the file, so
+  // every section that can grow carries its own cap as well as the final byte cap.
+  const ctl = installerTemplate() as string;
+  const caps = ctl.match(/-n \d+|tail -c \d+|tail -\d+/g) ?? [];
+  assert.ok(caps.length >= 4, `expected several per-section caps, found ${JSON.stringify(caps)}`);
+  assert.match(ctl, /tail -c 180000/, 'and one final byte cap over the whole report');
+});
+
 test('the log collection asks journalctl for all three units, not a mix of filter types', () => {
   // journalctl ORs repeated matches on the SAME field and ANDs across DIFFERENT fields. So
   // `-u agent -u control -t omd-reinstall` asks for entries that are both in those units AND carry
@@ -923,6 +1034,23 @@ test('root never writes to, or chowns, a path the agent could have replaced with
     assert.ok(
       !/>\s*"\$(RES)"/.test(line) && !/>\s*"\$STATEDIR\//.test(line),
       `root must not redirect into a path the agent controls:\n  ${line.trim()}`,
+    );
+  }
+
+  // And root never MOVES an agent-owned inode into its own tree.
+  //
+  // This is the general form of a real escalation, found in the 0.70.0 audit. handover()'s comment
+  // covers the DESTINATION of a rename; the hazard at the SOURCE is identical and was missed for a
+  // release. rename(2) dereferences neither end, so `mv $STATEDIR/x $PREFIX/x` turns a symlink the
+  // agent planted into a $PREFIX path — and every chown/chmod afterwards DOES dereference it, which
+  // is how `chmod 600` reached /usr/bin/sudo from an unprivileged account. The rule is therefore
+  // not "chown the right path" but "never adopt the agent's inode at all": read the fields out,
+  // delete the file, write a fresh one.
+  for (const line of code.split('\n')) {
+    assert.ok(
+      !/\bmv\s+(?:-\w+\s+)*"\$(_req|RES|STATEDIR\/[A-Za-z0-9._-]+)"/.test(line),
+      `root must never rename an agent-owned inode into its own tree — read its fields and write a` +
+        ` fresh file instead:\n  ${line.trim()}`,
     );
   }
 

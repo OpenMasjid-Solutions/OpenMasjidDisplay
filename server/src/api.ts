@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config';
 import { makeLog } from './logger';
+import { openShellSession, closeShellSession, closeShellSessionsFor, SHELL_CLAIM_MS } from './piShell';
 import type { Store } from './store';
 import type { Orchestrator } from './orchestrator';
 import {
@@ -21,6 +22,7 @@ import {
 import { probePlatform, ssoConfigured, notify, siteInfo, whatsappAvailability, whatsappGroups } from './fabric';
 import { decideAnnounce, announceMessage, announceCaptionFor, type WhatsAppAnnouncer } from './whatsappAnnounce';
 import type { FabricCommands } from './fabricCommands';
+import { handleFabricTimetable, TIMETABLE_METHOD_BY_PATH, TIMETABLE_MAX_BODY_BYTES } from './fabricTimetable';
 import {
   originFor,
   renderInstaller,
@@ -39,16 +41,30 @@ import {
   isPiCommand,
   normWifiJoin,
   normShellCommand,
+  normTimezone,
+  normTimeOfDay,
+  normVideoMode,
   type PiCommandAction,
   findDeviceByToken,
   findPendingByCode,
   markDeviceSeen,
+  markPreviewWanted,
   makeDeviceToken,
   piState,
   prunePending,
   PI_POLL_MS,
   deviceOnline,
 } from './piAgent';
+import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
+
+/**
+ * How long one "somebody is watching" beat keeps a screen sending pictures.
+ *
+ * Long enough that a beat lost to a slow tunnel does not make the preview stutter, short enough that
+ * a browser tab closed without warning stops the frames while somebody is still in the room. The
+ * panel beats at roughly a third of this.
+ */
+const PREVIEW_WINDOW_MS = 15_000;
 import {
   findByToken,
   webScreenState,
@@ -146,6 +162,22 @@ function previewInstant(dateStr: unknown, timezone?: string): number {
 
 const readBody = (req: IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> =>
   readJsonBody(req, maxBytes);
+
+/**
+ * The entry with this id, resolved WHEN IT IS USED.
+ *
+ * Several routes settle a timetable's array index, then `await` the request body — an image
+ * upload, so the wait is as long as the upload takes — and only then write. An index is not a
+ * stable reference across that wait: a DELETE of any EARLIER timetable arriving in between
+ * shifts the array, and the write then lands on a different masjid screen's configuration
+ * entirely, or throws on `undefined`. Two browser tabs are enough to do it.
+ *
+ * So inside a `store.update` callback, never index with something captured before an await —
+ * look the id up again. The early `findIndex` those routes still do is only there to answer 404
+ * quickly; it is not what the write uses.
+ */
+const byId = <T extends { id: string }>(list: T[], id: string): T | undefined =>
+  list.find((x) => x.id === id);
 
 /** Validate an uploaded image by its BYTES (not the browser's extension-derived label) and
  *  return the true mime to store — or a friendly error. Browsers label an upload's data-URI
@@ -340,10 +372,38 @@ export function createApi(deps: Deps) {
   // X-Forwarded-For: this one sits in front of a secret check, and a forged header would both
   // dodge the cap entirely and add a Map entry per request.
   const commandLimiter = new RequestLimiter(60, 60_000, true);
+  // The `timetable` capability served to other apps through the broker. The only legitimate
+  // caller is the platform relaying one app's refresh, which is a handful of calls an hour, so
+  // 60/min is purely a bound on a runaway — and a needed one: a `get` at the 45-day cap is 45
+  // solar computations sharing this process with the 1 fps loop that draws the screens, so a
+  // tight loop here is a way to make a television stutter. Keyed on the SOCKET (the `true`) for
+  // the same reason as the commands limiter above: it sits in front of a secret check, where a
+  // forged X-Forwarded-For would dodge the cap and mint a Map entry per request.
+  const fabricAppLimiter = new RequestLimiter(60, 60_000, true);
   // Browser screens, PAGE and STATE only: a real screen asks for its state every 5 s, so ~12
   // a minute plus the odd page load. Generous enough for a masjid rebooting every television
   // at once.
-  const screenLimiter = new RequestLimiter(120, 60_000);
+  /**
+   * The budget for a screen asking what to show, and it is sized from the CADENCE, not picked.
+   *
+   * 120/min was sized for "a screen that asks twice a minute" — which is what a browser screen does.
+   * A Pi does not: it polls every five seconds normally (12/min) and shortens that to about 1.2s
+   * whenever anything is happening — a console open, a live preview running — which is 50/min from
+   * one device. And behind the platform's tunnel every screen in the masjid arrives from the SAME
+   * address, so the budget is shared: three screens with a console open between them was already
+   * 150/min against a cap of 120.
+   *
+   * What that failure looks like matters, and it is why this is not left tight: the 429 lands on the
+   * device's STATE POLL, so the screen decides it has lost contact with the display server and says
+   * so on the wall. A rate limit that turns a busy dashboard into "lost contact" on a television in
+   * a prayer hall is worse than no rate limit.
+   *
+   * This is the same mistake the media limiter below was created to fix, in the same file, for the
+   * same reason — a cap sized for one traffic pattern applied to another. So: sized for a masjid's
+   * worth of screens all fast-polling at once (see PI_FAST_POLL_MS), and it remains a bound on a
+   * runaway rather than a shape imposed on normal traffic.
+   */
+  const screenLimiter = new RequestLimiter(600, 60_000);
   // Video segments need their OWN budget, and this is why: an HLS player fetches a playlist
   // and a segment roughly every second — and in low-latency mode a "part" every 0.27 s. Those
   // went through the limiter above, sized for a screen that asks twice a minute, so a camera
@@ -354,6 +414,7 @@ export function createApi(deps: Deps) {
   setInterval(() => {
     widgetLimiter.prune();
     commandLimiter.prune();
+    fabricAppLimiter.prune();
     screenLimiter.prune();
     screenMediaLimiter.prune();
   }, 5 * 60_000).unref?.();
@@ -389,6 +450,32 @@ export function createApi(deps: Deps) {
         const body = await readBody(req, 8_000).catch(() => null);
         if (!body) return sendJson(res, 400, { ok: false, error: 'Could not read that request.' });
         return commands.handle(req, res, body);
+      }
+
+      /**
+       * ANOTHER APP reading this masjid's prayer times, through the platform's app-to-app
+       * broker: the `timetable` capability we declare in `manifest.yaml`'s `fabric.provides`.
+       *
+       * Same reason as the route above for sitting up here — there is no session, only our own
+       * app secret presented back to us — but a DIFFERENT caller and a different blast radius,
+       * so it is a separate handler and not a second command. Read-only. The broker maps
+       * `/api/fabric/app/display/timetable/<method>` onto these exact paths, and the handler
+       * re-checks the raw request line against the one it matched, which is what keeps the
+       * capability off the tunnel (`new URL()` above has already normalised dot segments away,
+       * so `pathname` alone would accept `/display/../fabric/timetable/get`).
+       */
+      const timetableMethod = TIMETABLE_METHOD_BY_PATH.get(pathname);
+      if (timetableMethod) {
+        if (!fabricAppLimiter.allow(req)) return sendJson(res, 429, { error: 'too_many_requests' });
+        // Matched on the path REGARDLESS of method, so that a GET says so instead of falling
+        // through to the static branch below — which answers any non-/api/ GET with the panel's
+        // index.html, and would hand a consumer debugging its integration a page of HTML with a
+        // 200 on it. Nothing is disclosed by admitting the route exists: it is in the manifest,
+        // and the manifest is in the public catalog.
+        if (method !== 'POST') return sendJson(res, 405, { error: 'method_not_allowed' });
+        const body = await readBody(req, TIMETABLE_MAX_BODY_BYTES).catch(() => null);
+        if (!body) return sendJson(res, 400, { error: 'bad_request' });
+        return handleFabricTimetable(req, res, timetableMethod, body, store);
       }
 
       // ---- Volunteer page (also served here, not just on its own port) ----
@@ -480,11 +567,16 @@ export function createApi(deps: Deps) {
       // it can only ever create a PENDING row. Content requires a token, and a token only
       // exists once an admin has typed the code shown on that screen.
       const piMatch =
-        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|logs|command-ack|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(
+        /^(?:\/[a-z0-9-]+)?\/pi\/(enrol|([A-Za-z0-9_-]{16,64})\/(state|seen|logs|screenshot|command-ack|(?:asset|font)\/[\w.\-]{1,120}))$/.exec(
           pathname,
         );
       if (piMatch) {
-        if (!screenLimiter.allow(req)) {
+        // A picture of the screen is a STREAM while a preview window is open — one frame roughly
+        // every second — so it is budgeted with the video segments, not with the polls. Putting it
+        // through the poll budget is what would have made a live preview lock a screen out of asking
+        // what to show, which is the exact bug the media limiter below was created for.
+        const limiter = piMatch[3] === 'screenshot' ? screenMediaLimiter : screenLimiter;
+        if (!limiter.allow(req)) {
           res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '30', 'cache-control': 'no-store' });
           res.end('Too many requests.');
           return;
@@ -546,6 +638,32 @@ export function createApi(deps: Deps) {
           if (!journal) return sendJson(res, 400, { error: 'no log in that request' });
           store.update((db) => setDeviceJournal(db, device.id, journal, Date.now()));
           log.info(`stored ${journal.length} bytes of log for pi device ${device.id}`);
+          return sendJson(res, 200, { ok: true });
+        }
+
+        // A picture of what this screen is showing. Its own endpoint for the same reason the journal
+        // has one, and the cap is DERIVED from what the store will keep rather than picked: base64
+        // inflates by a third, so the body cap is the file cap plus that plus room for the JSON
+        // around it. The two limits disagreeing is exactly how every check-in was silently dropped.
+        if (what === 'screenshot' && method === 'POST') {
+          const body = await readBody(req, Math.round(SCREENSHOT_MAX_BYTES * 1.4) + 1_000).catch((e: unknown) => e);
+          if (body instanceof Error) {
+            const tooBig = (body as { code?: string }).code === BODY_TOO_LARGE;
+            return sendJson(res, tooBig ? 413 : 400, { error: tooBig ? 'body too large' : 'bad request' });
+          }
+          const b64 = typeof (body as { png?: unknown })?.png === 'string' ? (body as { png: string }).png : '';
+          if (!b64) return sendJson(res, 400, { error: 'no picture in that request' });
+          // Node's 'base64' decoder IGNORES anything that is not a base64 character rather than
+          // failing, so there is nothing to catch here — the bytes are checked for a PNG signature
+          // in saveScreenshot instead, because this file is served back to a browser as image/png
+          // and has to actually be one.
+          if (!saveScreenshot(device.id, Buffer.from(b64, 'base64'))) {
+            return sendJson(res, 400, { error: 'that was not a usable picture' });
+          }
+          store.update((db) => {
+            const d = (db.piDevices ?? []).find((x) => x.id === device.id);
+            if (d) d.screenshotAt = new Date().toISOString();
+          });
           return sendJson(res, 200, { ok: true });
         }
 
@@ -1078,13 +1196,19 @@ export function createApi(deps: Deps) {
           const chk = checkUploadedImage(buf);
           if ('error' in chk) return sendJson(res, 400, { error: chk.error });
           const file = saveBackground(id, chk.mime, buf);
-          store.update((db) => void (db.timetables[idx].backgroundImage = file));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.backgroundImage = file;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
         if (method === 'DELETE') {
           removeBackground(id);
-          store.update((db) => void (db.timetables[idx].backgroundImage = ''));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.backgroundImage = '';
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -1112,13 +1236,19 @@ export function createApi(deps: Deps) {
           const chk = checkUploadedImage(buf);
           if ('error' in chk) return sendJson(res, 400, { error: chk.error });
           const file = saveLogo(id, chk.mime, buf);
-          store.update((db) => void (db.timetables[idx].logoImage = file));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.logoImage = file;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
         if (method === 'DELETE') {
           removeLogo(id);
-          store.update((db) => void (db.timetables[idx].logoImage = ''));
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.logoImage = '';
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -1136,14 +1266,18 @@ export function createApi(deps: Deps) {
               error: parsed.errors[0] ?? 'No usable rows found. Each row needs a date and at least one time.',
             });
           }
-          store.update((db) => void (db.timetables[idx].iqamahYear = parsed.data));
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.iqamahYear = parsed.data;
+          });
           // Return the parsed map too, so the editor can update its shared copy in place
           // (the one-off editor + monthly table + CSV all edit the same iqamahYear).
           return sendJson(res, 200, { ok: true, rows: parsed.rows, errors: parsed.errors.slice(0, 5), data: parsed.data });
         }
         if (method === 'GET') {
           const mode = url.searchParams.get('mode');
-          const tt = store.db.timetables[idx];
+          const tt = byId(store.db.timetables, id);
+          if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
           const csv = mode === 'template' ? templateCsv(tt) : toCsv(tt.iqamahYear);
           const fname = mode === 'template' ? 'iqamah-template.csv' : 'iqamah-times.csv';
           res.writeHead(200, {
@@ -1156,8 +1290,11 @@ export function createApi(deps: Deps) {
           return;
         }
         if (method === 'DELETE') {
-          store.update((db) => void delete db.timetables[idx].iqamahYear);
-          return sendJson(res, 200, store.db.timetables[idx]);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) delete t.iqamahYear;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
         }
       }
 
@@ -1170,8 +1307,10 @@ export function createApi(deps: Deps) {
         const body = await readBody(req, 2_000_000);
         const year = normalizeIqamahYear(body.year);
         store.update((db) => {
-          if (Object.keys(year).length) db.timetables[idx].iqamahYear = year;
-          else delete db.timetables[idx].iqamahYear;
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          if (Object.keys(year).length) t.iqamahYear = year;
+          else delete t.iqamahYear;
         });
         return sendJson(res, 200, { ok: true, rows: Object.keys(year).length });
       }
@@ -1187,8 +1326,10 @@ export function createApi(deps: Deps) {
         const body = await readBody(req, 2_000_000);
         const schedule = normalizeIqamahSchedule(body.schedule);
         store.update((db) => {
-          if (schedule.length) db.timetables[idx].iqamahSchedule = schedule;
-          else delete db.timetables[idx].iqamahSchedule;
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          if (schedule.length) t.iqamahSchedule = schedule;
+          else delete t.iqamahSchedule;
         });
         return sendJson(res, 200, { ok: true, entries: schedule.length, schedule });
       }
@@ -1217,13 +1358,15 @@ export function createApi(deps: Deps) {
         if ('error' in chk) return sendJson(res, 400, { error: chk.error });
         const file = saveAnnouncement(id, chk.mime, buf);
         store.update((db) => {
-          const a = db.timetables[idx].announcements ?? {
+          const t = byId(db.timetables, id);
+          if (!t) return;
+          const a = t.announcements ?? {
             enabled: false, images: [], start: '', end: '', everySeconds: 60, forSeconds: 20, imageSeconds: 8,
           };
           a.images = [...a.images, file].slice(0, 30);
-          db.timetables[idx].announcements = a;
+          t.announcements = a;
         });
-        return sendJson(res, 200, store.db.timetables[idx]);
+        return sendJson(res, 200, byId(store.db.timetables, id));
       }
       const annFileMatch = /^\/api\/timetables\/([\w-]+)\/announcements\/(.+)$/.exec(pathname);
       if (annFileMatch && (method === 'DELETE' || method === 'GET')) {
@@ -1250,10 +1393,10 @@ export function createApi(deps: Deps) {
         // Only delete a file that actually belongs to THIS timetable (same guard as GET).
         if (file.startsWith(`${id}.ann.`)) removeAnnouncement(file);
         store.update((db) => {
-          const a = db.timetables[idx].announcements;
+          const a = byId(db.timetables, id)?.announcements;
           if (a) a.images = a.images.filter((f) => f !== file);
         });
-        return sendJson(res, 200, store.db.timetables[idx]);
+        return sendJson(res, 200, byId(store.db.timetables, id));
       }
 
       // ---- Sources ---------------------------------------------------------
@@ -1573,6 +1716,19 @@ export function createApi(deps: Deps) {
             stats: d.stats,
             statsAt: d.statsAt,
             wifiResult: d.wifiResult,
+            // The screen's own account of itself, not what was last asked for — see PiDevice.
+            displayOff: d.displayOff,
+            displaySchedule: d.displaySchedule,
+            rebootSchedule: d.rebootSchedule,
+            // What the DEVICE's own boot config says, and whether a change to it is still
+            // provisional — see PiDevice.videoMode.
+            videoMode: d.videoMode,
+            videoModePending: d.videoModePending,
+            videoModeResult: d.videoModeResult,
+            timezone: d.timezone,
+            // The timestamp only. The picture is fetched separately, and this is what tells the
+            // panel whether the one it would fetch is the one it just asked for.
+            screenshotAt: d.screenshotAt,
             // Whether an install is in flight. The device is the authority on what it is running,
             // so this is only ever a hint that it is busy — the version changing is the real answer.
             updateAskedAt: d.updateAskedAt,
@@ -1614,7 +1770,7 @@ export function createApi(deps: Deps) {
       if (piCmd && method === 'POST') {
         // Room for a Wi-Fi passphrase now, so the cap is no longer 1KB.
         const body = (await readBody(req, 4_000).catch(() => null)) as
-          | { action?: unknown; wifi?: unknown; shell?: unknown }
+          | { action?: unknown; wifi?: unknown; shell?: unknown; text?: unknown }
           | null;
         if (!isPiCommand(body?.action)) return sendJson(res, 400, { error: 'Unknown action.' });
         const action = body!.action as PiCommandAction;
@@ -1640,9 +1796,19 @@ export function createApi(deps: Deps) {
           shell = parsed.cmd;
         }
 
+        // A timezone or a hostname. Checked here so somebody typing one is told at once — but the
+        // check that PROTECTS the device is root's on the device, which also requires the zone to
+        // exist in /usr/share/zoneinfo. This side of a network cannot know that.
+        let text: string | undefined;
+        if (action === 'set-timezone' || action === 'set-video-mode') {
+          const parsed = action === 'set-timezone' ? normTimezone(body!.text) : normVideoMode(body!.text);
+          if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
+          text = parsed.text;
+        }
+
         let queued: ReturnType<typeof queueCommand> = null;
         store.update((db) => {
-          queued = queueCommand(db, piCmd[1], action, Date.now(), wifi, shell);
+          queued = queueCommand(db, piCmd[1], action, Date.now(), wifi, shell, undefined, text);
         });
         if (!queued) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
         // The network NAME is fine in a log — it is broadcast on the air. The passphrase never is,
@@ -1654,13 +1820,162 @@ export function createApi(deps: Deps) {
         // as the server's own log needs to; the command itself comes back in the answer, where the
         // person who typed it is the one reading.
         log.info(
-          `queued "${action}"${wifi ? ` for network "${wifi.ssid}"` : ''}${shell ? ` (${shell.length} characters)` : ''} for pi device ${piCmd[1]}`,
+          `queued "${action}"${wifi ? ` for network "${wifi.ssid}"` : ''}${text ? ` ("${text}")` : ''}${shell ? ` (${shell.length} characters)` : ''} for pi device ${piCmd[1]}`,
         );
         return sendJson(res, 202, { queued: true });
       }
 
+      /**
+        * Ask for a terminal on a screen.
+        *
+        * Mints a session and hands the DEVICE its secret on the next poll; the browser gets only
+        * the id, and opens a WebSocket to /api/pi/shell/<id> to watch. See piShell.ts for why it is
+        * built inside out and what bounds it.
+        */
+       const piShellOpen = /^\/api\/pi\/([\w-]+)\/terminal$/.exec(pathname);
+       if (piShellOpen && method === 'POST') {
+         const body = (await readBody(req, 1_000).catch(() => null)) as { rows?: unknown; cols?: unknown } | null;
+         const device = (store.db.piDevices ?? []).find((d) => d.id === piShellOpen[1]);
+         if (!device || !device.token) return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
+         // rows/cols come back CLAMPED from openShellSession and are passed on as they are. They
+         // used to be written here as a literal 24x80 while the browser's measured size was clamped
+         // and then discarded, so every session ran 80 columns wide inside a window three times
+         // that and wrapped in the middle of the terminal.
+         const { id, secret, rows, cols } = openShellSession(device.id, body?.rows, body?.cols);
+         let queued: ReturnType<typeof queueCommand> = null;
+         store.update((db) => {
+           queued = queueCommand(db, device.id, 'shell-session', Date.now(), undefined, undefined, {
+             id,
+             secret,
+             rows,
+             cols,
+           });
+         });
+         if (!queued) {
+           closeShellSession(id, 'the screen could not be given the session');
+           return sendJson(res, 404, { error: 'No such screen, or it is not set up yet.' });
+         }
+         // The id is safe to hand back; the secret is not, and never leaves for the browser.
+         return sendJson(res, 202, { id, claimMs: SHELL_CLAIM_MS });
+       }
+
+      /**
+       * When this screen should turn its own output off overnight.
+       *
+       * Stored, not sent: it rides the device's ordinary state poll and the AGENT acts on it from
+       * its own clock. So a masjid whose internet drops at 23:00 still gets a dark screen at
+       * midnight and a lit one at Fajr — see PiState.displaySchedule.
+       */
+      const piSchedule = /^\/api\/pi\/([\w-]+)\/display-schedule$/.exec(pathname);
+      if (piSchedule && method === 'PUT') {
+        const body = (await readBody(req, 1_000).catch(() => null)) as
+          | { enabled?: unknown; offAt?: unknown; onAt?: unknown }
+          | null;
+        if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+        const offAt = normTimeOfDay(body.offAt);
+        const onAt = normTimeOfDay(body.onAt);
+        // Refused rather than defaulted: a schedule that silently became 00:00-00:00 would look
+        // saved in the panel and turn a masjid's screens off at a time nobody chose.
+        if (body.enabled === true && (!offAt || !onAt)) {
+          return sendJson(res, 400, { error: 'Give both times as HH:MM, in 24-hour form.' });
+        }
+        let found = false;
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piSchedule[1]);
+          if (!d) return;
+          found = true;
+          d.displaySchedule = { enabled: body.enabled === true, offAt, onAt };
+        });
+        if (!found) return sendJson(res, 404, { error: 'No such screen.' });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      /**
+       * Reboot this screen every night at a fixed time.
+       *
+       * Same mechanism as the display schedule and for the same reason: carried on the state poll
+       * and acted on by the agent from its own clock, so it still happens on the night a masjid's
+       * internet is down — which is exactly the night somebody wants a wedged board to recover.
+       */
+      const piReboot = /^\/api\/pi\/([\w-]+)\/reboot-schedule$/.exec(pathname);
+      if (piReboot && method === 'PUT') {
+        const body = (await readBody(req, 1_000).catch(() => null)) as { enabled?: unknown; at?: unknown } | null;
+        if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+        const at = normTimeOfDay(body.at);
+        if (body.enabled === true && !at) {
+          return sendJson(res, 400, { error: 'Give the time as HH:MM, in 24-hour form.' });
+        }
+        let found = false;
+        store.update((db) => {
+          const d = (db.piDevices ?? []).find((x) => x.id === piReboot[1]);
+          if (!d) return;
+          found = true;
+          d.rebootSchedule = { enabled: body.enabled === true, at };
+        });
+        if (!found) return sendJson(res, 404, { error: 'No such screen.' });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      /**
+       * "Somebody is watching this screen."
+       *
+       * Called repeatedly while a live-preview window is open, and it does one thing: push a
+       * deadline a few seconds into the future. The device reads that on its ordinary poll and sends
+       * a frame for as long as it holds.
+       *
+       * A deadline rather than an on/off flag, because there is no reliable "off". A browser tab
+       * closed mid-preview sends nothing, and neither does a laptop whose lid was shut or a tunnel
+       * that dropped — so a flag would leave a Pi sending half-megabyte frames for ever, and the one
+       * thing this must not become is a screen that quietly uploads a picture a second until
+       * somebody notices the bandwidth.
+       */
+      const piPreview = /^\/api\/pi\/([\w-]+)\/preview$/.exec(pathname);
+      if (piPreview && method === 'POST') {
+        // Read, not written: the deadline is in-memory (see markPreviewWanted), because a store
+        // update rewrites db.json whole and this is called once a second.
+        const device = (store.db.piDevices ?? []).find((x) => x.id === piPreview[1]);
+        if (!device) return sendJson(res, 404, { error: 'No such screen.' });
+        markPreviewWanted(device.id, Date.now() + PREVIEW_WINDOW_MS);
+        const shotAt = device.screenshotAt;
+        // The newest frame's timestamp rides back on the beat. It is what makes the picture live: the
+        // panel keys its <img> on this, so a frame is fetched exactly once and nothing is re-fetched
+        // while it waits for the next one. Sending it here costs a few bytes on a request that was
+        // already happening, and saves the panel re-reading a device row carrying up to 180KB of
+        // collected journal once a second to find the same thing out.
+        return sendJson(res, 200, { ok: true, forMs: PREVIEW_WINDOW_MS, screenshotAt: shotAt });
+      }
+
+      /**
+       * The last picture a screen sent of itself.
+       *
+       * Behind the admin session like everything else under /api — a frame of a masjid's screen is
+       * not sensitive the way a shell is, but it is the inside of somebody's building and there is
+       * no reason for it to be public. Never cached: the whole point of it is that it is current.
+       */
+      const piShot = /^\/api\/pi\/([\w-]+)\/screenshot$/.exec(pathname);
+      if (piShot && method === 'GET') {
+        const png = readScreenshot(piShot[1]);
+        if (!png) {
+          res.writeHead(404, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+          res.end('No picture yet.');
+          return;
+        }
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'content-type': 'image/png',
+          'content-length': String(png.length),
+          'cache-control': 'no-store',
+        });
+        res.end(png);
+        return;
+      }
+
       const piForget = /^\/api\/pi\/([\w-]+)\/forget$/.exec(pathname);
       if (piForget && method === 'POST') {
+        // A screen being handed to somebody else must not still have a live shell on it — nor leave
+        // a picture of the inside of the building it used to be in.
+        closeShellSessionsFor(piForget[1], 'the screen was forgotten');
+        removeScreenshot(piForget[1]);
         store.update((db) => {
           const d = (db.piDevices ?? []).find((x) => x.id === piForget[1]);
           if (d) {

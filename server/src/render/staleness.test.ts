@@ -113,7 +113,7 @@ test('a real render worker still answers normally (the deadline must not break r
       themeId: 'emerald',
       orientation: 'landscape',
       quality: '720p',
-      layout: 'centered',
+      layout: 'modern',
       layoutCarousel: false,
       masjidName: 'Test Masjid',
       location: '',

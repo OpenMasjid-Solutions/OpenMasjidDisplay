@@ -7,26 +7,33 @@
  * calendar grid (weeks as rows, Sun–Sat columns), each day showing every
  * prayer's Adhan / Iqamah time, with Fridays highlighted and the Jumu'ah time
  * called out. The browser's own "Save as PDF" turns it into a PDF, so we add no
- * PDF library — staying lightweight (see CLAUDE.md §5).
+ * PDF library — staying lightweight, which is one of this app's standing constraints (it has to
+ * run on a Raspberry Pi alongside the render loop).
  */
-import {
-  prayerTimes,
-  timezoneOffsetHours,
-  iqamahHours,
-  parseHHMM,
-  type MethodDef,
-} from './prayer/engine';
+import { zonedNoon } from './prayer/engine';
+import { buildModel } from './render/svg';
 import { logoDataUri } from './render/background';
 import type { Timetable } from './types';
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
+/**
+ * FLOORS the minute, exactly as `fmtClock` in render/svg.ts does.
+ *
+ * It used to `Math.round`, and that is not a rounding preference — it made the printout
+ * disagree with the wall. A time at 13:04:40 renders as 13:04 on the screen and printed as
+ * 13:05, so roughly half the rows on a month's sheet were a minute later than the board beside
+ * it, with nothing to explain why. `printAgreesWithScreen.test.ts` pins the two together.
+ *
+ * Still not `fmtShort`: the grid deliberately omits AM/PM to keep 31 cells narrow enough to
+ * print, and that is the only difference between them.
+ */
 function fmt(hours: number | null, timeFormat: string): string {
-  if (hours == null) return '—';
-  let h = Math.floor(hours) % 24;
-  let m = Math.round((hours - Math.floor(hours)) * 60);
-  if (m === 60) { m = 0; h = (h + 1) % 24; }
-  if (h < 0) h += 24;
+  if (hours == null || !Number.isFinite(hours)) return '—';
+  let total = Math.floor(hours * 60);
+  total = ((total % 1440) + 1440) % 1440;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
   if (timeFormat === '24h') return `${pad2(h)}:${pad2(m)}`;
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}:${pad2(m)}`; // AM/PM omitted in the grid to keep cells compact
@@ -52,54 +59,51 @@ interface DayCell {
   jumuah: string | null;
 }
 
-/** A readable Jumu'ah summary from the timetable's configured times (e.g. "1:30 & 4:00"). */
-function jumuahLabel(tt: Timetable): string | null {
-  const times = (tt.jumuah ?? [])
-    .map((t) => parseHHMM(t))
-    .filter((x): x is number => x != null)
-    .map((h) => fmt(h, tt.timeFormat));
+/**
+ * A readable Jumu'ah summary for ONE day (e.g. "1:30 & 4:00").
+ *
+ * Per-day rather than per-timetable, because a scheduled change can move the Jumu'ah times
+ * part-way through the month — and `buildModel` has already resolved which times apply on the
+ * date, so the sheet shows what each Friday will actually be.
+ */
+function jumuahLabel(hours: number[], timeFormat: string): string | null {
+  const times = hours.map((h) => fmt(h, timeFormat));
   return times.length ? times.join(' & ') : null;
 }
 
 /** Build a printable month calendar. `month` is 1-12, `year` is the full year. */
 export function renderMonthPrintHtml(tt: Timetable, year: number, month: number): string {
   const tz = tt.timezone || undefined;
-  const method: CalcMethodOrDef =
-    tt.method === 'Custom'
-      ? { label: 'Custom', fajr: tt.fajrAngle ?? 18, isha: tt.ishaAngle ?? 17 }
-      : tt.method;
   const monthName = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
     .format(Date.UTC(year, month - 1, 1));
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   // Day of week (0=Sun) the 1st falls on, so we can pad the first row.
   const firstDow = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
-  const jLabel = jumuahLabel(tt);
-
-  // Compute every day once.
+  /**
+   * Every day through `buildModel`, the same function the screens and the Fabric feed use.
+   *
+   * This file used to compute the month itself, and every difference between its version and
+   * the real one was a printout that contradicted the board on the wall:
+   *   * `iqamahSchedule` was not consulted at all, so a masjid that had scheduled a change —
+   *     the whole point of the WhatsApp wizard — printed the OLD Iqamah times indefinitely;
+   *   * `adhanOffsets` were not applied, so both the Adhan column and every offset-derived
+   *     Iqamah were early by however many minutes the masjid had set;
+   *   * a CSV override was honoured for Maghrib, which `buildModel` deliberately never does
+   *     (Maghrib always tracks the calculated sunset).
+   * One implementation of the precedence chain is the only way that stays true, so this now has
+   * none of its own. `zonedNoon` is the required anchor — see buildModel.
+   */
   const cells: DayCell[] = [];
   for (let day = 1; day <= daysInMonth; day++) {
-    const instant = new Date(Date.UTC(year, month - 1, day, 12));
-    const off = timezoneOffsetHours(instant, tz);
-    const t = prayerTimes({ year, month, day }, tt.latitude!, tt.longitude!, off, method, tt.asrMadhab);
-    const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-    const isFri = dow === 5;
-
-    const dayKey = `${pad2(month)}-${pad2(day)}`;
-    const yearRow = tt.iqamahYear?.[dayKey];
-    const iqOf = (k: string, adhan: number): number | null => {
-      const csv = (yearRow as Record<string, string> | undefined)?.[k];
-      const csvH = csv ? parseHHMM(csv) : null;
-      if (csvH != null) return csvH;
-      return iqamahHours(adhan, tt.iqamah[k as keyof typeof tt.iqamah]);
-    };
-
+    const m = buildModel(tt, zonedNoon(year, month, day, tz));
+    const row = (key: string) => m.rows.find((r) => r.key === key);
     cells.push({
       day,
-      jumuah: isFri ? jLabel : null,
+      jumuah: m.isFriday ? jumuahLabel(m.jumuah, tt.timeFormat) : null,
       rows: PRAYERS.map((p) => ({
         label: p.label,
-        adhan: fmt(t[p.key as keyof typeof t], tt.timeFormat),
-        iqamah: fmt(iqOf(p.key, t[p.key as keyof typeof t]), tt.timeFormat),
+        adhan: fmt(row(p.key)?.adhan ?? null, tt.timeFormat),
+        iqamah: fmt(row(p.key)?.iqamah ?? null, tt.timeFormat),
       })),
     });
   }
@@ -241,4 +245,3 @@ export function renderMonthPrintHtml(tt: Timetable, year: number, month: number)
 </html>`;
 }
 
-type CalcMethodOrDef = Timetable['method'] | MethodDef;

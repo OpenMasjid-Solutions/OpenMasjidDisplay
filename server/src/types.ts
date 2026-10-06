@@ -10,11 +10,18 @@
 
 export type Quality = '720p' | '1080p';
 export type Orientation = 'landscape' | 'portrait';
-/** Arrangement preset for the on-screen layout (see render/svg.ts). `centered`/`clockTop`/
- *  `split` all draw the same "reference" design (see the v0.37.0 consolidation) and are kept
- *  only so existing stored timetables keep rendering unchanged; `simple` is the real second
- *  option — fewer elements, larger prayer names and times, for reading from across a room. */
-export type TimetableLayout = 'centered' | 'clockTop' | 'split' | 'simple';
+/**
+ * Which on-screen design a timetable draws with (see render/svg.ts).
+ *
+ * `modern` is the themed design — glass panels, the countdown ring, a scene behind everything.
+ * `simple` is the flat page modelled on a real installed wall display.
+ *
+ * It used to be `centered | clockTop | split | simple`, where the first three were arrangements of
+ * one look that v0.37.0 collapsed into a single design. They drew identical pixels for thirty
+ * releases and were kept only so stored timetables still rendered; `modern` is that same design
+ * under the name it has always deserved, and normLayout migrates all three onto it.
+ */
+export type TimetableLayout = 'modern' | 'simple';
 export type Lang = 'en' | 'ar' | 'ur';
 export type CalcMethod = 'MWL' | 'ISNA' | 'Egypt' | 'Makkah' | 'Karachi' | 'Custom';
 export type AsrMadhab = 'Standard' | 'Hanafi';
@@ -235,8 +242,17 @@ export interface Timetable {
   showCountdown: boolean;
   showDates: boolean;
   showLogo: boolean;
-  /** show seconds on the big clock (HH:MM:SS) */
+  /** show seconds on the big clock */
   showSeconds: boolean;
+  /**
+   * WHERE the seconds go when `showSeconds` is on.
+   *
+   * 'stacked' is the original and the default: two small digits above the AM/PM, beside the
+   * clock. 'inline' sets them in the clock's own face — same font, same size, one more colon
+   * ("6:22:05") — which reads from further away but is about a third wider, so the clock shrinks
+   * to keep its column.
+   */
+  secondsStyle: 'stacked' | 'inline';
   /** show the small footer line (custom note, or the calculation-method note) */
   showFooter: boolean;
   /** show the sun/moon arcing across the sky (and the soft glow it casts on the glass) */
@@ -345,7 +361,6 @@ export interface PiDevice {
   ip: string;
   model: string;
   agentVersion: string;
-  firstSeenAt: string;
   lastSeenAt: string;
   /** The screen this device drives, once adopted. */
   tvId?: string;
@@ -367,12 +382,25 @@ export interface PiDevice {
       | 'wifi-join'
       | 'wifi-forget'
       | 'wifi-rescan'
-      | 'shell';
+      | 'shell'
+      | 'shell-session'
+      | 'display-off'
+      | 'display-on'
+      | 'set-timezone'
+      | 'screenshot'
+      | 'set-video-mode'
+      | 'keep-video-mode';
     issuedAt: number;
     /** Only for 'wifi-join', and deleted as soon as the device acknowledges the command. */
     wifi?: { ssid: string; psk: string };
     /** Only for 'shell': one line for the device to run as its own unprivileged user. */
     shell?: string;
+    /** Only for 'shell-session': where the device should dial in, and the one-time secret it must
+     *  present. Same life as the Wi-Fi passphrase — gone the moment the device acknowledges. */
+    shellSession?: { id: string; secret: string; rows: number; cols: number };
+    /** Only for 'set-timezone' / 'set-video-mode'. Validated on the way in, and again by root on
+     *  the device — which is the check that matters. */
+    text?: string;
   };
   /** The last lines the agent logged, as IT saw them — sent on check-in so the panel can show
    *  what a screen is doing without anybody opening a shell on it. Display text only. */
@@ -382,6 +410,51 @@ export interface PiDevice {
   /** When an install was last asked for from the panel. Used only to say "updating" while the
    *  device is busy doing it — the command is acknowledged within seconds, long before it finishes. */
   updateAskedAt?: number;
+  /**
+   * Whether the screen's OUTPUT is currently off — the DPMS state of its HDMI connector, as the
+   * device reads it rather than as we last commanded it. A masjid that pulls the plug on a
+   * television, or a schedule that fired while the panel was closed, both have to show correctly.
+   */
+  displayOff?: boolean;
+  /**
+   * Turn the output off overnight. Held here rather than on the timetable because it belongs to the
+   * SCREEN — two screens on one timetable can keep different hours — and enforced by the agent from
+   * its own clock, so a masjid whose internet drops at midnight still gets its screens back at Fajr.
+   */
+  displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
+  /**
+   * Reboot this screen nightly.
+   *
+   * A blunt instrument, and it is here because it is the one that works: a board that has been up
+   * for eleven months with a slow leak somewhere in a camera pipeline is fixed by a reboot at 3am
+   * and by nothing anybody wants to debug from another city. Enforced by the agent from its own
+   * clock, so it happens whether or not the internet does.
+   */
+  rebootSchedule?: { enabled: boolean; at: string };
+  /**
+   * The forced HDMI mode from the device's own kernel command line, or 'auto'.
+   *
+   * Reported BY the device rather than remembered from what was asked, because a mode nobody
+   * confirmed reverts itself on the device — see the video-revert unit in the installer — and the
+   * panel has to show what is true after that, not what somebody once pressed.
+   */
+  videoMode?: string;
+  /** True while a forced mode is provisional: it goes back on its own in a few minutes unless
+   *  somebody confirms the picture is fine. */
+  videoModePending?: boolean;
+  /** What root last said about a mode change, including that it was reverted. */
+  videoModeResult?: string;
+  /** The screen's own idea of its timezone and hostname, so the panel shows what IS, not what was
+   *  asked for. Both are settings an admin can also change from the console or the card. */
+  timezone?: string;
+  /**
+   * When the screen last sent a picture of itself.
+   *
+   * The timestamp only — the image is a file under /data/screenshots named after this device, for
+   * the reasons in piScreenshot.ts. This field is what the panel renders ("taken 4 seconds ago")
+   * and how it knows the picture it is about to fetch is the one it asked for.
+   */
+  screenshotAt?: string;
   /** Load, memory and temperature, as the screen last reported them. */
   stats?: {
     load1: number; cores: number; cpuPercent: number;
@@ -404,7 +477,7 @@ export interface PiDevice {
   networks?: { ssid: string; signal: number; secured: boolean; active: boolean }[];
   /** What the device's root side reported about the last join. `ok: null` means it joined but
    *  nothing proved the display server was still reachable over it — not a success. */
-  wifiResult?: { ok: boolean | null; detail: string; at: string };
+  wifiResult?: { ok: boolean | null; detail: string; at: string; kind?: 'join' | 'forget' };
   /** How this screen is attached to the network, as IT sees it. Self-reported and sanitised on
    *  arrival like every other device fact — this is decoration for the panel, never a decision. */
   net?: DeviceNet;
@@ -523,6 +596,38 @@ export interface WhatsAppLogEntry {
   /** when the platform's verdict was recorded, ISO — so the panel can distinguish "waiting"
    *  from "asked, and this is the answer". */
   settledAt?: string;
+  /**
+   * The platform later said its own `sent` for this message cannot be trusted.
+   *
+   * A masjid's WhatsApp session expired the way WhatsApp Desktop signs itself out, and nothing
+   * noticed: the gateway kept accepting messages and the platform kept recording them `sent` while
+   * none arrived. It detects that within about ten minutes now, but the messages already inside
+   * that window keep their `sent` record — and the platform cannot resend them, because it deletes
+   * a message's contents the moment it hands it over. This app still has the source data, so it is
+   * the only thing that can.
+   *
+   * `outcome` is deliberately left at `sent`: that IS what the platform reported, and rewriting it
+   * to `failed` would be putting words in its mouth. This field records what we later learned about
+   * the report, and the three states are what we then did about it:
+   *
+   *  - `pending`  — identified, and the change is still ahead, so it should go out again. The
+   *                 dedupe stops treating it as handled, and the ordinary paced announce path picks
+   *                 it up when that change is next in range.
+   *  - `resent`   — a later entry for the same change exists. Set when that entry is written, so a
+   *                 suspect message cannot re-open itself for ever.
+   *  - `stale`    — the change it announced is already in effect. Re-sending "from Friday, Asr will
+   *                 be at 5:30" after Friday is not a correction, it is confusing, so this is left
+   *                 for an admin to look at rather than acted on.
+   */
+  suspect?: 'pending' | 'resent' | 'stale';
+  /**
+   * Why the link was down, in the platform's words: 'session-expired', 'needs-relink',
+   * 'key-rejected' or 'unknown'. Stored as a plain string rather than a union, because the platform
+   * said more may be added and a stored value from a newer platform must not fail to parse on an
+   * older build of this app. The panel words its own sentence from it and falls back to saying
+   * nothing specific.
+   */
+  suspectCause?: string;
   /** true when the poster image went with it, false/absent when only the text did */
   asImage?: boolean;
   /** why the platform refused, or why it later failed; never contains the message */

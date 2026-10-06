@@ -80,12 +80,21 @@ through**, the app serves correctly. Other apps should follow the same rule (mou
 
 ### Until it's implemented
 
-OpenMasjid Display now **verifies** a candidate public URL before showing it: its
-`/api/timetables/:id/widget-info` fetches `<publicUrl>/w/<id>.json` and only advertises the
-public link if the response carries the app marker `{"app":"openmasjid-display"}`.
-Otherwise it shows the **LAN** link and tells the admin that per-app path routing isn't
-available yet. So Display will **light up the public link automatically** the moment the
-platform routes the path — no further app change needed.
+Display shows the public link when the platform reports remote access is on and this
+timetable's widget is enabled, and the **LAN** link otherwise
+(`/api/timetables/:id/widget-info` returns `{ enabled, publicUrl, publicConfigured }`).
+
+> **Corrected 2026-09-01.** This section used to say Display *verifies* a candidate public URL by
+> fetching `<publicUrl>/w/<id>.json` and checking for the marker `{"app":"openmasjid-display"}`
+> before advertising it. That hairpin check no longer exists: it made the panel depend on the
+> masjid's own tunnel being reachable *from inside the masjid*, which is not a thing that can be
+> relied on, and a failure there hid a public link that in fact worked. The `app` marker itself is
+> still on `/w/<id>.json` and is still part of that route's wire contract — nothing in the app
+> hairpins to read it any more.
+>
+> The practical consequence for the platform is unchanged: Display advertises the public link on the
+> platform's own say-so, so the link becomes correct the moment the path is routed, with no further
+> app change needed.
 
 **Suggested platform-side acceptance test:** with remote access on, `curl -s
 https://<domain>/<appId>/w/<id>.json` must return that app's JSON (here, containing

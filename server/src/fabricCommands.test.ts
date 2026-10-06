@@ -75,8 +75,22 @@ function call(
 
 const good = { 'x-openmasjid-app-secret': SECRET, 'x-openmasjid-caller-app': 'omos:platform' };
 
+/**
+ * A PINNED clock, and it is load-bearing rather than tidy.
+ *
+ * The wizard refuses a date in the past, and these tests type a real one. Against the system
+ * clock that makes them a time bomb: written when 2026-09-01 was next week, they began failing
+ * the moment it stopped being — three of them went red on 2026-09-04 having been touched by
+ * nobody, with the wizard politely suggesting today’s date back in the failure message.
+ *
+ * `CommandDeps.now` exists exactly so this is injectable. iqamahWizard.test.ts already pins its
+ * own clock to the same instant, which is why that file never rotted.
+ */
+const NOW = new Date('2026-08-15T15:00:00Z').getTime();
+const commands = (s: ReturnType<typeof store> = store()) => new FabricCommands({ store: s, now: () => NOW });
+
 test('the platform, with both headers, gets through', async () => {
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   const r = await call(c, good, { command: 'iqamah-change', text: '', requestId: 'r1', locale: 'en' });
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
@@ -84,14 +98,14 @@ test('the platform, with both headers, gets through', async () => {
 });
 
 test('a wrong secret is refused', async () => {
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   const r = await call(c, { ...good, 'x-openmasjid-app-secret': 'nope' }, { command: 'iqamah-change' });
   assert.equal(r.status, 403);
   assert.equal(r.body.ok, false);
 });
 
 test('a missing secret is refused', async () => {
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   const r = await call(c, { 'x-openmasjid-caller-app': 'omos:platform' }, { command: 'iqamah-change' });
   assert.equal(r.status, 403);
 });
@@ -99,7 +113,7 @@ test('a missing secret is refused', async () => {
 test('the RIGHT secret with the wrong caller is still refused', async () => {
   // Another installed app knows its own secret, not ours — but if the caller header were
   // unchecked, anything that ever learned this secret could drive the wizard. Both, or nothing.
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   for (const caller of ['donations', 'omos', 'omos:platform-x', '', 'OMOS:PLATFORM']) {
     const r = await call(c, { ...good, 'x-openmasjid-caller-app': caller }, { command: 'iqamah-change' });
     assert.equal(r.status, 403, `caller "${caller}" must not get in`);
@@ -107,13 +121,13 @@ test('the RIGHT secret with the wrong caller is still refused', async () => {
 });
 
 test('a caller header that is absent entirely is refused', async () => {
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   const r = await call(c, { 'x-openmasjid-app-secret': SECRET }, { command: 'iqamah-change' });
   assert.equal(r.status, 403);
 });
 
 test('an unknown command is 404 unknown_command, which the platform words for us', async () => {
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   const r = await call(c, good, { command: 'drop-tables' });
   assert.equal(r.status, 404);
   assert.equal(r.body.code, 'unknown_command');
@@ -131,7 +145,7 @@ function exchange(c: InstanceType<typeof FabricCommands>) {
 
 test('a whole change can be made through the endpoint, and it lands in the store', async () => {
   const s = store();
-  const say = exchange(new FabricCommands({ store: s }));
+  const say = exchange(commands(s));
 
   await say('');
   await say('2026-09-01');
@@ -146,7 +160,7 @@ test('a whole change can be made through the endpoint, and it lands in the store
 
 test('nothing is written until save', async () => {
   const s = store();
-  const say = exchange(new FabricCommands({ store: s }));
+  const say = exchange(commands(s));
   await say('');
   await say('2026-09-01');
   await say('1');
@@ -164,7 +178,7 @@ test('a terminal refusal is ok:false with a sentence, not an HTTP error', async 
     db.timetables[0].latitude = null;
     db.timetables[0].longitude = null;
   });
-  const c = new FabricCommands({ store: s });
+  const c = commands(s);
   const r = await call(c, good, { command: 'iqamah-change', text: '' });
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, false);
@@ -175,7 +189,7 @@ test('a terminal refusal is ok:false with a sentence, not an HTTP error', async 
 // ── follow-up exchanges ──────────────────────────────────────────────────────
 
 test('a followUp token is handed back while the wizard wants an answer', async () => {
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   const r = await call(c, good, { command: 'iqamah-change', text: '' });
   const token = (r.body.followUp as { token?: string })?.token;
   assert.ok(token, 'the sender should be able to just answer, not retype !display 1');
@@ -184,7 +198,7 @@ test('a followUp token is handed back while the wizard wants an answer', async (
 
 test('the whole flow runs on plain answers once the token is held', async () => {
   const s = store();
-  const c = new FabricCommands({ store: s });
+  const c = commands(s);
   let token: string | undefined;
   const say = async (text: string) => {
     const r = await call(c, good, { command: 'iqamah-change', text, followUpToken: token });
@@ -203,7 +217,7 @@ test('the whole flow runs on plain answers once the token is held', async () => 
 });
 
 test('the token stays stable across the exchange', async () => {
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   const first = await call(c, good, { command: 'iqamah-change', text: '' });
   const t1 = (first.body.followUp as { token: string }).token;
   const second = await call(c, good, { command: 'iqamah-change', text: '9/1/2026', followUpToken: t1 });
@@ -215,7 +229,7 @@ test('two senders mid-flow do not collide — the token IS the sender', async ()
   // two admins would overwrite each other's draft. The platform binds a token to one sender,
   // so keying on it keys on the person.
   const s = store();
-  const c = new FabricCommands({ store: s });
+  const c = commands(s);
   const start = async () => (await call(c, good, { command: 'iqamah-change', text: '' })).body;
   const a = (await start()).followUp as { token: string };
   const b = (await start()).followUp as { token: string };
@@ -232,7 +246,7 @@ test('two senders mid-flow do not collide — the token IS the sender', async ()
 });
 
 test('a retry keeps the exchange open — an ok:false would end it', async () => {
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   const first = await call(c, good, { command: 'iqamah-change', text: '' });
   const token = (first.body.followUp as { token: string }).token;
   const r = await call(c, good, { command: 'iqamah-change', text: 'not a date', followUpToken: token });
@@ -244,7 +258,7 @@ test('an unknown token starts a fresh exchange rather than answering into nothin
   // The exchange it belonged to is gone — expired, or ended by the platform without telling
   // us. "save" must not resolve against someone else's draft; it starts over asking for a date.
   const s = store();
-  const c = new FabricCommands({ store: s });
+  const c = commands(s);
   const r = await call(c, good, { command: 'iqamah-change', text: 'save', followUpToken: 'iq.nope' });
   assert.equal(r.body.ok, true);
   assert.match(String(r.body.text), /date/i);
@@ -258,7 +272,7 @@ test('a request carrying forwarding headers is refused, even with perfect creden
   // which NORMALISES dot segments, so `/display/../fabric/commands/run` collapses onto this
   // route. The platform builds its header set from scratch and never sends x-forwarded-*, so
   // their presence means the request came through an ingress — which this route never accepts.
-  const c = new FabricCommands({ store: store() });
+  const c = commands();
   for (const h of ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded']) {
     const r = await call(c, { ...good, [h]: 'anything' }, { command: 'iqamah-change', text: '' });
     assert.equal(r.status, 403, `${h} must not get through`);

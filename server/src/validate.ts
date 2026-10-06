@@ -33,6 +33,7 @@ import type {
   AdhanPopup,
   TimetableWidget,
   WhatsAppSettings,
+  TimetableLayout,
 } from './types';
 
 type Obj = Record<string, unknown>;
@@ -42,6 +43,22 @@ function str(v: unknown, def = '', max = 2000): string {
   if (v == null) return def;
   return String(v).slice(0, max);
 }
+/**
+ * The on-screen design, migrating the three names this field used to hold.
+ *
+ * 'centered' | 'clockTop' | 'split' were arrangements of one look, collapsed into a single design
+ * in v0.37.0 and drawn identically ever since. Plain validation cannot rename them: `oneOf` falls
+ * back to the BASE value, and for an existing timetable the base IS the stale string — it would
+ * validate 'centered' into 'centered' for ever, and a picker offering only Modern and Simple would
+ * then look broken on every timetable a masjid already had. All three become 'modern', which is
+ * the design they were already being drawn as.
+ */
+export function normLayout(v: unknown, base?: unknown): TimetableLayout {
+  if (v === 'simple' || v === 'modern') return v;
+  if (base === 'simple' || base === 'modern') return base;
+  return 'modern';
+}
+
 function oneOf<T extends string>(v: unknown, list: readonly T[], def: T): T {
   return (list as readonly string[]).includes(String(v)) ? (v as T) : def;
 }
@@ -280,11 +297,21 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
   const textColor = /^#?[0-9a-fA-F]{6}$/.test(tcRaw)
     ? (tcRaw.startsWith('#') ? tcRaw : `#${tcRaw}`).toLowerCase()
     : '';
-  // "simple" layout's flat page background: '' = white. Falls back to base like the others.
-  const sbgRaw = (o.simpleBg === undefined ? base?.simpleBg ?? '' : str(o.simpleBg, '', 7)).trim();
+  // "simple" layout's flat page background. Three kinds of value, and '' (= white) is still the
+  // default, which is what keeps every Simple screen already out there looking exactly as it did:
+  //   ''             white
+  //   'theme-light'  a page tinted with whatever accent is in play — resolved at RENDER time, so
+  //   'theme-dark'   it follows a preset, a custom accent and a wallpaper-matched one alike
+  //   '#rrggbb'      the admin's own colour
+  // The tokens are stored rather than the colour they resolve to precisely so that changing the
+  // accent later moves the page with it; storing the hex would freeze the pairing at the moment
+  // the admin happened to click.
+  const sbgRaw = (o.simpleBg === undefined ? base?.simpleBg ?? '' : str(o.simpleBg, '', 12)).trim();
   const simpleBg = /^#?[0-9a-fA-F]{6}$/.test(sbgRaw)
     ? (sbgRaw.startsWith('#') ? sbgRaw : `#${sbgRaw}`).toLowerCase()
-    : '';
+    : sbgRaw === 'theme-light' || sbgRaw === 'theme-dark'
+      ? sbgRaw
+      : '';
   const jumuahIn = Array.isArray(o.jumuah) ? o.jumuah : base?.jumuah ?? ['13:30'];
   const jumuah = jumuahIn.slice(0, 8).map((x) => hhmmOrNull(x)).filter((x): x is string => x != null);
   return {
@@ -297,7 +324,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     orientation: oneOf(o.orientation, ['landscape', 'portrait'] as const, base?.orientation ?? 'landscape') as Orientation,
     // Coerce the fallback too, so a timetable saved at the now-removed 4K downgrades to 1080p.
     quality: oneOf(o.quality, ['720p', '1080p'] as const, oneOf(base?.quality, ['720p', '1080p'] as const, '1080p')) as Quality,
-    layout: oneOf(o.layout, ['centered', 'clockTop', 'split', 'simple'] as const, base?.layout ?? 'centered'),
+    layout: normLayout(o.layout, base?.layout),
     layoutCarousel: o.layoutCarousel === undefined ? base?.layoutCarousel ?? false : bool(o.layoutCarousel, false),
     simpleBg,
     masjidName: str(o.masjidName, base?.masjidName ?? 'Our Masjid', 80) || 'Our Masjid',
@@ -324,6 +351,12 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     showDates: o.showDates === undefined ? base?.showDates ?? true : bool(o.showDates, true),
     showLogo: o.showLogo === undefined ? base?.showLogo ?? true : bool(o.showLogo, true),
     showSeconds: o.showSeconds === undefined ? base?.showSeconds ?? false : bool(o.showSeconds, false),
+    // Defaults to 'stacked', which is what every screen already does — so turning the seconds on
+    // after this change looks exactly as it did before it.
+    // The fallback is the STORED value, not the default — the same shape every other enum here
+    // uses. Falling back to 'stacked' would silently undo a masjid's choice the first time a
+    // save carried a malformed value for this one field.
+    secondsStyle: oneOf(o.secondsStyle === undefined ? base?.secondsStyle : o.secondsStyle, ['stacked', 'inline'] as const, base?.secondsStyle === 'inline' ? 'inline' : 'stacked'),
     showFooter: o.showFooter === undefined ? base?.showFooter ?? true : bool(o.showFooter, true),
     showCelestial: o.showCelestial === undefined ? base?.showCelestial ?? true : bool(o.showCelestial, true),
     bitrate720: o.bitrate720 === undefined ? base?.bitrate720 : intIn(o.bitrate720, base?.bitrate720 ?? 4000, 500, 20000),

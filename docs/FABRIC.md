@@ -11,9 +11,11 @@
 > **Status (2026-08-17, app v0.69.0): live on both sides, including identity-bound SSO.**
 >
 > This page is about SSO and appearance specifically. The app's full set of declared capabilities is
-> `sso`, `notifications`, `domain`, `https`, `whatsapp` and `commands` — see
-> [`USING_THE_FABRIC.md`](USING_THE_FABRIC.md) for the ones beyond this page, including the app's only
-> **inbound** route, `POST /fabric/commands/run`.
+> `sso`, `notifications`, `domain`, `https`, `whatsapp`, `commands`, and `fabric.provides:
+> [timetable]` — see [`USING_THE_FABRIC.md`](USING_THE_FABRIC.md) for the ones beyond this page,
+> including both **inbound** routes: `POST /fabric/commands/run` (the platform calling us, and the
+> only inbound route that can write) and `POST /fabric/timetable/{list,get,logo}` (another app on the
+> box reading this masjid's prayer times and logo, read-only, through the app-to-app broker).
 > - Platform: appearance (A1 `#omos=` fragment, A2 `GET /api/public/appearance`) since **v0.18.0**;
 >   **identity-bound SSO since v0.19.x** — `GET /api/auth/session` now **fails closed** and is bound to
 >   the calling app: a valid `omos_session` cookie alone is no longer enough, the app must present its

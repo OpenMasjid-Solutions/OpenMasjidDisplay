@@ -28,6 +28,14 @@ export const CONFIG_DIR = '/etc/openmasjid-screen';
  */
 export const CONFIG_PATH = process.env.OMD_SCREEN_CONFIG || `${CONFIG_DIR}/config.json`;
 
+/**
+ * A plausible display-server origin.
+ *
+ * Shared rather than inlined twice: this decides where the device sends its identity, and — for
+ * the root terminal — where a ROOT pty dials out to. Two copies of that rule would be one too many.
+ */
+export const SERVER_ORIGIN_RE = /^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/;
+
 export interface AgentConfig {
   /** the display server's origin, baked in by the installer from the URL it was fetched from */
   server: string;
@@ -57,7 +65,7 @@ export function parseConfig(text: string): AgentConfig | null {
   const o = raw as Record<string, unknown>;
 
   const server = typeof o.server === 'string' ? o.server.trim().replace(/\/+$/, '') : '';
-  if (!/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(server)) return null;
+  if (!SERVER_ORIGIN_RE.test(server)) return null;
 
   const deviceId = typeof o.deviceId === 'string' ? o.deviceId.trim() : '';
   const deviceSecret = typeof o.deviceSecret === 'string' ? o.deviceSecret.trim() : '';

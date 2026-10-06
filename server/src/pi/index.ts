@@ -29,8 +29,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import WebSocket from 'ws';
 import { Resvg } from '@resvg/resvg-js';
-import { Framebuffer, quietConsole, describeFramebuffer, FB_DEVICE, type FbGeometry } from './framebuffer';
+import {
+  Framebuffer,
+  quietConsole,
+  describeFramebuffer,
+  framebufferPng,
+  framebufferPngError,
+  FB_DEVICE,
+  type FbGeometry,
+} from './framebuffer';
 import { VideoPlayer } from './video';
 import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
@@ -48,6 +57,7 @@ import {
   makeDeviceId,
   makeDeviceSecret,
   CONFIG_PATH,
+  SERVER_ORIGIN_RE,
   type AgentConfig,
 } from './agentConfig';
 
@@ -119,6 +129,13 @@ interface PiStateWire {
   clockSuspect: boolean;
   pollMs: number;
   screenName: string;
+  /** Turn the output off overnight, enforced by the agent from its own clock — see
+   *  applyDisplaySchedule for why it is not the panel that sends the command at the moment. */
+  displaySchedule?: { enabled: boolean; offAt: string; onAt: string };
+  /** And reboot nightly, for the same reason and by the same mechanism. */
+  rebootSchedule?: { enabled: boolean; at: string };
+  /** While this is in the future, keep sending pictures — somebody has a preview window open. */
+  previewUntil?: number;
   command?: {
     id: string;
     action:
@@ -132,11 +149,22 @@ interface PiStateWire {
       | 'wifi-join'
       | 'wifi-forget'
       | 'wifi-rescan'
-      | 'shell';
+      | 'shell'
+      | 'shell-session'
+      | 'display-off'
+      | 'display-on'
+      | 'set-timezone'
+      | 'screenshot'
+      | 'set-video-mode'
+      | 'keep-video-mode';
     /** Only ever present for 'wifi-join'. The password is used once and never logged. */
     wifi?: { ssid: string; psk: string };
     /** Only ever present for 'shell'. One line, run as THIS user — see runShell. */
     shell?: string;
+    /** Only ever present for 'shell-session'. Where to dial in, and the one-time secret. */
+    shellSession?: { id: string; secret: string; rows: number; cols: number };
+    /** Only ever present for 'set-timezone' / 'set-video-mode'. Root validates it again. */
+    text?: string;
   } | null;
 }
 
@@ -400,6 +428,109 @@ async function runCommand(
     return;
   }
 
+  // The screen's own output. Root, because the framebuffer's blank control is root-owned.
+  if (cmd.action === 'display-off' || cmd.action === 'display-on') {
+    requestPrivileged(cmd.id, cmd.action, `asked the system to turn the screen ${cmd.action === 'display-off' ? 'off' : 'on'}`);
+    // Report the result promptly: somebody just pressed a button and is watching the panel.
+    live.checkInNow = true;
+    return;
+  }
+
+  // Confirming a provisional display mode. No payload: the marker root left is the whole state.
+  if (cmd.action === 'keep-video-mode') {
+    requestPrivileged(cmd.id, 'keep-video-mode', 'confirmed the display mode, so it will not revert');
+    live.checkInNow = true;
+    return;
+  }
+
+  // Forcing one. Same payload shape as the timezone: the verb cannot carry it, because the
+  // dispatcher reads a verb through a filter that keeps only lowercase letters and dashes.
+  if (cmd.action === 'set-video-mode') {
+    if (!cmd.text) {
+      log('a set-video-mode arrived with no mode; ignoring it');
+      return;
+    }
+    try {
+      const dir = '/var/lib/openmasjid-screen';
+      fs.writeFileSync(`${dir}/.video-mode-request`, `${cmd.text}\n`, { mode: 0o600 });
+      fs.renameSync(`${dir}/.video-mode-request`, `${dir}/video-mode-request`);
+    } catch (e) {
+      log('could not leave the display mode for the system:', (e as Error).message);
+      return;
+    }
+    // This one reboots the board, so there is no point waiting for a check-in that will not happen.
+    requestPrivileged(cmd.id, 'set-video-mode', `asked the system to set the display mode to "${cmd.text}" and reboot`);
+    return;
+  }
+
+  // The timezone carries a short string, which cannot travel in the spool file: the dispatcher
+  // reads a verb as `head -c 32 | tr -dc 'a-z-'`, which would turn "America/New_York" into
+  // "americanewyork". Same shape as a Wi-Fi join — the payload goes beside the verb, and root
+  // validates it itself rather than trusting this side.
+  if (cmd.action === 'set-timezone') {
+    if (!cmd.text) {
+      log('a set-timezone arrived with nothing to set; ignoring it');
+      return;
+    }
+    try {
+      const dir = '/var/lib/openmasjid-screen';
+      // Written and renamed BEFORE the verb, so the dispatcher can never wake on a request whose
+      // payload has not landed.
+      fs.writeFileSync(`${dir}/.tz-request`, `${cmd.text}\n`, { mode: 0o600 });
+      fs.renameSync(`${dir}/.tz-request`, `${dir}/tz-request`);
+    } catch (e) {
+      log('could not leave the timezone for the system:', (e as Error).message);
+      return;
+    }
+    requestPrivileged(cmd.id, 'set-timezone', `asked the system to set the timezone to "${cmd.text}"`);
+    live.checkInNow = true;
+    return;
+  }
+
+  // No privilege at all: the agent is already in the video group, because drawing is its job.
+  if (cmd.action === 'screenshot') {
+    log('taking a screenshot for the dashboard');
+    await sendScreenshot(cfg);
+    return;
+  }
+
+  /**
+   * A terminal. Handed to ROOT rather than run here.
+   *
+   * This process runs as omdscreen under NoNewPrivileges, so a shell it started could not become
+   * root by any route — `sudo` is not merely absent, it is unusable, and `reboot` cannot work
+   * however it is asked for. That is a debugging window, not a terminal, and a screen on a wall in
+   * another city needs the real thing.
+   *
+   * So the session details go into the spool and root starts the terminal itself, in a transient
+   * unit that outlives this poll. The verb carries no command — only a session id, a one-time
+   * secret and a size — so the spool is still a closed set of verbs rather than a way to run
+   * strings; see the `shell-session` arm in the installer for what still holds it shut.
+   */
+  if (cmd.action === 'shell-session') {
+    const s = cmd.shellSession;
+    if (!s?.id || !s.secret) {
+      log('a terminal session arrived with nothing to dial into; ignoring it');
+      return;
+    }
+    const rows = Math.max(8, Math.min(200, Math.round(s.rows) || 24));
+    const cols = Math.max(20, Math.min(400, Math.round(s.cols) || 80));
+    try {
+      const dir = '/var/lib/openmasjid-screen';
+      // Four lines rather than JSON: root reads this too, and parsing JSON in shell is how a
+      // validation gets skipped. Written and renamed BEFORE the verb, so the dispatcher cannot wake
+      // on a request whose payload has not landed. 0600 because line two is a credential.
+      fs.writeFileSync(`${dir}/.shell-request`, `${s.id}\n${s.secret}\n${rows}\n${cols}\n`, { mode: 0o600 });
+      fs.renameSync(`${dir}/.shell-request`, `${dir}/shell-request`);
+    } catch (e) {
+      log('could not leave the terminal session details for the system:', (e as Error).message);
+      return;
+    }
+    // The secret is NOT in this message, and there is no branch here that could put it in one.
+    requestPrivileged(cmd.id, 'shell-session', 'asked the system to open a terminal session');
+    return;
+  }
+
   if (cmd.action === 'shell') {
     if (!cmd.shell) {
       log('a console command arrived with nothing in it; ignoring it');
@@ -428,6 +559,315 @@ async function runCommand(
   }
 }
 
+/** This device's timezone as the system holds it, so the panel can show what IS rather than what
+ *  was last asked for. /etc/timezone is one line and present on Debian; the symlink is the fallback
+ *  for an image that has only that. */
+function readTimezone(): string {
+  try {
+    const tz = fs.readFileSync('/etc/timezone', 'utf8').trim();
+    if (tz) return tz;
+  } catch {
+    /* fall through */
+  }
+  try {
+    const link = fs.readlinkSync('/etc/localtime');
+    // Split rather than match: the path is /usr/share/zoneinfo/<Area>/<City>, and everything after
+    // the marker IS the zone name — which is also true of the two-level ones like America/Argentina.
+    const at = link.indexOf('zoneinfo/');
+    if (at >= 0) return link.slice(at + 'zoneinfo/'.length);
+  } catch {
+    /* no idea, then */
+  }
+  return '';
+}
+
+/** Where this board's kernel command line lives. /boot/firmware since Bookworm; the older path is
+ *  the fallback, and the agent has to cope with both because a masjid's card may be either. */
+function cmdlinePath(): string {
+  for (const p of ['/boot/firmware/cmdline.txt', '/boot/cmdline.txt']) {
+    try {
+      if (fs.statSync(p).isFile()) return p;
+    } catch {
+      /* try the other */
+    }
+  }
+  return '';
+}
+
+/**
+ * The forced HDMI mode on this device, or 'auto' when there is none.
+ *
+ * Read from the boot config rather than remembered from what the panel asked for, because a mode
+ * nobody confirmed puts itself back — see the video-revert unit in the installer. After that has
+ * happened the only truthful answer is the one written on the card.
+ */
+function readVideoMode(): string {
+  const file = cmdlinePath();
+  if (!file) return '';
+  try {
+    const line = fs.readFileSync(file, 'utf8');
+    const at = line.indexOf('video=HDMI-A-1:');
+    if (at < 0) return 'auto';
+    const rest = line.slice(at + 'video=HDMI-A-1:'.length);
+    // The command line is space-separated, so the mode ends at the first space or end of line.
+    return rest.split(/\s/)[0].trim() || 'auto';
+  } catch {
+    return '';
+  }
+}
+
+/** What root left about the last mode change, read once and deleted — the same read-and-delete as
+ *  the Wi-Fi verdict, because it is a one-off answer to a one-off question. */
+function readVideoModeResult(): string | undefined {
+  const file = '/var/lib/openmasjid-screen/video-mode-result';
+  try {
+    const text = fs.readFileSync(file, 'utf8').trim().slice(0, 200);
+    fs.unlinkSync(file);
+    return text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Where the display's own power state can be read: the DPMS of the HDMI connector the kernel owns.
+ *
+ *  Read from DRM rather than from `vcgencmd display_power`, which reports 1 whatever the state is on
+ *  a Pi 4 under KMS — measured, along with the fact that the framebuffer's blank control is what
+ *  actually reaches the connector. See the display verbs in the installer. */
+function displayIsOff(): boolean {
+  try {
+    for (const card of fs.readdirSync('/sys/class/drm')) {
+      if (!/-HDMI-A-\d+$/.test(card)) continue;
+      const dir = `/sys/class/drm/${card}`;
+      // Only the connector that is actually plugged in has an opinion worth reporting.
+      if (fs.readFileSync(`${dir}/status`, 'utf8').trim() !== 'connected') continue;
+      return fs.readFileSync(`${dir}/dpms`, 'utf8').trim().toLowerCase() !== 'on';
+    }
+  } catch {
+    /* no DRM, or a board that reports none of this */
+  }
+  return false;
+}
+
+/** Send a screenshot to the dashboard. Its own route, for the same reason the journal has one: it is
+ *  a few hundred kilobytes and wanted occasionally, and sharing the check-in would force that cap up
+ *  for every screen on every poll. */
+async function sendScreenshot(cfg: AgentConfig, shrink = PREVIEW_SHRINK): Promise<void> {
+  const png = framebufferPng(shrink);
+  if (!png) {
+    log('could not read the framebuffer for a screenshot:', framebufferPngError() || 'no reason given');
+    return;
+  }
+  const res = await postJson<{ ok?: boolean }>(`${cfg.server}/pi/${cfg.token}/screenshot`, {
+    png: png.toString('base64'),
+  }).catch(() => ({ httpStatus: 0 }));
+  const status = (res as { httpStatus?: number }).httpStatus ?? 200;
+  if (status >= 200 && status < 300) log(`sent a ${Math.round(png.length / 1024)} KB screenshot to the dashboard`);
+  else log(`the display server would not take a screenshot (HTTP ${status})`);
+}
+
+/**
+ * Turn the display off and on to the schedule, from the device's OWN clock.
+ *
+ * Enforced here rather than by the panel sending a command at the right moment, because the point of
+ * a masjid's screen going dark at midnight is that it happens whether or not the internet does. The
+ * agent already has the server's time to correct its own by, so it needs nothing at the moment it
+ * acts.
+ *
+ * It acts on TRANSITIONS only — the minute the schedule names — never continuously. That is what
+ * lets somebody turn a screen on by hand during its off hours and have it stay on until the next
+ * boundary, instead of fighting a loop that switches it off again a second later.
+ */
+/**
+ * Is this time inside the window that starts at `off` and ends at `on`?
+ *
+ * The window normally crosses midnight — 23:00 to 04:30 is the whole point of it — so the comparison
+ * has to handle off > on. Plain string comparison is correct here and cheaper than parsing: both are
+ * zero-padded HH:MM, so they sort in time order.
+ */
+function insideOffWindow(hhmm: string, off: string, on: string): boolean {
+  if (!off || !on || off === on) return false;
+  return off < on ? hhmm >= off && hhmm < on : hhmm >= off || hhmm < on;
+}
+
+function applyDisplaySchedule(live: Live): void {
+  const sch = live.state?.displaySchedule;
+  const reb = live.state?.rebootSchedule;
+  if (!sch?.enabled && !reb?.enabled) return;
+  const now = live.serverTime();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  /**
+   * Once per boot: match the schedule's CURRENT state, not just its next boundary.
+   *
+   * Acting on transitions alone is right while the agent is running — it is what lets somebody turn
+   * a screen on by hand during its off hours without a loop fighting them. It is wrong the moment
+   * the board has just started, because a fresh boot leaves the framebuffer unblanked: a screen
+   * scheduled dark from 23:00 to 04:30 that reboots at 03:00 — which every screen now does by
+   * default — came back up LIT and stayed lit, since 04:30's "turn on" has nothing to do and 23:00
+   * is twenty hours away. The two features cancelled each other out.
+   *
+   * Only if the display is actually on, so this does not leave a spool file on every boot.
+   */
+  if (!live.scheduleReconciled) {
+    live.scheduleReconciled = true;
+    if (sch?.enabled && insideOffWindow(hhmm, sch.offAt, sch.onAt) && !displayIsOff()) {
+      requestPrivileged('sch_boot_off', 'display-off', 'this screen is inside its overnight hours, so switching it off');
+    }
+  }
+
+  // ONE minute guard for both schedules, so a minute is acted on once whichever of them named it.
+  if (hhmm === live.lastScheduleMinute) return;
+  live.lastScheduleMinute = hhmm;
+  if (sch?.enabled && sch.offAt && sch.onAt) {
+    if (hhmm === sch.offAt) requestPrivileged(`sch_${hhmm.replace(':', '')}off`, 'display-off', 'switching the screen off for the night');
+    else if (hhmm === sch.onAt) requestPrivileged(`sch_${hhmm.replace(':', '')}on`, 'display-on', 'switching the screen back on');
+  }
+  // Last, so a board scheduled to reboot at the same minute it goes dark does the dark part first.
+  if (reb?.enabled && reb.at && hhmm === reb.at) {
+    requestPrivileged(`sch_${hhmm.replace(':', '')}reboot`, 'reboot', 'rebooting on the nightly schedule');
+  }
+}
+
+/**
+ * A terminal session: dial out to the server and give it a real shell.
+ *
+ * The direction is the whole point. Nothing connects TO this device — it is behind a masjid's NAT
+ * on an address DHCP moves, and it holds a capability rather than listening on a port. So the panel
+ * mints a session, we are told about it on an ordinary state poll, and WE open the socket. The
+ * invariant survives and a keystroke still arrives in milliseconds.
+ *
+ * ## The pty, without a native module
+ *
+ * `script` (util-linux, already on the image) allocates a pty and runs a command inside it. That is
+ * what makes this a real terminal — a prompt, job control, an editor — rather than a pipe with a
+ * shell on the end. Two details it cost to find:
+ *
+ *  - **`SHELL` has to be forced.** `script -c` runs its command through `$SHELL`, and this account's
+ *    shell is `/usr/sbin/nologin` (it is a service account, deliberately). Without this the session
+ *    opens and immediately prints "This account is currently not available".
+ *  - **The size is set once, at spawn.** `stty rows/cols` inside the pty is the only handle we have
+ *    on it; resizing the browser window mid-session cannot reflow it, because that needs TIOCSWINSZ
+ *    on the pty fd and we do not have one without a native module. Sized from the browser's terminal
+ *    when the session is minted, which is right for every case except resizing mid-session.
+ *
+ * ## What it is allowed to be: everything
+ *
+ * This runs as ROOT, and it is the only part of this agent that does. It is not started by the agent
+ * — the agent cannot start anything privileged — but by the control spool, in a transient unit; see
+ * the `shell-session` arm in the installer for the whole of what still holds it shut.
+ *
+ * It was deliberately the other way round first: the same account and sandbox as the one-shot
+ * console, NoNewPrivileges, no sudo, no way to reboot the board. That is a defensible thing to build
+ * and it is not a terminal. You could not restart the screen you were looking at, could not install
+ * a package to diagnose something, could not read a root-owned log — and every one of those is why
+ * somebody opens a terminal on a machine three hundred miles away. OpenMasjidOS's own dashboard
+ * offers a real root shell; a screen managed from the same family of dashboards should not offer
+ * something that merely looks like one.
+ *
+ * What did NOT change is the way in: the panel mints a session, the device is offered it once and
+ * dials OUT, the secret never reaches a browser, and the server expires it three different ways.
+ * The privilege at the far end moved; the door did not.
+ *
+ * Nothing here logs a byte of the session. Not the keystrokes, not the output, not a sample: a
+ * terminal transcript is the likeliest thing in this whole app to contain a password — and now the
+ * likeliest to contain a root one.
+ */
+function runShellSession(cfg: AgentConfig, s: { id: string; secret: string; rows: number; cols: number }): void {
+  const url = `${cfg.server.replace(/^http/, 'ws')}/pi/${cfg.token}/shell/${encodeURIComponent(s.id)}`;
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url, { headers: { 'x-openmasjid-shell-secret': s.secret } });
+  } catch (e) {
+    log('could not open a terminal session:', (e as Error).message);
+    return;
+  }
+
+  let child: ReturnType<typeof spawn> | null = null;
+  let closed = false;
+  const done = (why: string): void => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(cap);
+    try {
+      child?.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+    try {
+      ws.close();
+    } catch {
+      /* already gone */
+    }
+    log(`terminal session ended (${why})`);
+  };
+
+  // Our own backstop for the server's limits. If the socket is wedged rather than closed, this is
+  // what stops a bash sitting on the device for the rest of the week.
+  const cap = setTimeout(() => done('reached the local time limit'), SHELL_SESSION_MAX_MS);
+
+  ws.on('open', () => {
+    const rows = Math.max(8, Math.min(200, Math.round(s.rows) || 24));
+    const cols = Math.max(20, Math.min(400, Math.round(s.cols) || 80));
+    // Root's own home, because this process IS root — started by the control spool as a transient
+    // unit, not by the agent. HOME is not cosmetic here: every tool that writes a dotfile uses it,
+    // and pointing root's shell at the agent's state directory would scatter root-owned files
+    // through a directory the agent has to be able to write.
+    const asRoot = process.getuid?.() === 0;
+    try {
+      child = spawn('script', ['-qfc', `stty rows ${rows} cols ${cols}; exec /bin/bash -i`, '/dev/null'], {
+        cwd: asRoot ? '/root' : shellCwd(),
+        env: {
+          PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+          HOME: asRoot ? '/root' : '/var/lib/openmasjid-screen',
+          // Forced: see the note above about nologin.
+          SHELL: '/bin/bash',
+          TERM: 'xterm-256color',
+          LANG: 'C.UTF-8',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (e) {
+      try {
+        ws.send(`\r\ncould not start a shell: ${(e as Error).message}\r\n`);
+      } catch {
+        /* the socket went too */
+      }
+      done('the shell would not start');
+      return;
+    }
+    log('terminal session open');
+    child.stdout?.on('data', (b: Buffer) => {
+      try {
+        if (ws.readyState === 1) ws.send(b);
+      } catch {
+        /* closing */
+      }
+    });
+    child.stderr?.on('data', (b: Buffer) => {
+      try {
+        if (ws.readyState === 1) ws.send(b);
+      } catch {
+        /* closing */
+      }
+    });
+    child.on('close', () => done('the shell exited'));
+    child.on('error', () => done('the shell failed'));
+  });
+
+  ws.on('message', (data: unknown) => {
+    // Whatever the panel typed, straight into the pty. Not inspected and not logged.
+    try {
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
+      child?.stdin?.write(buf);
+    } catch {
+      /* the shell has gone */
+    }
+  });
+  ws.on('close', () => done('the panel closed it'));
+  ws.on('error', (e: Error) => done(`socket error: ${e.message}`));
+}
+
 /** The state directory when we can use it, otherwise the root.
  *
  *  spawn() throws synchronously on a cwd it cannot use, which would turn every console command into
@@ -441,6 +881,20 @@ function shellCwd(): string {
     return '/';
   }
 }
+
+/** Our own ceiling on a terminal session, behind the server's. If the socket is wedged rather
+ *  than closed, this is what stops a bash sitting on the device for the rest of the week. */
+/**
+ * How much to shrink a screenshot before sending it.
+ *
+ * 2 halves each axis, so a quarter of the pixels: a 1080p timetable goes from about half a megabyte
+ * to well under a hundred kilobytes, which is what makes a frame a second through a masjid's tunnel
+ * reasonable rather than rude. A timetable is large flat type, so it stays readable — and reading
+ * the times off it is the only thing anybody wants the picture for.
+ */
+const PREVIEW_SHRINK = 2;
+
+const SHELL_SESSION_MAX_MS = 65 * 60_000;
 
 /** How long a console command may run before it is killed, and how much of its output is kept.
  *  Both are bounded because nobody is watching this device: a command that waits for input would
@@ -530,6 +984,17 @@ function runShell(cmd: string): Promise<{ out: string; code: number | null; ms: 
  * anything derived from the network.
  */
 type PrivilegedVerb =
+  // A ROOT terminal. The only verb that hands over the whole machine, and the reason it is a verb
+  // at all is that this process cannot start anything privileged — see the shell-session branch of
+  // runCommand. It carries a session id and a one-time secret, never a command.
+  | 'shell-session'
+  // 'screenshot' is deliberately absent: the agent reads the framebuffer itself, because it is
+  // already in the video group. Nothing that can be done unprivileged belongs in this list.
+  | 'display-off'
+  | 'display-on'
+  | 'set-timezone'
+  | 'set-video-mode'
+  | 'keep-video-mode'
   | 'update'
   | 'reboot'
   | 'reinstall'
@@ -629,16 +1094,20 @@ async function sendJournal(cfg: AgentConfig): Promise<void> {
  * panel reporting an old failure next to a working connection. Root writes it; we only ever read
  * it, so a corrupt or half-written file is treated as no answer rather than as a problem.
  */
-function readWifiResult(): { ok: boolean | null; detail: string } | undefined {
+function readWifiResult(): { ok: boolean | null; detail: string; kind?: string } | undefined {
   const p = '/var/lib/openmasjid-screen/wifi-result';
   try {
     if (!fs.existsSync(p)) return undefined;
-    const [verdict = '', detail = ''] = fs.readFileSync(p, 'utf8').split(String.fromCharCode(10));
+    // Three lines now: verdict, detail, and optionally WHICH action this is the answer to. A join
+    // writes the first two, as it always has, so a file with no third line is a join — which is
+    // what makes this readable by an older agent and vice versa.
+    const [verdict = '', detail = '', kind = ''] = fs.readFileSync(p, 'utf8').split(String.fromCharCode(10));
     fs.unlinkSync(p);
     // 'unverified' is its own answer and must not read as success: it means the join worked but
     // nothing proved the display server could still be reached afterwards.
     const ok = verdict.trim() === 'yes' ? true : verdict.trim() === 'no' ? false : null;
-    return { ok, detail: detail.trim().slice(0, 200) };
+    const which = kind.trim();
+    return { ok, detail: detail.trim().slice(0, 200), ...(which ? { kind: which.slice(0, 16) } : {}) };
   } catch {
     return undefined;
   }
@@ -668,6 +1137,15 @@ async function checkIn(
     networks,
     // Cheap enough to send every time: three world-readable files, no privilege, no subprocess.
     stats: piStats(),
+    displayOff: displayIsOff(),
+    videoMode: readVideoMode(),
+    // A provisional mode: root left this marker and will put the old one back in a few minutes
+    // unless somebody confirms. The panel needs it to know to ask.
+    videoModePending: fs.existsSync('/var/lib/openmasjid-screen/video-mode-pending'),
+    videoModeResult: readVideoModeResult(),
+    // What the device believes, not what the panel asked for: a television somebody unplugged and a
+    // schedule that fired while nobody was looking both have to show correctly.
+    timezone: process.env.TZ || readTimezone(),
     wifiResult: readWifiResult(),
     shellResult: shellResult ?? undefined,
   }).catch(() => ({ httpStatus: 0 }));
@@ -769,6 +1247,13 @@ class Live {
   shellResult: { id: string; cmd: string; out: string; code: number | null; ms: number } | null = null;
   /** while this is in the future, poll faster — see the 'shell' branch of runCommand */
   fastPollUntil = 0;
+  /** the last HH:MM the display schedule was evaluated for, so a boundary fires once and not on
+   *  every poll inside that minute — see applyDisplaySchedule */
+  lastScheduleMinute = '';
+  /** Whether the schedule has been reconciled once since this process started. The schedule acts on
+   *  TRANSITIONS, which is right while running and wrong immediately after a boot — see
+   *  applyDisplaySchedule. */
+  scheduleReconciled = false;
 
   serverTime(): Date {
     return new Date(Date.now() + this.clockOffsetMs);
@@ -955,6 +1440,13 @@ async function runAdopted(
   const poll = async (): Promise<void> => {
     let pollMs = POLL_MS;
     while (!live.forgotten) {
+      // Off and on to the schedule, from this device's OWN clock.
+      //
+      // First in the loop, and deliberately BEFORE the state fetch — everything below this line is
+      // skipped when the server cannot be reached, and a screen going dark overnight is the one
+      // thing that must not depend on that. The schedule and the clock offset are both from the
+      // last successful poll, which is all it needs.
+      applyDisplaySchedule(live);
       // Has root left an answer about a Wi-Fi join? Checked here, on the poll, rather than waiting
       // for the next check-in — those are five minutes apart, and somebody who has just pressed
       // Connect is watching the dashboard now. A stat every few seconds is nothing; making them
@@ -1003,6 +1495,16 @@ async function runAdopted(
       await resolveAssets(live, cache, cfg.server).catch(() => {
         /* a missing image draws the themed scene instead; the next poll tries again */
       });
+      // Somebody is watching this screen in the dashboard. Send a frame, and poll fast enough for
+      // it to look live — the same fast-poll window a console uses, re-armed on every frame for as
+      // long as the panel keeps saying somebody is there. Both ends expire: the panel stops
+      // refreshing previewUntil when its window closes, and this stops the moment that lapses.
+      if (st.previewUntil && Date.now() < st.previewUntil) {
+        live.fastPollUntil = Date.now() + 30_000;
+        await sendScreenshot(cfg).catch(() => {
+          /* a dropped frame is not worth a log line once a second */
+        });
+      }
       // A console open in the panel shortens the wait, for a minute at a time. Bounded, and only
       // ever set by having just run something: a screen nobody is looking at is back to five
       // seconds within a minute, so this cannot become a device that polls hard for ever.
@@ -1041,6 +1543,18 @@ async function runAdopted(
   // ── the drawing loop ──
   const draw = async (): Promise<void> => {
     while (!live.forgotten) {
+      // Nothing to draw while the output is asleep.
+      //
+      // Not required for correctness — the blank survives us writing frames, measured on the
+      // hardware — but a screen that is off between midnight and Fajr has no reason to spend a
+      // Pi's CPU rendering 1080p SVG into a framebuffer nobody can see. Stopping the camera
+      // matters more than the drawing does: that is a continuous H.264 decode, and it is the
+      // difference between a board idling overnight and one running warm all night for nothing.
+      if (displayIsOff()) {
+        player.stop();
+        await sleep(5000);
+        continue;
+      }
       if (!live.state) {
         screen?.show(messageSvg('Connecting…', `Waiting for ${cfg.server}`));
         await sleep(2000);
@@ -1201,8 +1715,86 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: Error) => {
+/**
+ * Run one terminal session and exit — the agent's second entry point.
+ *
+ * Reached only as `agent.js --shell-session <file>`, and only ever from the control spool's
+ * `shell-session` arm, which starts it as root in a transient unit. The file holds four lines: the
+ * session id, the one-time secret, and the terminal's rows and columns. Root has already moved it
+ * somewhere the agent cannot reach and checked its shape; this reads it, deletes it, and dials out.
+ *
+ * Deliberately the same binary as the agent. The socket handling, the TLS trust, the config and the
+ * pty are all here already, and a second program that had to be kept in step with this one is a
+ * second program that would quietly stop being.
+ */
+async function runShellSessionOnly(file: string): Promise<void> {
+  let lines: string[];
+  try {
+    lines = fs.readFileSync(file, 'utf8').split(String.fromCharCode(10));
+  } catch (e) {
+    log('could not read the terminal session details:', (e as Error).message);
+    process.exit(1);
+  }
+  // Deleted before the session opens, not after: it holds a single-use secret, and a session that
+  // runs for an hour must not leave that on disk for the hour.
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    /* already gone, which is fine */
+  }
+  const [id = '', secret = '', rowsRaw = '', colsRaw = '', serverRaw = ''] = lines;
+  // Re-validated here as well as by root. Same reasoning as everywhere else in this app: the check
+  // that matters is the one made by the thing about to act on the value.
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id.trim()) || !/^[A-Za-z0-9_-]{8,128}$/.test(secret.trim())) {
+    log('refusing a terminal session whose id or secret is not a plain token');
+    process.exit(1);
+  }
+  /**
+   * The origin comes from the SPOOL FILE — root's own copy, out of trust.env — and never from
+   * config.json.
+   *
+   * This is the fifth line, and it is a privilege boundary rather than a convenience. config.json
+   * belongs to the agent: the installer chowns $CONFDIR to the service account and the unit grants
+   * it ReadWritePaths, because the agent rewrites the file when the screen is adopted. So reading
+   * `server` from there meant a compromised UNPRIVILEGED agent could point it anywhere, ask the
+   * spool for a terminal, and be handed a ROOT pty on a socket of its choosing — the exact
+   * escalation the closed verb set exists to prevent, straight through the one verb that grants
+   * root. The token may still come from config; it is only this device's own credential. The
+   * ORIGIN may not.
+   */
+  const server = serverRaw.trim().replace(/\/+$/, '');
+  if (!SERVER_ORIGIN_RE.test(server)) {
+    log('refusing a terminal session with no trusted server address');
+    process.exit(1);
+  }
+  const cfg = loadConfig();
+  if (!cfg?.token) {
+    log('cannot open a terminal: this screen is not adopted');
+    process.exit(1);
+  }
+  runShellSession({ ...cfg, server }, {
+    id: id.trim(),
+    secret: secret.trim(),
+    rows: Number(rowsRaw) || 24,
+    cols: Number(colsRaw) || 80,
+  });
+  // runShellSession tears everything down through its own handlers and this process has nothing
+  // else to do, so the socket closing is what ends us. The backstop inside it (SHELL_SESSION_MAX_MS)
+  // is what stops a wedged socket leaving a root bash on the device for the rest of the week.
+}
+
+const shellArg = process.argv.indexOf('--shell-session');
+if (shellArg >= 0) {
+  const file = process.argv[shellArg + 1];
+  if (!file) {
+    log('--shell-session needs the path to a session file');
+    process.exit(1);
+  }
+  void runShellSessionOnly(file);
+} else {
+  main().catch((e: Error) => {
   // Last resort. systemd restarts us; the journal gets the reason.
-  log('fatal:', e.message);
-  process.exit(1);
-});
+    log('fatal:', e.message);
+    process.exit(1);
+  });
+}

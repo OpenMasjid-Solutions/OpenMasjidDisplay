@@ -4,7 +4,25 @@
 # ACTION REQUIRED — items a human must decide or do
 
 From the 2026-08-04 audit of `OpenMasjidDisplay` @ `c1080cd` (see
-[`SECURITY_AUDIT.md`](SECURITY_AUDIT.md)). Nothing in this file was changed autonomously.
+[`SECURITY_AUDIT.md`](SECURITY_AUDIT.md)).
+
+> ## ⚠ HISTORICAL — read the banner before acting on anything below
+>
+> This is the record of the **2026-08-04 audit**, kept because it is the only account of what was
+> found and why. It is **not** current instruction, and it is annotated where later evidence
+> contradicted it (look for *SUPERSEDED* notes). Two things in particular:
+>
+> - **Do not follow any release or rollback procedure in this file.** The authoritative chain is
+>   [`../../CLAUDE.md`](../../CLAUDE.md) § *On "merge to main"*. Where this file and CLAUDE.md
+>   disagree, CLAUDE.md is right and this file is the reason it says what it says.
+> - **`main` moves only when Hasan says so**, never autonomously — including for a finding in here.
+>
+> Reviewed against the tree on **2026-09-01** (v0.70.0).
+
+> **On the original "nothing here was changed autonomously":** that was true when written and is no
+> longer. Several items have since been acted on in the ordinary course of work on `dev` — §0b's
+> release did happen, and the release chain itself was rewritten after the tag order below produced
+> three mis-tagged releases. What has never happened autonomously, and must not, is a push to `main`.
 
 ---
 
@@ -53,11 +71,17 @@ on `main`; they were not in the catalog.
 So the crash (DISPLAY-001) and the silently-stale prayer times (DISPLAY-002) are still live in
 the field. This is precisely the hazard DISPLAY-010 described, now materialised.
 
-**Action:** cut a release when you're ready — bump the four version files, tag, let CI publish,
-re-pin the **new** digest in `docker-compose.yml`, then point `registry.yaml` in
-OpenMasjidAPPS at the digest-pin commit. I have not done it: deciding when masjids receive an
-update is yours, and the follow-up branch below should land first so you ship the fixes
-*without* the two regressions they introduced.
+**Action:** cut a release when you're ready. *Deciding when masjids receive an update is yours.*
+
+> **⚠ SUPERSEDED — do not follow the order this paragraph originally gave.** It said "bump the four
+> version files, **tag**, let CI publish, re-pin the new digest", and following it exactly is what
+> produced three releases whose tag points at a tree pinning the *previous* release's image
+> (`v0.66.1` and `v0.67.0` are still in that state, permanently — a published tag is not rewritten).
+> Tagging before the digest exists means the tag can only carry a stale one.
+>
+> The order is **publish → pin → tag**, and the version bump is **7 fields across 5 files**, not
+> four. See [`../../CLAUDE.md`](../../CLAUDE.md) § *On "merge to main"*, which is authoritative and
+> exists in that shape because of this paragraph.
 
 ---
 
@@ -122,13 +146,21 @@ Whichever you pick, test against a **pre-existing** `data` volume, not a fresh o
 Today `:latest` and `:<manifest version>` are republished on every push to `main`, so a
 published version tag does not immutably identify a release.
 
-**Recommended:** publish the version tag only from `refs/tags/v*`; from `main` publish only
-a moving tag such as `:edge`.
+**Recommended at the time:** publish the version tag only from `refs/tags/v*`; from `main` publish
+only a moving tag such as `:edge`.
 
-**Why this was not done autonomously:** it changes the release channel and interacts with
-the OpenMasjidAPPS catalog contract (`registry.yaml` `commit:` + the compose digest pin).
-Per the audit rules, changes to the update/release channel are held for human review rather
-than shipped.
+> **⚠ SUPERSEDED — this recommendation was examined and REJECTED on evidence, and must not be
+> implemented.** These builds are not reproducible: BuildKit stamps `created` into the image config,
+> so building the same tree twice yields two different digests (`:0.66.1` went out twice, with two
+> digests, which is how this was discovered). A `v*` tag build would therefore republish `:X.Y.Z`
+> under a **new** digest and invalidate the `@sha256` pin the release had just made — turning the one
+> mechanism that protects existing installs into the thing that breaks them, on every single release.
+>
+> What was done instead: `build-image.yml` deliberately does **not** build on `v*` tags, and
+> `verify-release-tag.yml` runs on the tag to compare the pinned digest against what the registry
+> actually serves, publishing nothing. The `@sha256` pin in `docker-compose.yml` — not tag
+> immutability — is what makes a release identifiable. DISPLAY-010's *diagnosis* stands; only its
+> prescription does not.
 
 ---
 

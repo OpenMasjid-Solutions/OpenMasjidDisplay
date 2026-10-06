@@ -467,6 +467,107 @@ export async function whatsappMessageStatus(id: string): Promise<WhatsAppOutcome
   }
 }
 
+/**
+ * A window in which the platform's own "sent" cannot be trusted.
+ *
+ * A masjid's WhatsApp session expired the way WhatsApp Desktop signs itself out, and nothing
+ * noticed: the gateway went on accepting messages and the platform went on recording them `sent`,
+ * for over a day, while none of them arrived. The platform detects that within about ten minutes
+ * now, but there is a residual window between the link dying and it being noticed, and the messages
+ * inside that window were recorded `sent`.
+ *
+ * The platform cannot resend them — it deletes a message's contents the moment it hands it to the
+ * gateway, on purpose — so the app that still has the source data is the only thing that can. For
+ * this app that is an Iqamah-change notice, and it is exactly the kind of message worth sending
+ * again: somebody turns up at the wrong time otherwise.
+ *
+ * On the READ budget (600/min), not the send budget, so polling this costs no sends.
+ */
+/** Why the link was down. More may be added, so anything unrecognised reads as 'unknown'. */
+export type SuspectCause = 'session-expired' | 'needs-relink' | 'key-rejected' | 'unknown';
+const SUSPECT_CAUSES: SuspectCause[] = ['session-expired', 'needs-relink', 'key-rejected', 'unknown'];
+
+export interface SuspectWindow {
+  /** epoch ms */
+  from: number;
+  to: number;
+  /** how many of OUR messages the platform reported `sent` inside it — scoped to this app id */
+  count: number;
+  /**
+   * WHICH of our messages, by the id it gave us when it accepted them.
+   *
+   * Authoritative, and it settles something inference cannot. Before this existed the only way to
+   * work out which messages a window covered was to ask whether the moment we handed one over
+   * could have fallen inside it — and the platform's own held-message behaviour then made that
+   * ambiguous: a message QUEUED during an outage and delivered after the phone was re-linked
+   * overlaps the window and was never lost. Re-announcing it would post the same Iqamah change to
+   * the group twice.
+   *
+   * Empty when the platform is older than 0.51.1-dev.13 and does not send it.
+   */
+  ids: string[];
+  /** true when the id list hit the platform's 500-per-window cap, so it is incomplete */
+  truncated: boolean;
+  cause: SuspectCause;
+}
+
+export async function whatsappSuspectWindows(): Promise<SuspectWindow[] | null> {
+  if (!config.omosBaseUrl || !config.omosAppSecret) return null;
+  warnIfCleartextSecret();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${config.omosBaseUrl}/api/fabric/whatsapp/suspect`, {
+      headers: { 'x-openmasjid-app-secret': config.omosAppSecret },
+      signal: ctrl.signal,
+      redirect: 'error',
+    });
+    // NULL, not []. A platform too old to have this endpoint answers 404, and "I could not ask"
+    // must not read as "there is nothing wrong" — the caller decides what to do with not knowing,
+    // exactly as it does for a message status it could not obtain.
+    if (!res.ok) return null;
+    const j = (await res.json().catch(() => ({}))) as { ok?: unknown; windows?: unknown };
+    // `ok: false` on a 200 body. Belt and braces beside the res.ok check above, and the platform
+    // added it because a sibling app was reading {groups: []} on a 429 as "there are no groups" —
+    // a success-shaped body on an error is the trap. An ABSENT ok is fine: a platform older than
+    // 0.51.1-dev.13 does not send it, and demanding it would break against every one of those.
+    if (j.ok === false) return null;
+    if (!Array.isArray(j.windows)) return null;
+    const out: SuspectWindow[] = [];
+    for (const w of j.windows.slice(0, 50)) {
+      const o = (w ?? {}) as Record<string, unknown>;
+      const from = Number(o.from);
+      const to = Number(o.to);
+      const count = Number(o.count);
+      // Every field re-derived. A window with from > to, or either end absent, would silently
+      // match nothing or everything depending on how it were compared — and a window that matches
+      // everything would re-announce the masjid's whole history to its group.
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from <= 0 || to < from) continue;
+      // Bounded at the platform's own cap. Ids are opaque strings from us in the first place, but
+      // they are compared against our log, and an unbounded list from the network is not something
+      // to iterate over however friendly its source.
+      const ids = Array.isArray(o.ids)
+        ? o.ids.filter((x): x is string => typeof x === 'string' && !!x.trim()).slice(0, 500).map((x) => x.trim())
+        : [];
+      const cause = SUSPECT_CAUSES.includes(o.cause as SuspectCause) ? (o.cause as SuspectCause) : 'unknown';
+      out.push({
+        from,
+        to,
+        count: Number.isFinite(count) && count > 0 ? Math.round(count) : 0,
+        ids,
+        truncated: o.truncated === true,
+        cause,
+      });
+    }
+    return out;
+  } catch (err) {
+    log.debug(`fabric whatsapp suspect lookup failed: ${err instanceof Error ? err.message : err}`);
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 /** Pull the platform's session token out of the request's Cookie header. */
 function omosCookie(req: IncomingMessage): string | null {
   const raw = req.headers.cookie;
@@ -631,7 +732,23 @@ async function platformReachable(): Promise<boolean> {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 3000);
       // No body is read here, so clearing straight after the fetch is correct.
-      await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'error' });
+      //
+      // `redirect: 'manual'`, and it is the ONE outbound call in this file that is not
+      // `'error'` — because here a redirect must count as REACHABLE.
+      //
+      // This value decides whether `/api/setup` accepts an anonymous local-admin claim: it
+      // opens only when the platform is UNREACHABLE (CLAUDE.md §4), so anything that wrongly
+      // reports "unreachable" is an unauthenticated admin takeover. With `'error'` a platform
+      // that answers 301 — an admin adding an http→https upgrade in front of the dashboard is
+      // enough — threw, landed in the catch, cached `ok:false`, and opened the guard for a full
+      // REACH_CACHE_MS. The two comments in probePlatform already state the rule this restores:
+      // *any* HTTP response means the platform is there.
+      //
+      // Nothing is weakened by it. `'manual'` does not follow the redirect either — verified: it
+      // returns the 3xx and never contacts the target — and unlike every other call here this
+      // one sends NO credential (no app secret, no cookie), so the hazard `'error'` exists to
+      // stop, our secret being bounced at some other internal host, does not arise.
+      await fetch(`${config.omosBaseUrl}/api/public/appearance`, { signal: ctrl.signal, redirect: 'manual' });
       clearTimeout(t);
       reachCache = { at: Date.now(), ok: true };
       return true;

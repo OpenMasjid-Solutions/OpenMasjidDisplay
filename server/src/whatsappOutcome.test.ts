@@ -286,10 +286,21 @@ test('a message is still asked about hours later, because expiry is the answer t
   }
 });
 
-test('the polling window matches what the platform will actually answer for', () => {
-  // Not a number picked here: 24 hours is OUTCOME_MAX_AGE_MS in the platform's own
-  // whatsapp-queue-store. Shorter loses verdicts; longer just asks about evicted ids.
-  assert.equal(WA_OUTCOME_WINDOW_MS, 24 * 60 * 60_000);
+test('the polling window outlasts a message the platform is HOLDING', () => {
+  // It used to be exactly 24 hours, matching OUTCOME_MAX_AGE_MS in the platform's own
+  // whatsapp-queue-store, on the reasoning that asking beyond that could only return 404.
+  //
+  // Then the platform started holding messages when the WhatsApp link is down, released by an admin
+  // once they have re-linked the phone. A message can now sit queued for days — so stopping at 24
+  // hours means giving up before the answer exists, and a `queued` entry reads as handled, which
+  // strands the notice silently and for ever. That is the exact failure this whole mechanism is for.
+  //
+  // Asking too long is free: a 404 is "unknown", already handled as such, and it is five reads a
+  // minute against a 600-a-minute budget.
+  assert.ok(
+    WA_OUTCOME_WINDOW_MS >= 3 * 24 * 60 * 60_000,
+    'a held message can wait days for an admin to re-link the phone',
+  );
 });
 
 test('an entry too old to be worth asking about is left alone', async () => {

@@ -70,10 +70,25 @@ commercial/dual licenses; you keep your copyright. If you cannot accept the reli
 - Don't weaken the security invariants noted in the code (stream-scheme allowlist, ffmpeg's
   `-protocol_whitelist` and array-form `spawn`, audience-bound tokens, scrypt + constant-time compare,
   server-to-server SSO verification, the `/api/setup` guard under a reachable platform).
-- `POST /fabric/commands/run` is the app's **only inbound** Fabric route — the platform calling us, with no
-  session cookie. It requires **both** our own app secret (constant-time compare) **and**
-  `X-OpenMasjid-Caller-App: omos:platform`, and it is registered at that **exact path only**, which is what
-  keeps it off the tunnel. Never add a base-path-prefixed variant, and never accept one header alone.
+- There are **two kinds of inbound** Fabric route and they are **not** the same trust boundary. Both
+  authenticate the same single way — the caller presents our OWN `OPENMASJID_APP_SECRET` back to us,
+  constant-time compared — and everything else about them differs. The shared primitives live in
+  `server/src/fabricInbound.ts`; what they must never share is a handler or a caller rule.
+  - `POST /fabric/commands/run` — the **platform** calling us, with no session cookie. It is the only
+    inbound route that can **write** prayer times. It requires **both** the secret **and**
+    `X-OpenMasjid-Caller-App: omos:platform` (a value no app id can be — the colon is outside the
+    app-id charset). Never accept one header alone. It is registered at that exact path only, *and*
+    refuses any request carrying `x-forwarded-*`, because the router derives the path with `new URL()`
+    which normalises `/display/../fabric/commands/run` straight onto it.
+  - `POST /fabric/timetable/{list,get,logo}` — **another app** reading this masjid's prayer times and
+    logo through the app-to-app broker (the `timetable` capability in `manifest.yaml`'s
+    `fabric.provides`). Read-only, and asserted so by a test that reads the module. The secret is the
+    authentication; the **path** is the authorisation, because the broker maps
+    `…/app/display/<capability>/<method>` onto `/fabric/<capability>/<method>` — so never keep a second
+    copy of the platform's grant list here. The caller id is checked for **shape only** and is not a
+    security control. LAN-only is enforced by comparing the **raw request line**, not by refusing
+    forwarding headers: the broker *is* a proxy, so that test would kill the route silently on a real
+    box. See `docs/USING_THE_FABRIC.md` §8.
 - WhatsApp messages are **queued, never sent** — nothing may report delivery — and message bodies, captions
   and image data are never logged.
 

@@ -59,6 +59,8 @@ import {
   whatsappSendToGroup,
   whatsappAvailability,
   whatsappMessageStatus,
+  whatsappSuspectWindows,
+  type SuspectWindow,
   WA_CAPTION_MAX,
   type WhatsAppMedia,
   type WhatsAppAvailability,
@@ -109,11 +111,37 @@ export const WA_RETRY_MS = 30 * 60_000;
  * An entry we still never get an answer for keeps its `queued` outcome, and that is deliberate:
  * "we could not learn" is not "it failed", and inventing a failure would re-announce a change
  * the group may already have.
+ *
+ * ## Why this is no longer 24 hours
+ *
+ * It matched the platform's retention exactly, on the reasoning that asking beyond it could only
+ * return 404. Then the platform started HOLDING messages when the WhatsApp link is down, released
+ * by an admin once they have re-linked the phone — deliberately, so a notice is not dropped while
+ * nobody is looking. A message can therefore sit queued for days, and a 24-hour window meant we
+ * stopped asking before the answer existed and left the entry `queued` for good. A `queued` entry
+ * reads as handled, so that strands the announcement silently, which is the one outcome this whole
+ * mechanism exists to prevent.
+ *
+ * Seven days costs nothing to be wrong about: a 404 in the meantime is "unknown", already handled
+ * as such, and asking is five reads a minute against a 600-a-minute read budget.
  */
-export const WA_OUTCOME_WINDOW_MS = 24 * 60 * 60_000;
+export const WA_OUTCOME_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
 /** How many outcomes to ask about in one tick, so a backlog cannot become a burst. */
 export const WA_OUTCOME_PER_TICK = 5;
+
+/**
+ * How often to ask whether the platform still stands behind its own `sent` reports.
+ *
+ * Hourly. The platform suggested hourly is plenty, the normal answer is an empty array, and it is a
+ * read against a 600-a-minute budget rather than anything that costs a send. Asking more often would
+ * buy nothing: the window only appears once the platform has NOTICED the link is dead, which takes
+ * it about ten minutes, so polling straight after a send would find nothing anyway.
+ *
+ * Asking less often is the mistake worth naming. The failure this exists for ran for over a day
+ * before anyone spotted it, and every notice inside it was recorded as delivered.
+ */
+export const WA_SUSPECT_MS = 60 * 60_000;
 
 /** How far to look when an admin presses "Send now" — the same year the poster uses, since
  *  the button exists to send whatever the poster would show. */
@@ -191,7 +219,14 @@ export function decideAnnounce(db: DB, nowMs: number, manual = false): AnnounceD
   // `queued` alone would stop matching the moment the platform confirmed delivery — and the
   // next tick would cheerfully announce the change to the group a second time. Success turning
   // into a duplicate is the exact shape of bug worth spelling out at the site.
-  if (mine.some((e) => e.outcome === 'queued' || e.outcome === 'sent')) {
+  //
+  // The one exception is a `sent` the PLATFORM has since disowned — see WhatsAppLogEntry.suspect.
+  // There the report of success is the thing that turned out to be wrong, so treating it as handled
+  // is what would strand the notice. It rejoins the ordinary paced path from here: nothing about the
+  // backoff, the attempt budget or the one-message-per-change rule is bypassed.
+  const handled = (e: WhatsAppLogEntry) =>
+    e.outcome === 'queued' || (e.outcome === 'sent' && e.suspect !== 'pending');
+  if (mine.some(handled)) {
     return { act: 'skip', why: 'This change has already been sent to the group.' };
   }
   // Only the SCHEDULED attempts count against the budget. A "Send now" that failed is an
@@ -257,6 +292,8 @@ export interface AnnouncerDeps {
   capability?: () => Promise<WhatsAppAvailability>;
   /** injected so tests never touch the network */
   status?: (id: string) => Promise<WhatsAppOutcome>;
+  /** injected so tests never touch the network. null = could not ask, which is not "nothing wrong". */
+  suspect?: () => Promise<SuspectWindow[] | null>;
   render?: (tt: Timetable, nowMs: number, model: PosterModel) => Promise<Buffer>;
   now?: () => number;
 }
@@ -275,6 +312,10 @@ export class WhatsAppAnnouncer {
   private readonly send: (group: string, text: string, media?: WhatsAppMedia) => Promise<{ queued: boolean; id?: string; error?: string }>;
   private readonly capability: () => Promise<WhatsAppAvailability>;
   private readonly status: (id: string) => Promise<WhatsAppOutcome>;
+  private readonly suspect: () => Promise<SuspectWindow[] | null>;
+  /** when the suspect check last ran, so it is hourly rather than every tick. 0 = never, which is
+   *  why the first tick after a restart always asks. */
+  private suspectAt = 0;
   private readonly render: (tt: Timetable, nowMs: number, model: PosterModel) => Promise<Buffer>;
   private readonly now: () => number;
 
@@ -283,6 +324,7 @@ export class WhatsAppAnnouncer {
     this.send = deps.send ?? whatsappSendToGroup;
     this.capability = deps.capability ?? whatsappAvailability;
     this.status = deps.status ?? whatsappMessageStatus;
+    this.suspect = deps.suspect ?? whatsappSuspectWindows;
     this.render = deps.render ?? ((tt, nowMs, model) => renderAnnouncePng(tt, nowMs, model));
     this.now = deps.now ?? Date.now;
   }
@@ -309,6 +351,9 @@ export class WhatsAppAnnouncer {
       // ones. This does NOT shortcut the retry backoff — that runs from the verdict — it just means
       // a notice the platform has failed stops looking like one still on its way.
       await this.reconcile();
+      // Before deciding, like the reconcile above and for the same reason: this can change whether
+      // a notice still counts as handled, and the decision below is what reads that.
+      await this.checkSuspect();
       const d = decideAnnounce(this.store.db, this.now(), false);
       if (d.act === 'skip') return { queued: false, reason: d.why };
       return await this.post(d.target, false);
@@ -382,14 +427,23 @@ export class WhatsAppAnnouncer {
    */
   private async reconcile(): Promise<void> {
     const now = this.now();
-    const waiting = (this.store.db.whatsappLog ?? []).filter(
-      (e) => e.outcome === 'queued' && !!e.id && now - (Date.parse(e.at) || 0) < WA_OUTCOME_WINDOW_MS,
-    );
+    const waiting = (this.store.db.whatsappLog ?? [])
+      .filter((e) => e.outcome === 'queued' && !!e.id && now - (Date.parse(e.at) || 0) < WA_OUTCOME_WINDOW_MS)
+      // Sorted rather than relying on the log's append order. It happens to hold today, and "oldest
+      // first" silently meaning "whatever order the array is in" is the kind of assumption that
+      // stops being true the first time anything reorders the log.
+      .sort((x, y) => (Date.parse(x.at) || 0) - (Date.parse(y.at) || 0));
     if (!waiting.length) return;
     try {
       const cap = await this.capability();
       if (!cap.outcomes) return;
-      for (const entry of waiting.slice(-WA_OUTCOME_PER_TICK)) {
+      // OLDEST first. It was `slice(-N)` — the newest five — which starves the rest whenever more
+      // than five are outstanding: the oldest would never be asked about, would fall out of the
+      // window, and would keep `queued` for good. Barely reachable when a queue drained in
+      // seconds; entirely reachable now that messages are held while a phone is unlinked, which is
+      // exactly when a backlog builds. Oldest first also puts the ones closest to expiring first,
+      // and each one settled leaves the waiting set, so the next tick moves along.
+      for (const entry of waiting.slice(0, WA_OUTCOME_PER_TICK)) {
         const res = await this.status(entry.id as string);
         if (!res.state || res.state === 'queued') continue;
         this.settle(entry, res.state, res.reason);
@@ -451,8 +505,161 @@ export class WhatsAppAnnouncer {
 
   private record(entry: WhatsAppLogEntry): void {
     this.store.update((db) => {
+      // Any suspect entry for this same change has now been dealt with, and this is the only place
+      // that can honestly say so: a new message for it exists. Without this the suspect entry stays
+      // 'pending', keeps reading as not-handled, and re-announces the change on every pass.
+      for (const e of db.whatsappLog ?? []) {
+        if (
+          e.suspect === 'pending' &&
+          e.event === entry.event &&
+          e.recipient === entry.recipient &&
+          e.effectiveFrom === entry.effectiveFrom
+        ) {
+          e.suspect = 'resent';
+        }
+      }
       const next = [...(db.whatsappLog ?? []), entry];
       db.whatsappLog = next.slice(-WA_LOG_MAX);
     });
   }
+
+  /**
+   * Ask the platform whether any of its own `sent` reports have turned out to be untrustworthy, and
+   * decide what to do about ours.
+   *
+   * Hourly, and on the first tick after a restart. It is a read against a 600-a-minute budget and
+   * the normal answer is an empty array, so there is no case for asking more often — and no case for
+   * asking less: the whole failure this addresses went unnoticed for over a day.
+   *
+   * Nothing is SENT from here. The decision this makes is only "does the existing dedupe still count
+   * that message as handled", so a re-send goes out through the ordinary paced path — one message per
+   * change, the same backoff, the same attempt budget — and a masjid with several suspect notices
+   * does not produce a burst on a number that has just been re-linked and is being watched hardest.
+   */
+  private async checkSuspect(): Promise<void> {
+    const now = this.now();
+    if (this.suspectAt && now - this.suspectAt < WA_SUSPECT_MS) return;
+    // Stamped BEFORE the request, not after: a platform that times out would otherwise be re-asked
+    // on every tick for as long as it kept timing out.
+    this.suspectAt = now;
+    const windows = await this.suspect();
+    // null is "could not ask" — an older platform, a timeout, a 404. Not "nothing is wrong", and
+    // the difference matters here for the same reason it does for a message status.
+    if (!windows?.length) return;
+    // Marked ONCE, inside the update, and the counts come back out through a captured variable.
+    //
+    // This used to call markSuspectEntries twice: once on `this.store.db` to get the counts, then
+    // again inside store.update to "apply" them. Those are the same array of the same objects, so the
+    // first call was already the mutation — outside store.update, where nothing schedules a save or
+    // notifies a listener — and the second was a no-op that happened to schedule the save the first
+    // one needed. It worked by accident, and in a way that breaks if anyone removes the call that
+    // returns a value nobody reads.
+    //
+    // Worth getting right rather than leaving: the platform retains a window for seven days after the
+    // outage ends and re-reports it UNCHANGED — everything about it is snapshotted at detection — so
+    // this path now runs against the same window roughly 170 times. Which is fine, because marking
+    // is idempotent: an entry that already carries a verdict is skipped.
+    let marked = { pending: 0, stale: 0 };
+    this.store.update((db) => {
+      marked = markSuspectEntries(db.whatsappLog ?? [], windows, now);
+    });
+    if (!marked.pending && !marked.stale) return;
+    if (marked.pending) {
+      log.warn(
+        `the platform can no longer vouch for ${marked.pending} Iqamah-change notice(s) it reported as sent; ` +
+          'they will be announced again on the usual schedule',
+      );
+    }
+    if (marked.stale) {
+      log.warn(
+        `${marked.stale} Iqamah-change notice(s) the platform can no longer vouch for announced a change ` +
+          'that has since taken effect; not re-sending those, because the wording would now be wrong',
+      );
+    }
+  }
+}
+
+/**
+ * How long after a window closes we will still believe a `sent` we learned about fell inside it.
+ *
+ * Only used when the platform does not name the messages. We poll for verdicts once a minute, five
+ * at a time, so learning about a genuinely lost message lags the platform's report by a minute or
+ * two — and a backlog can stretch that. Ten minutes is generous for the lag and still far short of
+ * the case this exists to exclude, which is a message HELD for hours or days and then delivered
+ * perfectly well after the phone was re-linked.
+ */
+const SUSPECT_LEARN_SLACK_MS = 10 * 60_000;
+
+/**
+ * Mark the log entries a suspect window covers, and say how many of each kind.
+ *
+ * Exported and pure so the decision can be tested without a platform: what counts as "covered" is
+ * the part worth being exact about, and there are now two ways to decide it.
+ *
+ * ## By id, when the platform names them
+ *
+ * `ids` is authoritative and settles something inference cannot. The platform holds messages while
+ * the WhatsApp link is down and releases them once an admin re-links the phone — so a message
+ * QUEUED during an outage can be delivered, properly, after it. That message overlaps the window on
+ * any interval test and was never lost, and re-announcing it posts the same Iqamah change to the
+ * group twice. Only the platform knows which messages it actually reported sent while the link was
+ * dead, and now it says so.
+ *
+ * ## By overlap, when it does not
+ *
+ * Older platforms send no ids, and a truncated list is incomplete by definition. Then we fall back
+ * to asking whether the hand-off COULD have fallen inside the window: it is somewhere between our
+ * queueing the message and our learning it was sent, so the test is an interval overlap rather than
+ * a point test on either end — a point test on `at` would miss a message queued just before the link
+ * died, which is the likeliest one of all to have been lost.
+ *
+ * With one bound added for the held case above: if we did not learn the verdict until well after the
+ * window closed, the platform's report was after it too. That is a heuristic, and it is why the id
+ * list is preferred wherever it exists.
+ */
+export function markSuspectEntries(
+  entries: WhatsAppLogEntry[],
+  windows: { from: number; to: number; ids?: string[]; truncated?: boolean; cause?: string }[],
+  nowMs: number,
+): { pending: number; stale: number } {
+  let pending = 0;
+  let stale = 0;
+  const today = new Date(nowMs).toISOString().slice(0, 10);
+  for (const e of entries) {
+    // Only ever a `sent` we have not already judged. A queued entry is still going to get a real
+    // verdict, and a failed one is already being retried by the ordinary path.
+    if (e.outcome !== 'sent' || e.suspect) continue;
+    const queuedAt = Date.parse(e.at) || 0;
+    if (!queuedAt) continue;
+    const learnedAt = Date.parse(e.settledAt ?? e.at) || queuedAt;
+    let hit: { cause?: string } | null = null;
+    for (const w of windows) {
+      const named = !!e.id && (w.ids?.includes(e.id) ?? false);
+      if (named) {
+        hit = w;
+        break;
+      }
+      // The list is authoritative when it is complete: a message the platform did NOT name is a
+      // message it did not lose, and guessing otherwise is what duplicates an announcement.
+      if (w.ids?.length && !w.truncated) continue;
+      if (queuedAt <= w.to && learnedAt >= w.from && learnedAt <= w.to + SUSPECT_LEARN_SLACK_MS) {
+        hit = w;
+        break;
+      }
+    }
+    if (!hit) continue;
+    if (hit.cause) e.suspectCause = hit.cause.slice(0, 32);
+    // The domain call, and the only one the platform explicitly said it cannot make for us. An
+    // Iqamah-change notice that has not taken effect yet still has a job to do, and somebody turning
+    // up at the wrong time is the cost of not re-sending it. One that has already taken effect does
+    // not: "from Friday, Asr will be at 5:30" read after Friday is not a correction.
+    if (e.effectiveFrom >= today) {
+      e.suspect = 'pending';
+      pending++;
+    } else {
+      e.suspect = 'stale';
+      stale++;
+    }
+  }
+  return { pending, stale };
 }
