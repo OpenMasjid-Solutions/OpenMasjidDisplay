@@ -1844,11 +1844,10 @@ function simpleStack(a: Box, m: Model, c: Ctx): string {
   // is given a slice proportional to the height rather than a fixed one — on a 1080x1920 screen
   // that is ~650px for logo, name, clock and date, which is the half of this design that is
   // meant to be read from the back of a hall.
-  // A little more than the third it was: the block beneath the logo now carries a readable
-  // sunrise/sunset pair and a countdown wheel, and the table under it still has six rows in the
-  // rest. Bounded below so the SHORT form of this box — the column beside a slideshow image —
-  // keeps the share it had rather than eating its own table.
-  const headH = clamp(a.h * 0.42, 240, 860);
+  // Bounded below so the SHORT form of this box — the column beside a slideshow image — keeps
+  // the share it had rather than eating its own table. (It was 0.42 while the block carried a
+  // countdown wheel; with the wheel gone the table gets that height back.)
+  const headH = clamp(a.h * 0.38, 240, 860);
   out.push(brandColumn({ x: a.x, y: a.y, w: a.w, h: headH }, m, c));
   const tableY = a.y + headH + gap;
   out.push(simpleTable({ x: a.x, y: tableY, w: a.w, h: a.y + a.h - tableY }, m, c));
@@ -1858,8 +1857,8 @@ function simpleStack(a: Box, m: Model, c: Ctx): string {
 /**
  * The "simple" layout, modelled directly on a real installed wall display: a plain
  * flat page (no themed scene, no glass, no sun/moon), a brand column on the left —
- * logo/name, a small sunrise/sunset line, the big clock, one date line, and a plain
- * "next prayer in…" sentence instead of a countdown ring — and one wide banded prayer
+ * logo/name, the big clock, the dates and a small sunrise/sunset row, and no countdown
+ * at all (the highlighted table row does that job) — and one wide banded prayer
  * table on the right, Jumu'ah as its own last row rather than a separate strip.
  * Nothing here is inherited from the classic look; it is its own, simpler thing.
  */
@@ -1931,212 +1930,33 @@ function announcementView(a: Box, m: Model, c: Ctx, image: string, isSimple: boo
 }
 
 /**
- * The Modern layout's countdown ring, shrunk for the Simple column.
- *
- * It replaces a sentence — "Next Jumu'ah in 50min" — and the reason a wheel beats that sentence
- * on a wall is that a ring is read without reading: the arc says how much of the wait is gone
- * before any word is. The sentence stayed the same shape whether the prayer was six hours off or
- * ninety seconds.
- *
- * What is kept from `panelRing` and what is dropped is the whole design of a "mini" version:
- *
- *  - KEPT: the arc, its direction and its progress; the prayer name in the middle; the amount
- *    below it as a big number and a small unit word; the "UNTIL …" line; the red-and-pulsing
- *    treatment during the zawāl window.
- *  - DROPPED: the glass card (this design has no cards), the "NEXT PRAYER" eyebrow (the
- *    "UNTIL …" line below already names the event), and the Arabic gloss — Simple deliberately
- *    carries no inline Arabic, which is the one thing that most distinguishes it from Modern.
- *
- * It is sized from BOTH axes. `panelRing` sizes from its card, which is a known shape; this has
- * to sit in whatever the column has left after the clock and the dates, and that is a third of a
- * portrait screen in one case and a short strip beside a slideshow image in another.
+ * The Simple column's one line during the prohibited (zawāl) window: "Prohibited time — adhan in
+ * 5min", in red. It is the only place this design says the window is on in WORDS when the ticker
+ * is off, and a red tint alone does not tell a volunteer which of the several red things is
+ * happening. With the countdown turned off it is still a warning, so it is drawn without the
+ * amount rather than not at all.
  */
-/**
- * The one-line sentence the wheel replaced, kept for the boxes a wheel does not fit in.
- *
- * "Next Jumu'ah in 50min" says the same thing in one line that can be set large enough to read,
- * which is the right trade the moment the circle would be smaller than the words inside it.
- */
-function countdownSentence(b: Box, c: Ctx): string {
-  if (!c.showCountdown) return '';
+function prohibitedLine(b: Box, c: Ctx): string {
   const sec = Math.max(0, c.remainingSec);
   const h = Math.floor(sec / 3600);
   const mm = Math.floor((sec % 3600) / 60);
   const amount = sec < 60 ? `${sec % 60} sec` : h > 0 ? `${h}hr ${mm}min` : `${mm}min`;
-  const word = c.eventWord.charAt(0) + c.eventWord.slice(1).toLowerCase();
-  const line = c.prohibited
-    ? `${c.L.prohibitedTime ?? 'Prohibited time'} — ${word.toLowerCase()} in ${amount}`
-    : `Next ${word} in ${amount}`;
+  const word = c.eventWord.toLowerCase();
+  const label = c.L.prohibitedTime ?? 'Prohibited time';
+  const line = c.showCountdown ? `${label} — ${word} in ${amount}` : `${label} — until ${word}`;
   const avail = b.w * 0.95;
   let ls = clamp(b.h * 0.42, 12, 40);
   const w = () => approxWidth(line, ls);
   if (w() > avail) ls = Math.max(9, (ls * avail) / w());
-  const fill = c.prohibited ? TICKER_RED : readableOn(c.p.primary, c.p.bg);
   const fitted = ellipsize(line, ls, avail);
   return fitted
-    ? text(b.x + b.w / 2, b.y + b.h * 0.5 + ls * 0.36, fitted, { size: ls, fill, family: FONT_SANS, weight: 500, anchor: 'middle' })
+    ? text(b.x + b.w / 2, b.y + b.h * 0.5 + ls * 0.36, fitted, { size: ls, fill: TICKER_RED, family: FONT_SANS, weight: 600, anchor: 'middle' })
     : '';
 }
 
-function miniRing(b: Box, c: Ctx): string {
-  const out: string[] = [];
-  const sec = Math.max(0, c.remainingSec);
-  const h = Math.floor(sec / 3600);
-  const mm = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  // The same vocabulary panelRing uses, so the two designs do not name the same wait differently.
-  const seg = (n: number, w: string) => ({ n: String(n), w: n === 1 ? w : w + 'S' });
-  const segs = sec < 60 ? [seg(s, 'SECOND')] : h === 0 ? [seg(mm, 'MINUTE')] : mm === 0 ? [seg(h, 'HOUR')] : [seg(h, 'HOUR'), seg(mm, 'MINUTE')];
-  // The words "Prohibited time" are back in it. The sentence this wheel replaced said them; the
-  // wheel said only the colour, and a red ring on its own does not tell a volunteer which of the
-  // several things that could be red is happening.
-  const untilWord = c.prohibited
-    ? `${c.L.prohibitedTime ?? 'Prohibited time'} — until ${c.nextLabel} ${c.eventWord}`.toUpperCase()
-    : `UNTIL ${c.eventWord}`;
-
-  /**
-   * Two arrangements, because this slot arrives as two very different shapes.
-   *
-   * On a landscape screen the column is TALL and narrow, and the wheel reads the way the Modern
-   * one does: ring above, the amount beneath it. On a portrait screen the same block is a wide,
-   * short strip — and a circle stacked over two lines of type in a 972x198 box comes out a 130px
-   * dot with 800px of width left empty beside it. So a wide box turns the wheel on its side: ring
-   * on the leading edge, the amount and what it counts to set next to it.
-   *
-   * Either way the RING is sized first and the type fits what is left over. Sizing the numbers
-   * first and giving the ring the remainder produced a circle smaller than the number under it,
-   * which reads as a caption with a doodle over it — and the arc is the part that is recognised
-   * from the back of a hall without being read.
-   */
-  const wide = b.w > b.h * 1.7;
-  const R = wide ? Math.min(b.h * 0.4, b.w * 0.2) : Math.min(b.w * 0.3, b.h * 0.33);
-  /**
-   * Below this the wheel stops being one. Beside a slideshow image on a 720p screen the slot is
-   * 399x31, which gives a 25px circle carrying 8px type — an arc nobody can read a position off
-   * and a name nobody can read at all. A countdown that cannot be read is worse than the sentence
-   * it replaced, so in a box that small the sentence comes back. It is one line, it always fits,
-   * and it says the same thing.
-   */
-  if (2 * R < 84) return countdownSentence(b, c);
-  const sw = Math.max(4, R * 0.14);
-  const span = 2 * (R + sw);
-  let numSize = wide
-    ? clamp(Math.min(b.w * 0.11, b.h * 0.44), 13, 72)
-    : clamp(Math.min(b.w * 0.165, (b.h - span) * 0.52), 13, 72);
-  // A little larger than a caption: these words are all that names what the number means, and the
-  // sentence they replaced was set at 40px.
-  let us = clamp(numSize * 0.4, 10, 32);
-
-  // Everything is placed before anything is drawn: in the wide form the ring's own centre depends
-  // on how much room the text beside it needs, so a draw-then-shift would have to move the ring
-  // AND the name inside it, which is the kind of pair that comes apart later.
-  // `unitW` carries the unit word's TRACKING. It is drawn with `letter: 1`, which is four more
-  // pixels on "HOURS" than `approxWidth` reports — and a budget that leaves them out puts the
-  // next segment's number on top of the word before it. (panelRing had the same omission, with
-  // bigger gaps hiding it.)
-  const unitW = (w: string) => approxWidth(w, us) + Math.max(0, w.length - 1);
-  const amountW = () => segs.reduce((a, p, i2) => a + approxWidth(p.n, numSize) + numSize * 0.12 + unitW(p.w) + (i2 < segs.length - 1 ? numSize * 0.26 : 0), 0);
-  const untilW = () => approxWidth(untilWord, us) + Math.max(0, untilWord.length - 1) * 3;
-  const gap = wide ? R * 0.4 : 0;
-  const textRoom = wide ? Math.max(1, b.w * 0.98 - span - gap) : b.w * 0.94;
-  /**
-   * Letter-spacing is a fixed number of PIXELS per gap, so it does not shrink when the type does
-   * — and `k = room / width` assumes everything shrinks. Scaling by that k leaves the constant
-   * behind, so the block stays over budget by it; and because the group is CENTRED, the overshoot
-   * is split both ways and escapes both edges at once — the ring off the left of its column, the
-   * "UNTIL …" line off the right and onto the prayer table.
-   *
-   * So the constant comes out of the room before the division, which is the same correction the
-   * prayer table needed for the same reason. The floor stops a pathological label driving the
-   * type to nothing; `ellipsize` below is what handles that case instead.
-   */
-  if (c.showCountdown) {
-    const trackA = segs.reduce((a, p) => a + Math.max(0, p.w.length - 1), 0);
-    const trackU = Math.max(0, untilWord.length - 1) * 3;
-    const kA = amountW() - trackA > 0 ? (textRoom - trackA) / (amountW() - trackA) : 1;
-    const kU = untilW() - trackU > 0 ? (textRoom - trackU) / (untilW() - trackU) : 1;
-    const k = clamp(Math.min(1, kA, kU), 0.35, 1);
-    numSize *= k;
-    us *= k;
-  }
-  const block = c.showCountdown ? Math.min(textRoom, Math.max(amountW(), untilW())) : 0;
-  const groupW = wide ? span + (block ? gap + block : 0) : b.w;
-  const groupX = b.x + (b.w - groupW) / 2;
-  const cx = wide ? groupX + span / 2 : b.x + b.w / 2;
-  const ringCy = wide ? b.y + b.h / 2 : b.y + R + sw;
-  const textLeft = wide ? groupX + span + gap : cx - block / 2;
-
-  // A ring is a graphic, not a letterform, so it is held to the 3:1 that non-text is held to —
-  // enough that the arc is unmistakably there on any page colour, without darkening the masjid's
-  // accent as far as a word would need.
-  const ringCol = c.prohibited ? TICKER_RED : readableOn(c.p.primary, c.p.bg, 3);
-  const C = 2 * Math.PI * R;
-  const cxs = cx.toFixed(1), cys = ringCy.toFixed(1), rs = R.toFixed(1), sws = sw.toFixed(1);
-  const ringOpacity = c.prohibited && !c.flash ? 0.35 : 1;
-  const off = C * (1 - clamp(c.ringProgress, 0.001, 1));
-  out.push(`<g opacity="${ringOpacity}">`);
-  out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${hexToRgba(ringCol, 0.18)}" stroke-width="${sws}"/>`);
-  out.push(`<circle cx="${cxs}" cy="${cys}" r="${rs}" fill="none" stroke="${ringCol}" stroke-width="${sws}" stroke-linecap="round" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 ${cxs} ${cys})"/>`);
-  out.push(`</g>`);
-
-  // Inside: the prayer name, fitted to the ring's INNER width rather than the box's — a word that
-  // fits the box but not the circle is a word written across the arc.
-  // The widest line that fits inside a circle of inner radius `R - sw` is its DIAMETER, less a
-  // hair so the glyphs do not touch the arc. 1.72 was a guess at that and it was 14% short, which
-  // is why the shipped default "MAGHRIB" came out as "MAGHR..." on nearly every shape.
-  const inner = (R - sw) * 1.96;
-  let lbl = clamp(R * 0.34, 10, 40);
-  const raw = c.nextLabel.toUpperCase();
-  const lblW = () => approxWidth(raw, lbl) + Math.max(0, raw.length - 1) * 2;
-  if (lblW() > inner) lbl = Math.max(8, (lbl * inner) / lblW());
-  // And then SHORTENED if even the floor will not hold it. The prayer names are admin-editable —
-  // `normLabels` takes forty characters — and a shrink with a floor is not a fit: at 8px a
-  // forty-character Jumu'ah label is still three times the width of the circle, so it was drawn
-  // straight across the arc and into the countdown beside it.
-  const label = ellipsize(raw, lbl, inner, 2);
-  if (c.nextOrdinal) {
-    // Two lines, the ordinal above the name — the same split panelRing makes, for the same
-    // reason: "2ND JUMU'AH" on one line does not fit inside a circle.
-    out.push(text(cx, ringCy - lbl * 0.15, c.nextOrdinal.toUpperCase(), { size: lbl * 0.82, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 2 }));
-    out.push(text(cx, ringCy + lbl * 0.95, label, { size: lbl, fill: c.p.text, family: FONT_DISPLAY, weight: 700, anchor: 'middle', letter: 2 }));
-  } else {
-    out.push(text(cx, ringCy + lbl * 0.36, label, { size: lbl, fill: c.p.text, family: FONT_DISPLAY, weight: 700, anchor: 'middle', letter: 2 }));
-  }
-
-  if (c.showCountdown) {
-    // The amount, then what it is counting to: under the ring, or beside it.
-    const numBase = wide ? ringCy + numSize * 0.08 : ringCy + R + sw + numSize;
-    let x = wide ? textLeft : cx - amountW() / 2;
-    for (let i2 = 0; i2 < segs.length; i2++) {
-      out.push(text(x, numBase, segs[i2].n, { size: numSize, fill: c.p.text, family: FONT_DISPLAY, weight: 800, anchor: 'start' }));
-      x += approxWidth(segs[i2].n, numSize) + numSize * 0.12;
-      out.push(text(x, numBase, segs[i2].w, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
-      x += unitW(segs[i2].w) + (i2 < segs.length - 1 ? numSize * 0.26 : 0);
-    }
-    // The floor above can leave the line still too wide — a long renamed prayer, or the
-    // prohibited wording in a narrow column — and a line that cannot shrink any further has to
-    // give up characters rather than cross into the prayer table.
-    const untilFit = ellipsize(untilWord, us, textRoom, 3);
-    if (untilFit) {
-      out.push(
-        text(wide ? textLeft : cx, numBase + us * 1.75, untilFit, {
-          size: us,
-          fill: c.prohibited ? TICKER_RED : c.p.textDim,
-          family: FONT_SANS,
-          weight: 600,
-          anchor: wide ? 'start' : 'middle',
-          letter: 3,
-        }),
-      );
-    }
-  }
-  return out.join('');
-
-}
-
-/** Left column for the "simple" layout: brand, a sunrise/sunset pair, the big clock,
- *  the two dates, and a small countdown wheel — sitting directly on the flat page, no
- *  card behind any of it. */
+/** Left column for the "simple" layout: brand, the big clock, the two dates, and a small
+ *  sunrise/sunset row under them — sitting directly on the flat page, no card behind any of
+ *  it. No countdown: the highlighted row in the table already names the next prayer. */
 function brandColumn(b: Box, m: Model, c: Ctx): string {
   const out: string[] = [];
   const avail = b.w * 0.95;
@@ -2153,31 +1973,6 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     if (nw > avail) ns = Math.max(12, ns * (avail / nw));
   }
   let headerH = c.showLogo && c.showName ? ms + ns * 1.5 : c.showLogo ? ms + b.h * 0.03 : c.showName ? ns * 1.5 : 0;
-
-  /**
-   * Sunrise and sunset, STACKED — and much larger than they were.
-   *
-   * They used to share one line, which meant the fit was against their SUM: two ~15-character
-   * strings plus the gap between them is about 19 times the type size, so a 510px column could
-   * only carry about 25px, and the cap was 14 anyway. At the back of a hall that is not small
-   * text, it is absent text — which is what a masjid reported.
-   *
-   * A line each is fitted against the WIDER of the two instead, so the same column carries 34.
-   * It costs height, and the height is there: this column is vertically centred and was running
-   * about half empty, which is the same spare room the countdown wheel below now uses.
-   */
-  const sunriseStr = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}`;
-  const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
-  let ss = c.showSunrise ? clamp(b.w * 0.07, 12, 34) : 0;
-  if (c.showSunrise) {
-    // The tracking is a constant per gap and does not shrink with the type, so it comes out of
-    // the room BEFORE the division — scaling by `avail / widest` would leave it behind and the
-    // line would still overshoot, by about 13px on a renamed label.
-    const track = Math.max(sunriseStr.length, sunsetStr.length) * 0.6;
-    const widest = Math.max(approxWidth(sunriseStr, ss), approxWidth(sunsetStr, ss));
-    if (widest + track > avail) ss *= Math.max(0.2, (avail - track) / widest);
-  }
-  let sunriseH = c.showSunrise ? ss * 3.3 : 0;
 
   const stackedSec = c.showSeconds && !c.secondsInline;
   const markStr = stackedSec ? c.secStr : c.clock.period || '';
@@ -2216,24 +2011,37 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   let dateH = showDateLine ? ds * (twoDates ? 3.5 : 2) : 0;
 
   /**
-   * The countdown wheel's slot: whatever the column has LEFT once everything above it is placed.
+   * Sunrise and sunset, SIDE BY SIDE under the date — small, and out of the way.
    *
-   * Everything else here is sized from the box width, which keeps the design's proportions as the
-   * column narrows. The wheel is the one element that should instead absorb the slack, because
-   * the slack is what this column had too much of — about half its height on a 1080p screen,
-   * which is why a masjid could see it was empty. Bounded either side so a very wide column does
-   * not grow a wheel out of proportion, and a short one still gets a circle big enough to read an
-   * arc on rather than a dot.
+   * They have been above the clock twice now, stacked and large the second time, and both times
+   * the head of this column read as cluttered: logo, name, two lines of sun times and then the
+   * clock, all fighting for the top. They are reference information, not what the hall reads
+   * from the back, so they go to the bottom of the block on one row, each centred in its own half
+   * of the column. Each half is fitted against the WIDER of the two strings, so they share a size
+   * — two sizes on one row would read as a mistake.
    */
-  const above = headerH + sunriseH + clockH + dateH;
-  // The bounds are the smaller of what the WIDTH and the HEIGHT allow. Width alone is wrong for
-  // this one: a portrait column is wide and short, so a width-derived floor demanded a 408px
-  // wheel in a box with 80px left, and the block's fit-to-height pass then shrank the clock, the
-  // dates and the masjid name by a third to pay for it. A floor is meant to stop the wheel
-  // becoming a dot, not to outrank everything above it.
-  const lo = Math.min(b.w * 0.42, b.h * 0.26);
-  const hi = Math.max(lo, Math.min(b.w * 0.95, b.h * 0.52));
-  let nextH = c.showCountdown ? clamp(b.h * 0.98 - above, lo, hi) : 0;
+  const sunriseStr = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}`;
+  const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
+  const SUN_TRACK = 0.6;
+  let ss = c.showSunrise ? clamp(b.w * 0.05, 11, 24) : 0;
+  if (c.showSunrise) {
+    // The tracking is a constant per gap and does not shrink with the type, so it comes out of
+    // the room BEFORE the division — scaling by `half / widest` would leave it behind.
+    const half = (avail / 2) * 0.92;
+    const track = Math.max(sunriseStr.length, sunsetStr.length) * SUN_TRACK;
+    const widest = Math.max(approxWidth(sunriseStr, ss), approxWidth(sunsetStr, ss));
+    if (widest + track > half) ss *= Math.max(0.2, (half - track) / widest);
+  }
+  let sunriseH = c.showSunrise ? ss * 2.2 : 0;
+
+  /**
+   * The countdown wheel is gone — the highlighted row in the table already says which prayer is
+   * next, and the wheel was most of what made this column busy. What it must not take with it is
+   * the PROHIBITED-TIME wording: with the notice on and the ticker off, the wheel was the only
+   * place this design said so in words. So inside that window, and only then, one red line comes
+   * back under the sun times. Outside it nothing is reserved.
+   */
+  let prohibH = c.prohibited ? clamp(b.w * 0.06, 12, 30) * 1.8 : 0;
 
   /**
    * Everything above is sized from the box WIDTH, which is right while this column is the full
@@ -2248,12 +2056,12 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
    * scaled to fit first, and then centred — one factor across every size, so the proportions the
    * design depends on are unchanged and it simply gets smaller.
    */
-  let totalH = headerH + sunriseH + clockH + dateH + nextH;
+  let totalH = headerH + clockH + dateH + sunriseH + prohibH;
   const room = b.h * 0.98;
   if (totalH > room && totalH > 0) {
     const k = room / totalH;
     ms *= k; ns *= k; ss *= k; ts *= k; ds *= k;
-    headerH *= k; sunriseH *= k; clockH *= k; dateH *= k; nextH *= k;
+    headerH *= k; sunriseH *= k; clockH *= k; dateH *= k; prohibH *= k;
     totalH = room;
   }
   let y = b.y + Math.max(0, (b.h - totalH) / 2);
@@ -2270,14 +2078,6 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   } else if (c.showName) {
     out.push(text(cx, y + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 500, anchor: 'middle', editId: 'masjidName' }));
     y += headerH;
-  }
-
-  // Sunrise above sunset, both centred — plain text, no icons.
-  if (c.showSunrise) {
-    const rowY = y + ss;
-    out.push(text(cx, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: 0.6 }));
-    out.push(text(cx, rowY + ss * 1.35, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: 0.6 }));
-    y += sunriseH;
   }
 
   // The big clock, centred as one unit — replacing the ring's job of "what time is
@@ -2308,8 +2108,20 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     y += ds * 0.8;
   }
 
-  // The wheel, in the room the sentence used to take a single line of.
-  if (nextH > 0) out.push(miniRing({ x: b.x, y, w: b.w, h: nextH }, c));
+  // Sunrise and sunset on one row under the date, each centred in its half — plain text, no icons.
+  if (c.showSunrise) {
+    const rowY = y + ss * 1.3;
+    // At the quarter points of a narrow column, but no further apart than a short gap between
+    // them: on a wide one (a portrait screen) the quarter points left them reading as two
+    // unrelated labels at opposite edges.
+    const halfW = Math.max(approxWidth(sunriseStr, ss), approxWidth(sunsetStr, ss)) / 2 + Math.max(sunriseStr.length, sunsetStr.length) * SUN_TRACK / 2;
+    const off = Math.min(avail / 4, halfW + ss * 1.5);
+    out.push(text(cx - off, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: SUN_TRACK }));
+    out.push(text(cx + off, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: SUN_TRACK }));
+    y += sunriseH;
+  }
+
+  if (prohibH > 0) out.push(prohibitedLine({ x: b.x, y, w: b.w, h: prohibH }, c));
   return out.join('');
 }
 
@@ -2707,13 +2519,20 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     // above fits every name a masjid is likely to type, and this is the backstop for one it is
     // not: a forty-character label cannot be made to fit a 399px column by shrinking without
     // becoming unreadable, so it is shortened instead of run over the time beside it.
+    /**
+     * A single Jumu'ah has no Adhan/Iqāmah pair — one time is the whole row — so it is centred
+     * BETWEEN the two columns rather than sitting under Iqāmah with an empty Adhan slot beside
+     * it. Between their visual centres, not their right edges: both columns are right-anchored, so
+     * the midpoint of the edges would sit the time noticeably right of centre.
+     */
+    const single = shape[i].adU === 0;
+    const iqW = approxWidth(shape[i].iqStr, timeSize);
+    const singleX = ((colAd - iqW * 0.92 / 2) + (colIq - iqW / 2)) / 2;
     const nameRoomHere =
-      (shape[i].adU > 0
-        ? colAd - slotW(shape[i].adStr!, timeSize * 0.92, shape[i].ord)
-        : // No Adhan time on this row — a single Jumu'ah — so the name runs until the IQAMAH
-          // slot, which is drawn at `colIq`. Stopping at `colIq` itself was stopping at the time's
-          // right-hand edge rather than its left, i.e. not stopping at all.
-          colIq - slotW(shape[i].iqStr, timeSize, shape[i].ord)) -
+      (single
+        ? // The name runs until the centred time's LEFT edge.
+          singleX - iqW / 2
+        : colAd - slotW(shape[i].adStr!, timeSize * 0.92, shape[i].ord)) -
       nameX -
       pad;
     const nameStr = ellipsize(line.name, nameSize, nameRoomHere, 1);
@@ -2747,8 +2566,15 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     const jum = line.key === 'jumuah' && m.jumuah.length > 1;
     // Against the BAND, for the same reason `iqColor` is: the quiet Adhan ink is the one colour
     // on this table that was still being chosen by a light-or-dark guess about the page.
-    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, readableOn(c.p.textDim, band), 300, jum ? ordinalEn(1) : '');
-    timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, jum ? ordinalEn(2) : '');
+    // The highlighted row is bold ACROSS — name, Adhan and Iqāmah. The Adhan keeps its quieter
+    // colour so the two time columns do not compete, but a row lit up in two places of three
+    // read as a mistake rather than as "this one".
+    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, readableOn(c.p.textDim, band), line.highlight ? 600 : 300, jum ? ordinalEn(1) : '');
+    if (single) {
+      out.push(text(singleX, midY, fmtShort(line.t2, c.timeFormat), { size: timeSize, fill: iqColor, family: FONT_DISPLAY, weight: line.highlight ? 600 : 500, anchor: 'middle' }));
+    } else {
+      timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, jum ? ordinalEn(2) : '');
+    }
   });
   return out.join('');
 }
