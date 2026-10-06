@@ -19,6 +19,8 @@ CLAUDE.md § *The changelog has two audiences*.
   The report shows as a full-screen red alert card that rotates into that screen's slideshow
   automatically — filing the report is the only opt-in, there's no separate toggle to
   remember. A volunteer can remove a report once the car has moved.
+- **A 3D-printable case for a Raspberry Pi 4 screen.** The base, the lid, and a ready-to-slice
+  project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Fixed
 - **The scrolling ticker was invisible on a real screen with the Simple layout (white

@@ -362,6 +362,21 @@ date afterwards.
 
 See **[docs/PI_SCREENS.md](docs/PI_SCREENS.md)**.
 
+### A 3D-printed case for the Pi
+
+If you have a 3D printer, there's a two-part case designed for a **Raspberry Pi 4** screen in
+[`3D Prints/`](3D%20Prints/):
+
+| File | What it is |
+| ---- | ---------- |
+| [`OMOS_Rpi4ViewerCase.stl`](3D%20Prints/OMOS_Rpi4ViewerCase.stl) | The base the Pi sits in (about 90 × 122 × 21 mm) |
+| [`OMOS_Rpi4ViewerCaseTop.stl`](3D%20Prints/OMOS_Rpi4ViewerCaseTop.stl) | The lid (about 92 × 107 × 13 mm) |
+| [`OMOS_Rpi4ViewerPrint.3mf`](3D%20Prints/OMOS_Rpi4ViewerPrint.3mf) | Both parts laid out on one plate, ready to slice |
+
+The `.3mf` is a Bambu Studio / OrcaSlicer project set up for a Bambu Lab P1S. Its settings are
+a good starting point on any printer: **PLA, 0.2 mm layers, 2 walls, 15% infill, no supports**.
+Use the `.stl` files with any other slicer.
+
 ## Hardware notes (it's meant to be light)
 
 - The timetable stream is mostly static and runs at a low frame rate, so a **Raspberry Pi 4/5** comfortably
