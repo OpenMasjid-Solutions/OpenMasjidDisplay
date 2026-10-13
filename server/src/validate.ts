@@ -32,6 +32,7 @@ import type {
   AdhanOffsets,
   AdhanPopup,
   TimetableWidget,
+  TimetableSound,
   WhatsAppSettings,
   TimetableLayout,
 } from './types';
@@ -257,6 +258,19 @@ function normAdhanPopup(v: unknown, base?: AdhanPopup): AdhanPopup | undefined {
     seconds: intIn(o.seconds, base?.seconds ?? 15, 3, 120),
   };
 }
+/**
+ * The clip filename is NOT taken from the browser. It is written by the upload endpoint, which
+ * is the only thing that knows a decoded file exists under that name; a panel save carries back
+ * whatever it was last given, so an edit cannot name somebody else's file or a file at all.
+ */
+function normSound(v: unknown, base?: TimetableSound): TimetableSound {
+  const o = asObj(v);
+  return {
+    adhan: bool(o.adhan, base?.adhan ?? false),
+    iqamah: bool(o.iqamah, base?.iqamah ?? false),
+    clip: base?.clip ?? '',
+  };
+}
 function normWidget(v: unknown, base?: TimetableWidget): TimetableWidget | undefined {
   if (v === undefined) return base;
   const o = asObj(v);
@@ -382,6 +396,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     adhanOffsets: normAdhanOffsets(o.adhanOffsets, base?.adhanOffsets),
     adhanPopup: normAdhanPopup(o.adhanPopup, base?.adhanPopup),
     widget: normWidget(o.widget, base?.widget),
+    sound: normSound(o.sound, base?.sound),
     footerNote: str(o.footerNote, base?.footerNote ?? '', 160),
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };

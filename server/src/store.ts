@@ -88,6 +88,7 @@ function seededTimetable(): Timetable {
     iqamah: defaultIqamah(),
     jumuah: ['13:30'],
     showSunrise: true,
+    sound: { adhan: false, iqamah: false, clip: '' },
     ishraqMinutes: 0,
     linkedTo: '',
     showCountdown: true,
@@ -122,6 +123,7 @@ function migrateTimetable(t: Timetable): Timetable {
     showDates: t.showDates ?? true,
     showLogo: t.showLogo ?? true,
     showSeconds: t.showSeconds ?? false,
+    sound: { adhan: false, iqamah: false, clip: '', ...(t.sound as object | undefined) },
     ishraqMinutes: t.ishraqMinutes ?? 0,
     linkedTo: t.linkedTo ?? '',
     // Every timetable stored before this field existed reads back as the original look.

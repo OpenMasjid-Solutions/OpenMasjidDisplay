@@ -74,6 +74,10 @@ export const api = {
     req<Timetable>('POST', `/api/timetables/${id}/logo`, { data: dataUrl }),
   removeLogo: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/logo`),
 
+  uploadSound: (id: string, dataUrl: string) =>
+    req<Timetable>('POST', `/api/timetables/${id}/sound`, { data: dataUrl }),
+  removeSound: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/sound`),
+
   importIqamahCsv: (id: string, csvText: string) =>
     req<{ ok: boolean; rows: number; errors: string[]; data: IqamahYear }>('POST', `/api/timetables/${id}/iqamah-csv`, { data: csvText }),
   clearIqamahCsv: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/iqamah-csv`),

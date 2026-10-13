@@ -135,7 +135,7 @@ function toForm(tt: Timetable | null, state: AppState): Form {
     method: 'MWL', fajrAngle: 18, ishaAngle: 17, asrMadhab: 'Hanafi', timezone: state.settings.scheduleTimezone ?? '',
     timeFormat: '12h', language: 'en', hijriOffset: 0, gregorianOffset: 0,
     iqamah: { fajr: { mode: 'offset', offset: 20 }, dhuhr: { mode: 'offset', offset: 10 }, asr: { mode: 'offset', offset: 10 }, maghrib: { mode: 'offset', offset: 5 }, isha: { mode: 'offset', offset: 10 } },
-    jumuah: ['13:30'], showSunrise: true, ishraqMinutes: 0, linkedTo: '', showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
+    jumuah: ['13:30'], showSunrise: true, ishraqMinutes: 0, linkedTo: '', sound: { adhan: false, iqamah: false, clip: '' }, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
     backgroundImage: '', logoImage: '', footerNote: '', tickerSpeed: 5, createdAt: '',
   };
 }
@@ -237,6 +237,35 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       })
       .catch((e) => toast(e instanceof Error ? e.message : 'Could not upload the logo.', 'error'));
   };
+  /** Read the chosen file as a data URL and hand it straight to the server, which decodes it.
+   *  No client-side conversion: the browser has no reliable audio decoder to resample with. */
+  const pickSound = (file: File) => {
+    if (!tt) return;
+    if (file.size > 5_000_000) return toast('That file is too large — please keep it under about 5 MB.', 'error');
+    const r = new FileReader();
+    r.onerror = () => toast('That file could not be read.', 'error');
+    r.onload = async () => {
+      try {
+        const updated = await api.uploadSound(tt.id, String(r.result ?? ''));
+        set('sound', updated.sound);
+        toast('Sound uploaded.');
+      } catch (e) {
+        toast(e instanceof Error ? e.message : 'Could not upload the sound.', 'error');
+      }
+    };
+    r.readAsDataURL(file);
+  };
+  const clearSound = async () => {
+    if (!tt) return;
+    try {
+      const updated = await api.removeSound(tt.id);
+      set('sound', updated.sound);
+      toast('Back to the built-in chime.');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not remove the sound.', 'error');
+    }
+  };
+
   const clearLogo = async () => {
     if (!tt) return;
     try {
@@ -413,6 +442,8 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const setAo = (k: keyof AdhanOffsets, v: number) => set('adhanOffsets', { ...ao, [k]: v });
   const apop: AdhanPopup = f.adhanPopup ?? { enabled: false, seconds: 15 };
   const setApop = (patch: Partial<AdhanPopup>) => set('adhanPopup', { ...apop, ...patch });
+  const snd = f.sound ?? { adhan: false, iqamah: false, clip: '' };
+  const setSnd = (patch: Partial<typeof snd>) => set('sound', { ...snd, ...patch });
   const wg: TimetableWidget = f.widget ?? { enabled: false };
   const setWg = (patch: Partial<TimetableWidget>) => set('widget', { ...wg, ...patch });
 
@@ -895,6 +926,36 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
         {apop.enabled && (
           <Field label="Show for (seconds)" hint="The pop-up appears over the screen the moment each prayer's Adhan time arrives, then fades after this many seconds.">
             <input className="input" type="number" min={3} max={120} value={apop.seconds} onChange={(e) => setApop({ seconds: Number(e.target.value) })} />
+          </Field>
+        )}
+      </div>
+
+      <div className="card section">
+        <h3 className="section-title">Sound</h3>
+        <p className="hint" style={{ marginBlockStart: 0 }}>
+          Plays through the screen itself, carried on this timetable's video stream — so the television has to
+          be able to play the stream's sound and have its volume up. Raspberry&nbsp;Pi screens and screens shown
+          in a browser stay silent: the Pi sends picture only, and a browser refuses to start a video that has
+          sound. With both switches off the stream carries no sound at all, exactly as before.
+        </p>
+        <div className="toggle-list">
+          <ToggleRow label="Play at Adhan" checked={snd.adhan} onChange={(v) => setSnd({ adhan: v })} />
+          <ToggleRow label="Play at Iqamah" checked={snd.iqamah} onChange={(v) => setSnd({ iqamah: v })} />
+        </div>
+        {(snd.adhan || snd.iqamah) && (
+          <Field label="What to play" hint="The built-in chime is two short tones. Or upload your own — an MP3, M4A, WAV or OGG up to 5 MB and three minutes; longer files are cut to three minutes.">
+            {tt ? (
+              <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
+                <span className="muted" style={{ fontSize: '0.88rem' }}>{snd.clip ? 'Your own sound is set.' : 'Using the built-in chime.'}</span>
+                <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
+                  <input type="file" accept="audio/*" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickSound(file); e.target.value = ''; }} />
+                  {snd.clip ? 'Replace sound' : 'Upload a sound'}
+                </label>
+                {snd.clip && <button type="button" className="btn btn--ghost btn--sm" onClick={clearSound}>Use the chime</button>}
+              </div>
+            ) : (
+              <span className="hint">Create the timetable first, then you can upload a sound.</span>
+            )}
           </Field>
         )}
       </div>

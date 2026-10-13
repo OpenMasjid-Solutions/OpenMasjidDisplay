@@ -13,6 +13,13 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **A sound when the Adhan or the Iqamah arrives.** Under **Sound** on a timetable, turn on
+  *Play at Adhan* and/or *Play at Iqamah*. It plays a built-in chime, or your own recording if
+  you upload one — MP3, M4A, WAV or OGG, up to 5 MB and three minutes. The sound travels on the
+  screen's own video stream, so the television has to be able to play the stream's sound and
+  have its volume up; Raspberry Pi screens and screens shown in a browser stay silent. On a
+  Friday the Iqamah sound follows your Jumu'ah times, not the Dhuhr Iqamah. With both switches
+  off the stream carries no sound at all, exactly as before.
 - **A 3D-printable case for a Raspberry Pi 4 screen.** The base, the lid, and a ready-to-slice
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 

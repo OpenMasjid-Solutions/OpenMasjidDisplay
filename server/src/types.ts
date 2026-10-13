@@ -178,6 +178,22 @@ export interface AdhanPopup {
   seconds: number;
 }
 
+/**
+ * A sound played on this screen's RTSP stream when the Adhan or the Iqāmah arrives.
+ *
+ * Both switches off means the stream carries NO audio track at all, which is the default and
+ * what every screen had before this existed — a television that cannot cope with an audio track
+ * never sees one unless a masjid asked for it.
+ */
+export interface TimetableSound {
+  /** play at each of the five calls (Dhuhr's call included on a Friday) */
+  adhan: boolean;
+  /** play when a congregation lines up — on a Friday that is each Jumu'ah, not Dhuhr */
+  iqamah: boolean;
+  /** the uploaded clip's stored filename, or '' for the built-in chime */
+  clip: string;
+}
+
 /** Public embeddable web widget: a compact vertical list of just the prayer times +
  *  Jumu'ah (NOT the full TV display), served unauthenticated for this timetable so a
  *  masjid can embed it on their own website. Off by default. */
@@ -303,6 +319,8 @@ export interface Timetable {
   adhanPopup?: AdhanPopup;
   /** public embeddable web widget (prayer times only) for this timetable */
   widget?: TimetableWidget;
+  /** a sound on the stream at Adhan / Iqāmah — see TimetableSound */
+  sound: TimetableSound;
   footerNote: string;
   createdAt: string;
 }

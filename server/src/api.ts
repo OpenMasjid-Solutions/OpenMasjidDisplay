@@ -56,6 +56,7 @@ import {
   deviceOnline,
 } from './piAgent';
 import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
+import { saveSoundClip, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
 
 /**
  * How long one "somebody is watching" beat keeps a screen sending pictures.
@@ -1144,6 +1145,7 @@ export function createApi(deps: Deps) {
         if (src.iqamahSchedule) copy.iqamahSchedule = JSON.parse(JSON.stringify(src.iqamahSchedule));
         copy.backgroundImage = src.backgroundImage ? copyAsset(src.backgroundImage, copy.id, 'bg') : '';
         copy.logoImage = src.logoImage ? copyAsset(src.logoImage, copy.id, 'logo') : '';
+        copy.sound.clip = src.sound?.clip ? copySoundClip(src.sound.clip, copy.id) : '';
         if (copy.announcements?.images?.length) {
           copy.announcements.images = (src.announcements?.images ?? [])
             .map((f) => copyAsset(f, copy.id, 'ann'))
@@ -1167,6 +1169,7 @@ export function createApi(deps: Deps) {
           removeBackground(id);
           removeLogo(id);
           removeAllAnnouncements(id);
+          removeSoundClipsFor(id);
           store.update((db) => void (db.timetables = db.timetables.filter((t) => t.id !== id)));
           return sendJson(res, 200, { ok: true });
         }
@@ -1247,6 +1250,46 @@ export function createApi(deps: Deps) {
           store.update((db) => {
             const t = byId(db.timetables, id);
             if (t) t.logoImage = '';
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
+        }
+      }
+
+      // ---- Timetable Adhan/Iqamah sound --------------------------------------
+      // The uploaded file is DECODED here, once, to the raw audio the stream is written in —
+      // so what is stored is already in the form the renderer needs and nothing has to decode
+      // an mp3 at the moment the Adhan lands.
+      const soundMatch = /^\/api\/timetables\/([\w-]+)\/sound$/.exec(pathname);
+      if (soundMatch) {
+        const id = soundMatch[1];
+        const idx = store.db.timetables.findIndex((t) => t.id === id);
+        if (idx < 0) return sendJson(res, 404, { error: 'Timetable not found.' });
+        if (method === 'POST') {
+          const body = await readBody(req, Math.round(SOUND_MAX_UPLOAD_BYTES * 1.4) + 1_000);
+          const m = /^data:[^;,]*;base64,(.+)$/s.exec(String(body.data ?? ''));
+          if (!m) return sendJson(res, 400, { error: 'Please choose an audio file (MP3, M4A, WAV or OGG).' });
+          let buf: Buffer;
+          try {
+            buf = Buffer.from(m[1], 'base64');
+          } catch {
+            return sendJson(res, 400, { error: 'That file could not be read.' });
+          }
+          if (buf.length > SOUND_MAX_UPLOAD_BYTES) {
+            return sendJson(res, 400, { error: 'That file is too large — please keep it under about 5 MB.' });
+          }
+          const saved = await saveSoundClip(id, buf);
+          if ('error' in saved) return sendJson(res, 400, { error: saved.error });
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.sound.clip = saved.file;
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
+        }
+        if (method === 'DELETE') {
+          removeSoundClipsFor(id);
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) t.sound.clip = '';
           });
           return sendJson(res, 200, byId(store.db.timetables, id));
         }
