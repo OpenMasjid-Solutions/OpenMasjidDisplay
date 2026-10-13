@@ -17,6 +17,15 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
+- **Ishrāq can now be shown on the prayer table**, on both designs. Under Elements, set how many
+  minutes after sunrise your masjid observes it (commonly 15 or 20); leave it blank to hide it.
+  There is no default minute count on purpose — that is your masjid's call, not ours.
+- **One timetable's times can now drive several screens.** Under Location & time zone, a timetable
+  can either set its own times or follow another one. A follower takes the location, calculation
+  method, Iqamah times, Jumu'ah times and Adhan delays of the one it follows, so you edit them
+  once; everything about how it LOOKS — layout, theme, orientation, which elements are on — stays
+  its own. Screens that follow a timetable you delete simply stop following and keep the times
+  they had.
 - **The Simple design's left column is calmer.** Sunrise and sunset now sit side by side on one
   small line under the date, instead of crowding the top of the column above the clock. The
   countdown has gone from this design altogether: the highlighted row in the prayer table already

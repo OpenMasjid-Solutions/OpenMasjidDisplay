@@ -88,6 +88,10 @@ export interface Timetable {
   iqamahSchedule?: IqamahScheduleEntry[];
   jumuah: string[];
   showSunrise: boolean;
+  /** minutes after sunrise to show Ishrāq, or 0 to hide it */
+  ishraqMinutes: number;
+  /** id of the timetable this one copies its TIMES from, or '' for its own */
+  linkedTo: string;
   showCountdown: boolean;
   showDates: boolean;
   showLogo: boolean;

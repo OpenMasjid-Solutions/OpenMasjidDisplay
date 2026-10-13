@@ -238,6 +238,22 @@ export interface Timetable {
   /** Friday khutbah/Jumu'ah times "HH:MM" (one or more) */
   jumuah: string[];
   showSunrise: boolean;
+  /**
+   * Minutes after sunrise to show Ishrāq, or 0 to not show it.
+   *
+   * One number rather than a toggle plus a number: the minutes ARE the setting. Masjids do not
+   * agree on it (15 and 20 are both common, and it is a fiqh question, not a default we get to
+   * pick), so a toggle would have to invent one.
+   */
+  ishraqMinutes: number;
+  /**
+   * The timetable this one takes its TIMES from, or '' for its own.
+   *
+   * One level only — a timetable that is itself linked may not be linked to. Linking copies the
+   * time-defining fields (location, method, Iqāmah, Jumu'ah, offsets) and nothing else: the look
+   * stays per-screen, because the whole point is one masjid's times on several different screens.
+   */
+  linkedTo: string;
   /** element toggles for the on-screen display */
   showCountdown: boolean;
   showDates: boolean;

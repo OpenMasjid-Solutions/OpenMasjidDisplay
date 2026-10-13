@@ -135,7 +135,7 @@ function toForm(tt: Timetable | null, state: AppState): Form {
     method: 'MWL', fajrAngle: 18, ishaAngle: 17, asrMadhab: 'Hanafi', timezone: state.settings.scheduleTimezone ?? '',
     timeFormat: '12h', language: 'en', hijriOffset: 0, gregorianOffset: 0,
     iqamah: { fajr: { mode: 'offset', offset: 20 }, dhuhr: { mode: 'offset', offset: 10 }, asr: { mode: 'offset', offset: 10 }, maghrib: { mode: 'offset', offset: 5 }, isha: { mode: 'offset', offset: 10 } },
-    jumuah: ['13:30'], showSunrise: true, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
+    jumuah: ['13:30'], showSunrise: true, ishraqMinutes: 0, linkedTo: '', showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
     backgroundImage: '', logoImage: '', footerNote: '', tickerSpeed: 5, createdAt: '',
   };
 }
@@ -430,6 +430,24 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       <div className="card section">
         <h3 className="section-title">Location & time zone</h3>
         <p className="hint" style={{ marginBlockStart: 0 }}>Prayer times are calculated on the device from your coordinates — no internet needed.</p>
+        <Field
+          label="Prayer times"
+          hint="Keep one timetable's times and have the others follow it, so you only edit them once. A followed timetable's own location, calculation, Iqamah, Jumu'ah and Adhan-delay settings are replaced by the one it follows — everything about how it LOOKS stays its own. A timetable that already follows another cannot itself be followed."
+        >
+          <select
+            className="select"
+            value={f.linkedTo}
+            onChange={(e) => set('linkedTo', e.target.value)}
+          >
+            <option value="">Its own (this timetable sets its own times)</option>
+            {state.timetables
+              .filter((o) => o.id !== tt?.id && !o.linkedTo)
+              .map((o) => (
+                <option key={o.id} value={o.id}>{`Follow "${o.name}"`}</option>
+              ))}
+          </select>
+          {f.linkedTo && <p className="hint" style={{ marginBlockStart: '0.4rem' }}>Saving will replace this timetable's times with that one's.</p>}
+        </Field>
         <div className="grid2">
           <Field label="Latitude" hint="Your masjid's latitude, e.g. 40.748222. Use the lookup link below if you're not sure."><input className="input" inputMode="decimal" value={f.latitude} onChange={(e) => set('latitude', e.target.value)} /></Field>
           <Field label="Longitude" hint="Your masjid's longitude, e.g. -73.891075."><input className="input" inputMode="decimal" value={f.longitude} onChange={(e) => set('longitude', e.target.value)} /></Field>
@@ -815,6 +833,17 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           <ToggleRow label="Countdown to next prayer" checked={f.showCountdown} onChange={(v) => set('showCountdown', v)} />
           <ToggleRow label="Seconds on the clock" checked={f.showSeconds} onChange={(v) => set('showSeconds', v)} />
           <ToggleRow label="Sunrise" checked={f.showSunrise} onChange={(v) => set('showSunrise', v)} />
+          <div className="toggle-row row-between">
+            <span className="label" style={{ margin: 0 }}>Ishrāq (minutes after sunrise)</span>
+            <input
+              className="input"
+              style={{ width: '5.5rem' }}
+              inputMode="numeric"
+              value={f.ishraqMinutes || ''}
+              placeholder="off"
+              onChange={(e) => set('ishraqMinutes', Math.max(0, Math.min(120, Number(e.target.value.replace(/\D/g, '')) || 0)))}
+            />
+          </div>
           <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />
           <ToggleRow label="Calculation-method footnote" checked={f.showFooter} onChange={(v) => set('showFooter', v)} />
         </div>

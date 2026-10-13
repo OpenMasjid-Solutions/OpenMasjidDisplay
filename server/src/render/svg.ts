@@ -620,12 +620,12 @@ function ordinalEn(n: number): string {
 }
 
 export const PRAYER_LABELS: Record<string, Record<string, string>> = {
-  en: { fajr: 'Fajr', sunrise: 'Sunrise', sunset: 'Sunset', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha', jumuah: "Jumu'ah", iqamah: 'Iqāmah', athan: 'Adhan', next: 'Next prayer', prayer: 'Prayer' },
+  en: { fajr: 'Fajr', sunrise: 'Sunrise', sunset: 'Sunset', ishraq: 'Ishrāq', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha', jumuah: "Jumu'ah", iqamah: 'Iqāmah', athan: 'Adhan', next: 'Next prayer', prayer: 'Prayer' },
   // `sunset` was missing from all three until the Simple column started setting it at 34px
   // directly under an Arabic date — the English word had always been there, just too small to
   // notice.
-  ar: { fajr: 'الفجر', sunrise: 'الشروق', sunset: 'الغروب', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
-  ur: { fajr: 'فجر', sunrise: 'طلوع', sunset: 'غروب', dhuhr: 'ظہر', asr: 'عصر', maghrib: 'مغرب', isha: 'عشاء', jumuah: 'جمعہ', iqamah: 'اقامہ', athan: 'اذان', next: 'اگلی نماز', prayer: 'نماز' },
+  ar: { fajr: 'الفجر', sunrise: 'الشروق', sunset: 'الغروب', ishraq: 'الإشراق', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
+  ur: { fajr: 'فجر', sunrise: 'طلوع', sunset: 'غروب', ishraq: 'اشراق', dhuhr: 'ظہر', asr: 'عصر', maghrib: 'مغرب', isha: 'عشاء', jumuah: 'جمعہ', iqamah: 'اقامہ', athan: 'اذان', next: 'اگلی نماز', prayer: 'نماز' },
 };
 
 export function labels(lang: string, overrides?: Record<string, string>): Record<string, string> {
@@ -776,6 +776,12 @@ export function buildModel(tt: Timetable, now: Date): Model {
   const rows: Row[] = [];
   rows.push({ key: 'fajr', label: 'fajr', adhan: adj('fajr'), iqamah: iq('fajr', adj('fajr')) });
   if (tt.showSunrise) rows.push({ key: 'sunrise', label: 'sunrise', adhan: times.sunrise, iqamah: null, minor: true });
+  // Ishrāq is sunrise plus the masjid's own number of minutes. Like Sunrise it has no Adhan and
+  // no jamā'ah, so it is a display row only and stays out of `order` — nothing counts down to it
+  // and it never becomes the "next" prayer.
+  if (tt.ishraqMinutes > 0) {
+    rows.push({ key: 'ishraq', label: 'ishraq', adhan: times.sunrise + tt.ishraqMinutes / 60, iqamah: null, minor: true });
+  }
   rows.push({ key: 'dhuhr', label: 'dhuhr', adhan: adj('dhuhr'), iqamah: iq('dhuhr', adj('dhuhr')) });
   rows.push({ key: 'asr', label: 'asr', adhan: adj('asr'), iqamah: iq('asr', adj('asr')) });
   rows.push({ key: 'maghrib', label: 'maghrib', adhan: adj('maghrib'), iqamah: iq('maghrib', adj('maghrib')) });
@@ -2143,6 +2149,7 @@ export function prayerIcon(key: string, cx: number, cy: number, r: number): stri
       return `<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${color}" stroke-width="${f(Math.max(1.2, r * 0.16))}" stroke-linecap="round"/>`;
     }).join('');
   switch (key) {
+    case 'ishraq': // the sun just up — the same art as Fajr, which is the one sunrise icon here
     case 'fajr': // sunrise: half sun sitting on a horizon line, rays fanning up
       return (
         `<line x1="${f(cx - r * 1.4)}" y1="${f(cy)}" x2="${f(cx + r * 1.4)}" y2="${f(cy)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}"/>` +

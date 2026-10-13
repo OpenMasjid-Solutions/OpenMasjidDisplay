@@ -347,6 +347,11 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     iqamahSchedule: base?.iqamahSchedule,
     jumuah: jumuah.length ? jumuah : ['13:30'],
     showSunrise: o.showSunrise === undefined ? base?.showSunrise ?? true : bool(o.showSunrise, true),
+    // 0 = not shown. Capped at two hours: past that it is not Ishrāq any more, it is a typo.
+    ishraqMinutes: o.ishraqMinutes === undefined ? base?.ishraqMinutes ?? 0 : intIn(o.ishraqMinutes, 0, 0, 120),
+    // The id is only shape-checked here; whether it points at a real, unlinked timetable is a
+    // question about the whole store, so api.ts answers it where it can see the other rows.
+    linkedTo: typeof o.linkedTo === 'string' ? str(o.linkedTo, '', 40).trim() : base?.linkedTo ?? '',
     showCountdown: o.showCountdown === undefined ? base?.showCountdown ?? true : bool(o.showCountdown, true),
     showDates: o.showDates === undefined ? base?.showDates ?? true : bool(o.showDates, true),
     showLogo: o.showLogo === undefined ? base?.showLogo ?? true : bool(o.showLogo, true),
