@@ -1482,6 +1482,66 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
   return out.join('');
 }
 
+/**
+ * How much room the countdown block needs for a given number size — the reserve, so a caller
+ * that has to centre a column can work its total height out before it draws anything.
+ *
+ * It is a function rather than a constant multiple because the unit word's size is CLAMPED, so
+ * a small countdown is proportionally taller than a big one.
+ */
+const countdownUnit = (size: number) => clamp(size * 0.32, 11, 30);
+const countdownH = (size: number) => size * 1.15 + countdownUnit(size) * 2;
+
+/**
+ * The countdown in words: the number(s) big, the unit word(s) small beside them, and a line
+ * under both naming what is being counted to ("12 MINUTES / UNTIL IQAMAH").
+ *
+ * Modern sets this under its ring; Simple sets it on its own, because Simple has no ring — so it
+ * lives here rather than inside `panelRing`, and the two designs cannot drift into saying the
+ * same thing two different ways. `topY` is the top of the block; the number's baseline sits one
+ * `size` below it, which is also where the gap above the block comes from.
+ */
+function countdownText(cx: number, topY: number, maxW: number, size: number, c: Ctx): string {
+  const out: string[] = [];
+  // Under a minute it counts seconds; under an hour, minutes; otherwise "1 HOUR" / "1 HOUR 15
+  // MINUTES" (never "1 HOUR 0 MINUTES"). Proper singular/plural throughout.
+  const sec = Math.max(0, c.remainingSec);
+  const h = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const seg = (n: number, w: string) => ({ n: String(n), w: n === 1 ? w : w + 'S' });
+  const segs = sec < 60 ? [seg(s, 'SECOND')] : h === 0 ? [seg(mm, 'MINUTE')] : mm === 0 ? [seg(h, 'HOUR')] : [seg(h, 'HOUR'), seg(mm, 'MINUTE')];
+  let numSize = size;
+  const usz = () => countdownUnit(numSize);
+  // The unit word is drawn with `letter: 1`; counting its width without that tracking under-
+  // reserves by a pixel per letter, which is what put "44" on top of "HOURS" in the mini ring.
+  const unitW = (w: string) => approxWidth(w, usz()) + Math.max(0, w.length - 1);
+  const width = () => segs.reduce((a, p, i) => a + approxWidth(p.n, numSize) + numSize * 0.12 + unitW(p.w) + (i < segs.length - 1 ? numSize * 0.3 : 0), 0);
+  // Converge rather than divide once: the unit word's size is clamped, so shrinking the number
+  // does not shrink the line in proportion — and the group is CENTRED, so whatever is left over
+  // escapes BOTH edges at once.
+  for (let i = 0; i < 4; i++) {
+    const over = width() / maxW;
+    if (over <= 1) break;
+    numSize /= over * 1.002;
+  }
+  const us = usz();
+  const numBase = topY + numSize;
+  let x = cx - width() / 2;
+  for (let i = 0; i < segs.length; i++) {
+    out.push(text(x, numBase, segs[i].n, { size: numSize, fill: c.p.text, family: FONT_DISPLAY, weight: 800, anchor: 'start' }));
+    x += approxWidth(segs[i].n, numSize) + numSize * 0.12;
+    out.push(text(x, numBase, segs[i].w, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
+    x += approxWidth(segs[i].w, us) + Math.max(0, segs[i].w.length - 1) + (i < segs.length - 1 ? numSize * 0.3 : 0);
+  }
+  // In a prohibited window the countdown runs to the Dhuhr adhan, so name it plainly.
+  const untilWord = c.prohibited ? `UNTIL ${c.nextLabel} ${c.eventWord}`.toUpperCase() : `UNTIL ${c.eventWord}`;
+  const track = Math.max(0, untilWord.length - 1) * 3;
+  // Same subtract-the-tracking-first rule as above: it is pixels per gap, not a share of the type.
+  let uSize = us;
+  if (approxWidth(untilWord, uSize) + track > maxW) uSize = Math.max(8, (maxW - track) / Math.max(0.001, approxWidth(untilWord, 1)));
+  out.push(text(cx, numBase + us * 1.6, untilWord, { size: uSize, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'middle', letter: 3 }));
+  return out.join('');
+}
+
 /** The circular NEXT-PRAYER countdown ring: an emerald progress arc (rounded caps)
  *  around the next prayer's Arabic + English name, with the minutes-until below. */
 function panelRing(b: Box, c: Ctx): string {
@@ -1523,35 +1583,8 @@ function panelRing(b: Box, c: Ctx): string {
   } else {
     out.push(text(cx, ringCy + R * (c.nextArabic ? 0.4 : 0.08), c.nextLabel.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
   }
-  // Below the ring: the countdown as big number(s) + small unit word(s). Under a minute
-  // it counts seconds; under an hour, minutes; otherwise "1 HOUR" / "1 HOUR 15 MINUTES"
-  // (never "1 HOUR 0 MINUTES"). Proper singular/plural throughout.
-  if (c.showCountdown) {
-    const sec = Math.max(0, c.remainingSec);
-    const h = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), s = sec % 60;
-    const seg = (n: number, w: string) => ({ n: String(n), w: n === 1 ? w : w + 'S' });
-    const segs = sec < 60 ? [seg(s, 'SECOND')] : h === 0 ? [seg(mm, 'MINUTE')] : mm === 0 ? [seg(h, 'HOUR')] : [seg(h, 'HOUR'), seg(mm, 'MINUTE')];
-    let numSize = clamp(b.h * 0.14, 22, 84);
-    const usz = () => clamp(numSize * 0.32, 11, 30);
-    // The unit word is drawn with `letter: 1`; counting its width without that tracking under-
-    // reserves by a pixel per letter, which is what put "44" on top of "HOURS" in the mini ring.
-    const unitW = (w: string) => approxWidth(w, usz()) + Math.max(0, w.length - 1);
-    const width = () => segs.reduce((a, p, i) => a + approxWidth(p.n, numSize) + numSize * 0.12 + unitW(p.w) + (i < segs.length - 1 ? numSize * 0.3 : 0), 0);
-    if (width() > b.w * 0.9) numSize *= (b.w * 0.9) / width();
-    const us = usz();
-    const ringBottom = ringCy + R + sw;
-    const numBase = ringBottom + numSize; // baseline sits below the ring with a clear gap
-    let x = cx - width() / 2;
-    for (let i = 0; i < segs.length; i++) {
-      out.push(text(x, numBase, segs[i].n, { size: numSize, fill: c.p.text, family: FONT_DISPLAY, weight: 800, anchor: 'start' }));
-      x += approxWidth(segs[i].n, numSize) + numSize * 0.12;
-      out.push(text(x, numBase, segs[i].w, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
-      x += approxWidth(segs[i].w, us) + Math.max(0, segs[i].w.length - 1) + (i < segs.length - 1 ? numSize * 0.3 : 0);
-    }
-    // In a prohibited window the countdown runs to the Dhuhr adhan, so name it plainly.
-    const untilWord = c.prohibited ? `UNTIL ${c.nextLabel} ${c.eventWord}`.toUpperCase() : `UNTIL ${c.eventWord}`;
-    out.push(text(cx, numBase + us * 1.6, untilWord, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'middle', letter: 3 }));
-  }
+  // Below the ring: the countdown in words — the same block the Simple column now draws.
+  if (c.showCountdown) out.push(countdownText(cx, ringCy + R + sw, b.w * 0.9, clamp(b.h * 0.14, 22, 84), c));
   return out.join('');
 }
 
@@ -1852,8 +1885,10 @@ function simpleStack(a: Box, m: Model, c: Ctx): string {
   // meant to be read from the back of a hall.
   // Bounded below so the SHORT form of this box — the column beside a slideshow image — keeps
   // the share it had rather than eating its own table. (It was 0.42 while the block carried a
-  // countdown wheel; with the wheel gone the table gets that height back.)
-  const headH = clamp(a.h * 0.38, 240, 860);
+  // countdown WHEEL; the wheel is gone and the countdown is words now, which is smaller than the
+  // wheel was and taller than nothing — 0.40 is what the words need without scaling the clock
+  // down to make room for them.)
+  const headH = clamp(a.h * 0.4, 240, 860);
   out.push(brandColumn({ x: a.x, y: a.y, w: a.w, h: headH }, m, c));
   const tableY = a.y + headH + gap;
   out.push(simpleTable({ x: a.x, y: tableY, w: a.w, h: a.y + a.h - tableY }, m, c));
@@ -1960,9 +1995,9 @@ function prohibitedLine(b: Box, c: Ctx): string {
     : '';
 }
 
-/** Left column for the "simple" layout: brand, the big clock, the two dates, and a small
- *  sunrise/sunset row under them — sitting directly on the flat page, no card behind any of
- *  it. No countdown: the highlighted row in the table already names the next prayer. */
+/** Left column for the "simple" layout: brand, the big clock, the two dates, the countdown in
+ *  words and a small sunrise/sunset row under them — sitting directly on the flat page, no card
+ *  behind any of it. */
 function brandColumn(b: Box, m: Model, c: Ctx): string {
   const out: string[] = [];
   const avail = b.w * 0.95;
@@ -2041,6 +2076,18 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   let sunriseH = c.showSunrise ? ss * 2.2 : 0;
 
   /**
+   * The countdown, in words, under the dates — the SAME block Modern sets under its ring, minus
+   * the ring. The wheel that was here briefly is what made this column read as cluttered; the
+   * words are the half of it that was doing the work, and which prayer they are counting to is
+   * already said by the highlighted row in the table beside them.
+   *
+   * Sized off the box width like everything else in this column, so it holds its proportion to
+   * the clock above it on every screen size.
+   */
+  let cdSize = c.showCountdown ? clamp(b.w * 0.2, 16, 96) : 0;
+  let cdH = c.showCountdown ? countdownH(cdSize) : 0;
+
+  /**
    * The countdown wheel is gone — the highlighted row in the table already says which prayer is
    * next, and the wheel was most of what made this column busy. What it must not take with it is
    * the PROHIBITED-TIME wording: with the notice on and the ticker off, the wheel was the only
@@ -2062,13 +2109,16 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
    * scaled to fit first, and then centred — one factor across every size, so the proportions the
    * design depends on are unchanged and it simply gets smaller.
    */
-  let totalH = headerH + clockH + dateH + sunriseH + prohibH;
+  let totalH = headerH + clockH + dateH + cdH + sunriseH + prohibH;
   const room = b.h * 0.98;
   if (totalH > room && totalH > 0) {
     const k = room / totalH;
-    ms *= k; ns *= k; ss *= k; ts *= k; ds *= k;
+    ms *= k; ns *= k; ss *= k; ts *= k; ds *= k; cdSize *= k;
     headerH *= k; sunriseH *= k; clockH *= k; dateH *= k; prohibH *= k;
-    totalH = room;
+    // Re-measured, not scaled: `countdownH` is not proportional (the unit word's size is clamped),
+    // so a scaled reserve would be short of what gets drawn at small sizes.
+    cdH = c.showCountdown ? countdownH(cdSize) : 0;
+    totalH = headerH + clockH + dateH + cdH + sunriseH + prohibH;
   }
   let y = b.y + Math.max(0, (b.h - totalH) / 2);
 
@@ -2112,6 +2162,11 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     if (twoDates) y += ds * 1.5;
     if (c.greg) out.push(text(cx, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
     y += ds * 0.8;
+  }
+
+  if (cdH > 0) {
+    out.push(countdownText(cx, y, avail, cdSize, c));
+    y += cdH;
   }
 
   // Sunrise and sunset on one row under the date, each centred in its half — plain text, no icons.

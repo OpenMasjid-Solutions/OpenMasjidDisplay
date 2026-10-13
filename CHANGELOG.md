@@ -28,10 +28,11 @@ CLAUDE.md § *The changelog has two audiences*.
   they had.
 - **The Simple design's left column is calmer.** Sunrise and sunset now sit side by side on one
   small line under the date, instead of crowding the top of the column above the clock. The
-  countdown has gone from this design altogether: the highlighted row in the prayer table already
-  shows which salah is next. During the prohibited time, if the notice is on and the ticker is
-  off, a single red line under sunrise and sunset still says so in words. On a portrait screen,
-  and beside a slideshow image, the prayer table gets back the height the countdown used to take.
+  countdown is now words rather than a wheel — the same block the Modern design uses, reading
+  "50 MINUTES / UNTIL JUMU'AH" — which says the same thing in far less of the column. During the
+  prohibited time, if the notice is on and the ticker is off, a single red line under sunrise and
+  sunset still says so in words. On a portrait screen, and beside a slideshow image, the prayer
+  table gets back some of the height the wheel used to take.
 - **In the Simple design, the row for the upcoming salah is now bold all the way across.** The
   name and Iqamah time were bold but the Adhan time was not, so the row looked only half lit.
 - **A masjid with a single Jumu'ah now sees its time centred** between the Adhan and Iqamah

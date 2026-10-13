@@ -166,9 +166,9 @@ test('Simple in portrait is Simple, not Modern wearing its colours', () => {
   assert.ok(modern.includes('url(#scene)'), 'Modern portrait keeps its themed scene');
   assert.ok(!simple.includes('url(#scene)'), 'Simple is a flat page, in any orientation');
   assert.ok(simple.includes('PRAYER TIMES'), "and it has Simple's banded table");
-  // Simple has no countdown at all — its highlighted table row names the next prayer — so the
-  // Modern ring's wording must not turn up here.
-  assert.ok(!/UNTIL /.test(simple), 'and no Modern countdown ring');
+  // Simple counts down in words and Modern does too, so the WORDING no longer tells them apart.
+  // The ring does: Simple has no arc anywhere.
+  assert.ok(!/stroke-dasharray/.test(simple), 'and no countdown ring');
 });
 
 test("the composite's timetable column follows the design the masjid chose", () => {

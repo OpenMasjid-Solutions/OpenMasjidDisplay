@@ -162,17 +162,38 @@ test('sunrise and sunset sit side by side, under the date', () => {
   assert.ok(sun[0].size < clock.size * 0.25, 'and small — reference, not headline');
 });
 
-// ── no countdown on Simple ───────────────────────────────────────────────────
+// ── the countdown: words, not a wheel ────────────────────────────────────────
 
-test('the Simple column has no countdown wheel or sentence', () => {
+test('the Simple column counts down in words, with no wheel', () => {
+  // The wheel is what made this column read as cluttered, so it is the words alone — but they
+  // have to actually be there, in every shape of the box, including the short one beside a
+  // picture where the whole block is scaled down to fit.
   for (const orientation of ['landscape', 'portrait']) {
     for (const extra of [{}, { announcement: IMG }]) {
+      const where = `${orientation}${extra.announcement ? ' beside a picture' : ''}`;
       const svg = renderDisplaySvg(tt({ layout: 'simple', orientation }), FRI, extra);
-      assert.ok(!/stroke-dasharray/.test(svg), `${orientation}: no arc`);
-      assert.ok(!/UNTIL /.test(svg), `${orientation}: no "UNTIL …"`);
-      assert.ok(!/Next .* in /.test(svg), `${orientation}: no sentence either`);
+      assert.ok(!/stroke-dasharray/.test(svg), `${where}: no arc`);
+      const rs = runs(svg);
+      const until = rs.find((r) => r.body.startsWith('UNTIL '));
+      const unit = rs.find((r) => /^(SECOND|MINUTE|HOUR)S?$/.test(r.body));
+      assert.ok(until, `${where}: the line naming what it counts to`);
+      assert.ok(unit, `${where}: the unit word`);
+      assert.ok(unit!.t > rs.find((r) => /2026/.test(r.body))!.b, `${where}: under the date`);
+      assert.ok(until!.t >= unit!.t, `${where}: "UNTIL …" under the amount, not over it`);
     }
   }
+});
+
+test('Simple and Modern word the countdown identically', () => {
+  // The two designs draw it from one function precisely so this holds; a masjid running one
+  // screen of each must not be told the same thing two different ways.
+  const words = (layout: string) =>
+    runs(renderDisplaySvg(tt({ layout }), FRI, {}))
+      .filter((r) => r.body.startsWith('UNTIL ') || /^(SECOND|MINUTE|HOUR)S?$/.test(r.body))
+      .map((r) => r.body);
+  const simple = words('simple');
+  assert.ok(simple.length >= 2, 'the countdown is drawn at all');
+  assert.deepEqual(simple, words('modern'));
 });
 
 test('a forty-character prayer name overlaps nothing in the narrowest column', () => {
