@@ -17,7 +17,7 @@ The brief says: *"Where this prompt contradicts the code, say so instead of gues
 places. The first two are blocking — they need a decision before phase 4 can be designed, let
 alone built.
 
-### 0.1 BLOCKING — the platform cannot expose "only the pairing route"
+### 0.1 DECIDED (was blocking) — the platform cannot expose "only the pairing route"
 
 The brief requires:
 
@@ -72,9 +72,26 @@ Two options, and this is a **stop-and-ask** item under the brief's own list:
   the same plain 404 — not a login page, nothing that confirms Display is installed. The widget
   and volunteer page keep working as they do today.
 
-(b) satisfies the intent I read behind the requirement — *a stranger on the internet can reach
-nothing but pairing and sync* — and keeps three shipped features. (a) satisfies the literal
-words. **I have not picked one. It needs your call.**
+**Decision (Hasan, 2026-10-13): (b), authenticated-only.** A stranger on the internet reaches
+nothing but pairing and sync; the panel and the API answer only to a request carrying a valid
+Display admin session, and an unauthenticated probe of either gets the same plain 404 as a path
+that does not exist — not a login page, and nothing that confirms Display is installed. Remote
+admin access, the public widget and the remote volunteer page keep working.
+
+What this obliges phase 4 to build, and to test:
+
+- A single choke point that classifies every request as *under the public prefix* or not, reusing
+  `basePathPrefix` (`api.ts:253`) rather than adding a second notion of it.
+- Under the prefix: an allow-list of unauthenticated routes — the pairing route **only while a
+  window is open**, the managed-Pi sync and heartbeat routes (device token), the widget and the
+  volunteer page (unchanged from today). Everything else requires a Display admin session.
+- The 404 for a refused route must be **byte-identical** to the 404 for a path that does not
+  exist, and must not vary in timing in a way that distinguishes them. A test asserts the two
+  responses match, because "returns 404" and "returns an indistinguishable 404" are different
+  claims and only the second one is worth anything.
+- The brief's acceptance test — *"through the public hostname the admin panel and API are not
+  reachable"* — is kept, and reads: not reachable **without a Display admin session**. That is a
+  deliberate, recorded widening of the brief's literal words, and it is the only one.
 
 ### 0.2 BLOCKING — `/display/adoption` is not a fixed address
 
