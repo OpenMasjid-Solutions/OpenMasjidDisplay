@@ -113,6 +113,7 @@ function panel(opts: { claimed?: boolean; code?: string | undefined } = {}) {
       cfg = next as never;
     },
     webDir: WEB,
+    screens: { getStatuses: () => [] },
   });
   if (opts.claimed) {
     store.update((db) => {
@@ -226,6 +227,40 @@ test('guessing is rate-limited', async () => {
     }
   }
   assert.ok(sawLimit, 'eight digits is only out of reach while guessing is slow');
+});
+
+// ── what the panel boots from ────────────────────────────────────────────────
+
+/** Claim the screen and return the session cookie, so the authenticated routes can be reached. */
+async function claim(handler: ReturnType<typeof createPiPanel>): Promise<string> {
+  const r = await call(handler, 'POST', '/api/setup', { code: CODE, password: 'a-good-password' });
+  assert.equal(r.status, 200, r.body);
+  const set = String(r.headers['set-cookie'] ?? '');
+  return set.split(';')[0];
+}
+
+test('a signed-in panel gets the same payload shape the server sends', async () => {
+  // The panel is one app on both hosts, so it is written against one shape. These are the keys
+  // it boots from; a missing one is a page that renders empty with nothing in the console.
+  const { handler } = panel();
+  const cookie = await claim(handler);
+  const r = await call(handler, 'GET', '/api/state', undefined, cookie);
+  assert.equal(r.status, 200, r.body);
+  const j = r.json();
+  for (const k of ['settings', 'timetables', 'sources', 'tvs', 'schedules', 'themes', 'hadithDefaults', 'statuses', 'rtsp', 'volunteer', 'serverNow']) {
+    assert.ok(k in j, `missing ${k}`);
+  }
+});
+
+test('the state says plainly that this device serves no RTSP and has no platform', async () => {
+  // Not cosmetic: a screen that advertised an RTSP port would be inviting somebody to point a
+  // television at a stream this device does not publish and never will.
+  const { handler } = panel();
+  const cookie = await claim(handler);
+  const j = (await call(handler, 'GET', '/api/state', undefined, cookie)).json();
+  assert.deepEqual(j.rtsp, { port: 0, transport: 'tcp' });
+  assert.equal(j.omosBase, '');
+  assert.deepEqual(j.volunteer, { pinSet: false, port: 0 });
 });
 
 // ── the bundle ───────────────────────────────────────────────────────────────

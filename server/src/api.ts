@@ -57,6 +57,7 @@ import {
 } from './piAgent';
 import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
 import { capabilitiesFor } from './capabilities';
+import { statePayload } from './statePayload';
 import { saveSoundClip, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
 
 /**
@@ -81,8 +82,6 @@ import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
 import { parseChangelog, readChangelog } from './changelog';
-import { THEMES } from './render/theme';
-import { DEFAULT_SALAH_HADITH } from './render/defaultHadith';
 import {
   saveBackground,
   removeBackground,
@@ -311,39 +310,6 @@ function serveIndex(res: ServerResponse): void {
   }
 }
 
-function statePayload(store: Store, orchestrator: Orchestrator) {
-  const db = store.db;
-  const s = db.settings;
-  return {
-    authRequired: true,
-    settings: s,
-    timetables: db.timetables,
-    sources: db.sources,
-    tvs: db.tvs,
-    schedules: db.schedules,
-    themes: THEMES,
-    // The built-in library of ahadith on Salāh (id + English + citation + shipped salah
-    // targeting) so the panel can render the enable/disable checklist and prayer pickers.
-    // Arabic isn't sent — the panel only toggles/targets them.
-    hadithDefaults: DEFAULT_SALAH_HADITH.map((h) => ({ id: h.id, en: h.en, cite: h.cite, prayers: h.prayers })),
-    statuses: orchestrator.getStatuses(),
-    // The screens connect to rtsp://<this server>:<port>/<screen>. The host is
-    // whatever address the panel was opened with (filled in by the browser), so
-    // there is no server IP to configure here.
-    rtsp: {
-      port: config.rtspPort,
-      transport: 'tcp',
-    },
-    omosBase: config.omosBaseUrl,
-    // Volunteer mode (the simple mobile page on its own port). We never send the
-    // PIN itself — only whether one is set, and the host port to show in the URL.
-    volunteer: {
-      pinSet: !!store.db.volunteerAuth,
-      port: config.volunteerPublicPort,
-    },
-    serverNow: Date.now(),
-  };
-}
 
 // SSO-minted admin sessions are short-lived (re-validated against the platform on
 // expiry) so a platform logout/deprovision isn't shadowed by a 30-day local cookie.

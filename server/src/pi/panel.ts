@@ -35,6 +35,7 @@ import {
 } from '../auth';
 import { LoginLimiter } from '../rateLimit';
 import { PI_CAPABILITIES } from '../capabilities';
+import { statePayload, type ScreenStatuses } from '../statePayload';
 import { setupCodeMatches } from './claim';
 import type { AgentConfig } from './agentConfig';
 
@@ -66,6 +67,8 @@ export interface PanelDeps {
   writeConfig: (cfg: AgentConfig) => void;
   /** where the built web app lives on the device */
   webDir: string;
+  /** what this screen is doing — the Pi reports on the one screen it is */
+  screens: ScreenStatuses;
 }
 
 const sendJson = (res: ServerResponse, code: number, body: unknown): void => {
@@ -101,7 +104,7 @@ function readBody(req: IncomingMessage, maxBytes = 64_000): Promise<Record<strin
 }
 
 export function createPiPanel(deps: PanelDeps) {
-  const { store, readConfig, writeConfig, webDir } = deps;
+  const { store, readConfig, writeConfig, webDir, screens } = deps;
   const loginLimiter = new LoginLimiter();
   const authed = (req: IncomingMessage): boolean => hasValidSession(req, store.secret);
 
@@ -246,6 +249,27 @@ export function createPiPanel(deps: PanelDeps) {
       // Everything else needs a session. This is the line that makes the list above the whole
       // of the unauthenticated surface.
       if (!authed(req)) return sendJson(res, 401, { error: 'Please sign in.' });
+
+      if (pathname === '/api/state' && method === 'GET') {
+        /**
+         * The same payload the server builds, with the three fields that describe a server
+         * replaced by what is true here.
+         *
+         * Shared rather than rewritten so the panel is written against one shape; overridden
+         * rather than parameterised because three fields do not justify three parameters, and
+         * because what the Pi puts in them is a statement about this device rather than a
+         * configuration anybody chooses.
+         */
+        return sendJson(res, 200, {
+          ...statePayload(store, screens),
+          // This device never serves RTSP — it only consumes streams and draws its own screen.
+          rtsp: { port: 0, transport: 'tcp' },
+          // No OpenMasjidOS behind it; that is what standalone means.
+          omosBase: '',
+          // The volunteer page is served by this same listener rather than on a port of its own.
+          volunteer: { pinSet: !!store.db.volunteerAuth, port: 0 },
+        });
+      }
 
       return sendJson(res, 404, { error: 'Not found.' });
     } catch {
