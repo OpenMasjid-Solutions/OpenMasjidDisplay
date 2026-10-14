@@ -142,6 +142,34 @@ test('a moment that has already gone by is dropped, not played late', () => {
   assert.deepEqual(s.loud, [], 'nothing played');
 });
 
+test('a long clip whose moment has passed is not replayed after a respawn', () => {
+  // ffmpeg respawns shortly after the Adhan, the sample clock starts again from zero, the day
+  // is re-scanned, and the Adhan is offered with its moment now in the past. Letting the clip's
+  // own length count as room meant a three-minute recording was still queued — and written
+  // from its beginning, so the masjid heard the whole Adhan a second time.
+  const long = Buffer.alloc(120 * SOUND_RATE * 2, 1); // two minutes, audible all the way
+  const s = new Sink();
+  const t = new SoundTrack();
+  const t0 = 1_000_000;
+  t.attach(s, t0);
+  t.playAt(t0 - 60_000, long); // it was a minute ago
+  for (let ms = 0; ms <= 5000; ms += 250) t.pump(t0 + ms);
+  assert.deepEqual(s.loud, [], 'nothing replayed');
+});
+
+test('a moment still ahead of the written audio is kept, however close', () => {
+  // The other edge of the same rule: queued before the first pump, so nothing has been written
+  // past it yet, and half a second is still a place it can go.
+  const s = new Sink();
+  const t = new SoundTrack();
+  const t0 = 1_000_000;
+  t.attach(s, t0);
+  t.playAt(t0 + 500, beepPcm());
+  for (let ms = 0; ms <= 3000; ms += 250) t.pump(t0 + ms);
+  assert.equal(s.loud.length, 1, 'played');
+  assert.ok(Math.abs(s.loud[0] - 0.5 * SOUND_RATE) <= 1, 'at half a second');
+});
+
 test('a detached track writes nothing', () => {
   const s = new Sink();
   const t = new SoundTrack();

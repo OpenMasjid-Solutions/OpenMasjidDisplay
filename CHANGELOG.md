@@ -20,6 +20,8 @@ CLAUDE.md § *The changelog has two audiences*.
   have its volume up; Raspberry Pi screens and screens shown in a browser stay silent. On a
   Friday the Iqamah sound follows your Jumu'ah times, not the Dhuhr Iqamah. With both switches
   off the stream carries no sound at all, exactly as before.
+  If the screen's stream restarts in the minutes after a sound has played — a scrolling-message
+  change does that — the sound is not played a second time.
 - **A 3D-printable case for a Raspberry Pi 4 screen.** The base, the lid, and a ready-to-slice
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 

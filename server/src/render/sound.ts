@@ -308,9 +308,21 @@ export class SoundTrack {
   playAt(at: number, pcm: Buffer): void {
     if (!this.out || this.queued.has(at) || !pcm.length) return;
     const sample = Math.round(((at - this.startWall) / 1000) * SOUND_RATE);
-    // Wholly behind the audio already written: it cannot be heard, so do not queue it — it
-    // would otherwise play late, at full length, the moment the pump reached it.
-    if (sample + pcm.length / 2 < this.written) return;
+    /**
+     * Its START is behind the audio already written, so it cannot be put where it belongs:
+     * drop it rather than play it late.
+     *
+     * This used to allow the clip's LENGTH as room — "it would still be playing now, so let it
+     * through" — which is wrong, because a clip is written from its beginning. An ffmpeg
+     * respawn (a ticker change, a crash) resets the sample clock, the day is re-scanned, and
+     * the Adhan that played three minutes ago is offered again with its moment in the past: it
+     * went to the back of the queue and the masjid heard the whole Adhan a second time.
+     *
+     * The cost is the other edge: a moment falling inside the lead that the pump has already
+     * written past is now missed rather than played late. That window is two seconds, and it
+     * only exists just after a respawn, because every other moment is queued hours ahead.
+     */
+    if (sample < this.written) return;
     this.queued.add(at);
     this.queue.push({ sample, pcm });
     this.queue.sort((a, b) => a.sample - b.sample);
