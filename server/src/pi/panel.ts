@@ -189,9 +189,25 @@ export function createPiPanel(deps: PanelDeps) {
         if (pw.length < 8) return sendJson(res, 400, { error: 'Please choose a password of at least 8 characters.' });
         const name = String(body.name ?? '').slice(0, 80).trim();
         const { hash, salt } = hashPassword(pw);
+        /**
+         * The claim is decided INSIDE the update, not by the check at the top of this route.
+         *
+         * That check runs before `await readBody`, and an await yields — so two requests
+         * arriving together both passed it and both went on to write an account, the second
+         * silently replacing the first, who was left holding a session cookie for a password
+         * that no longer worked. Both callers need the right code, so it was never a takeover
+         * by a stranger; it was a screen that could not be explained afterwards.
+         *
+         * The callback runs synchronously, so between reading `db.admin` and setting it there
+         * is nowhere to yield and nothing can get in between.
+         */
+        let claimed = false;
         store.update((db) => {
+          if (db.admin) return;
           db.admin = { hash, salt, name: name || undefined, createdAt: new Date().toISOString() };
+          claimed = true;
         });
+        if (!claimed) return sendJson(res, 409, { error: 'This screen has already been set up.' });
         // Spend the code: written back WITHOUT it, so it leaves both the disk and the
         // television. A used code that still works is a second way in nobody is watching.
         if (cfg) writeConfig({ ...cfg, setupCode: undefined });

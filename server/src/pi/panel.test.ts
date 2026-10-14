@@ -181,6 +181,25 @@ test('a short password is refused, and the code is not spent by it', async () =>
   assert.equal(config().setupCode, CODE, 'the code survives a rejected password');
 });
 
+test('two people claiming at once cannot both win', async () => {
+  // The check for "is there an admin already" happens BEFORE the request body is awaited, and
+  // an await yields. So two POSTs arriving together can both pass that check and both go on to
+  // write an account — the second silently replacing the first, who keeps a session cookie for
+  // a password that no longer works.
+  //
+  // Both callers need the right code, so this is not a takeover by a stranger. It is still the
+  // kind of thing that is impossible to diagnose afterwards: one of two people setting up a
+  // screen finds their password simply does not work.
+  const { handler, store } = panel();
+  const results = await Promise.all([
+    call(handler, 'POST', '/api/setup', { code: CODE, password: 'first-password-x' }, '', '10.0.0.1'),
+    call(handler, 'POST', '/api/setup', { code: CODE, password: 'second-password-x' }, '', '10.0.0.2'),
+  ]);
+  const ok = results.filter((r) => r.status === 200);
+  assert.equal(ok.length, 1, `both requests were accepted: ${results.map((r) => r.status).join(', ')}`);
+  assert.ok(store.db.admin, 'and one of them did create the account');
+});
+
 test('a screen already set up cannot be claimed again', async () => {
   const { handler } = panel({ claimed: true });
   const r = await call(handler, 'POST', '/api/setup', { code: CODE, password: 'a-good-password' });
