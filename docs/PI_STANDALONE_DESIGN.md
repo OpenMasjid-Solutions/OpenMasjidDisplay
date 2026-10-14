@@ -278,9 +278,28 @@ Already shared, today, and it is why this is tractable: the agent imports
 `../render/svg` (`pi/index.ts:52`). The prayer engine, timetable schema, renderer and schedule
 evaluation are **already** host-neutral.
 
-Phase 1 is therefore mostly a **move, not a rewrite**: lift these into a shared area with no
-behaviour change, add golden-image tests, and leave every caller working. The risk in phase 1 is
-not design, it is accidental behaviour change — hence golden images first.
+**Measured, phase 1: there is nothing to extract.** The agent is bundled by esbuild from
+`server/src/pi/index.ts` (`scripts/build-agent.mjs`), which follows the imports — so whatever the
+Pi reaches is already shared, by construction. Its entire dependency on the rest of the server is
+four modules:
+
+```
+server/src/pi/*  →  ../render/svg   ../render/theme   ../render/background   ../types
+```
+
+and those pull in, transitively and only: `render/defaultHadith`, `config`, `iqamahSchedule`,
+`prayer/engine`. That set **is** the brief's shared core — prayer engine, timetable schema,
+renderer, schedule evaluation — and it is already narrow, already host-neutral and already
+shared.
+
+So moving these files into a `shared/` directory would rewrite every import path in the server
+for no capability the Pi does not have today, with the golden table as the only thing standing
+between that rename and a changed screen. **Phase 1 therefore ships the golden tests and the
+capability gating and does not perform the move.**
+
+What phase 2 actually needs is different from an extraction: the agent must additionally bundle
+the panel's server side (`api`, `validate`, `store`) and ship the built web assets. That is
+adding imports to the agent entry point, and it belongs with the work that needs it.
 
 What stays host-specific: MediaMTX and the RTSP renderer (server only), the framebuffer and
 video player (Pi only), the verb spool (Pi only).
