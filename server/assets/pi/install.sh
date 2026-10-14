@@ -683,6 +683,27 @@ DeviceAllow=char-video4linux rw
 # guaranteed and renderD128 in particular is numbered by probe order.
 DeviceAllow=char-drm rw
 Environment=NODE_ENV=production
+# Where the agent keeps its own data when it runs standalone: the timetables, sources and
+# schedules somebody enters in its panel. The default is relative to the working directory,
+# which for a systemd unit is / — so this is not a preference, it is the difference between a
+# store that writes and one that cannot. Already in ReadWritePaths above.
+Environment=DATA_DIR=$STATEDIR
+# The built control panel, installed beside the agent.
+Environment=OMD_PANEL_WEB=$PREFIX/web
+# Port 80 WITHOUT running as root.
+#
+# A standalone screen serves its panel on the address shown on the television, and that address
+# has to be one somebody can type — so port 80, which is privileged. The whole of the privilege
+# needed to bind it is CAP_NET_BIND_SERVICE, granted here as an ambient capability so the agent
+# keeps running as its own unprivileged account. Root for one bind would have handed the whole
+# machine to a bug in an HTTP handler.
+#
+# The bounding set is narrowed to the same single capability: it is the only one this process has
+# any business holding, and naming it means a future edit cannot quietly widen it. Ambient
+# capabilities and NoNewPrivileges=yes work together — systemd raises them before exec, which is
+# before the agent can do anything at all.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 # How this device trusts its display server, decided at install time. Either a pinned certificate
 # (verification ON, against that one certificate) or — said loudly at the time — no verification,
 # when the certificate could not be made to match the address. Empty for plain HTTP.

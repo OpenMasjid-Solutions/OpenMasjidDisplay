@@ -806,6 +806,33 @@ test('the updater refuses an unsupported board instead of bricking a working scr
   assert.ok(!/exit 1/.test(branch), 'an unsupported board is left alone, never failed');
 });
 
+test('the panel binds port 80 by capability, not by running as root', () => {
+  // A standalone screen serves its panel on the address shown on its television, which has to
+  // be one somebody can type — so port 80, which is privileged. The whole of the privilege that
+  // needs is CAP_NET_BIND_SERVICE. Running the agent as root for one bind would hand the whole
+  // machine to a bug in an HTTP handler, and this is the line that keeps that from being the
+  // easy fix later.
+  const tpl = installerTemplate() as string;
+  const unit = tpl.slice(tpl.indexOf('openmasjid-screen.service'), tpl.indexOf('keeping itself current'));
+  assert.match(unit, /AmbientCapabilities=CAP_NET_BIND_SERVICE/, 'the capability is granted');
+  assert.match(unit, /CapabilityBoundingSet=CAP_NET_BIND_SERVICE/, 'and nothing wider is even possible');
+  assert.match(unit, /User=\$SERVICE_USER/, 'still its own unprivileged account');
+  assert.ok(!/User=root/.test(unit), 'and never root');
+  assert.match(unit, /NoNewPrivileges=yes/, 'ambient capabilities and this work together');
+});
+
+test('the agent is told where to keep its data and find its panel', () => {
+  // DATA_DIR is not a preference. The default is relative to the working directory, which for a
+  // systemd unit is `/` — so without this the standalone store has nowhere writable to go, and
+  // every timetable somebody enters is lost at the next restart.
+  const tpl = installerTemplate() as string;
+  const unit = tpl.slice(tpl.indexOf('openmasjid-screen.service'), tpl.indexOf('keeping itself current'));
+  assert.match(unit, /Environment=DATA_DIR=\$STATEDIR/, 'the store needs a writable directory');
+  assert.match(unit, /Environment=OMD_PANEL_WEB=\$PREFIX\/web/, 'and the panel needs its bundle');
+  // And that directory must actually be writable, or the line above is decoration.
+  assert.match(unit, /ReadWritePaths=[^\n]*\$STATEDIR/, 'STATEDIR has to be in ReadWritePaths');
+});
+
 test('the H.265 decoder is switched on, and reachable once it is', () => {
   // A Pi 4 has two unrelated video decoders. H.264 uses the old VideoCore block; H.265 uses a
   // dedicated unit (rpivid) that only appears as a device when its overlay is loaded. Miss either
