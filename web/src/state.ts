@@ -18,6 +18,8 @@ export interface UseApp {
   ssoReachable: boolean;
   /** what the host serving this panel supports — a Pi serves the same app with less of it on */
   caps: Capabilities;
+  /** first run on a screen that wants the code off its own television before it will be claimed */
+  setupCodeRequired: boolean;
   loading: boolean;
   refetch: () => Promise<void>;
   onAuthed: () => void;
@@ -30,6 +32,7 @@ export function useAppState(): UseApp {
   const [ssoEnabled, setSsoEnabled] = useState(false);
   const [ssoReachable, setSsoReachable] = useState(true);
   const [caps, setCaps] = useState<Capabilities>(ALL_CAPABILITIES);
+  const [setupCodeRequired, setSetupCodeRequired] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const refetch = useCallback(async () => {
@@ -54,6 +57,7 @@ export function useAppState(): UseApp {
       setSsoReachable(s.sso?.reachable !== false);
       // A host too old to answer keeps every feature, which is what it had.
       if (s.capabilities) setCaps(s.capabilities);
+      setSetupCodeRequired(!!s.setupCodeRequired);
       if (s.authed) {
         await refetch();
         return;
@@ -121,5 +125,5 @@ export function useAppState(): UseApp {
     void checkSession();
   }, [checkSession]);
 
-  return { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, loading, refetch, onAuthed };
+  return { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, setupCodeRequired, loading, refetch, onAuthed };
 }

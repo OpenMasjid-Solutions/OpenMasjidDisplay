@@ -54,8 +54,11 @@ export const api = {
       hasPassword: boolean;
       sso: { enabled: boolean; reachable?: boolean; username?: string };
       capabilities?: Capabilities;
+      /** a Raspberry Pi running on its own wants the code from its television before it will
+       *  create an account; an OpenMasjidOS server has no such code and never sends this */
+      setupCodeRequired?: boolean;
     }>('GET', '/api/session'),
-  setup: (password: string) => req<{ ok: boolean }>('POST', '/api/setup', { password }),
+  setup: (password: string, code?: string) => req<{ ok: boolean }>('POST', '/api/setup', { password, ...(code ? { code } : {}) }),
   login: (password: string) => req<{ ok: boolean }>('POST', '/api/login', { password }),
   logout: () => req<{ ok: boolean }>('POST', '/api/logout'),
   state: () => req<AppState>('GET', '/api/state'),

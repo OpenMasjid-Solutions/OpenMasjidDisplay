@@ -74,7 +74,7 @@ function EditorPage({ id, state, refetch }: { id: string; state: AppState; refet
 }
 
 function Root() {
-  const { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, loading, refetch, onAuthed } = useAppState();
+  const { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, setupCodeRequired, loading, refetch, onAuthed } = useAppState();
   const [tab, setTab] = useState<Tab>('screens');
   const [setupInstead, setSetupInstead] = useState(false);
   const editId = new URLSearchParams(window.location.search).get('edit');
@@ -111,7 +111,7 @@ function Root() {
   }
   if (loading) return <Splash />;
   // Not signed in. Standalone first run (or a chosen fallback) → create a password.
-  if (!hasPassword && (setupInstead || !ssoEnabled)) return <Setup onDone={onAuthed} />;
+  if (!hasPassword && (setupInstead || !ssoEnabled)) return <Setup onDone={onAuthed} needsCode={setupCodeRequired} />;
   return (
     <Login
       onDone={onAuthed}
@@ -462,26 +462,41 @@ function Login({
   );
 }
 
-function Setup({ onDone }: { onDone: () => void }) {
+/**
+ * First run.
+ *
+ * `needsCode` is the one thing that differs between the two hosts, and it is the brief's own
+ * flow: a Raspberry Pi running on its own shows a code on its television, and whoever can read
+ * it is standing in the masjid. A server has no such code and never asks for one, so the field
+ * is absent there rather than shown empty.
+ */
+function Setup({ onDone, needsCode = false }: { onDone: () => void; needsCode?: boolean }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (password.length < 4) {
-      setError('Please use at least 4 characters.');
+    // Eight, matching what the server will accept. It said four, so a seven-character password
+    // passed here and came back as a server error instead of being caught in the form.
+    if (password.length < 8) {
+      setError('Please use at least 8 characters.');
       return;
     }
     if (password !== confirm) {
       setError('The two passwords don’t match.');
       return;
     }
+    if (needsCode && code.replace(/\D+/g, '').length !== 8) {
+      setError('Enter the 8-digit code shown on the screen.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      await api.setup(password);
+      await api.setup(password, needsCode ? code : undefined);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not finish setup.');
@@ -496,12 +511,26 @@ function Setup({ onDone }: { onDone: () => void }) {
         <div className="auth-logo"><MasjidMark size={44} /></div>
         <h1 className="page-title" style={{ textAlign: 'center' }}>Welcome</h1>
         <p className="page-sub" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
-          Create a password for your control panel. You'll set everything else up inside.
+          {needsCode
+            ? 'Enter the code shown on this screen\u2019s television, then choose a password.'
+            : "Create a password for your control panel. You'll set everything else up inside."}
         </p>
+        {needsCode && (
+          <input
+            className="input"
+            inputMode="numeric"
+            autoFocus
+            autoComplete="one-time-code"
+            placeholder="Code from the television"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            style={{ marginBlockEnd: '0.6rem' }}
+          />
+        )}
         <input
           className="input"
           type="password"
-          autoFocus
+          autoFocus={!needsCode}
           placeholder="Choose a password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
