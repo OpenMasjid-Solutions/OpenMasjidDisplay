@@ -53,9 +53,6 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x
 
 /** Is the host clock obviously wrong? See CLOCK_FLOOR_MS. Exported so the status feed and
  *  tests can ask the same question the renderer asks. */
-export function clockSuspect(now = Date.now()): boolean {
-  return now < CLOCK_FLOOR_MS;
-}
 
 function safeTicker(tt: Timetable): { text: string; prohibited: boolean } {
   try {
@@ -211,7 +208,10 @@ const STALE_AFTER_MS = 30_000;
  * be set LATER than the release it ships in, or a correct clock would read as suspect on
  * day one.
  */
-export const CLOCK_FLOOR_MS = Date.parse('2026-08-13T00:00:00Z');
+// Re-exported so existing callers of this module are untouched; imported as well because a
+// re-export does not bind the name in this file's own scope, and the render loop calls it.
+import { clockSuspect } from '../clockFloor';
+export { CLOCK_FLOOR_MS, clockSuspect } from '../clockFloor';
 export function renderDimsFor(out: Dims): Dims {
   // Full resolution unless this box has proved it cannot manage it — see noteRenderCost.
   if (!boxTooSlowForFullRes) return out;

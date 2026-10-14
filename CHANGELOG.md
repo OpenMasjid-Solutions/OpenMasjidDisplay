@@ -41,8 +41,11 @@ CLAUDE.md § *The changelog has two audiences*.
 - **A Raspberry Pi screen can now run on its own.** Installed with no display server, it shows a
   one-time code on the television and serves its own control panel on the masjid's network: open
   the address on the screen, enter the code, and choose a password. It is the same control panel
-  the server has, with the parts a Pi does not have left out. Still early — a claimed screen
-  shows a holding card rather than the timetable until the next update — and nothing about an
+  the server has, with the parts a Pi does not have left out. Once set up, the screen draws its
+  timetable from its own settings, with its own wallpaper, logo and announcement pictures, and a
+  volunteer's manual override works with no server behind it. If the clock cannot be right — a
+  Pi has no battery-backed clock, so a power cut leaves it believing an old date — the screen
+  says so instead of showing prayer times nobody should trust. Still early, and nothing about an
   existing screen changes.
 - **Raspberry Pi screens now install only on the Pi 4 family** — the Pi 4 Model B, the Pi 400 and
   the Compute Module 4. The Pi 5, the Pi Zero and unrecognised boards are refused with a message

@@ -47,6 +47,8 @@ import { pairingSvg, messageSvg } from './pairing';
 import { createPiPanel, PANEL_PORT, WEB_DIR } from './panel';
 import { newSetupCode, formatSetupCode } from './claim';
 import { Store } from '../store';
+import { backgroundDataUri, logoDataUri, announcementDataUri } from '../render/background';
+import { clockSuspect } from '../clockFloor';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
 import { netFacts, scanNetworks } from './network';
@@ -1368,6 +1370,9 @@ function frostOnce(live: Live, bgUri: string, width: number, height: number): vo
  *  that shows nothing until it does is not. */
 function imageFor(live: Live, pathOrNull: string | null): string | null {
   if (!pathOrNull) return null;
+  // Already resolved. A standalone screen reads its own uploads off its own disk, so there is no
+  // server URL to look up and nothing to fetch — the value IS the picture.
+  if (pathOrNull.startsWith('data:')) return pathOrNull;
   const url = absolute(pathOrNull, live.server);
   return (url && live.images.get(url)) || null;
 }
@@ -1676,6 +1681,51 @@ async function waitForConfig(screen: Screen | null): Promise<AgentConfig> {
 }
 
 /**
+ * The state a standalone screen would have been sent, built from what is on this device.
+ *
+ * Same shape as the wire state the server sends, so `drawFrame` is the one that draws it and
+ * there is no second rendering path to keep in step. The assets are `data:` URIs read straight
+ * off this disk — `render/background` caches them by modification time, so this costs one read
+ * per change rather than one per frame.
+ */
+function localState(store: Store, live: Live): void {
+  const db = store.db;
+  // One screen, so one assignment: whatever this device was told to show, or the only timetable
+  // there is. A screen with nothing configured says so rather than going black.
+  const tv = db.tvs[0];
+  // A volunteer's manual override outranks the default, until it expires — the same precedence
+  // the server applies, and the reason the volunteer page works with no server behind it.
+  const override = tv?.override && (tv.override.until === null || tv.override.until > Date.now()) ? tv.override.content : null;
+  const ref = override ?? tv?.defaultContent ?? { kind: 'timetable' as const, id: db.timetables[0]?.id ?? '' };
+  const tt = ref.kind === 'timetable' ? (db.timetables.find((t) => t.id === ref.id) ?? null) : null;
+  const ann = tt?.announcements?.images ?? [];
+
+  live.state = {
+    content: ref,
+    timetable: tt,
+    assets: {
+      background: tt?.backgroundImage ? backgroundDataUri(tt.backgroundImage) : null,
+      logo: tt?.logoImage ? logoDataUri(tt.logoImage) : null,
+      announcements: ann.map((f) => announcementDataUri(f)).filter((u): u is string => !!u),
+    },
+    fonts: [],
+    // Both are the render worker's job on the server, and there is no worker here. Leaving them
+    // alone means the timetable's own colour choice decides, which is what it does when a masjid
+    // has not set a wallpaper — the common case on a screen configured from its own panel.
+    bgLight: false,
+    autoAccent: null,
+    stream: null,
+    serverNow: Date.now(),
+    clockSuspect: clockSuspect(),
+    pollMs: POLL_MS,
+    screenName: tv?.name ?? '',
+    // shortcut: no weekly schedule and no overnight display schedule yet — those live on the
+    // screen record the server keeps, and a standalone screen has no panel for them until the
+    // Screens page learns its one-screen form. Upgrade with that page.
+  } as PiStateWire;
+}
+
+/**
  * A screen that runs on its own.
  *
  * It never calls anybody. The whole of its inbound surface is the panel below, on the masjid's
@@ -1683,12 +1733,14 @@ async function waitForConfig(screen: Screen | null): Promise<AgentConfig> {
  * somebody claims it, the television carries the code that lets them.
  */
 async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: DeviceFacts): Promise<never> {
-  let live = cfg;
+  // `conf` not `live`: in this file `live` is the screen's live STATE, and runAdopted uses it
+  // that way. Two meanings for one name in one function is how the wrong one gets passed.
+  let conf = cfg;
   // Minted once and kept. A code that changed on every boot would be a code nobody can write
   // down, on a device whose normal shutdown is somebody switching the socket off.
-  if (!live.setupCode) {
-    live = { ...live, setupCode: newSetupCode() };
-    saveConfig(live);
+  if (!conf.setupCode) {
+    conf = { ...conf, setupCode: newSetupCode() };
+    saveConfig(conf);
     log('minted a setup code for this screen');
   }
 
@@ -1707,10 +1759,12 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
   server.on('error', (e) => log('panel listener:', e.message));
   server.listen(PANEL_PORT, () => log(`panel listening on port ${PANEL_PORT}`));
 
+  const live = new Live('');
+  const cadence = new RenderCadence();
+
   for (;;) {
-    const claimed = !!store.db.admin;
     const code = loadConfig()?.setupCode ?? '';
-    if (!claimed && code) {
+    if (!store.db.admin && code) {
       screen?.show(
         pairingSvg({
           code: formatSetupCode(code),
@@ -1723,12 +1777,40 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
           standalone: true,
         }),
       );
-    } else {
-      // shortcut: claimed screens show a holding card until the local draw loop lands in the
-      // next slice; upgrade when the standalone renderer reads timetables from this store.
-      screen?.show(messageSvg('Ready', `Set up this screen at http://${facts.ip || 'its address'}`));
+      await sleep(2_000);
+      continue;
     }
-    await sleep(2_000);
+
+    // A clock that cannot be right must never be presented as the time. A Pi has no
+    // battery-backed clock, so after a power cut it believes whatever was last written to the
+    // card until NTP corrects it — and prayer times computed against that are wrong in the one
+    // way nobody checks.
+    if (clockSuspect()) {
+      screen?.show(messageSvg('Clock is wrong', 'This screen is waiting for the correct time before showing prayer times.'));
+      await sleep(5_000);
+      continue;
+    }
+
+    localState(store, live);
+    applyDisplaySchedule(live);
+    if (!live.state?.timetable) {
+      // Not black. A screen with nothing configured and a screen that is broken look identical
+      // in the dark, and only one of them is somebody's job to fix.
+      screen?.show(messageSvg('Nothing to show yet', `Add a timetable at http://${facts.ip || 'this screen'}`));
+      await sleep(2_000);
+      continue;
+    }
+
+    // Blur the wallpaper once per wallpaper, not once per frame. Measured on a Pi 4: the frost
+    // costs about 3.8 seconds of every frame, which turns a clock that ticks into one that
+    // lurches. See RenderOpts.bgPreblurred.
+    const bg = live.state.assets.background;
+    const { width: fw, height: fh } = dimsFor(live.state.timetable.orientation, live.state.timetable.quality);
+    if (bg && (live.frostedSrc !== bg || live.frostedDims !== `${fw}x${fh}`)) frostOnce(live, bg, fw, fh);
+
+    const ms = drawFrame(screen, live);
+    if (ms !== null) cadence.record(ms);
+    await sleep(cadence.intervalMs());
   }
 }
 
