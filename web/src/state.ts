@@ -2,7 +2,8 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useCallback, useEffect, useState } from 'react';
 import { api, setUnauthHandler } from './api';
-import type { AppState, TvStatus } from './types';
+import type { AppState, TvStatus, Capabilities } from './types';
+import { ALL_CAPABILITIES } from './types';
 
 export interface UseApp {
   state: AppState | null;
@@ -15,6 +16,8 @@ export interface UseApp {
   /** whether the OpenMasjidOS platform was reachable on the last session check
    *  (false → SSO can't complete right now; offer the local-password recovery) */
   ssoReachable: boolean;
+  /** what the host serving this panel supports — a Pi serves the same app with less of it on */
+  caps: Capabilities;
   loading: boolean;
   refetch: () => Promise<void>;
   onAuthed: () => void;
@@ -26,6 +29,7 @@ export function useAppState(): UseApp {
   const [hasPassword, setHasPassword] = useState(false);
   const [ssoEnabled, setSsoEnabled] = useState(false);
   const [ssoReachable, setSsoReachable] = useState(true);
+  const [caps, setCaps] = useState<Capabilities>(ALL_CAPABILITIES);
   const [loading, setLoading] = useState(true);
 
   const refetch = useCallback(async () => {
@@ -48,6 +52,8 @@ export function useAppState(): UseApp {
       setHasPassword(!!s.hasPassword);
       setSsoEnabled(!!s.sso?.enabled);
       setSsoReachable(s.sso?.reachable !== false);
+      // A host too old to answer keeps every feature, which is what it had.
+      if (s.capabilities) setCaps(s.capabilities);
       if (s.authed) {
         await refetch();
         return;
@@ -115,5 +121,5 @@ export function useAppState(): UseApp {
     void checkSession();
   }, [checkSession]);
 
-  return { state, authed, hasPassword, ssoEnabled, ssoReachable, loading, refetch, onAuthed };
+  return { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, loading, refetch, onAuthed };
 }

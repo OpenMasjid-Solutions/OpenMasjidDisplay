@@ -6,6 +6,7 @@ import type { AppState, Timetable, IqamahRule, IqamahConfig, IqamahYear, IqamahS
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, IconDownload, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 import { readImageForUpload } from '../image';
+import { useCaps } from '../capabilities';
 
 interface Props {
   state: AppState;
@@ -153,6 +154,7 @@ type EditorTab = 'general' | 'salah' | 'appearance' | 'during' | 'announce' | 's
 
 // `fullPage` is accepted (App passes it) but the editor is now always a full-page layout.
 export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppState; tt: Timetable | null; onClose: () => void; onSaved: () => void; fullPage?: boolean }) {
+  const caps = useCaps();
   const toast = useToast();
   const [f, setF] = useState<Form>(() => toForm(tt, state));
   const [busy, setBusy] = useState(false);
@@ -1138,6 +1140,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
   const sharing = (
     <>
+      {caps.widget && (
       <div className="card section">
         <h3 className="section-title">Website widget</h3>
         <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
@@ -1148,6 +1151,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           <p className="hint">Save this timetable, then reopen to get the embed code.</p>
         ))}
       </div>
+      )}
 
       <div className="card section">
         <h3 className="section-title">Print</h3>

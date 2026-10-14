@@ -14,6 +14,7 @@ import type {
   Release,
   WhatsAppStatus,
   PiDeviceInfo,
+  Capabilities,
 } from './types';
 
 let onUnauth: () => void = () => {};
@@ -52,6 +53,7 @@ export const api = {
       authed: boolean;
       hasPassword: boolean;
       sso: { enabled: boolean; reachable?: boolean; username?: string };
+      capabilities?: Capabilities;
     }>('GET', '/api/session'),
   setup: (password: string) => req<{ ok: boolean }>('POST', '/api/setup', { password }),
   login: (password: string) => req<{ ok: boolean }>('POST', '/api/login', { password }),

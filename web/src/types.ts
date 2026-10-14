@@ -10,6 +10,35 @@ export type CalcMethod = 'MWL' | 'ISNA' | 'Egypt' | 'Makkah' | 'Karachi' | 'Cust
 export type AsrMadhab = 'Standard' | 'Hanafi';
 export type TimeFormat = '12h' | '24h';
 
+/** What the host serving this panel supports — see server/src/capabilities.ts. A capability
+ *  that is off is ABSENT from the UI, never shown disabled. */
+export interface Capabilities {
+  host: 'server' | 'pi';
+  whatsapp: boolean;
+  companion: boolean;
+  sso: boolean;
+  notifications: boolean;
+  widget: boolean;
+  terminal: boolean;
+  remoteAccess: boolean;
+  screens: 'fleet' | 'self';
+}
+
+/** What to assume before the host has answered, and on a host too old to say. Everything on:
+ *  this panel only ever ran on the server until the Pi learned to serve it, so assuming
+ *  otherwise would hide features from the machine that actually has them. */
+export const ALL_CAPABILITIES: Capabilities = {
+  host: 'server',
+  whatsapp: true,
+  companion: true,
+  sso: true,
+  notifications: true,
+  widget: true,
+  terminal: true,
+  remoteAccess: true,
+  screens: 'fleet',
+};
+
 export interface IqamahRule {
   mode: 'offset' | 'fixed' | 'none';
   offset?: number;

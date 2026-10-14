@@ -13,6 +13,10 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Groundwork for Raspberry Pi screens that run on their own.** The control panel now asks the
+  machine serving it what it supports, so the same panel can be served by a Pi later with the
+  parts a Pi does not have left out rather than shown greyed out. Nothing is different on an
+  OpenMasjidOS server, which supports everything.
 - **A golden record of what the screens draw.** Thirty real configurations — both designs, both
   orientations, both resolutions, three languages, the slideshow, the ticker and the prohibited
   time — are pinned, so the upcoming Raspberry Pi work cannot change a screen by accident. This

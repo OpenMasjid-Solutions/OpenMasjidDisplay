@@ -23,6 +23,7 @@ import { WhatsNewModal } from './whatsnew';
 
 declare const __APP_VERSION__: string;
 import type { AppState } from './types';
+import { CapabilitiesProvider } from './capabilities';
 import { Screens } from './routes/Screens';
 import { Timetables, TimetableEditor } from './routes/Timetables';
 import { Sources } from './routes/Sources';
@@ -73,7 +74,7 @@ function EditorPage({ id, state, refetch }: { id: string; state: AppState; refet
 }
 
 function Root() {
-  const { state, authed, hasPassword, ssoEnabled, ssoReachable, loading, refetch, onAuthed } = useAppState();
+  const { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, loading, refetch, onAuthed } = useAppState();
   const [tab, setTab] = useState<Tab>('screens');
   const [setupInstead, setSetupInstead] = useState(false);
   const editId = new URLSearchParams(window.location.search).get('edit');
@@ -99,8 +100,14 @@ function Root() {
 
   if (authed) {
     if (!state) return <Splash />;
-    if (editId) return <EditorPage id={editId} state={state} refetch={refetch} />;
-    return <Shell state={state} refetch={refetch} tab={tab} setTab={setTab} />;
+    // Everything behind the sign-in reads the host's capabilities from here. The sign-in and
+    // first-run screens do not need them yet; a Pi's first run will, in phase 2.
+    const inner = editId ? (
+      <EditorPage id={editId} state={state} refetch={refetch} />
+    ) : (
+      <Shell state={state} refetch={refetch} tab={tab} setTab={setTab} />
+    );
+    return <CapabilitiesProvider value={caps}>{inner}</CapabilitiesProvider>;
   }
   if (loading) return <Splash />;
   // Not signed in. Standalone first run (or a chosen fallback) → create a password.

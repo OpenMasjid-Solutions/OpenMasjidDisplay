@@ -201,13 +201,23 @@ The capabilities object is served from the **existing** bootstrap endpoint, `GET
 ```jsonc
 "capabilities": {
   "host": "server" | "pi",          // who is serving this panel
-  "mode": "standalone" | "managed", // pi only; a managed Pi's panel is read-only
-  "link": "local" | "remote" | "",  // the connection type, '' when standalone
   "whatsapp": false, "companion": false, "sso": false, "notifications": false,
   "widget": false, "terminal": false, "remoteAccess": false,
   "screens": "fleet" | "self"
 }
 ```
+
+**Built, with one trim (phase 1, `0.71.0-dev.19`).** `mode` and `link` are NOT in the object.
+They are facts about one device at one moment — what a managed Pi is called, which server owns
+it, whether the link is local or remote — not capabilities, and nothing reads them until the
+badge arrives in phase 4. They belong with the device record, and inventing their shape before
+anything consumes it is how a contract acquires a field that turns out to be the wrong one.
+
+The web side reads this through a `useCaps()` context (`web/src/capabilities.ts`), mirroring the
+existing `useToast` and `usePrefs`, because the consumers are scattered — a settings panel, and a
+section of the timetable editor which is opened from two different routes. Its default is
+everything-on, so a component rendered outside the provider, or served by a host too old to
+answer, behaves exactly as it did before this existed.
 
 Adding a field to an endpoint the app already calls on boot is the smallest change that works:
 no new request, no new loading state, no second source of truth.
@@ -242,9 +252,22 @@ Three things it must get right or it will be a test that cannot fail:
 - **Mask the documented differences by element, not by raising tolerance.** A global tolerance
   large enough to hide the header pill is large enough to hide a broken layout.
 
-This is the brief's hardest acceptance criterion and the one most likely to be quietly defanged.
-It gets built in phase 1, before there is any Pi panel to compare, so that it is green on
-server-vs-server first and its failures mean something.
+**Reordered to phase 2, and the reason is worth keeping.** This is a *differential* test — one
+build against another, in the same run, in the same browser — not a test against stored
+baselines. That distinction removes the hardest problem in screenshot testing: committed
+baselines are machine-specific (this repository vendors two Arabic faces and no Latin one, so
+text rasterises differently on Windows and on a CI runner) and would have needed a pinned
+container to be stable. Compared pair-by-pair in one run, the platform cancels out and no
+baseline is stored at all.
+
+The consequence is that it cannot run until there are two hosts to compare, which is phase 2. A
+phase-1 run would compare the server against itself, which is green by construction and proves
+only the plumbing. Playwright is a **new dependency** either way — it is in neither
+`package.json` today and needs browser binaries in CI.
+
+This is the brief's hardest acceptance criterion and the one most likely to be quietly defanged,
+so: the tolerance is per-element masking, never a global threshold, and the clock and fixture
+date are frozen.
 
 ---
 

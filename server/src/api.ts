@@ -56,6 +56,7 @@ import {
   deviceOnline,
 } from './piAgent';
 import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
+import { capabilitiesFor } from './capabilities';
 import { saveSoundClip, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
 
 /**
@@ -1003,6 +1004,9 @@ export function createApi(deps: Deps) {
           authed: isAuthed,
           hasPassword: !!store.db.admin,
           sso: { enabled: ssoConfigured(), reachable, username },
+          // What this host supports. The Raspberry Pi serves the same panel from the same
+          // bundle and answers 'pi' here, which is the only thing that makes the two differ.
+          capabilities: capabilitiesFor('server'),
         });
       }
       if (pathname === '/api/setup' && method === 'POST') {

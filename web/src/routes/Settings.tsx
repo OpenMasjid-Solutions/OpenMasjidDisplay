@@ -6,6 +6,7 @@ import type { AppState, Settings, WhatsAppStatus, WhatsAppReason, WhatsAppLogEnt
 import { Field, Toggle, Spinner, IconCheck, useToast } from '../ui';
 import { usePrefs, prefsStore, WALLPAPERS, fetchOmosAppearance } from '../prefs';
 import { timezoneOptions } from '../timezones';
+import { useCaps } from '../capabilities';
 
 interface Props {
   state: AppState;
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export function SettingsPage({ state, refetch }: Props) {
+  const caps = useCaps();
   const toast = useToast();
   const prefs = usePrefs();
   const [quality, setQuality] = useState<Settings['defaultQuality']>(state.settings.defaultQuality);
@@ -140,9 +142,9 @@ export function SettingsPage({ state, refetch }: Props) {
 
       <VolunteerPanel state={state} refetch={refetch} />
 
-      <NotificationsPanel />
+      {caps.notifications && <NotificationsPanel />}
 
-      <WhatsAppPanel state={state} refetch={refetch} />
+      {caps.whatsapp && <WhatsAppPanel state={state} refetch={refetch} />}
 
       <BetaPanel state={state} refetch={refetch} />
 
