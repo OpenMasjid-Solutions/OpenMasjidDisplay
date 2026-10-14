@@ -136,31 +136,45 @@ say "server: $SERVER"
 
 # ── the board this needs ─────────────────────────────────────────────────────
 #
-# A Pi 4 or newer, and the Pi 3 is refused rather than merely discouraged.
+# The Raspberry Pi 4 family, and nothing else: the Pi 4, the Pi 400 and the Compute Module 4.
 #
-# It is refused because it could not do the job and no amount of software changed that. A Pi 3
-# decodes a modern camera in software at roughly half real time, and falling behind a live stream is
-# what makes a camera hang up — so the picture stuttered AND the connection dropped every half
-# minute, from one cause. Its H.264 hardware decoder will not open anything much above 1080p and it
-# has no HEVC decoder at all, which is the whole reason for moving.
+# This USED to be "a Pi 4 or newer, and let anything unrecognised through". Both halves changed,
+# and in opposite directions, so it is worth saying why each way round:
 #
-# The generation is compared as a NUMBER, so a Pi 5 or a Pi 6 is accepted by a check written today.
-# Anything that does not identify itself as a numbered Raspberry Pi is allowed through: refusing an
-# unrecognised board on the strength of a string comparison would strand a screen for no reason, and
-# a Compute Module or a Zero is somebody's deliberate choice rather than a mistake to block.
-# `[0-9][0-9]*` rather than `[0-9]\+`: this script is deliberately POSIX sh for dash, and `\+` is a
-# GNU sed extension. It happens to work on Raspberry Pi OS, and it would have gone unnoticed there
-# forever — which is exactly why it is not worth relying on.
-PI_GEN=$(printf '%s' "$MODEL" | sed -n 's/^Raspberry Pi \([0-9][0-9]*\).*/\1/p')
-if [ -n "$PI_GEN" ] && [ "$PI_GEN" -lt 4 ]; then
+#   * A Pi 3 is refused because it could not do the job and no software fixed that. It decodes a
+#     modern camera in software at roughly half real time, and falling behind a live stream is
+#     what makes a camera hang up — so the picture stuttered AND the connection dropped every
+#     half minute, from one cause. It has no HEVC decoder at all.
+#   * A Pi 5, a Zero and an unknown board are now refused too, where before they were allowed.
+#     This is a screen a masjid leaves on a wall for years: "it installed, and we will find out
+#     whether it works" is not a trade to make on somebody else's behalf. The supported board is
+#     the one that has been tested on real hardware.
+#
+# A screen that is ALREADY running is never touched by this — the gate is on installing, not on
+# the service — so no working screen anywhere goes dark because this rule changed.
+# >>> board-gate (lifted verbatim by piInstaller.test.ts — keep the markers and keep the two
+# copies of this block identical)
+# Matched by NAME, not by a parsed generation number. A number cannot express this family: the
+# Pi 400 reports "Raspberry Pi 400" (which parses as four hundred) and the Compute Module 4
+# reports no leading number at all, so a `-eq 4` test refuses two of the three boards that are
+# supported. Written as a `case`, which is POSIX and needs no sed.
+case "$MODEL" in
+  "Raspberry Pi 4 "*|"Raspberry Pi 4"|"Raspberry Pi 400"*|"Raspberry Pi Compute Module 4"*) PI_OK=yes ;;
+  *) PI_OK=no ;;
+esac
+# <<< board-gate
+if [ "$PI_OK" != yes ]; then
   printf '\n\033[31mThis board is not supported.\033[0m\n\n' >&2
-  printf '  %s\n\n' "$MODEL" >&2
-  printf '  OpenMasjidDisplay screens need a Raspberry Pi 4 or newer. Support for the Pi 3 has\n' >&2
-  printf '  ended: it cannot decode a modern camera fast enough to keep up with it, which made\n' >&2
-  printf '  the picture stutter and the camera drop the connection every half minute.\n\n' >&2
-  printf '  A Raspberry Pi 4 with 2GB is enough, and it decodes H.265 cameras in hardware.\n\n' >&2
-  printf '  A Pi 3 screen that is ALREADY set up keeps working and is left alone — it simply\n' >&2
-  printf '  stops receiving new versions. Nothing you do here will switch it off.\n\n' >&2
+  printf '  %s\n\n' "${MODEL:-could not read /proc/device-tree/model}" >&2
+  printf '  OpenMasjidDisplay screens run on the Raspberry Pi 4 family:\n' >&2
+  printf '    - Raspberry Pi 4 Model B (2GB or more)\n' >&2
+  printf '    - Raspberry Pi 400\n' >&2
+  printf '    - Raspberry Pi Compute Module 4\n\n' >&2
+  printf '  The Pi 3 and the Pi Zero cannot decode a modern camera fast enough to keep up with\n' >&2
+  printf '  it, which makes the picture stutter and the camera drop the connection. The Pi 5 is\n' >&2
+  printf '  not supported yet simply because this software has not been tested on one.\n\n' >&2
+  printf '  A screen that is ALREADY set up keeps working and is left alone — it simply stops\n' >&2
+  printf '  receiving new versions. Nothing you do here will switch it off.\n\n' >&2
   exit 1
 fi
 
@@ -725,12 +739,19 @@ fi
 # So the updater refuses instead: the screen keeps the version it has and keeps working, and simply
 # receives nothing new. That is exactly what "no longer supported" should cost somebody.
 MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)
-# `[0-9][0-9]*` rather than `[0-9]\+`: this script is deliberately POSIX sh for dash, and `\+` is a
-# GNU sed extension. It happens to work on Raspberry Pi OS, and it would have gone unnoticed there
-# forever — which is exactly why it is not worth relying on.
-PI_GEN=$(printf '%s' "$MODEL" | sed -n 's/^Raspberry Pi \([0-9][0-9]*\).*/\1/p')
-if [ -n "$PI_GEN" ] && [ "$PI_GEN" -lt 4 ]; then
-  echo "this board ($MODEL) is no longer supported; keeping the version already installed"
+# >>> board-gate (lifted verbatim by piInstaller.test.ts — keep the markers and keep the two
+# copies of this block identical)
+# Matched by NAME, not by a parsed generation number. A number cannot express this family: the
+# Pi 400 reports "Raspberry Pi 400" (which parses as four hundred) and the Compute Module 4
+# reports no leading number at all, so a `-eq 4` test refuses two of the three boards that are
+# supported. Written as a `case`, which is POSIX and needs no sed.
+case "$MODEL" in
+  "Raspberry Pi 4 "*|"Raspberry Pi 4"|"Raspberry Pi 400"*|"Raspberry Pi Compute Module 4"*) PI_OK=yes ;;
+  *) PI_OK=no ;;
+esac
+# <<< board-gate
+if [ "$PI_OK" != yes ]; then
+  echo "this board ($MODEL) is not supported; keeping the version already installed"
   exit 0
 fi
 

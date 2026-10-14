@@ -38,6 +38,11 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
+- **Raspberry Pi screens now install only on the Pi 4 family** — the Pi 4 Model B, the Pi 400 and
+  the Compute Module 4. The Pi 5, the Pi Zero and unrecognised boards are refused with a message
+  naming the board, where before they were allowed through untested. A screen that is **already
+  set up keeps working** and is left alone; it simply stops receiving new versions. This also
+  fixes the Pi 400 and the Compute Module 4, which the old check refused by mistake.
 - **Ishrāq can now be shown on the prayer table**, on both designs. Under Elements, set how many
   minutes after sunrise your masjid observes it (commonly 15 or 20); leave it blank to hide it.
   There is no default minute count on purpose — that is your masjid's call, not ours.
