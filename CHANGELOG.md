@@ -13,6 +13,10 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **A golden record of what the screens draw.** Thirty real configurations — both designs, both
+  orientations, both resolutions, three languages, the slideshow, the ticker and the prohibited
+  time — are pinned, so the upcoming Raspberry Pi work cannot change a screen by accident. This
+  is a safety net for future changes and alters nothing a masjid sees today.
 - **Design notes for standalone Raspberry Pi screens** (`docs/PI_STANDALONE_DESIGN.md`) — the
   plan for a Pi that runs on its own with its own control panel, and can later be adopted by a
   Display server. Nothing has changed on a screen yet; this is the written plan and the open
