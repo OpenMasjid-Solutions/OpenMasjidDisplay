@@ -13,6 +13,10 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Design notes for standalone Raspberry Pi screens** (`docs/PI_STANDALONE_DESIGN.md`) — the
+  plan for a Pi that runs on its own with its own control panel, and can later be adopted by a
+  Display server. Nothing has changed on a screen yet; this is the written plan and the open
+  questions, published so it can be reviewed before any of it is built.
 - **A sound when the Adhan or the Iqamah arrives.** Under **Sound** on a timetable, turn on
   *Play at Adhan* and/or *Play at Iqamah*. It plays a built-in chime, or your own recording if
   you upload one — MP3, M4A, WAV or OGG, up to 5 MB and three minutes. The sound travels on the
