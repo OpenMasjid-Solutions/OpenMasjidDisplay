@@ -43,8 +43,16 @@ export interface PairingView {
   /** the Pi's own address on the masjid's network, for whoever is diagnosing */
   ip: string;
   hostname: string;
-  /** the display server this agent is talking to */
+  /** the display server this agent is talking to, or '' when this screen runs standalone */
   server: string;
+  /**
+   * Setting itself up on its own rather than enrolling with a display server.
+   *
+   * The code is then typed into THIS Pi's own panel, so the instruction has to name its address
+   * instead of the dashboard — somebody standing in a hall with no server anywhere needs to be
+   * told where to go, and "Dashboard → Screens" is an instruction they cannot follow.
+   */
+  standalone?: boolean;
   /** what is going on right now, in one plain sentence */
   status: string;
   /** true once the server has answered at least once — decides which colour the dot is */
@@ -65,6 +73,16 @@ export function pairingSvg(v: PairingView): string {
 
   // Letter-spaced by hand rather than with `letter-spacing`, which resvg does not apply to
   // `text-anchor: middle` the way a browser does — the string would drift off centre.
+  // The two lines that differ between enrolling with a server and setting up on its own. They
+  // live here, with the rest of the screen's words, rather than being passed in by a caller that
+  // has no other opinion about what the television says.
+  const prompt = v.standalone ? 'ENTER THIS CODE TO SET UP THIS SCREEN' : 'ENTER THIS CODE IN THE DASHBOARD';
+  const where = v.standalone
+    ? v.ip
+      ? `In a browser on this network, open  http://${v.ip}`
+      : 'Connect this screen to the network to continue'
+    : 'Dashboard → Screens → Raspberry Pi screens';
+
   const codeChars = [...(v.code || '······')];
   const cellW = 132;
   const codeW = codeChars.length * cellW;
@@ -98,12 +116,12 @@ export function pairingSvg(v: PairingView): string {
     `font-size="34" fill="${P.textDim}">This screen is ready to be set up</text>` +
 
     `<text x="${W / 2}" y="424" text-anchor="middle" font-family="DejaVu Sans, sans-serif" ` +
-    `font-size="30" fill="${P.textFaint}">ENTER THIS CODE IN THE DASHBOARD</text>` +
+    `font-size="30" fill="${P.textFaint}">${esc(prompt)}</text>` +
     cells +
 
     // The one instruction. Named exactly as the panel names it, so the words match the buttons.
     `<text x="${W / 2}" y="726" text-anchor="middle" font-family="DejaVu Sans, sans-serif" ` +
-    `font-size="32" fill="${P.textDim}">Dashboard → Screens → Raspberry Pi screens</text>` +
+    `font-size="32" fill="${P.textDim}">${esc(where)}</text>` +
 
     // Status line, with the dot that tells you whether the network half works.
     `<circle cx="${W / 2 - 300}" cy="836" r="10" fill="${dot}"/>` +
@@ -113,7 +131,9 @@ export function pairingSvg(v: PairingView): string {
     // The small print: what a person on the phone to whoever set this up will be asked for.
     `<text x="${W / 2}" y="962" text-anchor="middle" font-family="DejaVu Sans, sans-serif" ` +
     `font-size="24" fill="${P.textFaint}">` +
-    `${esc(v.hostname)}  ·  ${esc(v.ip || 'no network')}  ·  server ${esc(v.server)}  ·  agent ${esc(v.agentVersion)}` +
+    `${esc(v.hostname)}  ·  ${esc(v.ip || 'no network')}` +
+    (v.server ? `  ·  server ${esc(v.server)}` : '') +
+    `  ·  agent ${esc(v.agentVersion)}` +
     `</text>` +
     `</svg>`
   );

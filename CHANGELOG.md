@@ -38,6 +38,10 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
+- **Groundwork for a Raspberry Pi screen that runs on its own.** A screen can now be configured
+  with no display server at all, and shows a one-time setup code on the television for whoever
+  sets it up. The panel that code leads to is not built yet, so nothing about an existing screen
+  changes.
 - **Raspberry Pi screens now install only on the Pi 4 family** — the Pi 4 Model B, the Pi 400 and
   the Compute Module 4. The Pi 5, the Pi Zero and unrecognised boards are refused with a message
   naming the board, where before they were allowed through untested. A screen that is **already

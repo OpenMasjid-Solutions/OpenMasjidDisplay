@@ -37,7 +37,14 @@ export const CONFIG_PATH = process.env.OMD_SCREEN_CONFIG || `${CONFIG_DIR}/confi
 export const SERVER_ORIGIN_RE = /^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/;
 
 export interface AgentConfig {
-  /** the display server's origin, baked in by the installer from the URL it was fetched from */
+  /**
+   * The display server's origin, baked in by the installer from the URL it was fetched from —
+   * or **empty, meaning this screen runs standalone** and has no server at all.
+   *
+   * Empty used to be refused along with every other malformed address, which is right for a
+   * screen that is supposed to have a server and wrong for one that never will. See parseConfig
+   * for the rule that keeps the two apart.
+   */
   server: string;
   /** stable across reboots so a power cut does not create a second pending device */
   deviceId: string;
@@ -45,6 +52,14 @@ export interface AgentConfig {
   deviceSecret: string;
   /** issued on adoption; absent until then */
   token?: string;
+  /**
+   * The one-time code on the television, for a standalone screen nobody has claimed yet.
+   *
+   * Persisted rather than generated per boot so that a power cut does not change the code
+   * somebody has already walked away with — on a screen switched off at the socket, an unclean
+   * restart is the normal one. Removed the moment the account is created; it is spent once.
+   */
+  setupCode?: string;
 }
 
 /**
@@ -61,17 +76,30 @@ export function parseConfig(text: string): AgentConfig | null {
   } catch {
     return null;
   }
-  if (!raw || typeof raw !== 'object') return null;
+  // Arrays are `typeof 'object'` too. That mattered the moment an absent server stopped being
+  // refused: `[]` has no `server` key, so it would have read as a perfectly good standalone
+  // config instead of the corrupt file it is.
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
 
   const server = typeof o.server === 'string' ? o.server.trim().replace(/\/+$/, '') : '';
-  if (!SERVER_ORIGIN_RE.test(server)) return null;
+  // Absent or empty is STANDALONE — a screen that runs on its own. Anything present but
+  // malformed is still refused: it is the one field that decides where this device sends its
+  // identity, and a typo there should stop the agent with a message on the television rather
+  // than have it try.
+  if (server && !SERVER_ORIGIN_RE.test(server)) return null;
 
   const deviceId = typeof o.deviceId === 'string' ? o.deviceId.trim() : '';
   const deviceSecret = typeof o.deviceSecret === 'string' ? o.deviceSecret.trim() : '';
   const token = typeof o.token === 'string' && o.token.trim() ? o.token.trim() : undefined;
+  // A token with no server is a CORRUPTED config, not a standalone screen. Reading it as
+  // standalone would quietly retire an adopted Pi — it would stop calling home for good, and the
+  // masjid would find out when a timetable change never arrived. Refuse it loudly instead.
+  if (token && !server) return null;
 
-  return { server, deviceId, deviceSecret, ...(token ? { token } : {}) };
+  const setupCode = typeof o.setupCode === 'string' && /^\d+$/.test(o.setupCode.trim()) ? o.setupCode.trim() : undefined;
+
+  return { server, deviceId, deviceSecret, ...(token ? { token } : {}), ...(setupCode ? { setupCode } : {}) };
 }
 
 export function loadConfig(file = CONFIG_PATH): AgentConfig | null {
@@ -115,6 +143,9 @@ export function saveConfig(cfg: AgentConfig, file = CONFIG_PATH): void {
   // An absent token means "forgotten", which has to be able to REMOVE the key rather than leave
   // the old one behind — the one field where merging would be wrong.
   if (cfg.token === undefined) delete merged.token;
+  // And the same for the setup code, which is SPENT on claiming the screen. Merging it back
+  // would leave a used code on disk and on the television for ever.
+  if (cfg.setupCode === undefined) delete merged.setupCode;
 
   // Write, FLUSH, rename, flush the directory. All four steps, and the flushes are the point.
   //

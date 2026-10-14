@@ -218,9 +218,41 @@ test('a trailing slash on the server is dropped, so URLs do not double up', () =
 });
 
 test('a server address that is not http(s) is refused', () => {
-  // The one field that decides where this device sends its identity.
-  for (const bad of ['', 'host:7860', 'ftp://host', 'file:///etc/passwd', 'javascript:x']) {
+  // The one field that decides where this device sends its identity. `''` is NOT in this list
+  // any more — it is how a standalone screen is spelled; see the two tests below.
+  for (const bad of ['host:7860', 'ftp://host', 'file:///etc/passwd', 'javascript:x']) {
     assert.equal(parseConfig(JSON.stringify({ server: bad })), null, bad);
+  }
+});
+
+// ── a screen that has no server at all ───────────────────────────────────────
+
+test('no server means standalone, not a broken config', () => {
+  // A Pi installed without a display server runs on its own. Reading that as "unconfigured"
+  // was what stopped it being possible at all: the agent treats a null config as a device it
+  // cannot start.
+  for (const text of ['{}', '{"server":""}', '{"server":"   "}', '{"deviceId":"pi_a","deviceSecret":"s"}']) {
+    const cfg = parseConfig(text);
+    assert.ok(cfg, text);
+    assert.equal(cfg!.server, '', text);
+    assert.equal(cfg!.token, undefined, text);
+  }
+});
+
+test('a token with no server is a corrupted config, not a standalone screen', () => {
+  // The dangerous reading. An adopted Pi whose server address was lost would quietly stop
+  // calling home for ever, and the masjid would find out when a timetable change never
+  // arrived. Refusing it sends somebody to the television instead, which is recoverable.
+  assert.equal(parseConfig('{"server":"","token":"t","deviceId":"pi_a","deviceSecret":"s"}'), null);
+  assert.equal(parseConfig('{"token":"t"}'), null);
+});
+
+test('the setup code survives a reboot, and only if it is digits', () => {
+  // Persisted so that a power cut does not change the code somebody already wrote down — on a
+  // screen switched off at the socket, an unclean restart is the normal one.
+  assert.equal(parseConfig('{"setupCode":"04172580"}')?.setupCode, '04172580');
+  for (const bad of ['', '   ', 'abcd1234', '1234-5678', '<script>']) {
+    assert.equal(parseConfig(JSON.stringify({ setupCode: bad }))?.setupCode, undefined, bad);
   }
 });
 
