@@ -102,6 +102,23 @@ export function parseConfig(text: string): AgentConfig | null {
   return { server, deviceId, deviceSecret, ...(token ? { token } : {}), ...(setupCode ? { setupCode } : {}) };
 }
 
+/**
+ * Is this config one the agent should act on, or should it keep waiting?
+ *
+ * A server address is obviously usable. A STANDALONE config has no server, so the test for it
+ * is the identity: the installer writes one, which makes its presence the evidence that this
+ * file was written on purpose.
+ *
+ * That distinction is the whole point. A file truncated by a power cut parses as `{}` — no
+ * server and no identity — and treating that as standalone would take a screen that has been
+ * adopted for a year and present it to the hall as a brand-new one asking to be set up. Waiting
+ * is the better failure: it is visible, it is recoverable, and it is what this did before
+ * standalone screens existed.
+ */
+export function isUsableConfig(cfg: AgentConfig | null): boolean {
+  return !!cfg && (!!cfg.server || (!!cfg.deviceId && !!cfg.deviceSecret));
+}
+
 export function loadConfig(file = CONFIG_PATH): AgentConfig | null {
   try {
     return parseConfig(fs.readFileSync(file, 'utf8'));

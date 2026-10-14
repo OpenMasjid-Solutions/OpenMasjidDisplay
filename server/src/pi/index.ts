@@ -27,6 +27,7 @@
  * touches the dashboard, and the picture changes every second because a clock is on it.
  */
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import WebSocket from 'ws';
@@ -43,6 +44,9 @@ import {
 import { VideoPlayer } from './video';
 import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
+import { createPiPanel, PANEL_PORT, WEB_DIR } from './panel';
+import { newSetupCode, formatSetupCode } from './claim';
+import { Store } from '../store';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
 import { netFacts, scanNetworks } from './network';
@@ -56,6 +60,7 @@ import {
   saveConfig,
   makeDeviceId,
   makeDeviceSecret,
+  isUsableConfig,
   CONFIG_PATH,
   SERVER_ORIGIN_RE,
   type AgentConfig,
@@ -1651,12 +1656,79 @@ async function runAdopted(
 async function waitForConfig(screen: Screen | null): Promise<AgentConfig> {
   for (let attempt = 0; ; attempt++) {
     const cfg = loadConfig();
-    if (cfg?.server) return cfg;
+    /**
+     * A server address, OR a deliberate standalone config — which the installer writes with an
+     * identity already in it.
+     *
+     * The identity is the test for "written on purpose". A file truncated by a power cut parses
+     * as `{}`: no server and no identity. Accepting that as standalone would take a screen that
+     * has been adopted for a year and present it to the hall as a brand-new one asking to be set
+     * up, which is a far worse failure than waiting. So a config with neither keeps waiting,
+     * exactly as it did before standalone existed.
+     */
+    if (isUsableConfig(cfg)) return cfg!;
     if (attempt === 0) log(`no usable config at ${CONFIG_PATH}; waiting`);
     screen?.show(
-      messageSvg('Not set up yet', 'This screen has no display server configured. Re-run the installer on this device.'),
+      messageSvg('Not set up yet', 'This screen has no configuration. Re-run the installer on this device.'),
     );
     await sleep(10_000);
+  }
+}
+
+/**
+ * A screen that runs on its own.
+ *
+ * It never calls anybody. The whole of its inbound surface is the panel below, on the masjid's
+ * network, and the whole of its outbound traffic is whatever the admin points a camera at. Until
+ * somebody claims it, the television carries the code that lets them.
+ */
+async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: DeviceFacts): Promise<never> {
+  let live = cfg;
+  // Minted once and kept. A code that changed on every boot would be a code nobody can write
+  // down, on a device whose normal shutdown is somebody switching the socket off.
+  if (!live.setupCode) {
+    live = { ...live, setupCode: newSetupCode() };
+    saveConfig(live);
+    log('minted a setup code for this screen');
+  }
+
+  const store = new Store();
+  const panel = createPiPanel({
+    store,
+    // Read fresh each time rather than closing over `live`: the panel SPENDS the code, and a
+    // stale copy here would keep accepting one that has already been used.
+    readConfig: () => loadConfig(),
+    writeConfig: (next) => saveConfig(next),
+    webDir: WEB_DIR,
+    screens: { getStatuses: () => [] },
+  });
+
+  const server = http.createServer((req, res) => void panel(req, res));
+  server.on('error', (e) => log('panel listener:', e.message));
+  server.listen(PANEL_PORT, () => log(`panel listening on port ${PANEL_PORT}`));
+
+  for (;;) {
+    const claimed = !!store.db.admin;
+    const code = loadConfig()?.setupCode ?? '';
+    if (!claimed && code) {
+      screen?.show(
+        pairingSvg({
+          code: formatSetupCode(code),
+          ip: facts.ip,
+          hostname: facts.hostname,
+          server: '',
+          status: `Waiting to be set up — open http://${facts.ip || 'this screen'} on this network`,
+          connected: !!facts.ip,
+          agentVersion: AGENT_VERSION,
+          standalone: true,
+        }),
+      );
+    } else {
+      // shortcut: claimed screens show a holding card until the local draw loop lands in the
+      // next slice; upgrade when the standalone renderer reads timetables from this store.
+      screen?.show(messageSvg('Ready', `Set up this screen at http://${facts.ip || 'its address'}`));
+    }
+    await sleep(2_000);
   }
 }
 
@@ -1694,6 +1766,13 @@ async function main(): Promise<void> {
     live = { ...live, deviceId: live.deviceId || makeDeviceId(), deviceSecret: live.deviceSecret || makeDeviceSecret() };
     saveConfig(live);
     log(`minted a device identity: ${live.deviceId}`);
+  }
+
+  // No server means this screen is its own: it serves a panel and is configured on the LAN,
+  // and nothing below this line — enrolment, polling, the adopted loops — applies to it.
+  if (!live.server) {
+    log('no display server configured; running standalone');
+    await runStandalone(screen, live, facts);
   }
 
   // The failure hook is the point of passing anything here: a background that will not download

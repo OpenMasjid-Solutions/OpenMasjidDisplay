@@ -18,7 +18,7 @@ import { parseGeometry, packFrame, Framebuffer } from './framebuffer';
 import { parseFbset } from './fbset';
 import { fitMode, blitCentered } from './raster';
 import { pickLanIp, deviceFacts } from './device';
-import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, type AgentConfig } from './agentConfig';
+import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, isUsableConfig, type AgentConfig } from './agentConfig';
 import { pairingSvg, messageSvg } from './pairing';
 
 // ── framebuffer geometry ─────────────────────────────────────────────────────
@@ -237,6 +237,22 @@ test('no server means standalone, not a broken config', () => {
     assert.equal(cfg!.server, '', text);
     assert.equal(cfg!.token, undefined, text);
   }
+});
+
+test('a truncated config is not mistaken for a brand-new standalone screen', () => {
+  // THE dangerous reading, and the reason standalone needs a test for "written on purpose".
+  // A file truncated by a power cut parses as `{}` — no server, no identity. Acting on it would
+  // take a screen adopted a year ago and present it to the hall as a new one asking to be set
+  // up. Waiting is visible and recoverable; that is what it did before standalone existed.
+  assert.equal(isUsableConfig(parseConfig('{}')), false);
+  assert.equal(isUsableConfig(parseConfig('{"server":""}')), false);
+  assert.equal(isUsableConfig(null), false);
+  // An identity is the evidence the installer wrote it.
+  assert.equal(isUsableConfig(parseConfig('{"deviceId":"pi_a","deviceSecret":"s"}')), true);
+  // Half an identity is not evidence of anything.
+  assert.equal(isUsableConfig(parseConfig('{"deviceId":"pi_a"}')), false);
+  // And a server address is usable with or without one, as it always was.
+  assert.equal(isUsableConfig(parseConfig('{"server":"http://h"}')), true);
 });
 
 test('a token with no server is a corrupted config, not a standalone screen', () => {

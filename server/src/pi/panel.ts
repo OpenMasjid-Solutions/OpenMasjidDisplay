@@ -59,6 +59,18 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
+/**
+ * Port 80, so the address on the television is one somebody can type.
+ *
+ * The agent does NOT run as root to get it: the systemd unit grants
+ * `CAP_NET_BIND_SERVICE` as an ambient capability, which is the whole of the privilege needed
+ * to bind a low port. Overridable so a test, or a developer, can run this without it.
+ */
+export const PANEL_PORT = Number(process.env.OMD_PANEL_PORT || 80);
+
+/** The built web app on the device, installed beside the agent. */
+export const WEB_DIR = process.env.OMD_PANEL_WEB || '/opt/openmasjid-screen/web';
+
 export interface PanelDeps {
   store: Store;
   /** the agent's config, for the setup code — read fresh, because it is cleared on claiming */
