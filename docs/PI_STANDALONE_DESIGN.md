@@ -237,6 +237,20 @@ Anything not on this list is a bug, and the brief makes adding to it a stop-and-
 | 3 | A **Standalone / Managed · Local / Managed · Remote** pill in the panel header | Not on the TV picture — that is congregation-facing. |
 | 4 | Appearance: the server matches the OMOS dashboard theme and wallpaper; the Pi uses the panel's own "set them here" controls | Same controls, same look. The server's extra behaviour is inherited theme, not a different UI. |
 | 5 | A **managed** Pi's panel is a read-only status page plus a break-glass login | Not a different design system — the same pages in a read-only state, which the panel already has a pattern for. |
+| 6 | The first-run screen asks for the **setup code** as well as a password | See below — the brief mandates this flow but left it off its own list. |
+
+**Difference 6 is the brief's own, and it is flagged rather than asked about.** The brief makes
+any unlisted panel difference a stop-and-ask item, and then specifies a flow that requires one:
+*"the user opens `http://<pi>` on the LAN, enters the code, and creates a username and
+password."* The server has no setup code and never will, so its first-run screen cannot carry
+that field. The list is incomplete; the flow is unambiguous. It is one extra input on the
+first-run screen only, gated on `capabilities.host === 'pi'`, and it touches no other page.
+
+**What was NOT taken from that sentence: a username.** The server's sign-in is password-only, and
+adding a username field to satisfy the Pi would either fork the Login page — the thing the brief
+calls a hard requirement — or change how every existing masjid signs in, which nobody asked for.
+The account record already carries an optional display name, so a name can be stored without the
+sign-in form growing a field. Password-only is the reading that keeps the panels identical.
 
 ### 2.2 Proving it — the visual-regression harness
 
