@@ -345,6 +345,30 @@ apt-get $APT_OPTS install -y --no-install-recommends \
   nodejs npm ca-certificates curl openssl fonts-dejavu-core fbset \
   || die 'could not install the base packages'
 
+# The Arabic faces.
+#
+# A timetable is bilingual even in English: every prayer name carries an Arabic gloss, and a
+# masjid can set the whole screen to Arabic or Urdu. DejaVu has no Arabic coverage, so without a
+# face that does, those strings draw as empty boxes — on the wall, in front of the congregation.
+#
+# An ADOPTED screen is sent its faces by the display server. A STANDALONE one has nobody to ask,
+# so they have to come from the distribution.
+#
+# Best-effort, each on its own: a package name that changed between Raspberry Pi OS releases must
+# not be the reason a screen cannot be installed. The agent says at startup whether it found one.
+say 'installing fonts for the Arabic prayer-name gloss'
+ARABIC_FONT=0
+for pkg in fonts-hosny-amiri fonts-noto-core; do
+  # shellcheck disable=SC2086
+  if apt-get $APT_OPTS install -y --no-install-recommends "$pkg" >/dev/null 2>&1; then
+    say "  installed $pkg"
+    ARABIC_FONT=1
+  else
+    warn "  $pkg is not available here"
+  fi
+done
+[ "$ARABIC_FONT" = 1 ] || warn 'no Arabic font installed — Arabic and Urdu text will draw as empty boxes'
+
 command -v node >/dev/null 2>&1 || die 'node did not install; check `apt-get install nodejs`'
 say "node $(node -v), npm $(npm -v 2>/dev/null || echo '?')"
 

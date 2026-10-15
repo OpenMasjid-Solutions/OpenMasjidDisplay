@@ -49,6 +49,7 @@ import { newSetupCode, formatSetupCode } from './claim';
 import { Store } from '../store';
 import { backgroundDataUri, logoDataUri, announcementDataUri } from '../render/background';
 import { clockSuspect } from '../clockFloor';
+import { fontOptions } from '../render/fonts';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
 import { netFacts, scanNetworks } from './network';
@@ -1688,6 +1689,17 @@ async function waitForConfig(screen: Screen | null): Promise<AgentConfig> {
  * off this disk — `render/background` caches them by modification time, so this costs one read
  * per change rather than one per frame.
  */
+/**
+ * The faces this device draws with, resolved once.
+ *
+ * The same scan the server runs, so a standalone screen picks what the server would have picked
+ * — including the Arabic face, which is the whole point. Naming the files matters: resvg is
+ * given `loadSystemFonts: false` when there are files, and with system fonts and a Latin default
+ * family it takes the Latin face and draws every Arabic glyph on the timetable as an empty box.
+ * See Screen.show, where that measurement is recorded.
+ */
+const FONTS = fontOptions();
+
 function localState(store: Store, live: Live): void {
   const db = store.db;
   // One screen, so one assignment: whatever this device was told to show, or the only timetable
@@ -1709,6 +1721,11 @@ function localState(store: Store, live: Live): void {
       announcements: ann.map((f) => announcementDataUri(f)).filter((u): u is string => !!u),
     },
     fonts: [],
+    fontFamilies: {
+      default: FONTS.defaultFontFamily,
+      serif: FONTS.serifFamily ?? FONTS.defaultFontFamily,
+      sansSerif: FONTS.sansSerifFamily ?? FONTS.defaultFontFamily,
+    },
     // Both are the render worker's job on the server, and there is no worker here. Leaving them
     // alone means the timetable's own colour choice decides, which is what it does when a masjid
     // has not set a wallpaper — the common case on a screen configured from its own panel.
@@ -1760,6 +1777,11 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
   server.listen(PANEL_PORT, () => log(`panel listening on port ${PANEL_PORT}`));
 
   const live = new Live('');
+  // Named explicitly rather than left to resvg's system-font search — see FONTS.
+  live.fontFiles = FONTS.fontFiles ?? [];
+  const arabic = (FONTS.fontFiles ?? []).some((f) => /arabic|amiri/i.test(f));
+  log(`fonts: ${live.fontFiles.length} file(s)${arabic ? '' : ' — NO ARABIC FACE; Arabic and Urdu text will draw as empty boxes'}`);
+
   const cadence = new RenderCadence();
 
   for (;;) {
