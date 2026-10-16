@@ -142,7 +142,14 @@ CLAUDE.md § *The changelog has two audiences*.
   release meant a masjid got new software on its screens and no explanation of what changed. It
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
-### Fixed
+### Fixed
+- **Pictures you upload are served more defensively.** A logo, background or announcement image
+  is now sent with headers that stop a browser treating it as anything but a picture. Four of the
+  five places that serve these files were missing that; they all have it now. Nothing you do in
+  the panel changes.
+- **A Raspberry Pi running on its own checks a release's name before using it.** A release named
+  in an unexpected way is now refused outright rather than acted on — which also means a screen
+  can no longer be tripped up by an unusual tag.
 - **The clock no longer shows the wrong second.** With the seconds displayed, the digit repeated
   and then skipped about twice a minute — the time was being rebuilt from a decimal that had
   already lost a fraction, so flooring it landed on the second before. It affected the

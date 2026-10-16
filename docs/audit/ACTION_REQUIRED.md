@@ -355,3 +355,42 @@ exits with *"nothing to update from"* and the screen receives nothing again, for
 looking perfectly healthy. Re-running `pi.sh` is the supported route and writes both back. The
 documentation now says so, and any un-adopt feature must do the same rather than just clearing a
 field.
+
+### 9.7 Security sweep, 2026-10-16 — what it found and what was fixed
+
+A pass over the whole app, not just the Pi. `npm audit` is clean at `--audit-level=low` in both
+packages. The unauthenticated route surface was enumerated and every entry is deliberate:
+`/api/{login,logout,session,setup}`, `/healthz`, the PIN-gated volunteer page, the public widget,
+and `/fabric/commands/run` (secret + caller-header authenticated). No authorisation gap was found.
+No log call anywhere in the server writes a secret — the one match was the word "token" inside an
+English sentence.
+
+**Two real findings, both fixed in the same commit:**
+
+1. **An uploaded file was served without sandboxing headers by four routes out of five.** An
+   uploaded image may be an SVG, which is a script container: served with its real type and opened
+   directly it runs in this app's origin. `api.ts`'s announcement-thumbnail route had the sandbox
+   CSP *and a paragraph explaining why*; the Pi agent's asset route, the browser screen's asset
+   route and a standalone Pi's own preview did not, and the volunteer page had a third hand-written
+   copy that had already drifted (it omitted `media-src`). Now one `UPLOAD_HEADERS` constant in
+   `httpio.ts`, used by all five, with a test that fails if a sixth caller appears without it.
+
+   Severity is modest and worth stating plainly: uploading requires an admin session and the asset
+   routes require a session or a device token, so this is admin-to-admin rather than a way in. It is
+   fixed because the project already decided stored SVG is active content — `fabricTimetable.ts`
+   refuses it outright by magic bytes — and four routes had not got the message.
+
+2. **The standalone updater used a GitHub release tag unvalidated.** `update.sh` took `tag_name`
+   straight from the API response into a URL, a filename, and — through `record_version` — the
+   replacement half of a `sed` expression writing `trust.env`, **which update.sh sources as root on
+   its next run**. A tag carrying a quote leaves that file unbalanced; one carrying `;` leaves a
+   command in it. Publishing a tag needs repository write access, so an attacker who could use this
+   could already ship a malicious bundle — but it needed no attacker at all: `release/1.0` is a tag
+   git accepts and would have corrupted the file on the first update. Now an allowlist of the
+   characters our tags use, plus refusals of a leading dash and of `..`, with seven hostile tags
+   pinned in `update.test.sh` and each watched to pass when the guard is removed.
+
+**Not a finding, recorded so it is not re-investigated:** `server/src/pi/panel.ts` keeps its own
+`SECURITY_HEADERS` rather than importing the server's. It is not a drifted copy — it sends
+`x-frame-options: DENY` where the server sends `frame-ancestors 'self'`, which is stricter. Only
+the comment claiming it mirrored the server was wrong, and that has been corrected.

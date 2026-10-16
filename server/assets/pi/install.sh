@@ -975,6 +975,23 @@ else
   [ "$CHANNEL" = stable ] || JSON=$(printf '%s' "$JSON" | sed -n '1,/^  },$/p')
   TAG=$(printf '%s' "$JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
   [ -n "$TAG" ] || { echo "no $CHANNEL release found; keeping the version installed"; exit 0; }
+  # ── the tag came off the network, so it is checked before it is USED as anything ──
+  #
+  # A git tag may contain almost any byte, including a slash, a quote and a newline. This one
+  # is about to become a URL, a filename, and — through record_version — the replacement half
+  # of a sed expression writing a line into trust.env, which THIS SCRIPT SOURCES AS ROOT on its
+  # next run. A tag carrying a quote would leave that file unbalanced; one carrying `;` would
+  # leave a command in it.
+  #
+  # That needs no attacker to go wrong: `release/1.0` is a tag git accepts and would corrupt the
+  # file on the first update. So the test is an allowlist of the characters our tags actually
+  # use, plus a refusal of a leading dash (which every tool here would read as an option) and of
+  # `..` (which would climb out of the work directory). Anything else is not a tag of ours.
+  case "$TAG" in
+    ""|*[!A-Za-z0-9._-]*|-*|*..*)
+      echo "refusing a release tag that is not shaped like one of ours"; exit 0 ;;
+  esac
+  [ "${#TAG}" -le 64 ] || { echo "refusing an implausibly long release tag"; exit 0; }
 
   # Nothing to do is the common case, and it must cost one API call and no download.
   if [ "$TAG" = "$VERSION" ] || [ "$TAG" = "v$VERSION" ]; then

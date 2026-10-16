@@ -19,7 +19,7 @@ import fs from 'node:fs';
 
 /** Where the agent leaves its requests, and where root leaves its answers. */
 export const STATE_DIR = '/var/lib/openmasjid-screen';
-export const CONTROL_DIR = `${STATE_DIR}/control`;
+// Where the requests land. Derived per call from the state directory so a test can watch them.
 
 /**
  * The closed set of things the root dispatcher will act on.

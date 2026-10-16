@@ -230,6 +230,42 @@ done
 echo 'Raspberry Pi 4 Model B Rev 1.5' > "$R/model"
 
 echo
+echo "-- a release tag that is not shaped like ours is refused before it is used"
+# The tag comes off the network and ends up in a URL, a filename, and the replacement half of
+# a sed expression writing trust.env — which update.sh SOURCES AS ROOT. A quote there leaves
+# the file unbalanced; a semicolon leaves a command in it. `release/1.0` is a tag git accepts
+# and needs no attacker at all.
+for bad in "v9.9.9; touch /tmp/updtest-pwned" "v9.9.9' ; id ; '" "release/9.9.9" "../../etc/passwd" "-rf" "v9..9" "v$(printf 'a%.0s' $(seq 1 80))"; do
+  reset; trust '' dev v9.9.8
+  printf '[{"tag_name":"%s","prerelease":true}]
+' "$bad" > "$R/rel/releases"
+  sh "$R/update.sh" > "$R/out" 2>&1 || bad "exited non-zero for a hostile tag"
+  if grep -q 'old agent' "$R/prefix/agent.js" && ! grep -q "VERSION='v9.9.8'" "$R/prefix/trust.env"; then
+    bad "trust.env was rewritten from a hostile tag"
+  elif grep -q 'refusing' "$R/out" && grep -q 'old agent' "$R/prefix/agent.js"; then
+    ok "refused: $(printf '%s' "$bad" | cut -c1-28)"
+  else
+    bad "not refused: $bad -> $(cat "$R/out" | head -1)"
+  fi
+done
+# And nothing it could have written actually got written.
+[ -e /tmp/updtest-pwned ] && bad "a hostile tag reached a shell" || ok "no command from a tag ran"
+# trust.env must still be a file a shell can source without surprises.
+sh -c '. "$1" ; [ -n "${CHANNEL:-}" ]' _ "$R/prefix/trust.env" && ok "trust.env is still sourceable" || bad "trust.env was corrupted"
+# Put the real release list back for the remaining tests.
+cat > "$R/rel/releases" <<'J'
+[
+  {
+    "tag_name": "v9.9.9",
+    "prerelease": true
+  },
+  {
+    "tag_name": "v9.9.8",
+    "prerelease": false
+  }
+]
+J
+echo
 echo "-- no work directory is left behind"
 ls -d "${TMPDIR:-/tmp}"/omd-update.* >/dev/null 2>&1 && bad "a work directory was left in the temp directory" || ok "cleaned up"
 

@@ -77,7 +77,7 @@ import {
 } from './webScreen';
 import { clockSuspect } from './render/renderer';
 import { fontOptions } from './render/fonts';
-import { SECURITY_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE } from './httpio';
+import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE } from './httpio';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
@@ -717,7 +717,9 @@ export function createApi(deps: Deps) {
             res.end('Not found.');
             return;
           }
-          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': found.mime, 'cache-control': 'public, max-age=86400' });
+          // UPLOAD_HEADERS, not SECURITY_HEADERS: this is a file somebody uploaded, and it may
+          // be an SVG. See the constant.
+          res.writeHead(200, { ...UPLOAD_HEADERS, 'content-type': found.mime, 'cache-control': 'public, max-age=86400' });
           fs.createReadStream(found.path).pipe(res);
           return;
         }
@@ -792,7 +794,8 @@ export function createApi(deps: Deps) {
             return;
           }
           res.writeHead(200, {
-            ...SECURITY_HEADERS,
+            // An uploaded file, so the sandboxing set rather than the ordinary one.
+            ...UPLOAD_HEADERS,
             'content-type': found.mime,
             // Uploads are content-addressed by filename and replaced under a new name, so a
             // long cache is safe and keeps a Pi off the network.
@@ -1391,14 +1394,13 @@ export function createApi(deps: Deps) {
           // Serve the image so the editor can show a thumbnail (must belong to this id).
           const f = file.startsWith(`${id}.ann.`) ? uploadFilePath(file) : null;
           if (!f) return sendJson(res, 404, { error: 'Image not found.' });
-          // Defense-in-depth: this serves user-uploaded files raw with their real type.
-          // An uploaded SVG is active content, so stop the browser sniffing the type and
-          // sandbox it (no scripts, same-origin only) so it can't run JS in our origin.
+          // This serves user-uploaded files raw with their real type, and an uploaded SVG is
+          // active content. The headers were written out here first; they are now UPLOAD_HEADERS,
+          // because the three other routes serving these same bytes did not have them.
           res.writeHead(200, {
+            ...UPLOAD_HEADERS,
             'content-type': f.mime,
             'cache-control': 'private, max-age=300',
-            'x-content-type-options': 'nosniff',
-            'content-security-policy': "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox",
           });
           fs.createReadStream(f.path).pipe(res);
           return;

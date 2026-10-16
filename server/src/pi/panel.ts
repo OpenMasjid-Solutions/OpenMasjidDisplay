@@ -58,10 +58,21 @@ import { renderMonthPrintHtml } from '../print';
 import { localParts } from '../prayer/engine';
 import { setupCodeMatches } from './claim';
 import { isWifiAction, type WifiAction } from './control';
+// Shared with the server deliberately: a file somebody uploaded is sandboxed the same way
+// whoever is serving it. httpio imports nothing but node's own types, so the agent bundle pays
+// nothing for this.
+import { UPLOAD_HEADERS } from '../httpio';
 import type { AgentConfig } from './agentConfig';
 
-/** Mirrors the server's own headers. A panel on a masjid's LAN gets the same treatment as one
- *  behind the platform: there is no reason for the weaker set. */
+/**
+ * The panel's own header set. A panel on a masjid's LAN gets the same treatment as one behind
+ * the platform: there is no reason for the weaker set.
+ *
+ * It is NOT a copy of the server's, and the comment here used to say it mirrored them. The
+ * server sends `content-security-policy: frame-ancestors 'self'`; this sends
+ * `x-frame-options: DENY`, which is stricter — nothing frames a screen's own panel, not even
+ * itself. Kept as it is; only the claim that it matched was wrong.
+ */
 const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
@@ -462,7 +473,9 @@ export function createPiPanel(deps: PanelDeps) {
         if (annFile && method === 'GET') {
           const found = uploadFilePath(decodeURIComponent(annFile));
           if (!found) return sendJson(res, 404, { error: 'Not found.' });
-          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': found.mime, 'cache-control': 'private, max-age=300' });
+          // An uploaded file, so the sandboxing header set. This route was added with the
+          // ordinary one, which is how it ended up being the fourth site to miss it.
+          res.writeHead(200, { ...UPLOAD_HEADERS, 'content-type': found.mime, 'cache-control': 'private, max-age=300' });
           return void res.end(fs.readFileSync(found.path));
         }
         if (annFile && method === 'DELETE') {

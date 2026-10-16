@@ -32,7 +32,7 @@ import {
   isSecureRequest,
 } from './auth';
 import { normContent } from './validate';
-import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
+import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody } from './httpio';
 import { LoginLimiter } from './rateLimit';
 import { rid } from './store';
 import { saveReportImages, removeReportImage, reportImageFile } from './render/background';
@@ -273,11 +273,12 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenSta
         // uploader declared, not from the bytes. So the same defence the announcement-thumbnail
         // route already carries applies here and was missing: `nosniff` so a browser cannot
         // decide the "image/png" is really HTML, and a CSP that makes it inert if it ever does.
+        // UPLOAD_HEADERS rather than a copy. This was the third hand-written copy of the same
+        // policy and it had already drifted — it omitted `media-src`, which the other two had.
         res.writeHead(200, {
+          ...UPLOAD_HEADERS,
           'content-type': f.mime,
           'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-          'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
         });
         return void fs.createReadStream(f.path).pipe(res);
       }
