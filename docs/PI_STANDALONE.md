@@ -215,17 +215,44 @@ sudo journalctl -u openmasjid-screen -n 100 --no-pager
 
 ## Growing into a server
 
-If you later add OpenMasjidOS and a Display server, an existing standalone screen can be
-**adopted**: the server takes over the timetable and the settings, the Pi keeps drawing and
-keeps opening its cameras directly, and the panel at the Pi's address becomes a read-only status
-page with a way back in if the server is ever unreachable.
+If you later add OpenMasjidOS and a Display server, this screen can join it. **Run the server's
+own install command on the Pi** — the one shown in the dashboard under **Screens → Raspberry Pi
+screens**:
 
-Nothing is thrown away, and a screen can be released back to standalone afterwards.
+```sh
+curl -fsSL http://<your-display-server>:7860/pi.sh | sudo sh
+```
 
-> **Not built yet.** The adoption flow is designed but not shipped. Until it is, a Pi set up on
-> its own and a Pi set up from a server are separate choices made at install time — re-running
-> the installer from a server address is the way to move one across, and you will set its
-> timetable up again on the server.
+The television then shows a setup code; type it into that same page and the server takes over
+the timetable and the settings. The Pi keeps drawing the screen itself and keeps opening its
+cameras directly, exactly as before.
+
+**Nothing is thrown away.** The screen keeps its local timetables, its settings and its password
+on disk, untouched, and keeps the same identity so the server sees one screen rather than a
+second one. (Tested on a Pi 4: a standalone screen with two timetables joined a server and still
+had both afterwards, and had them again when it was put back.)
+
+**Two things to know before you do it:**
+
+- **The panel at the Pi's address goes away.** A screen managed by a server is managed from the
+  dashboard, so the Pi stops serving its own panel. If the server later becomes unreachable, you
+  get the screen back by following the next paragraph — but that needs someone able to reach the
+  Pi over SSH, or a keyboard. A read-only status page on the Pi for exactly this situation is
+  designed but not built.
+- **You will set the timetable up again on the server.** The copy on the Pi is kept but not used,
+  and nothing is copied across for you.
+
+### Coming back to standalone
+
+Run the standalone installer again:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidDisplay/main/pi.sh | sudo sh
+```
+
+The screen returns to running on its own, with its old timetables and password still there, and
+starts following release updates again. Do not simply delete the server address by hand: a screen
+with neither a server nor a release channel updates from nothing at all, silently.
 
 ---
 

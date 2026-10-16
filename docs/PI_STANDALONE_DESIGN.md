@@ -509,3 +509,84 @@ Phases 1–3 do not depend on §0.1 or §0.2. **Phase 4 cannot start until §0.1
 A flashable disk image; multi-location management; peer syncing between standalone Pis; RTSP
 output from the Pi; remote access or tunnels on the Pi; terminal, widget or notifications in
 standalone mode; Pi 3, Pi 5 and Zero support.
+
+---
+
+## 11. Adoption: what is built, what was measured, and the two stop-and-ask items
+
+Written after exercising the whole path on real hardware — a Pi 4 at 192.168.1.30 against a
+display server on the LAN — rather than from reading. Both of the items below are on the brief's
+own *stop and ask* list, which is why they are written down here instead of built.
+
+### 11.1 Flow C works today, end to end, and nothing is lost either way
+
+Running a server's `pi.sh` on a standalone screen adopts it. Measured:
+
+| | before | after joining | after returning |
+| --- | --- | --- | --- |
+| local timetables | 2 | 2 | 2 |
+| local admin password | set | set | set |
+| device id | `pi_hwtest01` | unchanged | unchanged |
+| the Pi's own panel on :80 | 200 | **unreachable** | 200 |
+
+So the brief's *"un-adopt always keeps a copy"* holds in both directions already, and for free:
+the store lives in `$DATA_DIR` and nothing in either path touches it. The server saw the screen
+enrol as one device with a pairing code, not as a second row.
+
+The one bad cell in that table is the panel, which is §11.3.
+
+### 11.2 STOP AND ASK — a "join a server" button would invert what makes `reinstall` safe
+
+The obvious feature is a field in the standalone panel: type the server's address, press Connect.
+It cannot be built as it stands, and the reason is specific rather than general caution.
+
+Joining a server is not just storing an address. The installer also pins the server's certificate
+(`openssl s_client` → `$PREFIX`, then `NODE_EXTRA_CA_CERTS`), and most masjids reach their server
+over HTTPS with a self-signed certificate for a private address. Only root can write `$PREFIX`.
+So a panel button would have to ask root, through the spool, to fetch and run a script from an
+address the **unprivileged agent supplied**.
+
+Compare the `reinstall` verb that exists now. It runs the same script as root — but from
+`$SERVER` in `trust.env`, which is root-owned and the one file the agent cannot write. That is
+precisely why it is safe, and its own comment says so: *"over the SAME verified channel as
+everything else"*. A verb carrying an address would turn "root runs a script from the address
+root recorded" into "root runs a script from an address this process chose", which hands a
+compromised agent root on the box. That is the closed verb set's whole point, so it is a
+stop-and-ask rather than a judgement call.
+
+**Options, if it is wanted:**
+
+1. Leave it. Joining a server is `curl … | sudo sh`, which is also how a screen is installed in
+   the first place, and it is documented. **Recommended.**
+2. Allow it for `http://` **private addresses only**, validated by root, no certificate pinning
+   involved. Narrow, but still root fetching a script from an agent-chosen host.
+3. Have the SERVER push the adoption (flow A), so the address the Pi ends up with came from an
+   authenticated call *in* rather than from the agent. This is the brief's flow A and it is the
+   principled answer; it needs the Pi to accept an authenticated inbound call, which the panel
+   already is.
+
+### 11.3 STOP AND ASK — an adopted Pi serves no panel, so adoption is a one-way door
+
+Difference #5 in §2.1 says a managed Pi's panel is *"a read-only status page plus a break-glass
+login"*. It is not built: `createPiPanel` is constructed inside `runStandalone`, so the moment a
+screen is adopted its panel stops existing. Measured above: port 80 went from 200 to unreachable.
+
+What that costs a masjid: if the display server dies for good, the screen keeps drawing from its
+last state but there is no way to reach it except SSH or a keyboard. The thing an admin needs at
+that moment — put this screen back on its own — is exactly what they cannot do.
+
+Hoisting the panel out of `runStandalone` is straightforward. What is not, and what needs a
+decision:
+
+- **What the status page shows without a login.** A Pi installed from a server never had a local
+  password, so there is nothing to sign in with and "break-glass login" has no credential behind
+  it. Either the status page is unauthenticated on the LAN (name, model, version, server address,
+  what it is showing — no secrets, and the television already shows the address to the room), or
+  there is no break-glass on precisely the screens most likely to need one.
+- **Un-adopting from that page needs root**, to clear `SERVER` from `trust.env`. A verb that only
+  ever CLEARS cannot point root anywhere — the worst it can do is make the screen standalone — so
+  it is a far narrower proposition than §11.2. It is still a new member of the closed set.
+- **A hand-edited un-adopt updates from nothing.** Observed: clearing `SERVER` by hand leaves a
+  `trust.env` with no `SERVER` and no `CHANNEL`, so `update.sh` exits with *"nothing to update
+  from"* and the screen silently stops receiving anything, for ever. Re-running `pi.sh` is the
+  supported route and writes both. Any un-adopt we build must do the same.

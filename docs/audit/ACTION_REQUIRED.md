@@ -325,3 +325,33 @@ forwarded whatever it was given. A test asserts each one is refused.
   today's prayer times.
 - **The agent still cannot write `/opt`.** Updates run as a separate root unit, exactly as on a
   managed screen.
+
+### 9.5 Adoption is a one-way door for the admin, and the way back needs root
+
+An adopted Raspberry Pi serves no control panel — measured on hardware: port 80 answers 200
+standalone, is unreachable once adopted, and answers again when the screen is put back. So if a
+masjid's display server dies for good, the screens keep drawing but nobody can reach them except
+over SSH.
+
+Two decisions sit behind fixing it, both written up in
+[`../PI_STANDALONE_DESIGN.md`](../PI_STANDALONE_DESIGN.md) §11:
+
+- **A "join a server" button in the standalone panel cannot be built as things stand.** It would
+  need root to fetch and run a script from an address the unprivileged agent supplied — the exact
+  inversion of what makes the existing `reinstall` verb safe, which takes its address from the
+  root-owned `trust.env`. On the brief's stop-and-ask list. Three options are set out there; the
+  recommendation is to leave it and keep documenting `curl … | sudo sh`.
+- **A read-only status page on an adopted Pi** needs a call on what it shows without a login,
+  since a server-installed Pi never had a local password, and an un-adopt button on it would need
+  a new (clear-only, therefore narrow) spool verb.
+
+Nothing here is a regression: an adopted Pi has never served a panel. It is written down because
+the measurement made the cost concrete and the brief asks for the page.
+
+### 9.6 Un-adopting by hand silently stops all updates
+
+Clearing `SERVER` from `trust.env` by hand leaves no `SERVER` and no `CHANNEL`, so the updater
+exits with *"nothing to update from"* and the screen receives nothing again, for ever, while
+looking perfectly healthy. Re-running `pi.sh` is the supported route and writes both back. The
+documentation now says so, and any un-adopt feature must do the same rather than just clearing a
+field.

@@ -366,7 +366,14 @@ your box read your prayer times instead of being told them twice.
 > blocked by WhatsApp, so delivery takes a few minutes and longer inside quiet hours. Nothing important
 > depends on it — alerts still go by email and webhook.
 
-### Changed
+### Changed
+- **How to move a screen between running on its own and being managed by a server is now
+  written down** — both directions, with what is kept. A standalone screen joins a server by
+  running that server’s install command on it, and comes back by running the standalone one
+  again; its timetables, settings and password are kept either way, and it keeps the same
+  identity so the server sees one screen rather than two. Two things it now warns about: a
+  screen managed by a server stops serving its own control panel, and removing the server
+  address by hand leaves a screen that silently stops updating.
 
 - **Light mode is properly light.** The theme lightened the cards but left the page background dark, so
   panels sat as grey rectangles on a near-black backdrop and the text on them was hard to read. The
