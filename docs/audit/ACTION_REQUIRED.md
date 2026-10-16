@@ -408,3 +408,30 @@ English sentence.
 `SECURITY_HEADERS` rather than importing the server's. It is not a drifted copy — it sends
 `x-frame-options: DENY` where the server sends `frame-ancestors 'self'`, which is stricter. Only
 the comment claiming it mirrored the server was wrong, and that has been corrected.
+
+### 9.8 Two words on an Arabic screen are still English, and translating them is a content decision
+
+Found by pointing a capture card at the Pi's HDMI and actually looking, which is the only way this
+class of thing gets noticed: every string is individually plausible.
+
+Two were fixed on sight (the Simple table header read “الصلاة TIMES”; the next-prayer ring printed
+the Arabic name twice). **This one is not fixed, because it is not mine to decide.** The countdown
+on both designs reads, in Arabic:
+
+    2 HOURS 52 MINUTES UNTIL الأذان
+
+`HOURS`, `MINUTES` and `UNTIL` have no entry in the label table (`PRAYER_LABELS` carries prayer
+names and a handful of words, and none of those three). Adding them is not a matter of looking up
+three words:
+
+- **Arabic counted nouns are grammatical, not just plural.** 2 takes the dual, 3–10 takes the
+  plural, 11 and above takes the singular. “2 ساعات” is wrong where “ساعتان” is right, and a
+  masjid reading a grammatically wrong countdown off a wall all day is worse than one reading an
+  English word it already recognises.
+- The layout reserves width per string (`approxWidth` over-estimates, and letter-spacing is in
+  constant px), so longer words may need the countdown re-fitted.
+
+**What is needed:** the correct Arabic and Urdu forms for hour/hours, minute/minutes and “until”,
+including the counted-noun rules, from somebody who speaks them. Then it is a small change to
+`countdownText` and the label table, with the golden fixtures regenerated for the Arabic and Urdu
+shots only.

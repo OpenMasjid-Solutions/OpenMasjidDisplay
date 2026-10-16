@@ -153,6 +153,12 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **Arabic and Urdu screens no longer show half-translated headings.** The Simple design's table
+  header read “الصلاة TIMES” — the first word translated and the second not. It now reads the
+  same way the Modern design's always has. English screens are unchanged.
+- **The next-prayer ring no longer prints the prayer's name twice on an Arabic screen.** It shows
+  the Arabic name above the English one; in Arabic those are the same words, so it read
+  “العصر” over “العصر”. Now it shows the name once, centred.
 - **Pictures you upload are served more defensively.** A logo, background or announcement image
   is now sent with headers that stop a browser treating it as anything but a picture. Four of the
   five places that serve these files were missing that; they all have it now. Nothing you do in

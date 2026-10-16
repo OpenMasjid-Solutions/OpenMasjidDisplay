@@ -1574,14 +1574,28 @@ function panelRing(b: Box, c: Ctx): string {
   const arSize = clamp(R * 0.48, 18, 60);
   if (c.nextArabic) out.push(text(cx, ringCy + R * 0.04, c.nextArabic, { size: arSize, fill: c.p.gold, family: FONT_ARABIC, weight: 700, anchor: 'middle' }));
   const lblSize = clamp(R * 0.22, 12, 32);
+  /**
+   * The gloss under the Arabic name, unless it WOULD BE the Arabic name.
+   *
+   * The ring draws the Arabic name in gold with the English beneath it. In a language whose own
+   * prayer names are the Arabic ones, both lines are the same string, so an Arabic screen showed
+   * “العصر” over “العصر” — and the second one drawn through the LATIN display face with
+   * letter-spacing, which is not how Arabic should be set.
+   *
+   * Compared as strings rather than keyed on `c.lang === 'ar'`, which is the idiom used for the
+   * same problem in the table and the Jumu'ah band. The labels are admin-editable, so equality
+   * also catches a masjid that has typed the Arabic name into the label field by hand, which a
+   * language check cannot see.
+   */
+  const gloss = c.nextArabic && c.nextLabel.trim() === c.nextArabic.trim() ? '' : c.nextLabel;
   if (c.nextOrdinal) {
     // Two lines: drop the ordinal CLEAR of the Arabic gloss's descenders (Amiri's jīm reaches
     // ~0.5em below the baseline), then "JUMU'AH" beneath it.
     const ordY = ringCy + R * 0.04 + arSize * 0.5 + lblSize * 0.82;
     out.push(text(cx, ordY, c.nextOrdinal.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
-    out.push(text(cx, ordY + lblSize * 1.05, c.nextLabel.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
-  } else {
-    out.push(text(cx, ringCy + R * (c.nextArabic ? 0.4 : 0.08), c.nextLabel.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
+    if (gloss) out.push(text(cx, ordY + lblSize * 1.05, gloss.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
+  } else if (gloss) {
+    out.push(text(cx, ringCy + R * (c.nextArabic ? 0.4 : 0.08), gloss.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
   }
   // Below the ring: the countdown in words — the same block the Simple column now draws.
   if (c.showCountdown) out.push(countdownText(cx, ringCy + R + sw, b.w * 0.9, clamp(b.h * 0.14, 22, 84), c));
@@ -2373,7 +2387,18 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   const headY = b.y + titleH * 0.66;
   const adhanLbl = (c.L.athan ?? 'Adhan').toUpperCase();
   const iqamahLbl = (c.L.iqamah ?? 'Iqamah').toUpperCase();
-  const titleStr = (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES';
+  /**
+   * "PRAYER TIMES" in English, and the localised word alone in every other language.
+   *
+   * This used to append the English ' TIMES' to the localised word unconditionally, which put
+   * “الصلاة TIMES” — half a heading — across the top of an Arabic screen. Seen on the
+   * television through a capture card, which is the only way this kind of thing gets noticed:
+   * every string here is individually plausible.
+   *
+   * The Modern header already does the right thing with the localised word on its own, so this
+   * is the Simple table catching up rather than a new convention.
+   */
+  const titleStr = c.lang === 'en' ? `${(c.L.prayer ?? 'Prayer').toUpperCase()} TIMES` : (c.L.prayer ?? 'Prayer');
   /**
    * The column labels are fitted to the columns they name, and they are fitted FIRST.
    *
