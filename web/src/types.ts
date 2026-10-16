@@ -22,6 +22,8 @@ export interface Capabilities {
   terminal: boolean;
   remoteAccess: boolean;
   screens: 'fleet' | 'self';
+  /** This panel can change things. False only on a Pi a Display server has adopted. */
+  editable: boolean;
 }
 
 /** What to assume before the host has answered, and on a host too old to say. Everything on:
@@ -37,6 +39,9 @@ export const ALL_CAPABILITIES: Capabilities = {
   terminal: true,
   remoteAccess: true,
   screens: 'fleet',
+  // Editable, and this is the safe default rather than an arbitrary one: assuming a panel is
+  // read-only before the host has answered would blank a server's whole app for a moment.
+  editable: true,
 };
 
 export interface IqamahRule {

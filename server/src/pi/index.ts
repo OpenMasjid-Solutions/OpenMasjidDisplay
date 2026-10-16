@@ -45,6 +45,7 @@ import { VideoPlayer } from './video';
 import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
 import { createPiPanel, PANEL_PORT, WEB_DIR } from './panel';
+import { createManagedPanel, type ManagedStatus } from './managedPanel';
 import { newSetupCode, formatSetupCode } from './claim';
 import { Store, rid } from '../store';
 import { backgroundDataUri, logoDataUri, announcementDataUri } from '../render/background';
@@ -1366,6 +1367,44 @@ async function runAdopted(
   const player = new VideoPlayer(FB_DEVICE, log);
   let advised = '';
 
+  /**
+   * An adopted screen serves a panel too — one read-only status page.
+   *
+   * It used to serve nothing: createPiPanel was built inside runStandalone, so adoption took the
+   * panel away. Measured on hardware — port 80 went 200, unreachable, 200 across a round trip —
+   * and the cost lands on the day a masjid's display server dies for good, when every screen keeps
+   * drawing and none of them can be reached except over SSH.
+   *
+   * A SEPARATE, much smaller handler rather than the standalone panel with its writes disabled:
+   * see managedPanel.ts. Nothing that writes is registered, so there is no guard to get wrong.
+   */
+  const status = (): ManagedStatus => ({
+    screenName: live.state?.screenName ?? '',
+    hostname: facts.hostname,
+    ip: facts.ip,
+    model: facts.model,
+    agentVersion: AGENT_VERSION,
+    server: cfg.server,
+    // `stale()` is the agent's own judgement of whether the server has gone quiet long enough that
+    // the picture may be out of date — the same one that dims the screen. Reused rather than
+    // re-derived, so the page and the television cannot disagree.
+    serverReachable: live.lastPollOk > 0 && !live.stale(),
+    lastContactAt: live.lastPollOk > 0 ? new Date(live.lastPollOk).toISOString() : null,
+    content: !live.state
+      ? 'nothing'
+      : live.state.content.kind === 'source'
+        ? 'camera'
+        : live.state.content.kind === 'off'
+          ? 'off'
+          : 'timetable',
+    clockSuspect: clockSuspect(),
+    displayOff: displayIsOff(),
+  });
+  const panel = createManagedPanel({ webDir: WEB_DIR, status });
+  const panelServer = http.createServer((req, res) => panel(req, res));
+  panelServer.on('error', (e) => log('panel listener:', e.message));
+  panelServer.listen(PANEL_PORT, () => log(`managed panel listening on port ${PANEL_PORT}`));
+
   // ── the polling loop ──
   const poll = async (): Promise<void> => {
     let pollMs = POLL_MS;
@@ -1566,6 +1605,11 @@ async function runAdopted(
   await Promise.race([poll(), draw()]);
   live.forgotten = true;
   player.stop();
+  // Hand port 80 back before returning. This function returns when the screen is FORGOTTEN, and
+  // the caller's next pass either waits for adoption again or runs standalone — both of which
+  // bind this port. A listener left open makes that fail with EADDRINUSE, which would look like
+  // a screen that forgot how to serve its own panel.
+  await new Promise<void>((r) => panelServer.close(() => r()));
   return 'forgotten';
 }
 

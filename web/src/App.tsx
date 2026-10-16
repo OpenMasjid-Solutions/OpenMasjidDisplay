@@ -24,6 +24,7 @@ import { WhatsNewModal } from './whatsnew';
 declare const __APP_VERSION__: string;
 import type { AppState } from './types';
 import { CapabilitiesProvider, useCaps } from './capabilities';
+import { ManagedScreen } from './routes/ManagedScreen';
 import { Screens } from './routes/Screens';
 import { Timetables, TimetableEditor } from './routes/Timetables';
 import { Sources } from './routes/Sources';
@@ -51,8 +52,13 @@ const TABS: { id: Tab; label: string; Icon: (p: { size?: number }) => JSX.Elemen
  * has no business carrying a word about how the masjid runs its screens.
  */
 function HostPill() {
-  if (useCaps().host !== 'pi') return null;
-  return (
+  const caps = useCaps();
+  if (caps.host !== 'pi') return null;
+  return !caps.editable ? (
+    <span className="pill" title="A Display server manages this screen: its timetable and settings live there, not here.">
+      Managed
+    </span>
+  ) : (
     <span className="pill" title="This screen runs on its own: its timetable and settings live here, not on a Display server.">
       Standalone
     </span>
@@ -116,6 +122,24 @@ function Root() {
     if (wallpaperImage) html.setAttribute('data-scene', sceneTone);
     else html.removeAttribute('data-scene');
   }, [sceneTone, wallpaperImage]);
+
+  /**
+   * A screen a Display server manages: one read-only status page, and no sign-in.
+   *
+   * Checked before `authed` because there is nothing here to sign in to — a Pi installed from a
+   * server never had a local password. The host answers /api/session with authed: true for the
+   * same reason: sending the app to a login screen with no password behind it would lock an admin
+   * out of the one page that exists for the day the server stops answering.
+   *
+   * It renders inside the provider and inside Shell's header, so the Managed pill shows.
+   */
+  if (!caps.editable) {
+    return (
+      <CapabilitiesProvider value={caps}>
+        <ManagedShell />
+      </CapabilitiesProvider>
+    );
+  }
 
   if (authed) {
     if (!state) return <Splash />;
@@ -292,6 +316,34 @@ function ProfileMenu({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The frame around a managed screen's status page.
+ *
+ * Shell's chrome without Shell: the same brand, the same Managed pill, the same clock — and no
+ * Dock, because there is nothing to navigate to, and no profile menu, because there is nothing
+ * to sign out of and no settings on this machine to open. A disabled tab bar would be four
+ * promises this host cannot keep.
+ */
+function ManagedShell() {
+  return (
+    <div className="shell">
+      <Scene />
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="OpenMasjid Display — home">
+          <MasjidMark size={22} />
+          <b>OpenMasjid&nbsp;Display</b>
+        </a>
+        <HostPill />
+        <div className="spacer" />
+        <Clock />
+      </header>
+      <main className="main">
+        <ManagedScreen />
+      </main>
     </div>
   );
 }

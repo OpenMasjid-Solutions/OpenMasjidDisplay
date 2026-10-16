@@ -236,7 +236,7 @@ Anything not on this list is a bug, and the brief makes adding to it a stop-and-
 | 2 | Screens page shows exactly one card, "This screen" | Same card component, same status dot, same Default/Scheduled/Manual badge, same "Back to schedule". `capabilities.screens: "self"`. |
 | 3 | A **Standalone / Managed · Local / Managed · Remote** pill in the panel header | Not on the TV picture — that is congregation-facing. |
 | 4 | Appearance: the server matches the OMOS dashboard theme and wallpaper; the Pi uses the panel's own "set them here" controls | Same controls, same look. The server's extra behaviour is inherited theme, not a different UI. |
-| 5 | A **managed** Pi's panel is a read-only status page plus a break-glass login | Not a different design system — the same pages in a read-only state, which the panel already has a pattern for. |
+| 5 | A **managed** Pi's panel is a read-only status page | **Built** (`pi/managedPanel.ts`). Not the same pages in a read-only state, which is what this row first said: a separate, much smaller handler, so the writes are not registered rather than guarded. No break-glass login — a Pi installed from a server never had a password, so there is no credential; the page is unauthenticated on the LAN and says only what the television says. |
 | 6 | The first-run screen asks for the **setup code** as well as a password | See below — the brief mandates this flow but left it off its own list. |
 
 **Difference 6 is the brief's own, and it is flagged rather than asked about.** The brief makes
@@ -565,28 +565,45 @@ stop-and-ask rather than a judgement call.
    principled answer; it needs the Pi to accept an authenticated inbound call, which the panel
    already is.
 
-### 11.3 STOP AND ASK — an adopted Pi serves no panel, so adoption is a one-way door
+### 11.3 ~~STOP AND ASK~~ — DECIDED: an adopted Pi serves a status page
 
-Difference #5 in §2.1 says a managed Pi's panel is *"a read-only status page plus a break-glass
-login"*. It is not built: `createPiPanel` is constructed inside `runStandalone`, so the moment a
-screen is adopted its panel stops existing. Measured above: port 80 went from 200 to unreachable.
+**Decided by Hasan on 2026-10-16: an adopted Pi serves a web UI, and it says it is adopted.**
+Built as `pi/managedPanel.ts`; `runAdopted` serves it on the same port 80 and closes the listener
+when the screen is forgotten, so the next pass can bind it.
+
+What was asked and answered along the way:
+
+- **No sign-in.** A Pi installed from a server never had a local password, so "break-glass login"
+  had no credential behind it, and demanding one would lock an admin out of exactly the screens
+  that need the page. It is unauthenticated on the masjid's LAN and the payload is held to what the
+  TELEVISION already shows anybody in the room. `content` is a KIND, not an id: a camera's name can
+  carry a room name and its URL carries a password.
+- **A separate handler, not the standalone panel in a read-only mode.** That panel has ~25 routes,
+  most of which write; registering them and refusing the writes puts the safety in one `if` that a
+  later route can be added around. Here they are not registered, and a test reads the file to assert
+  it holds no writer.
+- **The capability is `editable`, not `managed`.** Written as a restriction first, which broke
+  `capabilities.test.ts` — that test asserts the server's profile is simply every flag on, and a
+  flag whose false is normal destroys it. Inverting it kept the invariant and its test. On a Pi,
+  `!editable` IS adopted, unambiguously.
+
+Verified on hardware: adopted, port 80 answered 200 with `editable: false`; the server was then
+killed and ~105s later the page reported *not in contact* with the last contact time, while the
+screen kept drawing and the panel stayed up.
 
 What that costs a masjid: if the display server dies for good, the screen keeps drawing from its
 last state but there is no way to reach it except SSH or a keyboard. The thing an admin needs at
 that moment — put this screen back on its own — is exactly what they cannot do.
 
-Hoisting the panel out of `runStandalone` is straightforward. What is not, and what needs a
-decision:
+**Still open: an un-adopt button on that page.** Returning to standalone means clearing `SERVER`
+from `trust.env`, which only root can write, so it needs a spool verb. That verb is a far narrower
+proposition than §11.2's — it only ever CLEARS, so the worst it can do is make a screen standalone
+— but it is still a new member of the closed set, and it must write `CHANNEL` and `VERSION` as
+well: clearing `SERVER` alone leaves a `trust.env` the updater reads as *"nothing to update from"*,
+and the screen silently stops receiving anything for ever. Observed while testing. Re-running
+`pi.sh` is the supported route today and writes all three.
 
-- **What the status page shows without a login.** A Pi installed from a server never had a local
-  password, so there is nothing to sign in with and "break-glass login" has no credential behind
-  it. Either the status page is unauthenticated on the LAN (name, model, version, server address,
-  what it is showing — no secrets, and the television already shows the address to the room), or
-  there is no break-glass on precisely the screens most likely to need one.
-- **Un-adopting from that page needs root**, to clear `SERVER` from `trust.env`. A verb that only
-  ever CLEARS cannot point root anywhere — the worst it can do is make the screen standalone — so
-  it is a far narrower proposition than §11.2. It is still a new member of the closed set.
-- **A hand-edited un-adopt updates from nothing.** Observed: clearing `SERVER` by hand leaves a
-  `trust.env` with no `SERVER` and no `CHANNEL`, so `update.sh` exits with *"nothing to update
-  from"* and the screen silently stops receiving anything, for ever. Re-running `pi.sh` is the
-  supported route and writes both. Any un-adopt we build must do the same.
+**Also still open: a panel on a Pi that has a server address but is not yet adopted.** It shows the
+pairing code on the television and serves nothing, because `runAdopted` is where the panel lives.
+That is pre-existing and arguably right — the code is on the screen and there is nothing to report
+— but it is the one gap left in "a Pi always serves something".

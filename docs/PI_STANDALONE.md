@@ -234,11 +234,11 @@ had both afterwards, and had them again when it was put back.)
 
 **Two things to know before you do it:**
 
-- **The panel at the Pi's address goes away.** A screen managed by a server is managed from the
-  dashboard, so the Pi stops serving its own panel. If the server later becomes unreachable, you
-  get the screen back by following the next paragraph — but that needs someone able to reach the
-  Pi over SSH, or a keyboard. A read-only status page on the Pi for exactly this situation is
-  designed but not built.
+- **The panel at the Pi's address becomes a status page.** A screen managed by a server is managed
+  from the dashboard, so the Pi's own panel stops offering to change anything. What it shows
+  instead is which server owns the screen, whether that server is answering, and what is on the
+  television — which is what you need on the day the server stops answering. It needs no password,
+  because a screen installed from a server never had one.
 - **You will set the timetable up again on the server.** The copy on the Pi is kept but not used,
   and nothing is copied across for you.
 

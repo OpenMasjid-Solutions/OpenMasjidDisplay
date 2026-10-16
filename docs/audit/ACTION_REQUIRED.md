@@ -326,12 +326,26 @@ forwarded whatever it was given. A test asserts each one is refused.
 - **The agent still cannot write `/opt`.** Updates run as a separate root unit, exactly as on a
   managed screen.
 
-### 9.5 Adoption is a one-way door for the admin, and the way back needs root
+### 9.5 ~~Adoption is a one-way door for the admin~~ — the status page is DONE, the un-adopt button is not
 
-An adopted Raspberry Pi serves no control panel — measured on hardware: port 80 answers 200
-standalone, is unreachable once adopted, and answers again when the screen is put back. So if a
-masjid's display server dies for good, the screens keep drawing but nobody can reach them except
-over SSH.
+**An adopted Raspberry Pi now serves a read-only status page** (`pi/managedPanel.ts`), decided by
+Hasan on 2026-10-16. Verified on hardware: adopted, port 80 answers 200; the local server was then
+killed, and ~105 seconds later the page reported *not in contact* with the time of last contact,
+while the screen kept drawing and the panel stayed up. That is the day this exists for.
+
+It is a SEPARATE handler rather than the standalone panel with its writes disabled, so nothing that
+writes is registered at all — a test reads the file and asserts it contains no writer. It is
+unauthenticated on the LAN, because a Pi installed from a server never had a local password and
+demanding one would lock an admin out of precisely the screens that need this page; the payload is
+therefore held to what the television already shows anybody in the room, and `content` is a KIND
+(`timetable`/`camera`/`off`) rather than an id, because a camera's name can carry a room name and
+its URL carries a password.
+
+**Still outstanding: an un-adopt button on that page.** Returning to standalone means clearing
+`SERVER` from `trust.env`, which only root can write, so it needs a spool verb. That verb would be
+far narrower than §11.2's — it only ever CLEARS, so the worst it can do is make a screen
+standalone — but it is still a new member of the closed set, and §9.6 applies: it must write
+`CHANNEL` and `VERSION` too, or the screen silently stops updating.
 
 Two decisions sit behind fixing it, both written up in
 [`../PI_STANDALONE_DESIGN.md`](../PI_STANDALONE_DESIGN.md) §11:

@@ -39,6 +39,29 @@ export interface Capabilities {
   remoteAccess: boolean;
   /** `fleet`: many screens to manage. `self`: this one screen, in the same card. */
   screens: 'fleet' | 'self';
+  /**
+   * This panel can change things, as opposed to only showing them.
+   *
+   * False only on a Raspberry Pi that a Display server has adopted. The server owns the timetable
+   * and the settings from that moment, so a panel here that offered to edit them would be
+   * offering to edit a copy nothing reads — which is worse than offering nothing, because the
+   * admin would believe they had changed something.
+   *
+   * **Stated as a capability the host HAS, not a restriction it is under**, and that is not
+   * cosmetic. Every other flag here means "this host can do X", which is what lets
+   * `capabilities.test.ts` assert the server's profile is simply everything on. A flag meaning
+   * "this host is restricted" would have been the one entry in the set whose false is normal, and
+   * it broke that test the moment it was added — which is the test doing its job.
+   *
+   * On a Pi, `!editable` IS "adopted", unambiguously: a standalone Pi is editable and so is a
+   * server. The panel words it as *Managed* because that is what an admin calls it.
+   *
+   * It is a CAPABILITY rather than device state, by the rule at the top of this file: it answers
+   * "what can this panel do", not "what is this device called". The screen's name, the server
+   * that owns it and whether that server can be reached are facts about one device at one moment
+   * and travel with the status payload, not here.
+   */
+  editable: boolean;
 }
 
 /** The OpenMasjidOS server: everything this app has ever offered. */
@@ -52,6 +75,7 @@ export const SERVER_CAPABILITIES: Capabilities = {
   terminal: true,
   remoteAccess: true,
   screens: 'fleet',
+  editable: true,
 };
 
 /**
@@ -72,9 +96,31 @@ export const PI_CAPABILITIES: Capabilities = {
   terminal: false,
   remoteAccess: false,
   screens: 'self',
+  editable: true,
 };
 
-/** The capabilities of the host answering this request. */
-export function capabilitiesFor(host: Capabilities['host']): Capabilities {
-  return host === 'pi' ? PI_CAPABILITIES : SERVER_CAPABILITIES;
+/**
+ * The same Pi, once a Display server has adopted it.
+ *
+ * It still serves a panel — that is the point. An adopted screen used to serve nothing at all,
+ * so a masjid whose server died for good had a wall of screens it could only reach over SSH, and
+ * the one thing an admin needs at that moment is to see what the screen thinks is going on.
+ *
+ * Everything is off, including `screens`, because there is nothing on this device to change. The
+ * panel is one status page.
+ */
+export const MANAGED_PI_CAPABILITIES: Capabilities = {
+  ...PI_CAPABILITIES,
+  editable: false,
+};
+
+/**
+ * The capabilities of the host answering this request.
+ *
+ * `managed` is only ever true for a Pi: a Display server is not adopted by anything, and asking
+ * for a managed server is a caller that has confused the two.
+ */
+export function capabilitiesFor(host: Capabilities['host'], managed = false): Capabilities {
+  if (host !== 'pi') return SERVER_CAPABILITIES;
+  return managed ? MANAGED_PI_CAPABILITIES : PI_CAPABILITIES;
 }

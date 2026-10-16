@@ -13,6 +13,16 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **A screen managed by a Display server now has a page of its own again.** Open the screen's own
+  address and it tells you which server manages it, whether that server is answering, what is on
+  the television and which board and version it is. It needs no password and changes nothing —
+  everything about a managed screen still lives on the server.
+
+  This is for one day: the day the server stops answering. Until now an adopted screen served
+  nothing at all on its own address, so a masjid whose server had died had a wall of screens still
+  showing prayer times that could not be reached or asked anything without plugging in a keyboard.
+  Now you can walk up to one and read what it thinks is going on.
+
 - **A standalone screen keeps itself up to date.** A Raspberry Pi installed with the one-line
   command now checks for a new release a few times a day and installs it on its own — the
   screen and its control panel together. Downloads are checked against the checksum published
