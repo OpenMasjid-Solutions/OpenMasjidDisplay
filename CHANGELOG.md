@@ -153,6 +153,9 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **Arabic headings are no longer spaced apart letter by letter.** Arabic joins up as it is
+  written, and one heading was being stretched out so the letters came apart. It now reads
+  normally — anywhere in the app, in any language that uses the Arabic script.
 - **Arabic and Urdu screens no longer show half-translated headings.** The Simple design's table
   header read “الصلاة TIMES” — the first word translated and the second not. It now reads the
   same way the Modern design's always has. English screens are unchanged.

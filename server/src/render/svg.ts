@@ -517,7 +517,22 @@ interface TextOpts {
   blink?: boolean;
 }
 
+/**
+ * Letter-spacing is dropped for Arabic script, wherever it is asked for.
+ *
+ * Arabic is cursive: the join between letters is part of the writing, not decoration between
+ * glyphs. Spacing it apart is the typographic equivalent of s p e l l i n g a word out, and on a
+ * wall it reads as broken rendering rather than as a style.
+ *
+ * Guarded HERE, in the one helper every string goes through, rather than at each call site. The
+ * call sites ask for letter-spacing because it suits the Latin label they were written for, and
+ * the same label is Arabic in two of the three languages this app ships — so every site would
+ * have to remember, and the Modern table header is the one that did not.
+ */
+const RTL_SCRIPT = /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/;
+
 function text(x: number, baseline: number, content: string, o: TextOpts): string {
+  if (o.letter && RTL_SCRIPT.test(content)) o = { ...o, letter: 0 };
   const attrs = [
     `x="${x.toFixed(1)}"`,
     `y="${baseline.toFixed(1)}"`,

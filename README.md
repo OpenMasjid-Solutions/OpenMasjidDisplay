@@ -43,9 +43,21 @@ largest is a mini-PC driving every screen in the building, announcing Iqamah cha
 publishing your times to your website. It is the same software.
 
 <div align="center">
-<img src="screenshots/1.png" width="49%" alt="A prayer timetable on a masjid screen, photographed from the Raspberry Pi driving it" />
+<img src="screenshots/screen-modern.png" width="49%" alt="The Modern design on a 1080p screen: masjid name, a live clock, the five prayers with Adhan and Iqamah columns, and a ring counting down to the next prayer" />
 <img src="screenshots/3.png" width="49%" alt="The control panel, showing three screens and what each is displaying" />
 </div>
+
+<div align="center">
+<img src="screenshots/screen-simple.png" width="32%" alt="The Simple design in a light theme: a large clock and a plain, high-contrast table of prayer times" />
+<img src="screenshots/screen-arabic.png" width="32%" alt="The Modern design in Arabic, with prayer names, headings and dates in Arabic" />
+<img src="screenshots/screen-hadith.png" width="32%" alt="A hadith shown full-screen while the congregation is praying, in Arabic with an English translation" />
+</div>
+
+<p align="center">
+<sub>Two designs, ten themes, three languages, landscape or portrait. Every screen here was captured
+from the HDMI output of a Raspberry Pi actually running this software — the control panel, top right,
+is a screenshot of the panel itself.</sub>
+</p>
 
 ## Start here: put a screen on a wall
 
@@ -405,6 +417,12 @@ The reason a Pi exists at all: it opens the camera **directly**, on your own net
 passes through a display server. That is what lets a server run somewhere else entirely — in another
 building or in the cloud — while cameras stay smooth. It draws to the screen without a desktop or a
 browser.
+
+<div align="center">
+<img src="screenshots/screen-portrait.png" width="26%" alt="The same timetable in portrait, for a screen mounted on its side" />
+<br/>
+<sub>Turn a screen on its side and set <b>Portrait</b> — the whole layout is rebuilt for it, not letterboxed.</sub>
+</div>
 
 **A board from the Raspberry Pi 4 family is required** — a Pi 4 Model B (2 GB or more), a Pi 400, or a
 Compute Module 4. The installer reads the board name and **refuses anything else** rather than installing

@@ -435,3 +435,40 @@ three words:
 including the counted-noun rules, from somebody who speaks them. Then it is a small change to
 `countdownText` and the label table, with the golden fixtures regenerated for the Arabic and Urdu
 shots only.
+
+### 9.9 The sun passes behind the clock in the early afternoon, and on a dark theme it eats a digit
+
+Found by sweeping the whole configuration matrix against a capture card. Pre-existing — nothing in
+the recent work touches `celestialPos` — and invisible unless you look at a screen between roughly
+13:30 and 14:30.
+
+The sun/moon travels an arc across the scene by time of day. It is drawn BEHIND the glass cards,
+which is the intended look, and the comment above it says it “sits in the open sky between the
+cards”. It does not: the arc's midday height puts it inside the header card band, and at t≈0.6 its
+x lands exactly where the clock's digits begin.
+
+Measured on the television:
+
+| clock | what it looks like |
+| --- | --- |
+| 12-hour, dark theme, 2:01 PM | the disc sits on the left stroke of the `2`; still legible |
+| **24-hour, dark theme, 13:58** | **the disc covers the `1`** |
+| light theme, any | a pale blob behind glass; harmless |
+
+So it is worst for masjids on a 24-hour clock and a dark theme, which is a large share of them
+outside the US. The clock is the most-read element on the screen.
+
+**Not fixed, because every option changes how every Modern screen looks** and that is a design
+call rather than a defect fix:
+
+1. Keep the hard disc out of the header band — clamp the arc's `y` so it passes below the top row.
+   The gap between the two card rows is ~20px and the disc is ~70px, so this means a real change to
+   the arc, not a nudge.
+2. Dim or shrink the disc while it is behind a card, keeping the glow.
+3. Give the clock text a dark halo so it stays legible over anything behind it. Cheapest, and does
+   not move the scene — but it is a second text draw per frame, which the render budget in
+   docs/RENDER_PERFORMANCE.md should be checked against first.
+4. Leave it.
+
+My recommendation is 2 or 3. `showCelestial: false` already turns the whole thing off for a masjid
+that minds today.
