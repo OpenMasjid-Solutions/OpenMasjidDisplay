@@ -154,6 +154,18 @@ jobs:
       - run: npm test
         working-directory: server
 
+      # The standalone screen's self-updater, actually run.
+      #
+      # piInstaller.test.ts reads install.sh as text, which is the right tool for "is this line
+      # present" and the wrong one for a chain of curl, sed, tar, sha256sum and node that either
+      # works end to end or silently does nothing. This runs that chain against a fake release on
+      # disk, with a stub systemctl and no network — including the cases that matter most on a
+      # device nobody is watching: a tampered bundle refused, a bad release rolled back, and a
+      # version actually written down so the same bundle is not downloaded every six hours for
+      # ever. It touches nothing outside a temporary directory.
+      - name: Pi self-updater
+        run: sh server/assets/pi/update.test.sh
+
       # The audit's own deliverable: keep the machine-readable findings parseable and
       # schema-complete, so it cannot rot into something nobody can consume.
       - name: Validate docs/audit/findings.json

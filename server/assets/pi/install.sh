@@ -384,6 +384,15 @@ mkdir -p "$PREFIX"
   printf '# Written by the OpenMasjidDisplay installer. Read by update.sh. Do not edit by hand.\n'
   printf "SERVER='%s'\n" "$SERVER"
   printf "CURL_OPTS='%s'\n" "$CURL_OPTS"
+  # A standalone screen has no server to follow, so it follows a release CHANNEL instead, and
+  # needs to know which version it is on to tell whether a release is newer. Both are recorded
+  # here rather than in config.json for the reason the updater explains: the agent rewrites its
+  # config and keeps only the keys it knows about.
+  if [ "$STANDALONE" = 1 ]; then
+    printf "CHANNEL='%s'\n" "${OMD_CHANNEL:-stable}"
+    printf "VERSION='%s'\n" "$AGENT_VERSION"
+    printf "REPO='%s'\n" "OpenMasjid-Solutions/OpenMasjidDisplay"
+  fi
 } > "$TRUSTENV"
 chmod 644 "$TRUSTENV"
 
@@ -892,15 +901,33 @@ CONF=/etc/openmasjid-screen/config.json
 # back to a handshake already known to fail on this device and stop updating forever, silently.
 CURL_OPTS=""
 SERVER=""
+CHANNEL=""
+VERSION=""
+REPO="OpenMasjid-Solutions/OpenMasjidDisplay"
 if [ -f "$PREFIX/trust.env" ]; then
   . "$PREFIX/trust.env"
 fi
-if [ -z "$SERVER" ]; then
+if [ -z "$SERVER" ] && [ -z "$CHANNEL" ]; then
   # Only for a device installed before trust.env existed. Re-running the installer writes one.
   SERVER=$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).server||""))}catch{}' "$CONF" 2>/dev/null || true)
 fi
 
-[ -n "$SERVER" ] || { echo "no server configured; nothing to update from"; exit 0; }
+[ -n "$SERVER" ] || [ -n "$CHANNEL" ] || { echo "nothing to update from"; exit 0; }
+
+# Record what is actually installed, so the next check compares against it.
+#
+# Appended when the line is absent, because `sed -i s/^VERSION=//` matching nothing SUCCEEDS —
+# it changes nothing and says nothing. The cost of that silence is the whole bundle downloaded
+# and the screen restarted every six hours, for ever, on a device nobody is watching.
+record_version() {
+  [ -n "${1:-}" ] || return 0
+  if grep -q '^VERSION=' "$PREFIX/trust.env" 2>/dev/null; then
+    sed -i "s/^VERSION=.*/VERSION='$1'/" "$PREFIX/trust.env"
+  else
+    printf "VERSION='%s'
+" "$1" >> "$PREFIX/trust.env"
+  fi
+}
 
 # A Pi 3 stops here, and stopping here is the whole point.
 #
@@ -929,13 +956,58 @@ if [ "$PI_OK" != yes ]; then
 fi
 
 TMP="$PREFIX/agent.new.js"
-# shellcheck disable=SC2086
-curl -fsSL --max-time 120 $CURL_OPTS "$SERVER/pi/agent.js" -o "$TMP" || { echo "could not download the agent"; exit 0; }
+WEBTMP=""
+
+if [ -n "$SERVER" ]; then
+  # shellcheck disable=SC2086
+  curl -fsSL --max-time 120 $CURL_OPTS "$SERVER/pi/agent.js" -o "$TMP" || { echo "could not download the agent"; exit 0; }
+else
+  # ── a standalone screen follows a release ──────────────────────────────────
+  #
+  # Same resolution pi.sh uses, and the same refusal: bytes from the public internet are checked
+  # against the checksum published beside them, and nothing is installed if they do not match.
+  # Every failure here EXITS 0 and leaves the screen exactly as it was — a masjid's prayer times
+  # must not go dark because GitHub was unreachable at four in the morning.
+  API="https://api.github.com/repos/$REPO/releases"
+  [ "$CHANNEL" = stable ] && API="$API/latest"
+  JSON=$(curl -fsSL --max-time 60 -H 'Accept: application/vnd.github+json' "$API" 2>/dev/null) ||
+    { echo "could not reach GitHub; keeping the version installed"; exit 0; }
+  [ "$CHANNEL" = stable ] || JSON=$(printf '%s' "$JSON" | sed -n '1,/^  },$/p')
+  TAG=$(printf '%s' "$JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  [ -n "$TAG" ] || { echo "no $CHANNEL release found; keeping the version installed"; exit 0; }
+
+  # Nothing to do is the common case, and it must cost one API call and no download.
+  if [ "$TAG" = "$VERSION" ] || [ "$TAG" = "v$VERSION" ]; then
+    exit 0
+  fi
+  echo "a newer release is available: $TAG (this screen has ${VERSION:-unknown})"
+
+  WORK=$(mktemp -d /tmp/omd-update.XXXXXX) || exit 0
+  trap 'rm -rf "$WORK"' EXIT INT TERM
+  BASE="https://github.com/$REPO/releases/download/$TAG"
+  curl -fsSL --max-time 600 -o "$WORK/b.tar.gz" "$BASE/openmasjid-screen-$TAG.tar.gz" 2>/dev/null ||
+    { echo "that release carries no screen bundle; keeping the version installed"; exit 0; }
+  curl -fsSL --max-time 60 -o "$WORK/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null ||
+    { echo "no checksums published for $TAG; refusing to install unverified bytes"; exit 0; }
+  ( cd "$WORK" && mv "b.tar.gz" "openmasjid-screen-$TAG.tar.gz" &&
+    sha256sum --ignore-missing --status -c SHA256SUMS ) ||
+    { echo "$TAG does not match its published checksum; nothing was changed"; exit 0; }
+  mkdir -p "$WORK/x" && tar xzf "$WORK/openmasjid-screen-$TAG.tar.gz" -C "$WORK/x" 2>/dev/null ||
+    { echo "the bundle could not be unpacked; keeping the version installed"; exit 0; }
+  [ -s "$WORK/x/agent.js" ] || { echo "the bundle has no agent in it"; exit 0; }
+  cp "$WORK/x/agent.js" "$TMP"
+  [ -d "$WORK/x/web" ] && WEBTMP="$WORK/x/web"
+  NEWVERSION="$TAG"
+fi
 [ -s "$TMP" ] || { rm -f "$TMP"; echo "downloaded agent was empty"; exit 0; }
 # A truncated or half-written download must never become the thing systemd restarts forever.
 node --check "$TMP" || { rm -f "$TMP"; echo "downloaded agent is not valid JavaScript"; exit 0; }
 
-if cmp -s "$TMP" "$PREFIX/agent.js"; then
+# The server path stops here when the bytes match: there is no version to speak of, only the
+# agent the server is serving. A release has a NAME, and a release whose agent happens to be
+# byte-identical (a panel-only change, a re-tag) still has to be installed and written down —
+# otherwise the check below sees the old version again in six hours and downloads it again.
+if [ -z "${NEWVERSION:-}" ] && cmp -s "$TMP" "$PREFIX/agent.js"; then
   rm -f "$TMP"
   exit 0
 fi
@@ -943,6 +1015,14 @@ fi
 echo "updating the screen agent"
 cp -f "$PREFIX/agent.js" "$PREFIX/agent.prev.js" 2>/dev/null || true
 mv "$TMP" "$PREFIX/agent.js"
+# The control panel ships WITH the agent and is versioned with it. Replacing one without the
+# other is a panel whose JavaScript expects an API the agent does not serve, so they move
+# together — and roll back together.
+if [ -n "$WEBTMP" ] && [ -s "$WEBTMP/index.html" ]; then
+  rm -rf "$PREFIX/web.prev"
+  [ -d "$PREFIX/web" ] && mv "$PREFIX/web" "$PREFIX/web.prev"
+  cp -r "$WEBTMP" "$PREFIX/web"
+fi
 systemctl restart openmasjid-screen.service
 
 # Roll back if the new one will not stay up. Without this, a bad build takes every screen in the
@@ -952,8 +1032,16 @@ if ! systemctl is-active --quiet openmasjid-screen.service; then
   echo "the new agent did not stay running; rolling back"
   if [ -f "$PREFIX/agent.prev.js" ]; then
     mv "$PREFIX/agent.prev.js" "$PREFIX/agent.js"
+    if [ -d "$PREFIX/web.prev" ]; then
+      rm -rf "$PREFIX/web"
+      mv "$PREFIX/web.prev" "$PREFIX/web"
+    fi
     systemctl restart openmasjid-screen.service
   fi
+else
+  # It stayed up, so this IS the version now.
+  record_version "${NEWVERSION:-}"
+  rm -rf "$PREFIX/web.prev"
 fi
 UPD
 chmod 700 "$PREFIX/update.sh"

@@ -12,7 +12,13 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
-### Added
+### Added
+- **A standalone screen keeps itself up to date.** A Raspberry Pi installed with the one-line
+  command now checks for a new release a few times a day and installs it on its own — the
+  screen and its control panel together. Downloads are checked against the checksum published
+  with the release, and if a new version will not start the screen puts the previous one back
+  and carries on. A screen that was installed from a Display server still follows that server,
+  as before. Install with `--channel dev` and the screen stays on the dev channel.
 - **One command installs a Raspberry Pi screen that runs on its own.** On a fresh Raspberry Pi OS
   Lite:
 

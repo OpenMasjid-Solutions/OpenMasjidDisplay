@@ -218,6 +218,47 @@ test('a masjid with a screen in every hall does not stampede the server', () => 
   assert.ok(/OnUnitActiveSec=/.test(tpl));
 });
 
+// ── a standalone screen has no server to be updated by ───────────────────────
+//
+// What the updater DOES with these is covered by assets/pi/update.test.sh, which runs the thing
+// against a fake release rather than reading it. These two assert the other half: that the
+// installer hands it what it needs, and that it is written somewhere the agent cannot erase.
+
+test('a standalone screen records the channel it follows and the version it is on', () => {
+  const tpl = installerTemplate() as string;
+  const env = tpl.slice(tpl.indexOf('TRUSTENV="$PREFIX/trust.env"'));
+  const block = env.slice(0, env.indexOf('} > "$TRUSTENV"'));
+  assert.ok(/printf "CHANNEL='%s'/.test(block), 'it has no server, so it follows a release channel');
+  assert.ok(/printf "VERSION='%s'/.test(block), 'and must know what it is on to tell a release is newer');
+  // Guarded, because an ADOPTED screen must keep following its server and nothing else: a device
+  // that did both would fight itself every six hours.
+  assert.ok(/if \[ "\$STANDALONE" = 1 \]; then/.test(block), 'only when standalone');
+});
+
+test('the version a standalone screen is on survives the agent rewriting its config', () => {
+  const tpl = installerTemplate() as string;
+  // The same reason trust.env exists at all: the agent rewrites config.json whenever it is
+  // adopted or forgotten and keeps only the keys it knows about. A version recorded there would
+  // be gone within minutes, and the updater would then re-download the same release for ever.
+  assert.ok(tpl.includes('TRUSTENV="$PREFIX/trust.env"'));
+  const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'));
+  assert.ok(/record_version\(\)/.test(upd), 'and it is written back after a successful update');
+  assert.ok(
+    /grep -q '\^VERSION=' "\$PREFIX\/trust\.env"/.test(upd),
+    "appended when absent: a sed that matches nothing succeeds silently, and the cost of that" +
+      ' silence is the whole bundle downloaded every six hours for ever',
+  );
+});
+
+test('a release is verified against its published checksum before anything is installed', () => {
+  const tpl = installerTemplate() as string;
+  const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'));
+  // A display server is on the masjid's own network and was reached over a pinned certificate.
+  // This is a download from the public internet, so the bytes have to prove themselves.
+  assert.ok(/sha256sum --ignore-missing --status -c SHA256SUMS/.test(upd));
+  assert.ok(/refusing to install unverified bytes/.test(upd), 'and missing checksums are a refusal');
+});
+
 // ── trusting a masjid's own display server ───────────────────────────────────
 //
 // Found on real hardware: the server was at https://192.168.1.18:8444 behind a self-signed

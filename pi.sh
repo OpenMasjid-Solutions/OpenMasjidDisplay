@@ -116,6 +116,8 @@ sh -n install.sh || die 'the installer in the bundle is not valid shell — refu
 #
 # The installer does the rest. OMD_BUNDLE tells it to take the agent and the control panel from
 # here rather than from a display server, which is the whole difference between a standalone
-# screen and an adopted one at install time.
+# screen and an adopted one at install time. OMD_CHANNEL is what the screen keeps FOLLOWING: it
+# has no server to be updated by, so its own updater asks GitHub for this channel every few
+# hours. Install from dev and the screen stays on dev, which is the only way to test a release.
 bold 'Handing over to the installer'
-OMD_BUNDLE="$WORK" sh install.sh
+OMD_BUNDLE="$WORK" OMD_CHANNEL="$CHANNEL" sh install.sh
