@@ -332,7 +332,32 @@ export function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null
   // `fps=${STATIC_FPS}` filter (static content, so there is no motion to stutter).
   const inFps = ticker ? TICKER_FPS : 1;
   const br = bitrate > 0 ? bitrate : d.height >= 1080 ? 8000 : 4000;
-  const buf = br * 2;
+  /**
+   * The HRD buffer, and it is HALF a second rather than two — because two seconds is what let a
+   * single frame hang a decoder box.
+   *
+   * `bufsize` is the most bits the encoder may spend between two points in the stream, so it caps
+   * how big ONE frame is allowed to be. At `br * 2` an I-frame could hold two seconds of bits and
+   * still be "within bitrate" on average — but it has to physically arrive in one frame slot, and
+   * at 8 fps that slot is 125 ms. Measured on a real stream with a photo on screen:
+   *
+   *     I-frames   mean 472 KB   max 737 KB
+   *     P-frames   mean  76 KB   max 449 KB
+   *
+   * 737 KB in 125 ms is a 47 Mbit/s burst out of a stream whose nominal rate is 8. MediaMTX then
+   * logs `reader is too slow, discarding N frames` and drops part of the GOP, and what reaches the
+   * decoder is a TRUNCATED I-frame — `Invalid level prefix`, `concealing 3966 DC errors in I
+   * frame`, `corrupt decoded frame`. A cheap RTSP decoder fed that locks up and has to be power
+   * cycled, which is the fault this was traced from.
+   *
+   * It never showed without a picture: a flat timetable's I-frames are small, so the ceiling was
+   * never reached. An announcement photo is the thing that fills it.
+   *
+   * Half a second bounds the worst frame to ~4× the per-frame share instead of ~16×. The cost is
+   * that a complex photo is compressed harder, which is the right trade: a slightly softer picture
+   * against a screen that needs somebody to walk over and unplug it.
+   */
+  const buf = Math.round(br / 2);
   // A red Iqāmah-change reminder owns the left of the band, so the scroll has to be clipped
   // to what is left of it — which needs a filtergraph (-filter_complex), not a chain (-vf).
   // Only when both are on screen at once; otherwise the plain chain is used unchanged.

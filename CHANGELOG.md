@@ -153,6 +153,12 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **A slideshow picture could freeze a screen until its decoder box was unplugged.** When an
+  announcement image appeared, the video for that moment could be far larger than the stream is
+  meant to carry. Some decoder boxes could not take it, lost part of the picture and stopped
+  playing altogether, and the only way back was to power the box off and on. The video now stays
+  within what a decoder expects. Pictures are very slightly more compressed; the timetable looks
+  exactly as it did.
 - **The countdown is now fully in Arabic and Urdu.** It used to read “2 HOURS 58 MINUTES UNTIL
   الأذان” — half translated. It now reads “26 دقيقة / حتى الأذان” in Arabic and “25 منٹ / اذان تک”
   in Urdu, with the word order each language actually uses. English screens are unchanged.

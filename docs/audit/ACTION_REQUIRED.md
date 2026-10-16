@@ -549,3 +549,39 @@ no existing screen is restyled. Measured from the real font files:
 **Worth knowing, not fixed:** the browser screen's ticker is a DOM node with no explicit
 font-family, so its Arabic is drawn in whatever the device's browser falls back to rather than in
 Amiri like the rest of the screen. Cosmetic rather than broken, and only on browser screens.
+
+### 9.11 ~~A slideshow picture could hang a decoder box~~ — FIXED
+
+Reported from the field on 0.70.0: when an announcement image came up, a decoder screen would
+sometimes stop playing and need to be power cycled. Intermittent, and only with a picture on
+screen.
+
+**Cause: `bufsize` was `bitrate * 2`.** That is the most bits the encoder may spend between two
+points in the stream, so it is also the ceiling on how big ONE frame may be. A frame that size is
+still within bitrate on average, but it has to arrive inside a single frame slot — 125 ms at the
+8 fps the static stream runs at.
+
+Reproduced against the shipped image with MediaMTX, pulled over RTSP/TCP as a decoder does:
+
+| | I-frames | P-frames |
+| --- | --- | --- |
+| before | mean 472 KB, **max 737 KB** | mean 76 KB, max 449 KB |
+| after | mean 360 KB, **max 451 KB** | mean 93 KB, max 398 KB |
+
+737 KB in 125 ms is a **47 Mbit/s burst** out of a stream whose nominal rate is 8. MediaMTX logged
+`reader is too slow, discarding 458 frames`, dropped part of the GOP, and the decoder received a
+truncated I-frame — `Invalid level prefix`, `concealing 3966 DC errors in I frame`, `corrupt
+decoded frame`. That is what hangs a cheap decoder.
+
+It never showed without a picture because a flat timetable's I-frames never came near the ceiling.
+
+**Fixed** by halving the ceiling to `bitrate / 2`, bounding the worst frame to ~4× the per-frame
+share instead of ~16×. The same 45-second run then produced **zero decoder errors and zero
+discards**, and a side-by-side of the prayer table before and after is visually identical — the
+cost falls on photographs, which are compressed slightly harder.
+
+`encoderBurst.test.ts` pins the relationship proportionally (it holds at every bitrate a masjid
+can set, with and without a ticker) rather than pinning the number, and fails with the old value.
+
+**This is on `main` and affects every masjid running a decoder with a slideshow**, so it is worth
+a release rather than waiting for the rest of this branch.
