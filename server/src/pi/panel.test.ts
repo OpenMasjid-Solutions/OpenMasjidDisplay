@@ -100,12 +100,15 @@ function call(
 }
 
 /** A panel with its own store, reset per test. */
-function panel(opts: { claimed?: boolean; code?: string | undefined } = {}) {
+function panel(opts: { claimed?: boolean; code?: string | undefined; noDevice?: boolean } = {}) {
   const store = new Store();
   store.update((db) => {
     db.admin = null;
   });
   let cfg = { server: '', deviceId: 'pi_a', deviceSecret: 's', setupCode: opts.code === undefined && !('code' in opts) ? CODE : opts.code };
+  // A stand-in for the Raspberry Pi: it records what it was asked for instead of writing a spool
+  // file, so the tests are about what the ROUTE lets through rather than about nmcli.
+  const asked: { action: string; wifi?: { ssid: string; psk: string } }[] = [];
   const handler = createPiPanel({
     store,
     readConfig: () => cfg as never,
@@ -114,13 +117,25 @@ function panel(opts: { claimed?: boolean; code?: string | undefined } = {}) {
     },
     webDir: WEB,
     screens: { getStatuses: () => [] },
+    ...(opts.noDevice
+      ? {}
+      : {
+          device: {
+            id: 'tv_self',
+            read: () => ({ net: { link: 'ethernet', ssid: '', hasWifi: true }, networks: [], wifiResult: undefined }),
+            wifi: (action, wifi) => {
+              asked.push({ action, ...(wifi ? { wifi } : {}) });
+              return null;
+            },
+          },
+        }),
   });
   if (opts.claimed) {
     store.update((db) => {
       db.admin = { hash: 'x', salt: 'y', createdAt: new Date().toISOString() };
     });
   }
-  return { handler, store, config: () => cfg };
+  return { handler, store, config: () => cfg, asked };
 }
 
 // ── what is reachable without signing in ─────────────────────────────────────
@@ -492,4 +507,99 @@ test('a path cannot climb out of the bundle', async () => {
     const r = await call(handler, 'GET', u);
     assert.ok(!r.body.includes('device token lives here'), `${u} escaped the bundle`);
   }
+});
+
+// ── Wi-Fi: the one device control this panel has ─────────────────────────────
+//
+// It exists because a standalone screen that loses its network has no other way back: there is no
+// display server holding a dashboard somewhere else, so the only thing that can move this screen
+// onto a new network is the screen itself.
+
+test('a Wi-Fi change reaches the device', async () => {
+  const { handler, asked } = panel();
+  const cookie = await claim(handler);
+  const r = await call(handler, 'POST', '/api/pi/tv_self/command', { action: 'wifi-rescan' }, cookie);
+  assert.equal(r.status, 200);
+  assert.deepEqual(asked, [{ action: 'wifi-rescan' }]);
+});
+
+test('a join carries the network and the passphrase, and nothing else', async () => {
+  const { handler, asked } = panel();
+  const cookie = await claim(handler);
+  const r = await call(
+    handler,
+    'POST',
+    '/api/pi/tv_self/command',
+    { action: 'wifi-join', wifi: { ssid: 'Masjid 5G', psk: 'correct horse' }, shell: 'rm -rf /', text: 'x' },
+    cookie,
+  );
+  assert.equal(r.status, 200);
+  assert.deepEqual(asked, [{ action: 'wifi-join', wifi: { ssid: 'Masjid 5G', psk: 'correct horse' } }]);
+});
+
+test('this route is Wi-Fi ONLY — every other verb the spool knows is refused', async () => {
+  // The spool WILL act on all of these. The panel has no page that asks for them, so a request
+  // for one cannot have come from this product — and forwarding whatever arrived is how a route
+  // that looks like "the device command route" becomes a remote reboot, a reinstall, or a root
+  // terminal on the masjid's screen.
+  const { handler, asked } = panel();
+  const cookie = await claim(handler);
+  for (const action of ['reboot', 'update', 'reinstall', 'shell', 'shell-session', 'logs', 'display-off', 'set-video-mode', 'restart', 'screenshot']) {
+    const r = await call(handler, 'POST', '/api/pi/tv_self/command', { action, shell: 'id' }, cookie);
+    assert.equal(r.status, 400, `"${action}" must be refused`);
+  }
+  assert.deepEqual(asked, [], 'and none of them reached the device');
+});
+
+test('a Wi-Fi change needs a session', async () => {
+  const { handler, asked } = panel({ claimed: true });
+  const r = await call(handler, 'POST', '/api/pi/tv_self/command', { action: 'wifi-rescan' });
+  assert.equal(r.status, 401);
+  assert.deepEqual(asked, []);
+});
+
+test('a command addressed to some other screen is refused', async () => {
+  // There is exactly one device here. An id that is not it is either a mistake or a panel built
+  // against a fleet, and acting on it anyway would mean the id in the path means nothing.
+  const { handler, asked } = panel();
+  const cookie = await claim(handler);
+  const r = await call(handler, 'POST', '/api/pi/tv_other/command', { action: 'wifi-rescan' }, cookie);
+  assert.equal(r.status, 404);
+  assert.deepEqual(asked, []);
+});
+
+test('a network name or passphrase that cannot be real is refused here, not only by root', async () => {
+  const { handler, asked } = panel();
+  const cookie = await claim(handler);
+  const bad = [
+    {},
+    { ssid: '' },
+    { ssid: 'x'.repeat(33), psk: 'abcdefgh' },
+    { ssid: 'ok', psk: 'p'.repeat(64) },
+  ];
+  for (const wifi of bad) {
+    const r = await call(handler, 'POST', '/api/pi/tv_self/command', { action: 'wifi-join', wifi }, cookie);
+    assert.equal(r.status, 400, `${JSON.stringify(wifi)} must be refused`);
+  }
+  assert.deepEqual(asked, []);
+});
+
+test('a screen with no device underneath it says so rather than pretending', async () => {
+  const { handler } = panel({ noDevice: true });
+  const cookie = await claim(handler);
+  const r = await call(handler, 'POST', '/api/pi/tv_self/command', { action: 'wifi-rescan' }, cookie);
+  assert.equal(r.status, 404);
+  // And the panel is told there is nothing to render, rather than being given an empty shape it
+  // would draw as a Wi-Fi section with no networks in it.
+  const j = (await call(handler, 'GET', '/api/state', undefined, cookie)).json();
+  assert.equal(j.pi, undefined);
+});
+
+test('the state carries this screen own network facts, so the panel polls once', async () => {
+  const { handler } = panel();
+  const cookie = await claim(handler);
+  const j = (await call(handler, 'GET', '/api/state', undefined, cookie)).json();
+  const pi = j.pi as Record<string, unknown>;
+  assert.equal(pi.id, 'tv_self');
+  assert.deepEqual(pi.net, { link: 'ethernet', ssid: '', hasWifi: true });
 });

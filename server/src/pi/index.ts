@@ -52,7 +52,12 @@ import { clockSuspect } from '../clockFloor';
 import { fontOptions } from '../render/fonts';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
-import { netFacts, scanNetworks } from './network';
+import { netFacts, scanNetworks, type NetFacts, type AccessPoint } from './network';
+import { makeControl, readWifiResult, isWifiAction } from './control';
+
+// Bound once to this module's logger, so no call site has to pass one. The panel on a
+// standalone screen builds its own with its own logger and writes the same files.
+const { requestPrivileged, requestWifi } = makeControl((...a) => log(...(a as [string, ...unknown[]])));
 import { piStats } from './stats';
 import { AssetCache } from './assetCache';
 import { RenderCadence, cadenceAdvice } from './cadence';
@@ -412,40 +417,10 @@ async function runCommand(
     return;
   }
 
-  if (cmd.action === 'wifi-on' || cmd.action === 'wifi-off' || cmd.action === 'wifi-forget' || cmd.action === 'wifi-rescan') {
-    requestPrivileged(cmd.id, cmd.action, `asked the system to ${cmd.action.replace('-', ' ')}`);
-    return;
-  }
-
-  if (cmd.action === 'wifi-join') {
-    // The details CANNOT travel in the spool file. The dispatcher reads a verb as
-    // `head -c 32 | tr -dc 'a-z-'`, which deletes digits, spaces, punctuation and capitals — a
-    // network called "Masjid 5G" would arrive as "masjidg". That filter's narrowness is what keeps
-    // the verb set closed, so it stays exactly as it is and the payload goes beside it.
-    //
-    // Both fields are base64 so no network name or password can introduce a newline, a quote or a
-    // leading dash into the file's shape. Root decodes and validates them itself — this side is a
-    // courier, not the check.
-    if (!cmd.wifi?.ssid) {
-      log('a Wi-Fi join arrived with no network name; ignoring it');
-      return;
-    }
-    try {
-      const dir = '/var/lib/openmasjid-screen';
-      const b64 = (v: string): string => Buffer.from(v, 'utf8').toString('base64');
-      const NL = String.fromCharCode(10);
-      const body = b64(cmd.wifi.ssid) + NL + b64(cmd.wifi.psk ?? '') + NL;
-      // Written and renamed BEFORE the verb, so the dispatcher can never wake on a join whose
-      // details have not landed yet. Mode 0600: it holds the masjid's Wi-Fi password.
-      const tmp = `${dir}/.wifi-request`;
-      fs.writeFileSync(tmp, body, { mode: 0o600 });
-      fs.renameSync(tmp, `${dir}/wifi-request`);
-    } catch (e) {
-      log('could not leave the Wi-Fi details for the system:', (e as Error).message);
-      return;
-    }
-    // The name is fine to log — it is on the air for anyone to see. The password never is.
-    requestPrivileged(cmd.id, 'wifi-join', `asked the system to join "${cmd.wifi.ssid}"`);
+  // The same request a standalone screen's own panel makes, through the same writer — see
+  // control.ts. All that differs is who asked.
+  if (isWifiAction(cmd.action)) {
+    requestWifi(cmd.id, cmd.action, cmd.wifi);
     return;
   }
 
@@ -993,51 +968,7 @@ function runShell(cmd: string): Promise<{ out: string; code: number | null; ms: 
   });
 }
 
-/**
- * Leave a request for the root side to carry out.
- *
- * The agent cannot do either of these itself, deliberately: it cannot write /opt, so it cannot
- * rewrite its own code, and it holds no capability that would let it reboot the machine. What it
- * CAN do is write one file into a spool directory that a root-owned systemd path unit is watching.
- *
- * Written under a dot-prefixed temporary name and renamed into place, so the watcher never wakes on
- * a half-written file — and the verb is one of a fixed set the dispatcher matches against, never
- * anything derived from the network.
- */
-type PrivilegedVerb =
-  // A ROOT terminal. The only verb that hands over the whole machine, and the reason it is a verb
-  // at all is that this process cannot start anything privileged — see the shell-session branch of
-  // runCommand. It carries a session id and a one-time secret, never a command.
-  | 'shell-session'
-  // 'screenshot' is deliberately absent: the agent reads the framebuffer itself, because it is
-  // already in the video group. Nothing that can be done unprivileged belongs in this list.
-  | 'display-off'
-  | 'display-on'
-  | 'set-timezone'
-  | 'set-video-mode'
-  | 'keep-video-mode'
-  | 'update'
-  | 'reboot'
-  | 'reinstall'
-  | 'logs'
-  | 'wifi-on'
-  | 'wifi-off'
-  | 'wifi-join'
-  | 'wifi-forget'
-  | 'wifi-rescan';
 
-function requestPrivileged(id: string, verb: PrivilegedVerb, said: string): void {
-  try {
-    const dir = '/var/lib/openmasjid-screen/control';
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${dir}/.${id}`;
-    fs.writeFileSync(tmp, `${verb}\n`);
-    fs.renameSync(tmp, `${dir}/${id}`);
-    log(said);
-  } catch (e) {
-    log(`could not ask for "${verb}":`, (e as Error).message);
-  }
-}
 
 /** Where root leaves the journal it collected for us. */
 const JOURNAL_PATH = '/var/lib/openmasjid-screen/journal.txt';
@@ -1108,31 +1039,6 @@ async function sendJournal(cfg: AgentConfig): Promise<void> {
   log(`log upload failed (HTTP ${status}); retrying in ${Math.round((journalRetryAt - Date.now()) / 1000)}s`);
 }
 
-/**
- * What root said about the last Wi-Fi join, if it has said anything since we last looked.
- *
- * Read-and-delete: the result is a one-off answer to one request, and leaving it would have the
- * panel reporting an old failure next to a working connection. Root writes it; we only ever read
- * it, so a corrupt or half-written file is treated as no answer rather than as a problem.
- */
-function readWifiResult(): { ok: boolean | null; detail: string; kind?: string } | undefined {
-  const p = '/var/lib/openmasjid-screen/wifi-result';
-  try {
-    if (!fs.existsSync(p)) return undefined;
-    // Three lines now: verdict, detail, and optionally WHICH action this is the answer to. A join
-    // writes the first two, as it always has, so a file with no third line is a join — which is
-    // what makes this readable by an older agent and vice versa.
-    const [verdict = '', detail = '', kind = ''] = fs.readFileSync(p, 'utf8').split(String.fromCharCode(10));
-    fs.unlinkSync(p);
-    // 'unverified' is its own answer and must not read as success: it means the join worked but
-    // nothing proved the display server could still be reached afterwards.
-    const ok = verdict.trim() === 'yes' ? true : verdict.trim() === 'no' ? false : null;
-    const which = kind.trim();
-    return { ok, detail: detail.trim().slice(0, 200), ...(which ? { kind: which.slice(0, 16) } : {}) };
-  } catch {
-    return undefined;
-  }
-}
 
 /** Tell the server what this device is, how it is attached, and what it has been saying. */
 async function checkIn(
@@ -1811,8 +1717,55 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
     });
     log('seeded this screen');
   }
+  /**
+   * How this screen is attached, for the panel's Wi-Fi section.
+   *
+   * Cached and refreshed off the request, never during one. `netFacts()` and `scanNetworks()` are
+   * `nmcli` subprocesses and the panel polls state every couple of seconds; doing this inline
+   * would put two process spawns in front of every poll, in the same process that draws the
+   * television at 1 fps. So a read returns the last good answer immediately and starts a refresh
+   * only if the answer is stale and one is not already running.
+   *
+   * The Wi-Fi verdict is different and is read on EVERY call: root's answer is written once and
+   * deleted when read, so a cache would either lose it or show it for ever.
+   */
+  let netAt = 0;
+  let netBusy = false;
+  let netCache: { net?: NetFacts; networks?: AccessPoint[] } = {};
+  const NET_MAX_AGE_MS = 15_000;
+  const refreshNet = (): void => {
+    if (netBusy || Date.now() - netAt < NET_MAX_AGE_MS) return;
+    netBusy = true;
+    void (async () => {
+      try {
+        const net = await netFacts();
+        netCache = { net, networks: net.hasWifi ? await scanNetworks() : [] };
+        netAt = Date.now();
+      } catch (e) {
+        // Keep the last good answer. A failed scan is not news worth replacing facts with.
+        log('could not read the network state:', (e as Error).message);
+      } finally {
+        netBusy = false;
+      }
+    })();
+  };
+
+  // Warmed before anything asks, so the first poll after a sign-in has a real answer rather
+  // than the empty cache — which the panel would otherwise have to draw as something.
+  refreshNet();
+
   const panel = createPiPanel({
     store,
+    device: {
+      id: store.db.tvs[0]?.id ?? 'this-screen',
+      read: () => {
+        refreshNet();
+        return { ...netCache, wifiResult: readWifiResult() };
+      },
+      // The same writer the agent uses for a command a display server queued. Only the asker
+      // differs; what lands in the spool is identical.
+      wifi: (action, w) => requestWifi(rid('wifi'), action, w),
+    },
     // Read fresh each time rather than closing over `live`: the panel SPENDS the code, and a
     // stale copy here would keep accepting one that has already been used.
     readConfig: () => loadConfig(),

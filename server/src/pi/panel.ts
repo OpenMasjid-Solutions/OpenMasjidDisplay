@@ -57,6 +57,7 @@ import { normalizeIqamahSchedule } from '../iqamahSchedule';
 import { renderMonthPrintHtml } from '../print';
 import { localParts } from '../prayer/engine';
 import { setupCodeMatches } from './claim';
+import { isWifiAction, type WifiAction } from './control';
 import type { AgentConfig } from './agentConfig';
 
 /** Mirrors the server's own headers. A panel on a masjid's LAN gets the same treatment as one
@@ -107,6 +108,30 @@ export interface PanelDeps {
   webDir: string;
   /** what this screen is doing — the Pi reports on the one screen it is */
   screens: ScreenStatuses;
+  /**
+   * The device itself, for the pages that are about the box rather than about the masjid.
+   *
+   * Optional only so the panel can be built in a test with no Raspberry Pi underneath it. On a
+   * real screen it is always supplied, and the Wi-Fi section is hidden without it rather than
+   * shown broken.
+   */
+  device?: PanelDevice;
+}
+
+export interface PanelDevice {
+  /** this screen's own id, so the panel addresses it through the route it already knows */
+  id: string;
+  /**
+   * How it is attached, and what it can see.
+   *
+   * Cheap by contract: the caller caches this and refreshes it in the background, because the
+   * panel polls constantly and `nmcli` is a subprocess. A few seconds stale is the right answer
+   * — somebody who just pulled a cable out sees it on the next poll, and the draw loop is not
+   * made to wait for a network scan.
+   */
+  read: () => { net?: unknown; networks?: unknown; wifiResult?: unknown };
+  /** Ask root for a Wi-Fi change. Returns null when the request was left, or why it was not. */
+  wifi: (action: WifiAction, wifi?: { ssid: string; psk: string }) => string | null;
 }
 
 const sendJson = (res: ServerResponse, code: number, body: unknown): void => {
@@ -142,7 +167,7 @@ function readBody(req: IncomingMessage, maxBytes = 64_000): Promise<Record<strin
 }
 
 export function createPiPanel(deps: PanelDeps) {
-  const { store, readConfig, writeConfig, webDir, screens } = deps;
+  const { store, readConfig, writeConfig, webDir, screens, device } = deps;
   const loginLimiter = new LoginLimiter();
   /**
    * The volunteer page, served by this same listener.
@@ -320,7 +345,55 @@ export function createPiPanel(deps: PanelDeps) {
           omosBase: '',
           // The volunteer page is served by this same listener rather than on a port of its own.
           volunteer: { pinSet: !!store.db.volunteerAuth, port: 0 },
+          // How this screen is attached. The server sends a list of devices; a standalone screen
+          // IS the device, so it sends one object and the panel renders the same section against
+          // it. Absent in a test with no Pi underneath, and the section hides itself.
+          ...(device ? { pi: { id: device.id, ...device.read() } } : {}),
         });
+      }
+
+      /**
+       * Wi-Fi, and ONLY Wi-Fi.
+       *
+       * The server's panel posts device commands to this path, so the same panel code reaches it
+       * here unchanged. What it may ask for is a different question, and the answer is much
+       * narrower than the server's: the five Wi-Fi verbs, nothing else.
+       *
+       * The narrowness is the point and it is not laziness. `reboot`, `update`, `reinstall` and a
+       * root terminal are all verbs this device's spool WILL act on, and every one of them is
+       * reachable here the moment this route forwards whatever it is given. A standalone panel has
+       * no page that asks for them, so a request for one is not a feature nobody built — it is a
+       * request nobody in this product can have meant. Adding one later means adding it here, on
+       * purpose, with the page that needs it.
+       */
+      {
+        const cmd = /^\/api\/pi\/([A-Za-z0-9_-]{1,64})\/command$/.exec(pathname);
+        if (cmd && method === 'POST') {
+          if (!device) return sendJson(res, 404, { error: 'This screen has no device controls.' });
+          // Addressed to THIS screen or to nothing. There is exactly one device here.
+          if (cmd[1] !== device.id) return sendJson(res, 404, { error: 'No such screen.' });
+          const body = await readBody(req).catch(() => null);
+          if (!body) return sendJson(res, 400, { error: 'Could not read that request.' });
+          const action = body.action;
+          if (!isWifiAction(action)) {
+            return sendJson(res, 400, { error: 'This screen only accepts Wi-Fi changes here.' });
+          }
+          let wifi: { ssid: string; psk: string } | undefined;
+          if (action === 'wifi-join') {
+            const w = body.wifi as { ssid?: unknown; psk?: unknown } | undefined;
+            const ssid = typeof w?.ssid === 'string' ? w.ssid : '';
+            const psk = typeof w?.psk === 'string' ? w.psk : '';
+            // Bounded here as well as by root. 32 is the limit of an SSID and 63 of a WPA
+            // passphrase, so anything longer is not a network anybody can join.
+            if (!ssid || ssid.length > 32 || psk.length > 63) {
+              return sendJson(res, 400, { error: 'That network name or password is not usable.' });
+            }
+            wifi = { ssid, psk };
+          }
+          const why = device.wifi(action, wifi);
+          if (why) return sendJson(res, 500, { error: why });
+          return sendJson(res, 200, { queued: true });
+        }
       }
 
       /**

@@ -254,7 +254,13 @@ timetable, plays your cameras, and is managed entirely from the dashboard — an
 brings cameras to browser screens, a second screen design, and lets the other OpenMasjid apps on
 your box read your prayer times instead of being told them twice.
 
-### Added
+### Added
+- **Wi-Fi settings on a screen that runs on its own.** **Settings → Wi-Fi** lists the networks
+  the screen can see and joins one, so a Pi set up on a cable can be moved onto Wi-Fi, and one
+  whose network password has changed can be put back on without fetching a keyboard. When the
+  join works the screen tells you its new address — that is where you manage it from then on,
+  because the panel is served by the screen itself. Change network with the cable still in if
+  you can; turning the radio off is refused unless a cable is carrying the screen.
 - **Raspberry Pi screens.** One command on a Pi running Raspberry Pi OS Lite, a setup code on the
   television, and that screen is yours. It draws the timetable **itself** — no desktop, no browser —
   and it opens your cameras **directly**, on your own network, so camera video never travels through

@@ -293,13 +293,26 @@ visible to GitHub, and to anyone watching the masjid's outbound traffic, as "thi
 OpenMasjidDisplay". Worth stating rather than fixing; a masjid that minds can block it and update by
 re-running the installer.
 
-### 9.4 A standalone screen that loses Wi-Fi needs someone to stand next to it
+### 9.4 ~~A standalone screen that loses Wi-Fi needs someone to stand next to it~~ — DONE
 
-Not a security finding — an availability one, and the one most likely to cost a volunteer an
-evening. The standalone panel has **no Wi-Fi page** (the capability exists only for a
-server-managed Pi, driven through the control spool), so if the masjid's Wi-Fi password changes, the
-way back is a keyboard on the Pi or a network cable. The documentation says so. Building the Wi-Fi
-page for the standalone panel is the obvious fix and is not done.
+The standalone panel now has the Wi-Fi page, through the same control spool a server-managed Pi
+uses and with the same component in the panel. One thing about it is worth knowing rather than
+re-deciding:
+
+**A standalone join is never "verified", and that is correct.** Root proves a join worked by
+fetching something from the display server over `wlan0`, and rolls the join back if it cannot —
+the safeguard that stops a screen stranding itself on a guest VLAN. A standalone screen has no
+server to fetch from, so root reports `unverified` and the new IP address instead, and does not
+roll back. Rolling back there would make Wi-Fi unusable on exactly the screens that most need it.
+
+The panel words that outcome differently for a standalone screen: it leads with the new address,
+because this panel is served BY the screen, so a join is what changes where the admin types to
+reach it. The managed wording ("leave the cable in") is about a dashboard elsewhere staying
+reachable, which is not the situation here.
+
+**The route is Wi-Fi only, on purpose.** `reboot`, `update`, `reinstall` and the root terminal are
+all verbs this device's spool will act on, and all of them would be reachable the moment that route
+forwarded whatever it was given. A test asserts each one is refused.
 
 ### Already decided, recorded so it is not re-litigated
 

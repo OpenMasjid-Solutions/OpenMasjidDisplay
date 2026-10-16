@@ -113,14 +113,25 @@ Set a **PIN** in **Settings → Volunteer page** and anybody with the PIN can op
 password and without being able to change anything else. This is the page for whoever opens the
 masjid.
 
+### Wi-Fi
+
+**Settings → Wi-Fi** lists the networks the screen can see and joins one, so a Pi set up on a
+cable can be moved onto Wi-Fi, and one whose network password has changed can be put back on
+without anybody fetching a keyboard.
+
+Read the result before you unplug anything. **When the join succeeds, the screen reports its new
+address** — that is where you manage it from now on, because this panel is served by the screen
+itself. Changing its network changes where you type to reach it. The television shows that
+address too, so you can always read it off the wall.
+
+Change network **while the cable is still in** if you can. Turning the radio off is refused by the
+screen unless a cable is carrying it, and a network that turns out not to work leaves you needing
+the cable to put it right.
+
 ### Not here yet
 
-Two things a server-managed screen has, that a standalone panel does not yet:
-
-- **Wi-Fi settings.** Set the Pi's Wi-Fi when you flash the card, in Raspberry Pi Imager. If the
-  masjid's Wi-Fi password changes, the way back in today is a keyboard on the Pi or a network
-  cable — so prefer a cable, or a network whose password does not change.
-- **A terminal in the panel.** SSH in instead.
+**A terminal in the panel.** A server-managed screen can be given one from the dashboard; a
+standalone one cannot. SSH in instead.
 
 ---
 
@@ -136,7 +147,11 @@ The panel is deliberately the same panel, so the list of differences is short an
    theme and wallpaper from the OpenMasjidOS dashboard instead.
 4. **The first-run screen asks for the setup code** as well as a password. A server has no code
    to ask for.
-5. **Wi-Fi settings and the in-panel terminal are absent**, as above.
+5. **Wi-Fi lives in Settings**, not on a screen's card — a server manages many screens, so there
+   the question is always "which one"; here it is this one. Same controls, and after a join it
+   tells you the screen's new address rather than telling you to leave the cable in, because
+   there is no dashboard elsewhere that needs to stay reachable.
+6. **There is no terminal in the panel**, as above.
 
 Anything else that differs is a bug worth reporting.
 

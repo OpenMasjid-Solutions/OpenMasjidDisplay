@@ -7,6 +7,7 @@ import { Field, Toggle, Spinner, IconCheck, useToast } from '../ui';
 import { usePrefs, prefsStore, WALLPAPERS, fetchOmosAppearance } from '../prefs';
 import { timezoneOptions } from '../timezones';
 import { useCaps } from '../capabilities';
+import { WifiSection } from './WifiPanel';
 
 interface Props {
   state: AppState;
@@ -141,6 +142,18 @@ export function SettingsPage({ state, refetch }: Props) {
       </div>
 
       <VolunteerPanel state={state} refetch={refetch} />
+
+      {/* Moving THIS screen onto a Wi-Fi network.
+          On a server this lives on the device's own card under Screens, because a server manages
+          many devices and the question is always "which one". A standalone screen is the device,
+          so it belongs in its own settings — and it is the same component, against the same
+          routes, so what a volunteer sees does not depend on which kind of screen they have. */}
+      {state.pi && (
+        <div className="panel glass">
+          <h3 className="section-title" style={{ marginTop: 0 }}>Wi-Fi</h3>
+          <WifiSection device={state.pi} badge={null} />
+        </div>
+      )}
 
       {caps.notifications && <NotificationsPanel />}
 

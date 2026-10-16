@@ -47,6 +47,9 @@ import {
 import type { DB, PiDevice } from './types';
 
 const agentSrc = () => fs.readFileSync(path.resolve(__dirname, 'pi', 'index.ts'), 'utf8');
+/** The spool writer and the closed verb set, which a standalone screen's panel shares with the
+ *  agent — so this reads where they live rather than where they used to. */
+const controlSrc = () => fs.readFileSync(path.resolve(__dirname, 'pi', 'control.ts'), 'utf8');
 const installerSrc = () => fs.readFileSync(path.resolve(__dirname, '..', 'assets', 'pi', 'install.sh'), 'utf8');
 
 // ── where this feature is not ────────────────────────────────────────────────
@@ -54,10 +57,11 @@ const installerSrc = () => fs.readFileSync(path.resolve(__dirname, '..', 'assets
 test('a console command is never a root verb', () => {
   assert.ok((PI_COMMANDS as readonly string[]).includes('shell'), 'the panel has to be able to ask for it');
 
-  // The agent's own list of things it hands to root.
-  const src = agentSrc();
-  const union = /type PrivilegedVerb =([\s\S]*?);/.exec(src);
-  assert.ok(union, 'could not find the PrivilegedVerb union in the agent');
+  // The list of things this device hands to root. It is in control.ts rather than in the agent
+  // because there are two callers now — the agent, and a standalone screen's own panel — and a
+  // second copy of this set is exactly how a verb nobody reviewed would appear.
+  const union = /export type PrivilegedVerb =([\s\S]*?);/.exec(controlSrc());
+  assert.ok(union, 'could not find the PrivilegedVerb union');
 
   // The EXACT verb, not a substring of one. The invariant here is narrower than it first looks and
   // the distinction is the whole of it: what must never be a root verb is a verb that carries a

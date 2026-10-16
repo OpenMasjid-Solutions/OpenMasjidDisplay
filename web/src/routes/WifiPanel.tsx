@@ -30,14 +30,19 @@
  */
 import { useState } from 'react';
 import { api } from '../api';
+import { useCaps } from '../capabilities';
 import type { PiDeviceInfo } from '../types';
 import { Field, Spinner, SignalBars, IconWifi, IconRefresh, IconNoLink, IconTrash, IconCheck, useToast } from '../ui';
 
 type WifiAction = 'wifi-on' | 'wifi-off' | 'wifi-join' | 'wifi-forget' | 'wifi-rescan';
 
 /** What the device said about the last thing it was asked to do. Worded from `kind`, because the
- *  same three verdicts mean different things for a join and for a forget. */
-function resultLine(r: NonNullable<PiDeviceInfo['wifiResult']>): { text: string; tone: 'ok' | 'bad' | 'warn' } {
+ *  same three verdicts mean different things for a join and for a forget — and from `standalone`,
+ *  because the third verdict means something different again when there is no server. */
+function resultLine(
+  r: NonNullable<PiDeviceInfo['wifiResult']>,
+  standalone: boolean,
+): { text: string; tone: 'ok' | 'bad' | 'warn' } {
   if (r.kind === 'forget') {
     return r.ok === true
       ? { text: r.detail || 'This screen no longer has a saved Wi-Fi network.', tone: 'ok' }
@@ -52,6 +57,21 @@ function resultLine(r: NonNullable<PiDeviceInfo['wifiResult']>): { text: string;
   if (r.ok === false) {
     return { text: `The last attempt did not work: ${r.detail || 'the screen did not say why'}.`, tone: 'bad' };
   }
+  // `ok: null` is 'unverified': the join worked, but nothing proved the dashboard still reachable.
+  //
+  // On a standalone screen that is not a warning, it is the NORMAL answer — root has no server
+  // address to test against, so it reports the new IP instead and the panel must lead with it.
+  // That address is the thing the admin needs: this panel is served BY this screen, so moving it
+  // to another network is what changes where they type to get back in. Telling them to leave the
+  // cable in, and burying the address in parentheses, is the wrong half of the sentence.
+  if (standalone) {
+    return {
+      text: r.detail
+        ? `Joined. This screen is now at ${r.detail} — open that address to manage it on the new network.`
+        : 'Joined, but this screen did not report its new address. Check the television, which shows it.',
+      tone: r.detail ? 'ok' : 'warn',
+    };
+  }
   return {
     text: `Joined${r.detail ? ` (${r.detail})` : ''}, but nothing has confirmed this dashboard is reachable over it. Leave the cable in.`,
     tone: 'warn',
@@ -60,8 +80,13 @@ function resultLine(r: NonNullable<PiDeviceInfo['wifiResult']>): { text: string;
 
 const TONE = { ok: 'var(--color-success)', bad: 'var(--color-danger)', warn: 'var(--color-warning)' };
 
-export function WifiSection({ device, badge }: { device: PiDeviceInfo; badge: React.ReactNode }) {
+/** Only the four fields this reads, so a standalone screen can pass what it has rather than
+ *  inventing the twenty it does not. */
+type WifiDevice = Pick<PiDeviceInfo, 'id' | 'net' | 'networks' | 'wifiResult'>;
+
+export function WifiSection({ device, badge }: { device: WifiDevice; badge: React.ReactNode }) {
   const toast = useToast();
+  const standalone = useCaps().host === 'pi';
   const [chosen, setChosen] = useState('');
   const [psk, setPsk] = useState('');
   const [busy, setBusy] = useState<'' | WifiAction>('');
@@ -83,15 +108,20 @@ export function WifiSection({ device, badge }: { device: PiDeviceInfo; badge: Re
       toast(said ?? 'Asked the screen. It will pick this up in a few seconds.');
       if (action === 'wifi-join') setPsk('');
     } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not reach the display server.', 'error');
+      toast(e instanceof Error ? e.message : standalone ? 'Could not reach this screen.' : 'Could not reach the display server.', 'error');
     } finally {
       setBusy('');
     }
   };
 
-  if (!net?.hasWifi) return <p className="hint">This screen has no Wi-Fi, so there is nothing to set up here.</p>;
+  // Undefined is NOT 'none', and drawing it as none is a confidently wrong sentence: a screen
+  // that has not reported yet would be told it has no Wi-Fi, and then be told it does a second
+  // later. Both ends of this produce that gap — a managed device before its first check-in, and
+  // a standalone one in the moment before its first network read lands.
+  if (!net) return <p className="hint">Asking this screen how it is connected…</p>;
+  if (!net.hasWifi) return <p className="hint">This screen has no Wi-Fi, so there is nothing to set up here.</p>;
 
-  const line = result ? resultLine(result) : null;
+  const line = result ? resultLine(result, standalone) : null;
 
   return (
     <>

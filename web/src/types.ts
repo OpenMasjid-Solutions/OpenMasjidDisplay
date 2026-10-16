@@ -410,6 +410,14 @@ export interface AppState {
   omosBase: string;
   /** volunteer mode: whether a PIN is set, and the host port the page is shown on */
   volunteer: { pinSet: boolean; port: number };
+  /**
+   * On a standalone Raspberry Pi: this screen's own device facts.
+   *
+   * A server sends a LIST of devices, fetched separately, because it manages many. A standalone
+   * screen is the device, so the facts ride on the state the panel already polls — and the Wi-Fi
+   * section renders against this instead of against a row picked out of a fleet.
+   */
+  pi?: Pick<PiDeviceInfo, 'id' | 'net' | 'networks' | 'wifiResult'>;
   serverNow: number;
 }
 
