@@ -1267,6 +1267,37 @@ function sunburst(cx: number, cy: number, r: number): string {
   return out.join('');
 }
 
+/**
+ * How much of the sun's or moon's hard body reaches the eye.
+ *
+ * ## Why this is not 1
+ *
+ * The body travels an arc across the scene by time of day, and it is drawn BEHIND the glass
+ * cards. The comment that used to sit here said it rides "in the open sky between the cards" —
+ * it does not, and in the Modern design there is barely any open sky: the arc's midday height
+ * puts it inside the header band, and at roughly t=0.6 its x lands exactly where the clock's
+ * digits begin. At full strength the disc then sits behind the most-read element on the screen
+ * and takes the contrast out of it. Measured on a television: on a 24-hour dark-theme screen at
+ * 13:58 the disc covered the "1" outright.
+ *
+ * Fixing it by moving the arc was the obvious idea and the wrong one. There is nowhere to move
+ * it to — the body crosses SOME card for nearly the whole day, so an arc that avoids the clock
+ * just lands on the table or the ring instead. Haloing the text underneath has the same problem
+ * in reverse: it would mean haloing most of the screen.
+ *
+ * So the body is dimmed instead, which is also what it should have looked like all along. A
+ * bright object behind frosted glass reads as a diffuse glow, not as a hard disc with a crisp
+ * edge. Opacity stands in for that diffusion because a real blur filter is the single most
+ * expensive thing this renderer can do (see docs/RENDER_PERFORMANCE.md — gradients alone are 85%
+ * of rasterisation).
+ *
+ * 0.4 was chosen by rendering 1.0 / 0.4 / 0.25 / none at the worst-case minute and looking: at
+ * 0.4 the sun still reads as the sun and the digits read cleanly through it; by 0.25 it is a
+ * faint smudge and the sky loses its anchor. The corona, the ray shimmer and #cglow are left at
+ * full strength — they are already soft and low-contrast, and they are what carries the warmth.
+ */
+const BODY_THROUGH_GLASS = 0.4;
+
 /** The sun (day) or moon (night). Soft edges come from gradient fades, not a blur
  *  filter. The sun is a gentle warm orb with a faint corona + the lightest ray
  *  shimmer; the glow it casts onto the glass comes from #cglow + #litsheen. */
@@ -1278,16 +1309,19 @@ function celestialBody(cel: Celestial, W: number, H: number): string {
     return (
       `<circle cx="${cx}" cy="${cy}" r="${(r * 3.0).toFixed(1)}" fill="url(#suncorona)"/>` +
       sunburst(cel.x, cel.y, r) +
-      `<circle cx="${cx}" cy="${cy}" r="${(r * 1.0).toFixed(1)}" fill="url(#sun)"/>`
+      `<circle cx="${cx}" cy="${cy}" r="${(r * 1.0).toFixed(1)}" fill="url(#sun)" opacity="${BODY_THROUGH_GLASS}"/>`
     );
   }
+  // The moon's disc and its craters dim together, or the craters would float free of it.
   return (
     `<circle cx="${cx}" cy="${cy}" r="${(r * 2.6).toFixed(1)}" fill="url(#moonglow)"/>` +
+    `<g opacity="${BODY_THROUGH_GLASS}">` +
     `<circle cx="${cx}" cy="${cy}" r="${r.toFixed(1)}" fill="url(#moon)"/>` +
     // a couple of faint craters for a less "fake" moon
     `<circle cx="${(cel.x - r * 0.3).toFixed(1)}" cy="${(cel.y - r * 0.25).toFixed(1)}" r="${(r * 0.16).toFixed(1)}" fill="rgba(120,135,165,0.22)"/>` +
     `<circle cx="${(cel.x + r * 0.28).toFixed(1)}" cy="${(cel.y + r * 0.18).toFixed(1)}" r="${(r * 0.12).toFixed(1)}" fill="rgba(120,135,165,0.18)"/>` +
-    `<circle cx="${(cel.x + r * 0.05).toFixed(1)}" cy="${(cel.y + r * 0.4).toFixed(1)}" r="${(r * 0.09).toFixed(1)}" fill="rgba(120,135,165,0.16)"/>`
+    `<circle cx="${(cel.x + r * 0.05).toFixed(1)}" cy="${(cel.y + r * 0.4).toFixed(1)}" r="${(r * 0.09).toFixed(1)}" fill="rgba(120,135,165,0.16)"/>` +
+    `</g>`
   );
 }
 

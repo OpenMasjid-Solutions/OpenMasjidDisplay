@@ -58,9 +58,46 @@ export interface ResvgFontOptions {
 let cached: ResvgFontOptions | null = null;
 /** The bundled font file path for ffmpeg's drawtext ticker (null = none bundled). */
 let primaryFont: string | null = null;
-export function primaryFontFile(): string | null {
+/** A face covering BOTH Arabic and Latin, for a ticker that mixes them. See tickerFontFile. */
+let mixedScriptFont: string | null = null;
+
+/** Not exported: every caller goes through `tickerFontFile`, which picks per message. */
+function primaryFontFile(): string | null {
   fontOptions(); // ensure the scan/selection has run
   return primaryFont;
+}
+
+/** Arabic, Arabic Supplement, Arabic Extended-A, and the presentation forms. */
+const ARABIC_SCRIPT = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/;
+
+/**
+ * The font ffmpeg should draw a PARTICULAR ticker message with.
+ *
+ * The ticker is the one piece of text on a decoder screen that the renderer does NOT draw: the
+ * SVG paints its band and ffmpeg's `drawtext` scrolls the message over it, because that is what
+ * makes the motion smooth at 1 fps. So it is the one piece of text that does not get the
+ * renderer's font handling, and it was getting `NotoSans-Bold` — which has no Arabic at all.
+ *
+ * Rendered on the real board, the three candidates with mixed Arabic+Latin ticker text:
+ *
+ *   NotoSans-Bold          every Arabic character is a TOFU BOX; the Latin is fine
+ *   Amiri-Regular          Arabic shaped and joined, right-to-left, AND the Latin renders
+ *   NotoNaskhArabic        Arabic fine; the LATIN is tofu
+ *
+ * So an Arabic announcement on an RTSP decoder screen was a row of empty boxes, while the same
+ * message on a Pi (which draws its own ticker) and in a browser (CSS) was correct. ffmpeg's
+ * drawtext in these builds does shape Arabic properly — the only thing missing was a font with
+ * the glyphs in it.
+ *
+ * Chosen per MESSAGE rather than once, so an English ticker keeps the bold sans it has always
+ * had and only a message that actually contains Arabic switches to the face that can draw it.
+ * Amiri is the right one for that because it carries full Latin too (see PRIORITY above), so a
+ * mixed message is drawn in ONE font instead of tofu on one side or the other.
+ */
+export function tickerFontFile(message: string): string | null {
+  fontOptions();
+  if (!ARABIC_SCRIPT.test(message)) return primaryFontFile();
+  return mixedScriptFont ?? primaryFont;
 }
 
 function scan(): string[] {
@@ -111,6 +148,11 @@ export function fontOptions(): ResvgFontOptions {
   }
 
   primaryFont = chosen.find((f) => /NotoSans-Bold/i.test(f)) ?? chosen.find((f) => /NotoSans-Regular/i.test(f)) ?? chosen[0] ?? null;
+  // Amiri first: it is the one curated face carrying BOTH scripts, so a ticker mixing Arabic and
+  // Latin draws in one font rather than tofu on one side. Naskh is the fallback for Arabic-only
+  // text — its Latin is tofu, which is still better than no Arabic at all.
+  mixedScriptFont =
+    chosen.find((f) => /Amiri/i.test(f)) ?? chosen.find((f) => /NotoNaskhArabic/i.test(f)) ?? null;
   const haveNotoSans = chosen.some((f) => /NotoSans-/.test(path.basename(f)));
   const sans = haveNotoSans ? 'Noto Sans' : 'DejaVu Sans';
   log.info(`using ${chosen.length} of ${all.length} bundled font file(s) for rendering`);

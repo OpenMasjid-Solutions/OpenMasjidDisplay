@@ -153,6 +153,13 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **Arabic scrolling messages were empty boxes on screens fed by a decoder box.** A message in
+  Arabic or Urdu came out as a row of squares on those screens, while the same message was fine
+  on a Raspberry Pi screen and in a browser. It now reads correctly everywhere. An English
+  message looks exactly as it did before.
+- **The sun no longer sits on top of the clock.** On a dark design in the early afternoon the sun
+  drifted behind the clock and washed out a digit — on a 24-hour clock it covered one completely.
+  It is now softer, as something behind frosted glass should look, and the time stays readable.
 - **Arabic headings are no longer spaced apart letter by letter.** Arabic joins up as it is
   written, and one heading was being stretched out so the letters came apart. It now reads
   normally — anywhere in the app, in any language that uses the Arabic script.

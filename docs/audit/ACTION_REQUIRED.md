@@ -436,7 +436,7 @@ including the counted-noun rules, from somebody who speaks them. Then it is a sm
 `countdownText` and the label table, with the golden fixtures regenerated for the Arabic and Urdu
 shots only.
 
-### 9.9 The sun passes behind the clock in the early afternoon, and on a dark theme it eats a digit
+### 9.9 ~~The sun passes behind the clock and eats a digit~~ — FIXED
 
 Found by sweeping the whole configuration matrix against a capture card. Pre-existing — nothing in
 the recent work touches `celestialPos` — and invisible unless you look at a screen between roughly
@@ -458,8 +458,31 @@ Measured on the television:
 So it is worst for masjids on a 24-hour clock and a dark theme, which is a large share of them
 outside the US. The clock is the most-read element on the screen.
 
-**Not fixed, because every option changes how every Modern screen looks** and that is a design
-call rather than a defect fix:
+**Fixed** by dimming the body to 0.4 (`BODY_THROUGH_GLASS` in `svg.ts`), which is also what it
+should have looked like: a bright object behind frosted glass reads as a diffuse glow, not as a
+hard disc with a crisp edge. Opacity stands in for that diffusion because a real blur is the most
+expensive thing this renderer can do.
+
+The value was chosen by rendering 1.0 / 0.4 / 0.25 / none at the worst minute and looking: at 0.4
+the sun still reads as the sun and the digits read cleanly through it; by 0.25 it is a smudge and
+the sky loses its anchor. The corona, the ray shimmer and `#cglow` stay at full strength — they
+are soft and low-contrast already, and they are what carries the warmth.
+
+Measured, as the mean luminance the body adds to the scene behind the clock with the text
+stripped (font-independent, so it holds on any machine):
+
+| theme | no body | before | after |
+| --- | --- | --- | --- |
+| emerald | 0.455 | +0.033 | **+0.013** |
+| night | 0.462 | +0.032 | **+0.013** |
+| ocean | 0.500 | +0.029 | **+0.012** |
+| light | 0.956 | −0.001 | −0.000 |
+
+`celestial.test.ts` pins a ceiling of +0.02, between the two, so restoring the full-strength disc
+fails and the current value passes with room to move. Twelve golden fixtures moved, every one of
+them `modern-*` landscape — the body is not drawn in Simple or in portrait.
+
+The options that were weighed and rejected, since they will occur to the next person:
 
 1. Keep the hard disc out of the header band — clamp the arc's `y` so it passes below the top row.
    The gap between the two card rows is ~20px and the disc is ~70px, so this means a real change to
@@ -470,5 +493,46 @@ call rather than a defect fix:
    docs/RENDER_PERFORMANCE.md should be checked against first.
 4. Leave it.
 
-My recommendation is 2 or 3. `showCelestial: false` already turns the whole thing off for a masjid
-that minds today.
+1 is not available — the gap between the two card rows is ~20px and the body is ~70px, so there is
+nowhere to move it to; the arc crosses SOME card for nearly the whole day, and one that dodges the
+clock lands on the table or the ring instead. 3 would mean haloing most of the screen for the same
+reason. `showCelestial: false` still turns the whole thing off for a masjid that wants that.
+
+### 9.10 ~~An Arabic ticker was tofu boxes on every decoder screen~~ — FIXED
+
+Found by asking whether the Arabic fixes reached the OTHER two screen types, which was the right
+question: all four renderer fixes do, because `renderDisplaySvg` is shared by the Pi agent, the
+RTSP render worker and the browser screen. This one did not, because it is the one piece of text
+the renderer does not draw.
+
+On a decoder screen the SVG paints the ticker's BAND and ffmpeg's `drawtext` scrolls the message
+over it — that is what keeps the motion smooth between 1 fps renders. So the ticker misses the
+renderer's font handling entirely, and it was being handed `NotoSans-Bold`, which has no Arabic.
+
+Reproduced end to end against a real RTSP stream (the published `0.71.0-dev.48` image, MediaMTX,
+pulled over TCP with ffmpeg exactly as a decoder box does). The ticker read:
+
+    □□□□ 1:30 □□□□□□□ □□□□□□□ - Jumuah at 1:30 PM
+
+and after the fix, on the same pipeline:
+
+    الجمعة الساعة 1:30 ظهرا - Jumuah at 1:30 PM
+
+The same message was always correct on a Raspberry Pi (which draws its own ticker) and in a
+browser (where the text is a DOM node and the browser falls back per glyph). Only decoder screens
+were affected — which is most existing installs.
+
+**Fixed** by choosing the ticker font per MESSAGE (`tickerFontFile`): a message containing Arabic
+script gets Amiri, which carries full Latin too, so a mixed message is drawn in ONE font rather
+than tofu on one side or the other. An English ticker keeps the bold sans it has always had, so
+no existing screen is restyled. Measured from the real font files:
+
+| face | covers Latin | covers Arabic |
+| --- | --- | --- |
+| NotoSans-Bold (what it used) | yes | **no** |
+| Amiri-Regular (Arabic messages now) | yes | yes |
+| NotoNaskhArabic | **no** | yes |
+
+**Worth knowing, not fixed:** the browser screen's ticker is a DOM node with no explicit
+font-family, so its Arabic is drawn in whatever the device's browser falls back to rather than in
+Amiri like the rest of the screen. Cosmetic rather than broken, and only on browser screens.

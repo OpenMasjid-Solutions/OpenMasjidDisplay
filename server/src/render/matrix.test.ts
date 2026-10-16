@@ -74,18 +74,37 @@ interface Shot {
   name: string;
   over: Record<string, unknown>;
   when: Date;
+  opts: Record<string, unknown>;
 }
 
+/**
+ * The two shapes the four real callers pass, because a fault can live in one and not the other.
+ *
+ * `tickerBandOnly` is not a detail: it is what an RTSP DECODER screen and a BROWSER screen both
+ * use (`renderWorker.ts` and `web/src/screen.tsx`). In that mode the SVG paints the ticker's band
+ * and leaves the moving text to a compositor — ffmpeg for the video path, CSS for the browser —
+ * so the output genuinely differs from what a Pi draws, and the first version of this sweep
+ * exercised only the Pi's shape. Every fault class checked here could hide in the half that was
+ * never rendered.
+ */
+const CALLERS: [string, Record<string, unknown>][] = [
+  // The Pi agent, and the still-PNG preview: the renderer draws everything itself.
+  ['drawn whole', {}],
+  // A decoder screen and a browser screen: the band is painted, the motion composited over it.
+  ['ticker band only', { tickerBandOnly: true }],
+];
+
 function matrix(): Shot[] {
-  const shots: Shot[] = [];
+  const base: Shot[] = [];
   for (const layout of ['reference', 'simple'] as const) {
     for (const quality of ['720p', '1080p'] as const) {
       for (const orientation of ['landscape', 'portrait'] as const) {
         for (const language of ['en', 'ar', 'ur'] as const) {
-          shots.push({
+          base.push({
             name: `${layout}/${quality}/${orientation}/${language}`,
             over: { layout, quality, orientation, language },
             when: THU_AM,
+            opts: {},
           });
         }
       }
@@ -93,7 +112,7 @@ function matrix(): Shot[] {
   }
   for (const t of THEMES) {
     for (const layout of ['reference', 'simple'] as const) {
-      shots.push({ name: `theme ${t.id}/${layout}`, over: { layout, themeId: t.id }, when: THU_AM });
+      base.push({ name: `theme ${t.id}/${layout}`, over: { layout, themeId: t.id }, when: THU_AM, opts: {} });
     }
   }
   // The states that move geometry, each on both designs and in both scripts.
@@ -119,11 +138,13 @@ function matrix(): Shot[] {
   for (const [n, over, when] of states) {
     for (const layout of ['reference', 'simple'] as const) {
       for (const language of ['en', 'ar'] as const) {
-        shots.push({ name: `${n}/${layout}/${language}`, over: { ...over, layout, language }, when });
+        base.push({ name: `${n}/${layout}/${language}`, over: { ...over, layout, language }, when, opts: {} });
       }
     }
   }
-  return shots;
+  // Each configuration is swept once per CALLER SHAPE — see CALLERS. Doubling the matrix is
+  // cheaper than choosing which half of the product to test.
+  return CALLERS.flatMap(([who, opts]) => base.map((s) => ({ ...s, name: `${s.name} [${who}]`, opts: { ...opts } })));
 }
 
 const SHOTS = matrix();
@@ -133,7 +154,7 @@ const rendered = SHOTS.map((s) => {
   let svg = '';
   let threw: string | null = null;
   try {
-    svg = renderDisplaySvg(tt(s.over), s.when, {});
+    svg = renderDisplaySvg(tt(s.over), s.when, s.opts as never);
   } catch (e) {
     threw = (e as Error).message;
   }
@@ -142,7 +163,8 @@ const rendered = SHOTS.map((s) => {
 
 test('the matrix is as wide as it claims', () => {
   // Guards against a refactor quietly shrinking the sweep to nothing.
-  assert.ok(SHOTS.length >= 100, `only ${SHOTS.length} configurations swept`);
+  assert.ok(SHOTS.length >= 200, `only ${SHOTS.length} configurations swept`);
+  assert.ok(SHOTS.some((s) => s.opts.tickerBandOnly), 'the decoder/browser render mode is not being swept');
   assert.ok(rendered.every((r) => r.threw || r.svg.startsWith('<svg')), 'something did not return an SVG');
 });
 

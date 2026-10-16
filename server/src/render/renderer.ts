@@ -17,7 +17,7 @@ import path from 'node:path';
 import { config } from '../config';
 import { makeLog } from '../logger';
 import { dimsFor, activeTicker, tickerTextColor, tickerLayout, bottomBandSplit, TICKER_RED, type Dims } from './svg';
-import { primaryFontFile } from './fonts';
+import { tickerFontFile } from './fonts';
 import { selectEncoder, encoderArgs, encoderPixFmt } from './encoder';
 import { RenderWorker } from './renderPool';
 import { SoundTrack, SOUND_RATE, soundOn, soundEvents, soundPcmFor } from './sound';
@@ -584,7 +584,11 @@ class TimetablePipeline extends FfmpegPipeline {
   }
 
   private tickerSpec(): TickerSpec | null {
-    const font = primaryFontFile();
+    // Per MESSAGE, not once: an Arabic announcement needs a face that has Arabic in it, and the
+    // bold sans this used unconditionally has none — it drew every Arabic character as a tofu box
+    // on every decoder screen, while the same message was correct on a Pi and in a browser.
+    // See tickerFontFile.
+    const font = tickerFontFile(this.tickerText);
     if (!this.tickerText || !font) return null;
     return { text: this.tickerText, textfile: this.tickerFile, fontfile: font, speed: this.tickerSpeed, prohibited: this.tickerProhibited, color: this.tickerColor };
   }
