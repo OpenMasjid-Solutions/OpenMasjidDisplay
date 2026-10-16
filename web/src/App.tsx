@@ -23,7 +23,7 @@ import { WhatsNewModal } from './whatsnew';
 
 declare const __APP_VERSION__: string;
 import type { AppState } from './types';
-import { CapabilitiesProvider } from './capabilities';
+import { CapabilitiesProvider, useCaps } from './capabilities';
 import { Screens } from './routes/Screens';
 import { Timetables, TimetableEditor } from './routes/Timetables';
 import { Sources } from './routes/Sources';
@@ -39,6 +39,25 @@ const TABS: { id: Tab; label: string; Icon: (p: { size?: number }) => JSX.Elemen
   { id: 'schedules', label: 'Schedule', Icon: IconCalendar },
   { id: 'settings', label: 'Settings', Icon: IconCog },
 ];
+
+/**
+ * Which kind of screen is this panel being served by?
+ *
+ * Only ever shown on a Raspberry Pi serving its own panel. A Display server's panel has no pill,
+ * because a server is not a screen and there is nothing to disambiguate — adding one there would
+ * be a difference nobody asked for.
+ *
+ * In the HEADER and never on the television. The picture on the wall is congregation-facing and
+ * has no business carrying a word about how the masjid runs its screens.
+ */
+function HostPill() {
+  if (useCaps().host !== 'pi') return null;
+  return (
+    <span className="pill" title="This screen runs on its own: its timetable and settings live here, not on a Display server.">
+      Standalone
+    </span>
+  );
+}
 
 export function App() {
   return (
@@ -313,6 +332,7 @@ function Shell({
           <MasjidMark size={22} />
           <b>OpenMasjid&nbsp;Display</b>
         </a>
+        <HostPill />
         <div className="spacer" />
         <Clock />
         <ProfileMenu

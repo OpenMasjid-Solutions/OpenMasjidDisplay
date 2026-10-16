@@ -293,7 +293,11 @@ your box read your prayer times instead of being told them twice.
   musalli's phone is yours. Read-only, never leaves your own box, and OpenMasjidOS decides which apps
   are allowed to ask.
 
-### Changed
+### Changed
+- **Adding a screen now offers a Raspberry Pi first.** The list of ways a screen can receive
+  the picture is ordered best-first, and the RTSP decoder box is marked **legacy** — it still
+  works exactly as it always has, and every screen already set up that way is untouched. What
+  you get if you do not change the dropdown is also unchanged.
 - **The terminal on a Raspberry Pi screen is a root shell, deliberately.** It used to run as the
   screen's own limited account, which meant `sudo` did not work and `reboot` was impossible — a
   debugging window, not a terminal. It is now the whole machine, to match what the OpenMasjidOS
@@ -335,7 +339,11 @@ your box read your prayer times instead of being told them twice.
 
 ## 0.69.0
 
-### Added
+### Added
+- **The panel says when a screen is running on its own.** A **Standalone** label sits beside the
+  name at the top of the control panel on a Raspberry Pi that has no Display server, so it is
+  always clear which kind of screen you are looking at. It is in the panel only — never on the
+  television.
 
 - **Announce an Iqamah change to your congregation.** Any scheduled change can now be turned into a
   portrait **announcement image** — your masjid name and logo, the date it takes effect, and the whole

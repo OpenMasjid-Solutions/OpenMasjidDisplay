@@ -108,7 +108,7 @@ export function Screens({ state, refetch }: Props) {
           <h3>{fleet ? 'No screens yet' : 'Starting up'}</h3>
           <p>
             {fleet
-              ? "Add a screen for each TV. You'll get a link to put into its RTSP decoder."
+              ? 'Add a screen for each TV — a Raspberry Pi behind it, a browser, or a decoder box.'
               : 'This screen is getting itself ready. It will appear here in a moment.'}
           </p>
           {fleet && (
@@ -751,10 +751,15 @@ function TvModal({
           label="How this screen receives the picture"
           hint="Pick this first — it changes what the rest of this asks for."
         >
+          {/* Ordered best-first, with the decoder box marked as the older route.
+              The DEFAULT is deliberately left alone. A masjid adding a fourth decoder to a wall
+              of three would otherwise get a Raspberry Pi screen for not reading a dropdown that
+              used to have one answer — and relabelling a route is not a reason to change what
+              somebody gets when they do not choose. */}
           <select className="select" value={kind} onChange={(e) => setKind(e.target.value as TvKind)}>
-            <option value="rtsp">Video stream — a decoder box pulls RTSP from this server</option>
-            <option value="web">Web page — a browser draws the timetable itself (beta)</option>
             <option value="pi">Raspberry Pi — draws the timetable AND plays cameras itself (beta)</option>
+            <option value="web">Web page — a browser draws the timetable itself (beta)</option>
+            <option value="rtsp">Video stream — an RTSP decoder box pulls from this server (legacy)</option>
           </select>
         </Field>
       )}
