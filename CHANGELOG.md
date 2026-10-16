@@ -46,8 +46,12 @@ CLAUDE.md § *The changelog has two audiences*.
   volunteer's manual override works with no server behind it. If the clock cannot be right — a
   Pi has no battery-backed clock, so a power cut leaves it believing an old date — the screen
   says so instead of showing prayer times nobody should trust. The installer now also puts the
-  Arabic fonts on the device, which a screen with no server has nobody to fetch them from.
-  Still early, and nothing about an existing screen changes.
+  Arabic fonts on the device, which a screen with no server has nobody to fetch them from. Its
+  control panel shows only what a single screen can do: one screen card for itself, and none of
+  the server-only settings. Still early, and nothing about an existing screen changes.
+- **Fixed: the setup screen on a Raspberry Pi showed no text at all.** On Raspberry Pi OS Lite the
+  pairing screen drew its boxes and its status dot and not one character, so the code a masjid
+  needs to type was invisible. Every screen a Pi draws before it has been set up was affected.
 - **Raspberry Pi screens now install only on the Pi 4 family** — the Pi 4 Model B, the Pi 400 and
   the Compute Module 4. The Pi 5, the Pi Zero and unrecognised boards are refused with a message
   naming the board, where before they were allowed through untested. A screen that is **already

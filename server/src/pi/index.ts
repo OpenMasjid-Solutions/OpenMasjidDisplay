@@ -46,7 +46,7 @@ import { describeFbset } from './fbset';
 import { pairingSvg, messageSvg } from './pairing';
 import { createPiPanel, PANEL_PORT, WEB_DIR } from './panel';
 import { newSetupCode, formatSetupCode } from './claim';
-import { Store } from '../store';
+import { Store, rid } from '../store';
 import { backgroundDataUri, logoDataUri, announcementDataUri } from '../render/background';
 import { clockSuspect } from '../clockFloor';
 import { fontOptions } from '../render/fonts';
@@ -243,7 +243,20 @@ class Screen {
               serifFamily: families?.serif ?? families?.default ?? 'DejaVu Sans',
               sansSerifFamily: families?.sansSerif ?? families?.default ?? 'DejaVu Sans',
             }
-          : { loadSystemFonts: true, defaultFontFamily: 'DejaVu Sans' },
+          : // No files named — the pairing screen, "Starting…", every message card. This used to
+            // ask resvg to load SYSTEM fonts, and on Raspberry Pi OS LITE that finds nothing:
+            // fontconfig is not installed on a Lite image, and resvg enumerates system fonts
+            // through it. Measured on a Pi 4 with the fonts sitting on disk the whole time:
+            //
+            //   loadSystemFonts: true        612 bytes   no text at all
+            //   explicit DejaVuSans.ttf     4682 bytes   text
+            //   fontDirs /usr/share/fonts   4682 bytes   text
+            //
+            // So the first screen a masjid ever sees — the one carrying the setup code — drew
+            // its boxes and its status dot and not one character. `fontOptions()` names the
+            // files instead, which is what the adopted path already does once the server has
+            // sent them; this makes the screens BEFORE that point work the same way.
+            fontOptions(),
       }).render();
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
@@ -1753,15 +1766,46 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
   // `conf` not `live`: in this file `live` is the screen's live STATE, and runAdopted uses it
   // that way. Two meanings for one name in one function is how the wrong one gets passed.
   let conf = cfg;
-  // Minted once and kept. A code that changed on every boot would be a code nobody can write
-  // down, on a device whose normal shutdown is somebody switching the socket off.
-  if (!conf.setupCode) {
+  const store = new Store();
+
+  /**
+   * A code only while there is somebody to use it.
+   *
+   * Minted once and kept — a code that changed on every boot is one nobody can write down, on a
+   * device whose normal shutdown is somebody switching the socket off. But ONLY while this
+   * screen is unclaimed: it used to mint on every restart regardless, so a screen set up months
+   * ago carried a fresh, live setup code on disk that nothing would ever show or spend. Nothing
+   * could be done with it today — the claim route refuses outright once an account exists — and
+   * that is exactly the kind of secret that becomes a way in the day somebody reorders those two
+   * checks.
+   */
+  if (!conf.setupCode && !store.db.admin) {
     conf = { ...conf, setupCode: newSetupCode() };
     saveConfig(conf);
     log('minted a setup code for this screen');
   }
-
-  const store = new Store();
+  /**
+   * One screen, and it is this device.
+   *
+   * Seeded so the panel's Screens page has the same card the server would show, rather than an
+   * empty state offering to add a screen on a machine that plainly has one attached. It is also
+   * what `localState` reads to decide what to draw, so the admin's choice in the panel and the
+   * picture on the television are the same record rather than two guesses at it.
+   */
+  if (store.db.tvs.length === 0) {
+    store.update((db) => {
+      db.tvs = [
+        {
+          id: rid('tv'),
+          name: 'This screen',
+          kind: 'pi',
+          defaultContent: { kind: 'timetable', id: db.timetables[0]?.id ?? '' },
+          createdAt: new Date().toISOString(),
+        },
+      ];
+    });
+    log('seeded this screen');
+  }
   const panel = createPiPanel({
     store,
     // Read fresh each time rather than closing over `live`: the panel SPENDS the code, and a
@@ -1769,7 +1813,33 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
     readConfig: () => loadConfig(),
     writeConfig: (next) => saveConfig(next),
     webDir: WEB_DIR,
-    screens: { getStatuses: () => [] },
+    /**
+     * This screen's own status.
+     *
+     * On the server this comes from MediaMTX reporting a reader on the path. Here the question
+     * answers itself: the process computing it is the process drawing the picture, so if
+     * anything is asking, the screen is on. Reporting an empty list made the panel badge the
+     * very screen the admin was looking at as OFFLINE.
+     *
+     * `contentStale` carries the clock warning through to the panel, so the badge agrees with
+     * what the television is saying rather than contradicting it.
+     */
+    screens: {
+      getStatuses: () => {
+        const tv = store.db.tvs[0];
+        if (!tv) return [];
+        const override = tv.override && (tv.override.until === null || tv.override.until > Date.now()) ? tv.override : null;
+        return [
+          {
+            tvId: tv.id,
+            effective: override ? override.content : tv.defaultContent,
+            source: override ? ('override' as const) : ('default' as const),
+            streamReady: true,
+            ...(clockSuspect() ? { contentStale: true, staleReason: 'clock' as const } : {}),
+          },
+        ];
+      },
+    },
   });
 
   const server = http.createServer((req, res) => void panel(req, res));

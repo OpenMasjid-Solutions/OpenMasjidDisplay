@@ -36,6 +36,7 @@ import {
 import { LoginLimiter } from '../rateLimit';
 import { PI_CAPABILITIES } from '../capabilities';
 import { statePayload, type ScreenStatuses } from '../statePayload';
+import { normTimetable, normTv, normSettings, normSource, normSchedule } from '../validate';
 import { setupCodeMatches } from './claim';
 import type { AgentConfig } from './agentConfig';
 
@@ -281,6 +282,82 @@ export function createPiPanel(deps: PanelDeps) {
           // The volunteer page is served by this same listener rather than on a port of its own.
           volunteer: { pinSet: !!store.db.volunteerAuth, port: 0 },
         });
+      }
+
+      /**
+       * The writes the panel makes.
+       *
+       * Through the same `normTimetable`/`normTv`/`normSettings` the server validates with, over
+       * the same `Store` — so what a standalone screen accepts is what the server accepts, and a
+       * timetable edited here and later imported there cannot mean two different things.
+       *
+       * shortcut: this is a focused set — timetables, sources, schedules, the one screen and the
+       * settings — not every route the server serves. Uploads, the CSV importer and the Iqamah
+       * wizard still answer 404 here. Upgrade by lifting the server's store-only routes into a
+       * module both mount, which is the same move `statePayload` already made; it was not worth
+       * doing before there was a second caller to prove the shape.
+       */
+      const body = method === 'GET' || method === 'DELETE' ? {} : await readBody(req, 2_000_000).catch(() => null);
+      if (body === null) return sendJson(res, 400, { error: 'That request was too large.' });
+
+      const idOf = (prefix: string): string => pathname.slice(prefix.length).split('/')[0];
+      const saved = <T,>(v: T): void => sendJson(res, 200, v);
+
+      // ── the one screen ─────────────────────────────────────────────────────
+      if (pathname.startsWith('/api/tvs/')) {
+        const id = idOf('/api/tvs/');
+        const idx = store.db.tvs.findIndex((t) => t.id === id);
+        if (idx < 0) return sendJson(res, 404, { error: 'Screen not found.' });
+        if (pathname.endsWith('/set') && method === 'POST') {
+          const until = typeof body.until === 'number' ? body.until : null;
+          store.update((db) => {
+            db.tvs[idx].override = { content: (body.content ?? { kind: 'off' }) as never, until };
+          });
+          return saved(store.db.tvs[idx]);
+        }
+        if (pathname.endsWith('/resume') && method === 'POST') {
+          store.update((db) => void (db.tvs[idx].override = null));
+          return saved(store.db.tvs[idx]);
+        }
+        if (method === 'PUT') {
+          const updated = normTv(body, store.db.tvs[idx]);
+          store.update((db) => void (db.tvs[idx] = updated));
+          return saved(updated);
+        }
+      }
+
+      // ── timetables, sources, schedules ─────────────────────────────────────
+      const collections = [
+        { path: '/api/timetables', key: 'timetables' as const, norm: normTimetable },
+        { path: '/api/sources', key: 'sources' as const, norm: normSource },
+        { path: '/api/schedules', key: 'schedules' as const, norm: normSchedule },
+      ];
+      for (const c of collections) {
+        if (pathname === c.path && method === 'POST') {
+          const made = c.norm(body) as never;
+          store.update((db) => void (db[c.key] as unknown[]).push(made));
+          return saved(made);
+        }
+        if (pathname.startsWith(`${c.path}/`)) {
+          const id = idOf(`${c.path}/`);
+          const list = store.db[c.key] as { id: string }[];
+          const idx = list.findIndex((x) => x.id === id);
+          if (idx < 0) return sendJson(res, 404, { error: 'Not found.' });
+          if (method === 'PUT') {
+            const updated = c.norm(body, list[idx] as never) as never;
+            store.update((db) => void ((db[c.key] as unknown[])[idx] = updated));
+            return saved(updated);
+          }
+          if (method === 'DELETE') {
+            store.update((db) => void ((db[c.key] as { id: string }[]) = (db[c.key] as { id: string }[]).filter((x) => x.id !== id)));
+            return saved({ ok: true });
+          }
+        }
+      }
+
+      if (pathname === '/api/settings' && method === 'PUT') {
+        store.update((db) => void (db.settings = normSettings(body, db.settings)));
+        return saved(store.db.settings);
       }
 
       return sendJson(res, 404, { error: 'Not found.' });

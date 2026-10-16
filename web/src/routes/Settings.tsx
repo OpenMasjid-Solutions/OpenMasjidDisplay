@@ -146,8 +146,11 @@ export function SettingsPage({ state, refetch }: Props) {
 
       {caps.whatsapp && <WhatsAppPanel state={state} refetch={refetch} />}
 
-      <BetaPanel state={state} refetch={refetch} />
+      {caps.screens === 'fleet' && <BetaPanel state={state} refetch={refetch} />}
 
+      {/* A decoder box pointed at this server. A standalone screen IS the screen: there is
+          nothing to connect and no link to copy. */}
+      {caps.screens === 'fleet' && (
       <div className="panel glass">
         <h3 className="section-title" style={{ marginTop: 0 }}>Connecting a screen</h3>
         <p className="muted" style={{ marginBottom: '1rem' }}>
@@ -159,6 +162,7 @@ export function SettingsPage({ state, refetch }: Props) {
           <li>Pick what the screen shows — a timetable, a camera, or an HDMI source.</li>
         </ol>
       </div>
+      )}
 
       <button className="btn btn--primary" onClick={save} disabled={busy}><IconCheck size={16} /> Save settings</button>
     </div>
@@ -582,12 +586,18 @@ function BetaPanel({ state, refetch }: Props) {
 
 /** Turn the simple mobile volunteer page on/off and set its 4-digit PIN. */
 function VolunteerPanel({ state, refetch }: Props) {
+  const caps = useCaps();
   const toast = useToast();
   const [enabled, setEnabled] = useState(state.settings.volunteerEnabled);
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   const pinSet = state.volunteer.pinSet;
-  const volUrl = `http://${window.location.hostname}:${state.volunteer.port}`;
+  // Port 0 means "this same listener" — a standalone screen serves the volunteer page from the
+  // panel's own address rather than a second port. Without this the panel printed a literal
+  // `http://192.168.1.30:0`, which is not an address anybody can open.
+  const volUrl = state.volunteer.port
+    ? `http://${window.location.hostname}:${state.volunteer.port}`
+    : `http://${window.location.host}/volunteer`;
   // Public address behind the OS remote-access tunnel (the volunteer page now rides the main
   // port under /volunteer). Empty unless remote access is on.
   const [publicUrl, setPublicUrl] = useState('');
@@ -642,6 +652,10 @@ function VolunteerPanel({ state, refetch }: Props) {
         <Toggle checked={enabled} onChange={(v) => save(v)} label="Enable the volunteer page" />
       </div>
 
+      {/* There is no tunnel on a standalone screen and never will be — the panel is LAN-only
+          by design, so a switch offering to publish it is offering something that does not
+          exist. */}
+      {caps.remoteAccess && (
       <div className="toggle-row row-between" style={{ marginBlockEnd: '0.9rem' }}>
         <span className="label" style={{ margin: 0 }}>
           Reachable over remote access
@@ -649,6 +663,7 @@ function VolunteerPanel({ state, refetch }: Props) {
         </span>
         <Toggle checked={remote} onChange={(v) => saveRemote(v)} label="Reachable over remote access" />
       </div>
+      )}
 
       <div className="grid2">
         <Field label={pinSet ? 'Change PIN (4–8 digits)' : 'Set a PIN (4–8 digits)'} hint="Leave blank to keep the current PIN.">

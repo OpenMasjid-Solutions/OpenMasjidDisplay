@@ -91,6 +91,9 @@ export function pairingSvg(v: PairingView): string {
   const cells = codeChars
     .map((ch, i) => {
       const x = codeX + i * cellW;
+      // A space is the grouping in "2640 4654", not a character to put in a box. Drawing one
+      // gave an empty ninth box on the television, which reads as a digit somebody forgot.
+      if (ch === ' ') return '';
       return (
         `<rect x="${x - cellW / 2 + 8}" y="470" width="${cellW - 16}" height="168" rx="18" ` +
         `fill="${P.surface}" stroke="${P.border}" stroke-width="2"/>` +

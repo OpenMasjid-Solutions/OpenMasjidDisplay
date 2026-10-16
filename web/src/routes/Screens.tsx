@@ -6,6 +6,7 @@ import type { AppState, Tv, TvKind, ContentRef, TvStatus, PiDeviceInfo, PiDevice
 // The same helper the server tests, rather than a second copy of the rule living in the panel.
 import { installCommand } from '../../../server/src/pi/lanHost';
 import { contentOptions, ContentPicker, contentLabel } from '../content';
+import { useCaps } from '../capabilities';
 import { PiSettings } from './PiSettings';
 import {
   Modal,
@@ -35,6 +36,15 @@ interface Props {
 
 export function Screens({ state, refetch }: Props) {
   const toast = useToast();
+  /**
+   * A fleet, or this one screen.
+   *
+   * A Raspberry Pi running on its own IS the screen — there is no second one to add, nothing to
+   * pair, and nothing to remove, because removing it would leave the device showing a timetable
+   * it no longer claims to have. So the page keeps its card and loses the machinery around it.
+   * Same component, same card, same status dot; what differs is what the host says it is.
+   */
+  const fleet = useCaps().screens === 'fleet';
   const [edit, setEdit] = useState<Tv | 'new' | null>(null);
   const [confirm, setConfirm] = useState<Tv | null>(null);
   const [piById, setPiById] = useState<Map<string, PiDeviceInfo>>(new Map());
@@ -71,27 +81,41 @@ export function Screens({ state, refetch }: Props) {
   return (
     <div>
       {/* Pi screens are devices as well as screens, and the card is where somebody looks to see
-          whether the thing on the shelf is alive. Fetched once here rather than per card. */}
-      <PiDeviceFacts tvs={state.tvs} onLoaded={setPiById} />
+          whether the thing on the shelf is alive. Fetched once here rather than per card.
+          Only a server has other devices to ask about; a Pi asking itself would be asking an
+          endpoint it does not serve. */}
+      {fleet && <PiDeviceFacts tvs={state.tvs} onLoaded={setPiById} />}
 
       <div className="page-head row-between">
         <div>
           <h1 className="page-title">Screens</h1>
-          <p className="page-sub">Choose what each screen shows. Changes happen within a few seconds.</p>
+          <p className="page-sub">
+            {fleet
+              ? 'Choose what each screen shows. Changes happen within a few seconds.'
+              : 'Choose what this screen shows. Changes happen within a few seconds.'}
+          </p>
         </div>
-        <button className="btn btn--primary" onClick={() => setEdit('new')}>
-          <IconPlus size={16} /> Add screen
-        </button>
+        {fleet && (
+          <button className="btn btn--primary" onClick={() => setEdit('new')}>
+            <IconPlus size={16} /> Add screen
+          </button>
+        )}
       </div>
 
       {state.tvs.length === 0 ? (
         <div className="empty-state glass" style={{ borderRadius: 'var(--radius-card)' }}>
           <div className="empty-art"><MasjidMark size={64} /></div>
-          <h3>No screens yet</h3>
-          <p>Add a screen for each TV. You'll get a link to put into its RTSP decoder.</p>
-          <button className="btn btn--primary" style={{ marginTop: '1rem' }} onClick={() => setEdit('new')}>
-            <IconPlus size={16} /> Add your first screen
-          </button>
+          <h3>{fleet ? 'No screens yet' : 'Starting up'}</h3>
+          <p>
+            {fleet
+              ? "Add a screen for each TV. You'll get a link to put into its RTSP decoder."
+              : 'This screen is getting itself ready. It will appear here in a moment.'}
+          </p>
+          {fleet && (
+            <button className="btn btn--primary" style={{ marginTop: '1rem' }} onClick={() => setEdit('new')}>
+              <IconPlus size={16} /> Add your first screen
+            </button>
+          )}
         </div>
       ) : (
         <div className="screens-grid">
@@ -106,7 +130,7 @@ export function Screens({ state, refetch }: Props) {
               onSet={(c) => setContent(tv, c)}
               onResume={() => resume(tv)}
               onEdit={() => setEdit(tv)}
-              onDelete={() => setConfirm(tv)}
+              onDelete={fleet ? () => setConfirm(tv) : undefined}
               onCopy={(url) => copyText(url).then(() => toast('Link copied.'))}
             />
           ))}
@@ -165,7 +189,8 @@ function ScreenCard({
   onSet: (c: ContentRef) => void;
   onResume: () => void;
   onEdit: () => void;
-  onDelete: () => void;
+  /** absent where there is nothing to remove — a standalone Pi IS its one screen */
+  onDelete?: () => void;
   onCopy: (url: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -271,7 +296,7 @@ function ScreenCard({
           </button>
         )}
         <button className="icon-btn" aria-label="Edit screen" onClick={onEdit}><IconEdit size={16} /></button>
-        <button className="icon-btn" aria-label="Remove screen" onClick={onDelete}><IconTrash size={16} /></button>
+        {onDelete && <button className="icon-btn" aria-label="Remove screen" onClick={onDelete}><IconTrash size={16} /></button>}
       </div>
 
       <div className="screen-now glass-inset">
@@ -308,6 +333,11 @@ function ScreenCard({
         // to fall through to the RTSP branch and print an rtsp:// URL that nothing served — worse
         // than useless, because it invites somebody to test it, fail, and conclude the screen is
         // broken when it is working perfectly.
+        //
+        // Facts about a device somebody has to go and find. On a STANDALONE screen the panel is
+        // that device, so "address unknown · agent ?" is the screen failing to recognise itself,
+        // which is worse than saying nothing. Shown only when the facts were actually fetched.
+        device ? (
         <div className="rtsp-box" style={{ justifyContent: 'flex-start', gap: '0.6rem', flexWrap: 'wrap' }}>
           <span
             className={`status-dot${device?.online ? '' : ' status-dot--idle'}`}
@@ -336,6 +366,7 @@ function ScreenCard({
             )
           ) : null}
         </div>
+        ) : null
       ) : (
         <div className="rtsp-box">
           <span className="rtsp-url" title={url}>{url}</span>
