@@ -37,6 +37,18 @@ import { LoginLimiter } from '../rateLimit';
 import { PI_CAPABILITIES } from '../capabilities';
 import { statePayload, type ScreenStatuses } from '../statePayload';
 import { normTimetable, normTv, normSettings, normSource, normSchedule } from '../validate';
+import {
+  saveLogo,
+  removeLogo,
+  saveBackground,
+  removeBackground,
+  saveAnnouncement,
+  removeAnnouncement,
+  uploadFilePath,
+  sniffImageMime,
+  isRenderableImageMime,
+} from '../render/background';
+import { saveSoundClip, removeSoundClipsFor, SOUND_MAX_UPLOAD_BYTES } from '../render/sound';
 import { setupCodeMatches } from './claim';
 import type { AgentConfig } from './agentConfig';
 
@@ -297,7 +309,9 @@ export function createPiPanel(deps: PanelDeps) {
        * module both mount, which is the same move `statePayload` already made; it was not worth
        * doing before there was a second caller to prove the shape.
        */
-      const body = method === 'GET' || method === 'DELETE' ? {} : await readBody(req, 2_000_000).catch(() => null);
+      // A wallpaper is megabytes; a timetable is bytes. Read to whichever this path can be.
+      const upload = /\/(background|logo|sound|announcements)$/.test(pathname);
+      const body = method === 'GET' || method === 'DELETE' ? {} : await readBody(req, upload ? 8_000_000 : 2_000_000).catch(() => null);
       if (body === null) return sendJson(res, 400, { error: 'That request was too large.' });
 
       const idOf = (prefix: string): string => pathname.slice(prefix.length).split('/')[0];
@@ -323,6 +337,120 @@ export function createPiPanel(deps: PanelDeps) {
           const updated = normTv(body, store.db.tvs[idx]);
           store.update((db) => void (db.tvs[idx] = updated));
           return saved(updated);
+        }
+      }
+
+      /**
+       * Pictures, and the sound.
+       *
+       * The same stores the server writes to — `render/background` and `render/sound` — so a
+       * wallpaper uploaded here sits where the renderer already looks for it, and a timetable
+       * carried to a server later still names a file that store understands.
+       *
+       * The image type comes from the BYTES, never the browser's label: a browser types a
+       * data URI from the file extension, so a JPEG saved as "logo.png" arrives claiming to be
+       * a PNG and resvg then picks its decoder from the lie and renders nothing.
+       */
+      const asset = /^\/api\/timetables\/([\w-]+)\/(background|logo|sound|announcements)(?:\/(.+))?$/.exec(pathname);
+      if (asset) {
+        const [, ttId, kind, annFile] = asset;
+        const tt = store.db.timetables.find((t) => t.id === ttId);
+        if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
+        const back = (): void => sendJson(res, 200, store.db.timetables.find((t) => t.id === ttId));
+
+        // Serving one announcement picture back to the editor's preview.
+        if (annFile && method === 'GET') {
+          const found = uploadFilePath(decodeURIComponent(annFile));
+          if (!found) return sendJson(res, 404, { error: 'Not found.' });
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': found.mime, 'cache-control': 'private, max-age=300' });
+          return void res.end(fs.readFileSync(found.path));
+        }
+        if (annFile && method === 'DELETE') {
+          const name = decodeURIComponent(annFile);
+          removeAnnouncement(name);
+          store.update((db) => {
+            const t = db.timetables.find((x) => x.id === ttId);
+            if (t?.announcements) t.announcements.images = (t.announcements.images ?? []).filter((f) => f !== name);
+          });
+          return back();
+        }
+
+        if (method === 'POST') {
+          const m = /^data:([^;,]*);base64,(.+)$/s.exec(String(body.data ?? ''));
+          if (!m) return sendJson(res, 400, { error: 'That file could not be read.' });
+          let buf: Buffer;
+          try {
+            buf = Buffer.from(m[2], 'base64');
+          } catch {
+            return sendJson(res, 400, { error: 'That file could not be read.' });
+          }
+
+          if (kind === 'sound') {
+            if (buf.length > SOUND_MAX_UPLOAD_BYTES) return sendJson(res, 400, { error: 'That file is too large — please keep it under about 5 MB.' });
+            const made = await saveSoundClip(ttId, buf);
+            if ('error' in made) return sendJson(res, 400, { error: made.error });
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) t.sound.clip = made.file;
+            });
+            return back();
+          }
+
+          const sniffed = sniffImageMime(buf);
+          if (!sniffed || !isRenderableImageMime(sniffed)) {
+            return sendJson(res, 400, { error: 'That file isn’t an image this screen can draw. Please use a PNG, JPG, GIF or SVG.' });
+          }
+          if (kind === 'logo') {
+            const file = saveLogo(ttId, sniffed, buf);
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) t.logoImage = file;
+            });
+            return back();
+          }
+          if (kind === 'background') {
+            const file = saveBackground(ttId, sniffed, buf);
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) t.backgroundImage = file;
+            });
+            return back();
+          }
+          const file = saveAnnouncement(ttId, sniffed, buf);
+          store.update((db) => {
+            const t = db.timetables.find((x) => x.id === ttId);
+            if (!t) return;
+            // A timetable nobody has opened the slideshow settings on has no announcements
+            // object at all, and guarding on it meant the upload succeeded and stored nothing.
+            // The defaults are normAnnouncements', so the first picture does not also invent
+            // a different slideshow than the panel would have made.
+            t.announcements ??= { enabled: false, images: [], start: '', end: '', everySeconds: 60, forSeconds: 20, imageSeconds: 8 };
+            t.announcements.images = [...(t.announcements.images ?? []), file];
+          });
+          return back();
+        }
+
+        if (method === 'DELETE') {
+          if (kind === 'logo') {
+            removeLogo(ttId);
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) t.logoImage = '';
+            });
+          } else if (kind === 'background') {
+            removeBackground(ttId);
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) t.backgroundImage = '';
+            });
+          } else if (kind === 'sound') {
+            removeSoundClipsFor(ttId);
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) t.sound.clip = '';
+            });
+          }
+          return back();
         }
       }
 

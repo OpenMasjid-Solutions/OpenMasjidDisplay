@@ -263,6 +263,64 @@ test('the state says plainly that this device serves no RTSP and has no platform
   assert.deepEqual(j.volunteer, { pinSet: false, port: 0 });
 });
 
+// ── pictures ─────────────────────────────────────────────────────────────────
+
+/** A real 1x1 PNG, because the type is decided by the BYTES and a fake would be refused. */
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+test('a logo can be uploaded, and the timetable then names it', async () => {
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  const r = await call(handler, 'POST', `/api/timetables/${id}/logo`, { data: PNG }, cookie);
+  assert.equal(r.status, 200, r.body);
+  assert.ok(store.db.timetables[0].logoImage, 'the timetable points at the stored file');
+  const gone = await call(handler, 'DELETE', `/api/timetables/${id}/logo`, undefined, cookie);
+  assert.equal(gone.status, 200);
+  assert.equal(store.db.timetables[0].logoImage, '', 'and removing it clears the reference');
+});
+
+test('the picture type comes from the bytes, not the name the browser gave it', async () => {
+  // A browser types a data URI from the file EXTENSION, so a text file called logo.png arrives
+  // claiming to be a PNG. resvg would then pick its decoder from that lie and draw nothing.
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  const lying = `data:image/png;base64,${Buffer.from('this is not a picture').toString('base64')}`;
+  const r = await call(handler, 'POST', `/api/timetables/${id}/logo`, { data: lying }, cookie);
+  assert.equal(r.status, 400, r.body);
+  assert.equal(store.db.timetables[0].logoImage, '', 'nothing was stored');
+});
+
+test('an upload needs a session like everything else', async () => {
+  const { handler, store } = panel();
+  await claim(handler);
+  const id = store.db.timetables[0].id;
+  const r = await call(handler, 'POST', `/api/timetables/${id}/logo`, { data: PNG });
+  assert.equal(r.status, 401);
+});
+
+test('announcement pictures add, list and remove one at a time', async () => {
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  await call(handler, 'POST', `/api/timetables/${id}/announcements`, { data: PNG }, cookie);
+  await call(handler, 'POST', `/api/timetables/${id}/announcements`, { data: PNG }, cookie);
+  const images = store.db.timetables[0].announcements?.images ?? [];
+  assert.equal(images.length, 2, 'both were kept — each announcement is its own file');
+  assert.notEqual(images[0], images[1], 'and they are different files');
+  const r = await call(handler, 'DELETE', `/api/timetables/${id}/announcements/${encodeURIComponent(images[0])}`, undefined, cookie);
+  assert.equal(r.status, 200);
+  assert.deepEqual(store.db.timetables[0].announcements?.images, [images[1]], 'only the named one went');
+});
+
+test('an upload for a timetable that does not exist is refused', async () => {
+  const { handler } = panel();
+  const cookie = await claim(handler);
+  const r = await call(handler, 'POST', '/api/timetables/tt_nope/logo', { data: PNG }, cookie);
+  assert.equal(r.status, 404);
+});
+
 // ── the bundle ───────────────────────────────────────────────────────────────
 
 test('the web app and its assets are served', async () => {
