@@ -828,7 +828,7 @@ test('the agent is told where to keep its data and find its panel', () => {
   const tpl = installerTemplate() as string;
   const unit = tpl.slice(tpl.indexOf('openmasjid-screen.service'), tpl.indexOf('keeping itself current'));
   assert.match(unit, /Environment=DATA_DIR=\$STATEDIR/, 'the store needs a writable directory');
-  assert.match(unit, /Environment=OMD_PANEL_WEB=\$PREFIX\/web/, 'and the panel needs its bundle');
+  assert.match(unit, /Environment=PUBLIC_DIR=\$PREFIX\/web/, 'and the panel needs its bundle');
   // And that directory must actually be writable, or the line above is decoration.
   assert.match(unit, /ReadWritePaths=[^\n]*\$STATEDIR/, 'STATEDIR has to be in ReadWritePaths');
 });

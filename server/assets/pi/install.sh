@@ -735,8 +735,10 @@ Environment=NODE_ENV=production
 # which for a systemd unit is / — so this is not a preference, it is the difference between a
 # store that writes and one that cannot. Already in ReadWritePaths above.
 Environment=DATA_DIR=$STATEDIR
-# The built control panel, installed beside the agent.
-Environment=OMD_PANEL_WEB=$PREFIX/web
+# The built control panel, installed beside the agent. One variable, because the volunteer page
+# is the server's own handler and reads this same setting — two pointing at one directory is two
+# chances to point at different ones.
+Environment=PUBLIC_DIR=$PREFIX/web
 # Port 80 WITHOUT running as root.
 #
 # A standalone screen serves its panel on the address shown on the television, and that address

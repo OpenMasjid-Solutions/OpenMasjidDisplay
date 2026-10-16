@@ -14,7 +14,15 @@ import path from 'node:path';
 import { config } from './config';
 import { makeLog } from './logger';
 import type { Store } from './store';
-import type { Orchestrator } from './orchestrator';
+/**
+ * Only the screen statuses, not a whole orchestrator.
+ *
+ * This asked for an `Orchestrator` and used exactly one method of it. Narrowing the ask is what
+ * lets a standalone Raspberry Pi — which has one screen and no orchestrator at all — mount this
+ * same handler instead of growing a second volunteer page. `Orchestrator` still satisfies it
+ * structurally, so the server's call site is unchanged.
+ */
+import type { ScreenStatuses } from './statePayload';
 import {
   verifyPassword,
   makeVolunteerToken,
@@ -106,7 +114,7 @@ function labelFor(store: Store, c: ContentRef): string {
   return 'Nothing';
 }
 
-export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestrator }) {
+export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenStatuses }) {
   const { store, orchestrator } = deps;
   const loginLimiter = new LoginLimiter();
   const enabled = () => store.db.settings.volunteerEnabled && !!store.db.volunteerAuth;

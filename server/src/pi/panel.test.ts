@@ -408,6 +408,56 @@ test('an impossible month is refused, not quietly turned into another one', asyn
   assert.equal(r.status, 400);
 });
 
+// ── the volunteer page ───────────────────────────────────────────────────────
+
+test('the volunteer page is reachable without the admin sign-in', async () => {
+  // It has its own PIN and its own cookie. Putting it behind the admin login would defeat the
+  // point of it: a volunteer is exactly the person who does not have the admin password.
+  const { handler } = panel({ claimed: true });
+  const r = await call(handler, 'GET', '/api/volunteer/session');
+  assert.notEqual(r.status, 401, 'must not be behind the admin session');
+  assert.equal(r.status, 200, r.body);
+});
+
+test('the page cannot be turned on without a PIN', async () => {
+  // A volunteer page with no PIN is an open control for every screen in the building,
+  // reachable by anyone on the network.
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const r = await call(handler, 'PUT', '/api/volunteer-config', { enabled: true }, cookie);
+  assert.equal(r.status, 400);
+  assert.equal(store.db.settings.volunteerEnabled, false);
+});
+
+test('a PIN must be 4 to 8 digits', async () => {
+  const { handler } = panel();
+  const cookie = await claim(handler);
+  for (const pin of ['12', '123456789', 'abcd', '12a4']) {
+    const r = await call(handler, 'PUT', '/api/volunteer-config', { pin, enabled: true }, cookie);
+    assert.equal(r.status, 400, pin);
+  }
+});
+
+test('setting a PIN turns the page on, and clearing it turns it off', async () => {
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const on = await call(handler, 'PUT', '/api/volunteer-config', { pin: '4821', enabled: true }, cookie);
+  assert.equal(on.status, 200, on.body);
+  assert.equal(on.json().pinSet, true);
+  assert.ok(store.db.volunteerAuth, 'the PIN is stored hashed');
+  assert.notEqual(JSON.stringify(store.db.volunteerAuth), JSON.stringify('4821'), 'never in the clear');
+
+  const off = await call(handler, 'PUT', '/api/volunteer-config', { pin: '', enabled: false }, cookie);
+  assert.equal(off.status, 200);
+  assert.equal(store.db.volunteerAuth, null);
+});
+
+test('setting the PIN needs the admin session', async () => {
+  const { handler } = panel({ claimed: true });
+  const r = await call(handler, 'PUT', '/api/volunteer-config', { pin: '4821', enabled: true });
+  assert.equal(r.status, 401);
+});
+
 // ── the bundle ───────────────────────────────────────────────────────────────
 
 test('the web app and its assets are served', async () => {

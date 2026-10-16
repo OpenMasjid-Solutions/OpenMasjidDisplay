@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Store } from '../store';
+import { config } from '../config';
 import {
   hashPassword,
   verifyPassword,
@@ -36,6 +37,7 @@ import {
 import { LoginLimiter } from '../rateLimit';
 import { PI_CAPABILITIES } from '../capabilities';
 import { statePayload, type ScreenStatuses } from '../statePayload';
+import { createVolunteerApi } from '../volunteerApi';
 import { normTimetable, normTv, normSettings, normSource, normSchedule } from '../validate';
 import {
   saveLogo,
@@ -86,8 +88,14 @@ const MIME: Record<string, string> = {
  */
 export const PANEL_PORT = Number(process.env.OMD_PANEL_PORT || 80);
 
-/** The built web app on the device, installed beside the agent. */
-export const WEB_DIR = process.env.OMD_PANEL_WEB || '/opt/openmasjid-screen/web';
+/**
+ * The built web app on the device.
+ *
+ * Defaults to `config.publicDir` so there is ONE notion of where the bundle is: the volunteer
+ * page is the server's own handler and reads `config.publicDir`, and two environment variables
+ * pointing at the same directory is two chances to point at different ones.
+ */
+export const WEB_DIR = process.env.OMD_PANEL_WEB || config.publicDir;
 
 export interface PanelDeps {
   store: Store;
@@ -136,6 +144,15 @@ function readBody(req: IncomingMessage, maxBytes = 64_000): Promise<Record<strin
 export function createPiPanel(deps: PanelDeps) {
   const { store, readConfig, writeConfig, webDir, screens } = deps;
   const loginLimiter = new LoginLimiter();
+  /**
+   * The volunteer page, served by this same listener.
+   *
+   * The server runs it on a port of its own so a masjid can share just that address; a screen
+   * has one port, so it lives at /volunteer here. It is the SAME handler — a volunteer switching
+   * a screen with a PIN does the same thing on a Pi as on a server, including the rate limit on
+   * the PIN, because there is only one of it.
+   */
+  const volunteer = createVolunteerApi({ store, orchestrator: screens });
   const authed = (req: IncomingMessage): boolean => hasValidSession(req, store.secret);
 
   /**
@@ -182,6 +199,10 @@ export function createPiPanel(deps: PanelDeps) {
     const method = req.method ?? 'GET';
 
     try {
+      // Before the session routes and before the bundle: the volunteer page has its own PIN
+      // and its own cookie, and must not be behind the admin sign-in.
+      if (/^\/(volunteer(?:\/.*)?|api\/volunteer\/.+)$/.test(pathname)) return void (await volunteer(req, res));
+
       if (pathname === '/api/session' && method === 'GET') {
         return sendJson(res, 200, {
           // No platform to sign in through, so first run always means creating the account here.
@@ -579,6 +600,31 @@ export function createPiPanel(deps: PanelDeps) {
             return saved({ ok: true });
           }
         }
+      }
+
+      /**
+       * The volunteer page's PIN, set from the admin panel.
+       *
+       * Deliberately the same rules the server applies: '' clears the PIN, 4-8 digits sets it,
+       * and the page cannot be turned on without one — a volunteer page with no PIN is an open
+       * control for every screen in the building, reachable by anyone on the network.
+       */
+      if (pathname === '/api/volunteer-config' && method === 'PUT') {
+        const enabled = body.enabled === true;
+        const pinRaw = body.pin == null ? undefined : String(body.pin).trim();
+        if (pinRaw !== undefined && pinRaw !== '' && !/^\d{4,8}$/.test(pinRaw)) {
+          return sendJson(res, 400, { error: 'The PIN must be 4 to 8 digits.' });
+        }
+        const willHavePin = pinRaw === '' ? false : pinRaw ? true : !!store.db.volunteerAuth;
+        if (enabled && !willHavePin) {
+          return sendJson(res, 400, { error: 'Choose a 4-digit PIN before turning on the volunteer page.' });
+        }
+        store.update((db) => {
+          if (pinRaw === '') db.volunteerAuth = null;
+          else if (pinRaw) db.volunteerAuth = hashPassword(pinRaw);
+          db.settings.volunteerEnabled = enabled;
+        });
+        return sendJson(res, 200, { ok: true, enabled, pinSet: !!store.db.volunteerAuth });
       }
 
       if (pathname === '/api/settings' && method === 'PUT') {
