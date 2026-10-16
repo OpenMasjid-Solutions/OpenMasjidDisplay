@@ -393,7 +393,13 @@ your box read your prayer times instead of being told them twice.
 - Scheduled Iqamah changes that have already happened drop off the list a few days later, so it shows what
   is still to come. The change itself stays in effect.
 
-### Fixed
+### Fixed
+- **A test that could fail for no reason, and one that could pass for the wrong one.** An
+  internal check of the WhatsApp announcement log waited a fixed moment for a disk write instead
+  of waiting for the write, so it failed once on a busy build machine while the app itself was
+  fine — and the tests in that file were quietly sharing one working directory, so the check
+  could also have been satisfied by a leftover from an earlier test. Both fixed. No change to the
+  app; this is about trusting the checks that guard it.
 
 - **A scheduled Iqamah change could not be added** — the entry vanished while you typed the date.
 - **Security:** OpenMasjidOS replying with something that wasn't valid data was read as "the platform is
