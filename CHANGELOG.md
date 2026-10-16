@@ -54,7 +54,17 @@ CLAUDE.md § *The changelog has two audiences*.
 - **A 3D-printable case for a Raspberry Pi 4 screen.** The base, the lid, and a ready-to-slice
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
-### Changed
+### Changed
+- **Documentation for a screen that runs on its own.** A new guide covers setting one up,
+  what the panel can and cannot do without a server, how it updates itself, and what to do
+  when something is wrong. The README now starts with a table of the three ways to put a
+  screen on a wall, with the Raspberry Pi first and decoder boxes marked as the older route
+  — they keep working exactly as before.
+- **Corrected which Raspberry Pi boards are accepted.** The documentation said an
+  unrecognised board was allowed through; the installer has always refused anything outside
+  the Pi 4 family, including a Pi 5. The documentation now says what the installer does. A
+  screen already set up is never switched off by this — it simply stops receiving new
+  versions.
 - **The volunteer page works on a standalone Raspberry Pi screen.** Set a PIN in Settings and a
   volunteer can switch what the screen shows from their phone, on the masjid's network, without
   the admin password.

@@ -17,10 +17,22 @@
 #   PREFIX     -> a temporary directory, never /opt
 #   GitHub     -> file:// URLs, never the network
 #   systemctl  -> a stub on PATH that restarts nothing (and can be told to report a dead unit)
+#   the board  -> a file we write, not /proc/device-tree/model
+#
+# That last one is not tidiness. Run on a Pi this passed without it, because the board gate was
+# satisfied for real; run anywhere else — a CI runner, a laptop — every test failed at the gate
+# and the suite was useless exactly where it most needed to run. Faking the board also makes the
+# gate itself testable from both sides, which it was not before.
 #
 # Needs only POSIX sh, curl, tar and sha256sum, which is what a Raspberry Pi has and what the CI
 # runner has. Run it from anywhere: `sh server/assets/pi/update.test.sh`.
 set -eu
+
+# The updater node --checks what it downloaded, so a missing node makes every test fail at the
+# same place for a reason that has nothing to do with the updater. Say so once instead.
+for t in curl tar sha256sum node; do
+  command -v "$t" >/dev/null 2>&1 || { echo "this test needs $t, which is not installed"; exit 1; }
+done
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 INSTALLER="$HERE/install.sh"
@@ -37,7 +49,9 @@ mkdir -p "$R/rel/download/v9.9.9" "$R/prefix/web" "$R/bundle/web" "$R/bin"
 awk '/^cat > "\$PREFIX\/update.sh" <<.UPD.$/{f=1;next} /^UPD$/{f=0} f' "$INSTALLER" > "$R/raw.sh"
 [ -s "$R/raw.sh" ] || { echo "could not find the update.sh heredoc in install.sh"; exit 1; }
 
+echo 'Raspberry Pi 4 Model B Rev 1.5' > "$R/model"
 sed -e "s#^PREFIX=/opt/openmasjid-screen#PREFIX=$R/prefix#" \
+    -e "s#< /proc/device-tree/model#< $R/model#" \
     -e "s#https://api.github.com/repos/\$REPO/releases#file://$R/rel/releases#" \
     -e "s#API=\"\$API/latest\"#API=\"file://$R/rel/latest\"#" \
     -e "s#https://github.com/\$REPO/releases/download/\$TAG#file://$R/rel/download/\$TAG#" \
@@ -46,7 +60,7 @@ sed -e "s#^PREFIX=/opt/openmasjid-screen#PREFIX=$R/prefix#" \
 sh -n "$R/update.sh" || { echo "the updater install.sh writes is not valid shell"; exit 1; }
 # If a rewrite above stopped matching, the test would quietly talk to the real GitHub and pass
 # for the wrong reason. Assert every substitution landed.
-for must in "PREFIX=$R/prefix" "file://$R/rel/releases" "file://$R/rel/latest" "file://$R/rel/download"; do
+for must in "PREFIX=$R/prefix" "file://$R/rel/releases" "file://$R/rel/latest" "file://$R/rel/download" "< $R/model"; do
   grep -qF "$must" "$R/update.sh" || { echo "a rewrite did not match: $must"; exit 1; }
 done
 grep -q 'github.com' "$R/update.sh" && { echo "the updater still reaches the real network"; exit 1; }
@@ -192,6 +206,28 @@ printf "SERVER='https://display.example'\nCURL_OPTS=''\n" > "$R/prefix/trust.env
 sh "$R/update.sh" > "$R/out" 2>&1 || true
 grep -qi 'could not download the agent' "$R/out" && ok "went to the server, not to GitHub" || bad "unexpected: $(cat "$R/out")"
 grep -q 'old agent' "$R/prefix/agent.js" && ok "agent untouched" || bad "agent changed"
+
+echo
+echo "-- an unsupported board is left alone rather than updated into a restart loop"
+# A Pi 3 behind a television is a working screen showing correct prayer times. Ending support by
+# sending it an agent built for a board it is not would crash it every five seconds and leave a
+# masjid with a black screen nobody touched. It receives nothing instead.
+reset; trust '' dev v9.9.8
+for board in 'Raspberry Pi 3 Model B Plus Rev 1.3' 'Raspberry Pi 5 Model B Rev 1.0' ''; do
+  echo "$board" > "$R/model"
+  sh "$R/update.sh" > "$R/out" 2>&1 || bad "exited non-zero for '$board'"
+  grep -q 'not supported' "$R/out" && grep -q 'old agent' "$R/prefix/agent.js" \
+    && ok "refused: ${board:-no model at all}" || bad "updated an unsupported board: '$board'"
+done
+# The three boards that ARE supported, by the names they actually report. A `-eq 4` test refused
+# two of these, and did until it was measured on real hardware.
+for board in 'Raspberry Pi 4 Model B Rev 1.5' 'Raspberry Pi 400 Rev 1.0' 'Raspberry Pi Compute Module 4 Rev 1.1'; do
+  reset; trust '' dev v9.9.8
+  echo "$board" > "$R/model"
+  sh "$R/update.sh" > "$R/out" 2>&1 || bad "exited non-zero for '$board'"
+  grep -q 'new agent 9.9.9' "$R/prefix/agent.js" && ok "updated: $board" || bad "refused a supported board: '$board'"
+done
+echo 'Raspberry Pi 4 Model B Rev 1.5' > "$R/model"
 
 echo
 echo "-- no work directory is left behind"

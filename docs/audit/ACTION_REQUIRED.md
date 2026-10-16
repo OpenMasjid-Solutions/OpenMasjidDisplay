@@ -243,3 +243,72 @@ The GitHub Release for **v0.65.0 still exists and still advertises the Pi node i
 tags `v0.62.0`–`v0.65.0` remain. Nothing was deleted (no history was rewritten). If you
 want the store and the repo to tell the same story, consider marking those releases as
 pre-release or adding a note pointing at the rollback.
+
+---
+
+## 9. The standalone Raspberry Pi screen — four things only you can decide
+
+A Pi installed with `pi.sh` runs with no OpenMasjidOS behind it, which moves two things that the
+platform used to hold: the TLS in front of the panel, and the provenance of an update. Neither is a
+bug in what was built; both are **trust decisions that are now ours** and were the platform's, so
+they belong here rather than in a changelog.
+
+### 9.1 The standalone panel is plain HTTP, and a password crosses the LAN in the clear
+
+`createPiPanel` is served by `http.createServer` on port 80 (`server/src/pi/index.ts:1850`). There
+is no TLS, so the admin password typed at first run, the session cookie, and any camera credentials
+pasted into **Sources** are readable by anything on the masjid's network. The cookie's `Secure` flag
+is already decided per request (`isSecureRequest`), so it is simply never set here.
+
+This is the same posture as the camera's own web interface and the router's, and it is **LAN-only**
+— nothing is exposed to the internet. A managed screen does not have this problem, because the
+platform terminates TLS in front of it.
+
+**It cannot be fixed by just turning TLS on.** No certificate authority will issue a certificate for
+`192.168.1.42`, so the options are a self-signed certificate (a browser warning at first run, every
+time, which teaches a volunteer to click through warnings) or nothing. **Your call**, and the honest
+third option is to leave it and say so plainly in the documentation, which
+[PI_STANDALONE.md](../PI_STANDALONE.md) now does.
+
+### 9.2 An update is authenticated by GitHub alone
+
+`update.sh` downloads the release bundle and checks it against `SHA256SUMS` **published in the same
+release**. That stops a corrupted download and a tampering network, and it does **not** stop anyone
+who can publish a release to this repository — they would simply publish matching checksums.
+
+So the trust chain for software that auto-installs on every standalone screen is: GitHub's TLS, and
+the account security of whoever can cut a release here. Today that is one person.
+
+The step up is a signature the installer can verify against a public key baked into it — `minisign`
+or `cosign` — which separates "can publish a release" from "can sign a release". That is real
+key-management work and a real way to brick every screen if the key is lost, so it is a decision,
+not an obvious yes. **Until it is made, treat the release-publishing credentials for this repository
+as equivalent to root on every standalone screen**, and keep 2FA on that account.
+
+### 9.3 Every standalone screen tells GitHub it exists, a few times a day
+
+One unauthenticated call to `api.github.com` per update check, from the masjid's own IP address. No
+identifier, no masjid name and nothing about the screen is sent — but the IP and the timing are
+visible to GitHub, and to anyone watching the masjid's outbound traffic, as "this building runs
+OpenMasjidDisplay". Worth stating rather than fixing; a masjid that minds can block it and update by
+re-running the installer.
+
+### 9.4 A standalone screen that loses Wi-Fi needs someone to stand next to it
+
+Not a security finding — an availability one, and the one most likely to cost a volunteer an
+evening. The standalone panel has **no Wi-Fi page** (the capability exists only for a
+server-managed Pi, driven through the control spool), so if the masjid's Wi-Fi password changes, the
+way back is a keyboard on the Pi or a network cable. The documentation says so. Building the Wi-Fi
+page for the standalone panel is the obvious fix and is not done.
+
+### Already decided, recorded so it is not re-litigated
+
+- **The setup code is rate-limited** by the same `LoginLimiter` as the password, so the 8 digits
+  cannot be walked. An unclaimed screen stays claimable indefinitely by design: it is showing the
+  code on a television in the room, and expiring it would strand a screen nobody got to in time.
+- **The updater refuses rather than risks.** Unreachable GitHub, a release with no bundle, missing
+  checksums, bytes that do not match, an archive that will not unpack — every one leaves the screen
+  on the version it has. A screen that keeps showing yesterday's software is a screen showing
+  today's prayer times.
+- **The agent still cannot write `/opt`.** Updates run as a separate root unit, exactly as on a
+  managed screen.

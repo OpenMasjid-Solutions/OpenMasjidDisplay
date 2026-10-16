@@ -353,7 +353,54 @@ possible at all.
     `trust.env` — root-owned, and the one file the agent cannot write — never from the agent's own
     `config.json`, which it can.
 
-See [PI_SCREENS.md](PI_SCREENS.md) for setting one up and for troubleshooting.
+### Standalone: the same device with no server behind it
+
+A Pi can run with nothing else: its own store, its own control panel, its own updates.
+`runStandalone()` (`pi/index.ts`) replaces the poll loop; `createPiPanel()` (`pi/panel.ts`) serves
+the panel on port 80. The design and its decision record are in
+[PI_STANDALONE_DESIGN.md](PI_STANDALONE_DESIGN.md); what matters here is which things are **shared
+rather than re-implemented**, because every one of them is a divergence that cannot happen:
+
+- **One installer, one agent, one panel bundle.** `pi.sh` is a bootstrap that resolves a release,
+  verifies it against the published `SHA256SUMS`, and hands over to the *same* `install.sh` a
+  display server serves. The branch is the `@@SERVER@@` placeholder: a server substitutes it, and
+  its **survival** is what tells the installer nobody did. (The bundle therefore ships with it
+  intact, and `release-bundle.yml` greps for it before attaching the bundle to a release. Two other
+  placeholders have no server to fill them either, so the bundle's `MANIFEST` carries the renderer
+  and agent versions and the installer reads them back — found when a real install reached
+  `npm ERR! Invalid tag name "@@RESVG@@"`.)
+- **The state is built, not fetched.** `localState()` produces the same `PiStateWire` the server
+  would have sent: the stream resolved from the source row, assets inlined as `data:` URIs, fonts
+  from the same `fontOptions()` the server renders with. The draw loop below it is unchanged, so a
+  standalone screen and a managed one cannot draw differently.
+- **The panel is the server's panel.** Same bundle, same routes; `createVolunteerApi` is *mounted*
+  rather than reimplemented, and `statePayload()` was lifted out of `api.ts` so both serve the
+  same `/api/state`. What differs is served as data: `capabilitiesFor(host)` puts `PI_CAPABILITIES`
+  on `/api/session` and the panel hides what a Pi has no business showing — WhatsApp, SSO,
+  notifications, the widget, remote access, fleet screens — instead of forking a page.
+- **First-run is a claim, and the claim is atomic.** The television shows a setup code
+  (`pi/claim.ts`: 8 digits from `crypto.randomInt`, compared length-first then
+  `timingSafeEqual`), and the decision to accept it happens **inside** `store.update` — a check
+  before the write let two concurrent requests both become admin, which a test now pins.
+- **Updates reuse the root timer.** `openmasjid-screen-update.timer` is unchanged; `update.sh`
+  gains a second source. With no `SERVER` it resolves a release for the `CHANNEL` recorded in
+  `trust.env` (root-owned, the one file the agent cannot write), verifies the bundle against
+  `SHA256SUMS`, and installs the agent and the panel **together** — a panel whose JavaScript
+  expects an API the agent does not serve is the failure that splitting them would produce. The
+  existing restart-and-rollback block then covers both. Every other outcome is a refusal that
+  changes nothing: a masjid's prayer times must not go dark because GitHub was unreachable.
+  `assets/pi/update.test.sh` runs the whole chain against a fake release with a stub `systemctl`
+  and no network, and is a CI step.
+- **Nothing inbound is opened.** The panel listens on the LAN only. There is no tunnel, no
+  platform ingress and no Fabric route on a standalone Pi — the capability flags that would expose
+  them are false, and there is no OpenMasjidOS to proxy anything.
+- **The clock is its own.** A managed Pi takes the time from the server. A standalone one has
+  nothing to ask, so `clockSuspect()` (lifted to `clockFloor.ts` so a device that only draws need
+  not import the encoder) is the whole guard: below the build's own date it refuses to show prayer
+  times and says so on the television, rather than showing times that are confidently wrong.
+
+See [PI_STANDALONE.md](PI_STANDALONE.md) for setting up a screen that runs on its own, and
+[PI_SCREENS.md](PI_SCREENS.md) for one managed by a server.
 
 ## Release channels
 

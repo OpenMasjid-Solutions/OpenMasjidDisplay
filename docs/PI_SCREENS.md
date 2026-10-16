@@ -6,6 +6,12 @@
 A Raspberry Pi plugged into a television, showing the timetable and playing cameras by itself.
 One command sets one up.
 
+**This page is about a Pi managed by a Display server.** A Pi can also run with no server at all
+— its own timetable, its own control panel in a browser, updating itself from GitHub. If that is
+what you want, read **[PI_STANDALONE.md](PI_STANDALONE.md)** instead; that page also has a table
+comparing the two. Everything below about what is installed, how it performs and how it is kept
+shut applies to both.
+
 > **Beta.** Turn on *Screens that are a web page* in **Settings → Beta features** first — the same
 > switch covers browser screens and Pi screens. Without it the installer is not served.
 
@@ -36,12 +42,21 @@ schedule and the settings — kilobytes — and the pictures never leave the mas
 
 ## What you need
 
-- A **Raspberry Pi 4 or newer**. This is enforced, not advisory: the installer reads
-  `/proc/device-tree/model` and **refuses a Pi 3 or earlier** rather than installing something that
-  crashes in a restart loop and leaves a black screen on a wall. A board it does not recognise (a
-  Zero 2 W, a Compute Module, something that is not a Pi) is allowed through, on the assumption that
-  you chose it deliberately — refusing an unknown board would be the more destructive mistake. See
-  *Performance* below for why the line is drawn there.
+- A board from the **Raspberry Pi 4 family**: a Pi 4 Model B (2 GB or more), a Pi 400, or a
+  Compute Module 4. This is enforced, not advisory: the installer reads
+  `/proc/device-tree/model` and **refuses anything else** rather than installing something that
+  crashes in a restart loop and leaves a black screen on a wall. That includes a Pi 3 or a Zero,
+  which cannot decode a modern camera fast enough (see *Performance*), and — for now — a Pi 5,
+  which is refused only because this software has not been tested on one.
+
+  The gate matches by **name, not by a parsed number**, because no number describes this family:
+  a Pi 400 reports "Raspberry Pi 400", which parses as four hundred, and a Compute Module 4
+  reports no leading number at all. A `-eq 4` test refused two of the three supported boards, and
+  did until it was measured on real hardware.
+
+  **A screen that is already set up is never switched off by this.** The updater carries the same
+  gate, so an unsupported board that is working keeps working and simply stops receiving new
+  versions.
 - **Raspberry Pi OS Lite** — the version with no desktop. That is not a limitation to work
   around, it is the point: the agent draws straight to the screen, so there is no browser and no
   desktop to pay for.
@@ -155,8 +170,10 @@ back glyph by glyph — the wrong font set shows Arabic as empty boxes.
 **It comes back on its own** from a crash, a pulled cable, a rebooted camera or a power cut, with
 no start limit that could leave it stopped.
 
-**It keeps itself up to date**, checking the display server a few times a day. If an update will
-not start, the previous version is put back automatically.
+**It keeps itself up to date**, a few times a day. A screen installed from a display server asks
+that server; a standalone one asks GitHub for its release channel and checks the download against
+the checksum published with it. Either way, if an update will not start, the previous version is
+put back automatically and the screen carries on.
 
 ---
 
