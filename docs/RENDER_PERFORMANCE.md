@@ -119,7 +119,37 @@ parsing the whole SVG without fonts costs 1.7 ms on a Pi. Removing them would bu
 
 ---
 
-## 3. What is already right
+## 3. Ruled out, with the measurement
+
+Recorded so the work is not done twice.
+
+**Trimming the curated font list — no.** Dropping DejaVuSans and Noto Naskh removes 914 KB and
+changes the DB build by nothing (140 ms either way), and the pixels are identical, so those two
+faces are already contributing nothing to cost. Cutting to Amiri alone made it *slower* (178 ms)
+and changed what was drawn. The cost is not the list.
+
+**Memoising the frame — no.** `Screen.show()` could skip the whole render when the SVG is
+byte-identical to the last one, which would be exactly safe. It would never fire: over 119
+consecutive seconds the SVG changed on **all 119**, in every layout and with the seconds display
+both on and off.
+
+- Simple changes because the countdown is MM:SS. That is the feature working.
+- Modern changes because of that *and* decorative scene dots whose radius is recomputed from the
+  timestamp — `r="6.9"` becoming `r="6.8"`. A full 1080p frame, 403 ms of rasterisation on a Pi,
+  partly to move a dot by a tenth of a pixel.
+
+  Quantising that animation would not help on its own while a seconds-level countdown is on the
+  screen, so it is not worth doing for speed. It is noted because it is the only part of the
+  per-second churn that buys the viewer nothing.
+
+**`textRendering` / `shapeRendering: optimizeSpeed` — no.** 103 ms → 99 ms on the desktop, inside
+the noise, for a quality risk.
+
+**Resizing the render — no.** 720p Modern is 153 ms against 1080p's 187 ms, an 18% saving for a
+visibly softer picture. The `RENDER_CAP` comment already records why the obvious 2.25× pixel-count
+reasoning is wrong; this confirms it.
+
+## 4. What is already right
 
 Worth recording so it is not "optimised" later by someone measuring the wrong thing.
 
@@ -136,7 +166,7 @@ Worth recording so it is not "optimised" later by someone measuring the wrong th
 - **`textRendering` / `shapeRendering: optimizeSpeed` do nothing measurable** (103 → 99 ms on the
   desktop, inside the noise). Not worth the quality risk.
 
-## 4. Measuring this yourself: set OMD_FONT_DIR
+## 5. Measuring this yourself: set OMD_FONT_DIR
 
 `fonts.ts`'s `DIRS` is `OMD_FONT_DIR`, `/app/fonts`, `/usr/share/fonts`, `/usr/local/share/fonts`.
 The repository's own `server/assets/fonts` is deliberately not in that list — `OMD_FONT_DIR` is
