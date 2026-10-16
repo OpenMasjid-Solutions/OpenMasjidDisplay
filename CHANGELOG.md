@@ -153,6 +153,11 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **The countdown is now fully in Arabic and Urdu.** It used to read “2 HOURS 58 MINUTES UNTIL
+  الأذان” — half translated. It now reads “26 دقيقة / حتى الأذان” in Arabic and “25 منٹ / اذان تک”
+  in Urdu, with the word order each language actually uses. English screens are unchanged.
+- **A scrolling message on a browser screen is set in the same face as the rest of the screen.**
+  It was falling back to whatever the device happened to use.
 - **Arabic scrolling messages were empty boxes on screens fed by a decoder box.** A message in
   Arabic or Urdu came out as a row of squares on those screens, while the same message was fine
   on a Raspberry Pi screen and in a browser. It now reads correctly everywhere. An English

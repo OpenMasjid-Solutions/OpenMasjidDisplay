@@ -44,7 +44,16 @@ export function dimsFor(orientation: string, quality: string): Dims {
 // Match the OpenMasjidOS UI, which uses a clean system sans everywhere (no serif).
 // Noto Sans is the bundled equivalent; weight carries the "display" emphasis.
 const FONT_DISPLAY = 'Noto Sans, Noto Sans Arabic, DejaVu Sans, sans-serif';
-const FONT_SANS = 'Noto Sans, Noto Sans Arabic, DejaVu Sans, sans-serif';
+/**
+ * Exported for the browser screen.
+ *
+ * There, the scrolling ticker is a DOM node rather than SVG text — CSS moves it, where ffmpeg
+ * moves it on the video path — so it does not inherit the family the renderer puts on every
+ * other string. It was inheriting the page default, which on a device without the masjid's
+ * fonts meant the ticker was set in something other than the rest of the screen. Shared rather
+ * than copied into the web app, because two copies of a font stack drift.
+ */
+export const FONT_SANS = 'Noto Sans, Noto Sans Arabic, DejaVu Sans, sans-serif';
 // Arabic-first stack: name the Arabic faces FIRST so resvg shapes Arabic with them
 // directly (it doesn't always fall back from a Latin-only face). Naskh is the
 // traditional hand; Sans Arabic is the modern fallback. Used for Arabic hadith text.
@@ -642,6 +651,68 @@ export const PRAYER_LABELS: Record<string, Record<string, string>> = {
   ar: { fajr: 'الفجر', sunrise: 'الشروق', sunset: 'الغروب', ishraq: 'الإشراق', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
   ur: { fajr: 'فجر', sunrise: 'طلوع', sunset: 'غروب', ishraq: 'اشراق', dhuhr: 'ظہر', asr: 'عصر', maghrib: 'مغرب', isha: 'عشاء', jumuah: 'جمعہ', iqamah: 'اقامہ', athan: 'اذان', next: 'اگلی نماز', prayer: 'نماز' },
 };
+
+/**
+ * The countdown's own words: the unit beside each number, and the line naming what is counted to.
+ *
+ * Kept apart from PRAYER_LABELS because these are not labels an admin may override — they are
+ * grammar. A masjid can rename "Fajr"; it cannot usefully rename the plural of "minute".
+ *
+ * ## Arabic counts its nouns, and this is the part to be careful with
+ *
+ * Arabic agreement depends on the number: 3–10 take the plural (٣ ساعات), 11 and above take the
+ * singular (١٥ ساعة), and 1 and 2 are normally carried by the noun's own form (ساعة / ساعتان)
+ * rather than by a digit at all.
+ *
+ * This display always shows the digit, because that is the point of a countdown — the number is
+ * the big glyph and the word is the small one beside it. So the DUAL is deliberately not used:
+ * "2 ساعتان" would say "two" twice. The rule here is the one that is correct and uncontroversial
+ * when a digit is present — plural for 3–10, singular otherwise — and a countdown only ever
+ * shows 0–23 hours and 0–59 minutes, so nothing falls outside it.
+ *
+ * Urdu does not inflect منٹ or سیکنڈ for number, and its "until" is a POSTPOSITION: تک follows
+ * the thing, where Arabic's حتى precedes it. Hence `until` is a function rather than a prefix
+ * string — word order is part of the translation, not something a caller can assume.
+ *
+ * **Worth a native speaker's eye before this reaches a wall**, which is why it is written out
+ * here rather than buried: docs/audit/ACTION_REQUIRED.md §9.8.
+ */
+interface CountdownWords {
+  hour: (n: number) => string;
+  minute: (n: number) => string;
+  second: (n: number) => string;
+  /** The whole "until X" line, because the word's position differs by language. */
+  until: (what: string) => string;
+}
+
+/** 3–10 take the plural; 1, 2 and 11+ take the singular. See the note above. */
+const arPlural = (n: number, one: string, few: string): string => (n >= 3 && n <= 10 ? few : one);
+
+const COUNTDOWN_WORDS: Record<string, CountdownWords> = {
+  en: {
+    hour: (n) => (n === 1 ? 'HOUR' : 'HOURS'),
+    minute: (n) => (n === 1 ? 'MINUTE' : 'MINUTES'),
+    second: (n) => (n === 1 ? 'SECOND' : 'SECONDS'),
+    until: (what) => `UNTIL ${what}`,
+  },
+  ar: {
+    hour: (n) => arPlural(n, 'ساعة', 'ساعات'),
+    minute: (n) => arPlural(n, 'دقيقة', 'دقائق'),
+    second: (n) => arPlural(n, 'ثانية', 'ثوانٍ'),
+    until: (what) => `حتى ${what}`,
+  },
+  ur: {
+    hour: (n) => (n === 1 ? 'گھنٹہ' : 'گھنٹے'),
+    minute: () => 'منٹ',
+    second: () => 'سیکنڈ',
+    // تک is a postposition: it follows what it refers to.
+    until: (what) => `${what} تک`,
+  },
+};
+
+function countdownWords(lang: string): CountdownWords {
+  return COUNTDOWN_WORDS[lang] ?? COUNTDOWN_WORDS.en;
+}
 
 export function labels(lang: string, overrides?: Record<string, string>): Record<string, string> {
   const base = PRAYER_LABELS[lang] ?? PRAYER_LABELS.en;
@@ -1556,8 +1627,12 @@ function countdownText(cx: number, topY: number, maxW: number, size: number, c: 
   // MINUTES" (never "1 HOUR 0 MINUTES"). Proper singular/plural throughout.
   const sec = Math.max(0, c.remainingSec);
   const h = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), s = sec % 60;
-  const seg = (n: number, w: string) => ({ n: String(n), w: n === 1 ? w : w + 'S' });
-  const segs = sec < 60 ? [seg(s, 'SECOND')] : h === 0 ? [seg(mm, 'MINUTE')] : mm === 0 ? [seg(h, 'HOUR')] : [seg(h, 'HOUR'), seg(mm, 'MINUTE')];
+  // The unit words come from the language, not from English + "S" — see COUNTDOWN_WORDS. Arabic
+  // and Urdu do not pluralise by suffix, and Urdu's "until" follows what it refers to.
+  const W = countdownWords(c.lang);
+  const seg = (n: number, w: (n: number) => string) => ({ n: String(n), w: w(n) });
+  const segs =
+    sec < 60 ? [seg(s, W.second)] : h === 0 ? [seg(mm, W.minute)] : mm === 0 ? [seg(h, W.hour)] : [seg(h, W.hour), seg(mm, W.minute)];
   let numSize = size;
   const usz = () => countdownUnit(numSize);
   // The unit word is drawn with `letter: 1`; counting its width without that tracking under-
@@ -1582,7 +1657,11 @@ function countdownText(cx: number, topY: number, maxW: number, size: number, c: 
     x += approxWidth(segs[i].w, us) + Math.max(0, segs[i].w.length - 1) + (i < segs.length - 1 ? numSize * 0.3 : 0);
   }
   // In a prohibited window the countdown runs to the Dhuhr adhan, so name it plainly.
-  const untilWord = c.prohibited ? `UNTIL ${c.nextLabel} ${c.eventWord}`.toUpperCase() : `UNTIL ${c.eventWord}`;
+  //
+  // `toUpperCase` only for English: it is a no-op on Arabic and Urdu, and on a Latin-script label
+  // a masjid typed itself it would shout back something they wrote in sentence case.
+  const target = c.prohibited ? `${c.nextLabel} ${c.eventWord}` : c.eventWord;
+  const untilWord = W.until(c.lang === 'en' ? target.toUpperCase() : target);
   const track = Math.max(0, untilWord.length - 1) * 3;
   // Same subtract-the-tracking-first rule as above: it is pixels per gap, not a share of the type.
   let uSize = us;

@@ -68,7 +68,7 @@ const ENGLISH = /\b(HOURS?|MINUTES?|SECONDS?|UNTIL|TIMES|PRAYER|ADHAN|IQAMAH|SUN
  * Anything NOT on this list failing the check is a new half-translated string, which is the thing
  * this test is for.
  */
-const KNOWN_UNTRANSLATED = new Set(['HOURS', 'MINUTES', 'UNTIL']);
+const KNOWN_UNTRANSLATED = new Set<string>([]);
 
 interface Shot {
   name: string;

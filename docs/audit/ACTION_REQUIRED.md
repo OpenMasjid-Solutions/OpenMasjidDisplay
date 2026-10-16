@@ -409,7 +409,7 @@ English sentence.
 `x-frame-options: DENY` where the server sends `frame-ancestors 'self'`, which is stricter. Only
 the comment claiming it mirrored the server was wrong, and that has been corrected.
 
-### 9.8 Two words on an Arabic screen are still English, and translating them is a content decision
+### 9.8 ~~Two words on an Arabic screen are still English~~ — FIXED, grammar worth a second eye
 
 Found by pointing a capture card at the Pi's HDMI and actually looking, which is the only way this
 class of thing gets noticed: every string is individually plausible.
@@ -431,10 +431,23 @@ three words:
 - The layout reserves width per string (`approxWidth` over-estimates, and letter-spacing is in
   constant px), so longer words may need the countdown re-fitted.
 
-**What is needed:** the correct Arabic and Urdu forms for hour/hours, minute/minutes and “until”,
-including the counted-noun rules, from somebody who speaks them. Then it is a small change to
-`countdownText` and the label table, with the golden fixtures regenerated for the Arabic and Urdu
-shots only.
+**Fixed** in `COUNTDOWN_WORDS` (svg.ts), which carries the unit words and the “until” line per
+language. Verified on the television: Arabic reads “26 دقيقة / حتى الأذان” and Urdu “25 منٹ /
+اذان تک”. The matrix sweep now passes with an EMPTY known-untranslated list, so no English word
+survives into any Arabic or Urdu screen in any of the 216 configurations.
+
+**The judgement call, stated so a speaker can overrule it.** Arabic agreement depends on the
+number: 3–10 take the plural (٣ ساعات), 11+ take the singular (١٥ ساعة), and 1 and 2 are normally
+carried by the noun's own form (ساعة / ساعتان) rather than by a digit at all. This display always
+shows the digit, so the DUAL is deliberately not used — “2 ساعتان” would say “two” twice. The rule
+implemented is plural for 3–10 and singular otherwise, which is the uncontroversial one when a
+numeral is present, and a countdown only ever shows 0–23 hours and 0–59 minutes.
+
+Urdu does not inflect منٹ or سیکنڈ for number, and تک is a postposition — it FOLLOWS what it refers
+to, where Arabic's حتى precedes it. That is why `until` is a function rather than a prefix string.
+
+None of this needs code to change if a speaker disagrees — the words and the rule are in one
+table, and the golden fixtures for the Arabic and Urdu shots are the only ones that move.
 
 ### 9.9 ~~The sun passes behind the clock and eats a digit~~ — FIXED
 

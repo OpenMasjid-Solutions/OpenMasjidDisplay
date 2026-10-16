@@ -36,6 +36,7 @@ import {
   activeTicker,
   tickerTextColor,
   TICKER_RED,
+  FONT_SANS,
 } from '../../server/src/render/svg';
 import type { Timetable } from '../../server/src/types';
 
@@ -182,6 +183,12 @@ function syncTicker(tt: Timetable, now: Date, w: number, h: number): void {
   el.style.lineHeight = `${(band.bandH / h) * 100}vh`;
   el.style.fontSize = `${(band.fs / h) * 100}vh`;
   el.style.color = prohibited ? TICKER_RED : tickerTextColor(tt);
+  // The same family and weight the renderer puts on the ticker when IT draws the text, so the
+  // DOM lane matches the band underneath it. Without this the lane inherited the page default,
+  // and an Arabic message was set in whatever the device fell back to while the rest of the
+  // screen used the masjid’s own faces.
+  el.style.fontFamily = FONT_SANS;
+  el.style.fontWeight = prohibited ? '700' : '600';
   if (ticker.text !== text) {
     const run = el.firstElementChild as HTMLElement;
     const sep = '  •  ';
