@@ -321,6 +321,93 @@ test('an upload for a timetable that does not exist is refused', async () => {
   assert.equal(r.status, 404);
 });
 
+// ── the rest of a timetable ──────────────────────────────────────────────────
+
+test('a timetable can be duplicated, and the copy is its own', async () => {
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  const r = await call(handler, 'POST', `/api/timetables/${id}/duplicate`, {}, cookie);
+  assert.equal(r.status, 200, r.body);
+  assert.equal(store.db.timetables.length, 2);
+  const copy = store.db.timetables[1];
+  assert.notEqual(copy.id, id, 'a new id, or deleting one deletes both');
+  assert.match(copy.name, /\(copy\)$/);
+});
+
+test('an Iqamah spreadsheet imports, exports and clears', async () => {
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  const csv = 'date,fajr,dhuhr,asr,maghrib,isha\n01-15,06:00,13:15,16:30,18:05,19:45\n';
+  const put = await call(handler, 'POST', `/api/timetables/${id}/iqamah-csv`, { data: csv }, cookie);
+  assert.equal(put.status, 200, put.body);
+  assert.equal(put.json().rows, 1);
+  assert.ok(store.db.timetables[0].iqamahYear, 'the times were kept');
+
+  const out = await call(handler, 'GET', `/api/timetables/${id}/iqamah-csv`, undefined, cookie);
+  assert.equal(out.status, 200);
+  assert.match(String(out.headers['content-type']), /text\/csv/);
+  assert.ok(out.body.includes('06:00'), 'what went in comes back out');
+
+  const cleared = await call(handler, 'DELETE', `/api/timetables/${id}/iqamah-csv`, undefined, cookie);
+  assert.equal(cleared.status, 200);
+  assert.equal(store.db.timetables[0].iqamahYear, undefined);
+});
+
+test('a spreadsheet with nothing usable in it is refused, and changes nothing', async () => {
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  const r = await call(handler, 'POST', `/api/timetables/${id}/iqamah-csv`, { data: 'nonsense\nmore nonsense\n' }, cookie);
+  assert.equal(r.status, 400);
+  assert.equal(store.db.timetables[0].iqamahYear, undefined);
+});
+
+test('scheduled Iqamah changes save, and an empty list removes them', async () => {
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  const entry = [{ from: '2026-03-01', fajr: '05:45', dhuhr: '13:30' }];
+  const r = await call(handler, 'PUT', `/api/timetables/${id}/iqamah-schedule`, { schedule: entry }, cookie);
+  assert.equal(r.status, 200, r.body);
+  assert.equal(r.json().entries, 1);
+  assert.ok(store.db.timetables[0].iqamahSchedule?.length);
+  await call(handler, 'PUT', `/api/timetables/${id}/iqamah-schedule`, { schedule: [] }, cookie);
+  assert.equal(store.db.timetables[0].iqamahSchedule, undefined, 'an empty list means "none", not "an empty one"');
+});
+
+test('printing needs a location, and says so rather than printing nothing', async () => {
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  const no = await call(handler, 'GET', `/api/timetables/${id}/print`, undefined, cookie);
+  assert.equal(no.status, 400, 'a calendar with no times on it is worse than a message');
+
+  store.update((db) => {
+    db.timetables[0].latitude = 40.2415;
+    db.timetables[0].longitude = -75.2838;
+    db.timetables[0].timezone = 'America/New_York';
+  });
+  const yes = await call(handler, 'GET', `/api/timetables/${id}/print?month=2026-03`, undefined, cookie);
+  assert.equal(yes.status, 200);
+  assert.match(String(yes.headers['content-type']), /text\/html/);
+  assert.ok(yes.body.includes('March'), 'the month asked for');
+});
+
+test('an impossible month is refused, not quietly turned into another one', async () => {
+  // A printed calendar that is confidently the wrong month is a bad thing to hand a congregation.
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  store.update((db) => {
+    db.timetables[0].latitude = 40.2415;
+    db.timetables[0].longitude = -75.2838;
+  });
+  const id = store.db.timetables[0].id;
+  const r = await call(handler, 'GET', `/api/timetables/${id}/print?month=2026-99`, undefined, cookie);
+  assert.equal(r.status, 400);
+});
+
 // ── the bundle ───────────────────────────────────────────────────────────────
 
 test('the web app and its assets are served', async () => {

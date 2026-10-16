@@ -49,6 +49,11 @@ import {
   isRenderableImageMime,
 } from '../render/background';
 import { saveSoundClip, removeSoundClipsFor, SOUND_MAX_UPLOAD_BYTES } from '../render/sound';
+import { copyAsset } from '../render/background';
+import { parseIqamahCsv, toCsv, templateCsv } from '../iqamahCsv';
+import { normalizeIqamahSchedule } from '../iqamahSchedule';
+import { renderMonthPrintHtml } from '../print';
+import { localParts } from '../prayer/engine';
 import { setupCodeMatches } from './claim';
 import type { AgentConfig } from './agentConfig';
 
@@ -172,7 +177,8 @@ export function createPiPanel(deps: PanelDeps) {
   }
 
   return async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const pathname = url.pathname;
     const method = req.method ?? 'GET';
 
     try {
@@ -451,6 +457,98 @@ export function createPiPanel(deps: PanelDeps) {
             });
           }
           return back();
+        }
+      }
+
+      /**
+       * The rest of what a timetable can do: a copy of it, the Iqāmah year as a spreadsheet, the
+       * "from this date" changes, and a month to print.
+       *
+       * All of it store-only and all of it through the SAME helpers the server uses —
+       * `parseIqamahCsv`, `normalizeIqamahSchedule`, `renderMonthPrintHtml` — so a masjid that
+       * imports a spreadsheet here gets exactly what it would get there, down to which rows are
+       * rejected and why.
+       */
+      const sub = /^\/api\/timetables\/([\w-]+)\/(duplicate|iqamah-schedule|iqamah-csv|print)$/.exec(pathname);
+      if (sub) {
+        const [, ttId, what] = sub;
+        const tt = store.db.timetables.find((t) => t.id === ttId);
+        if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
+
+        if (what === 'duplicate' && method === 'POST') {
+          // The copy owns its own files, so deleting the original cannot blank it.
+          const copy = normTimetable({ ...tt, name: `${tt.name} (copy)`.slice(0, 80) });
+          if (tt.iqamahYear) copy.iqamahYear = JSON.parse(JSON.stringify(tt.iqamahYear));
+          if (tt.iqamahSchedule) copy.iqamahSchedule = JSON.parse(JSON.stringify(tt.iqamahSchedule));
+          copy.backgroundImage = tt.backgroundImage ? copyAsset(tt.backgroundImage, copy.id, 'bg') : '';
+          copy.logoImage = tt.logoImage ? copyAsset(tt.logoImage, copy.id, 'logo') : '';
+          if (copy.announcements) {
+            copy.announcements.images = (tt.announcements?.images ?? [])
+              .map((f) => copyAsset(f, copy.id, 'ann'))
+              .filter(Boolean);
+          }
+          store.update((db) => void db.timetables.push(copy));
+          return sendJson(res, 200, copy);
+        }
+
+        if (what === 'iqamah-schedule' && method === 'PUT') {
+          const schedule = normalizeIqamahSchedule(body.schedule);
+          store.update((db) => {
+            const t = db.timetables.find((x) => x.id === ttId);
+            if (!t) return;
+            if (schedule.length) t.iqamahSchedule = schedule;
+            else delete t.iqamahSchedule;
+          });
+          return sendJson(res, 200, { ok: true, entries: schedule.length, schedule });
+        }
+
+        if (what === 'iqamah-csv') {
+          if (method === 'POST') {
+            const parsed = parseIqamahCsv(String(body.data ?? ''));
+            if (parsed.rows === 0) {
+              return sendJson(res, 400, { error: parsed.errors[0] ?? 'No usable rows found. Each row needs a date and at least one time.' });
+            }
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) t.iqamahYear = parsed.data;
+            });
+            return sendJson(res, 200, { ok: true, rows: parsed.rows, errors: parsed.errors.slice(0, 5), data: parsed.data });
+          }
+          if (method === 'GET') {
+            const template = url.searchParams.get('mode') === 'template';
+            const csv = template ? templateCsv(tt) : toCsv(tt.iqamahYear);
+            res.writeHead(200, {
+              ...SECURITY_HEADERS,
+              'content-type': 'text/csv; charset=utf-8',
+              'content-disposition': `attachment; filename="${template ? 'iqamah-template.csv' : 'iqamah-times.csv'}"`,
+              'cache-control': 'no-store',
+            });
+            return void res.end(csv);
+          }
+          if (method === 'DELETE') {
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) delete t.iqamahYear;
+            });
+            return sendJson(res, 200, store.db.timetables.find((t) => t.id === ttId));
+          }
+        }
+
+        if (what === 'print' && method === 'GET') {
+          if (tt.latitude == null || tt.longitude == null) {
+            return sendJson(res, 400, { error: 'Add the masjid location before printing.' });
+          }
+          const now = localParts(new Date(), tt.timezone || undefined);
+          const ym = /^(\d{4})-(\d{2})$/.exec(url.searchParams.get('month') ?? '');
+          const year = ym ? Number(ym[1]) : now.year;
+          const mon = ym ? Number(ym[2]) : now.month;
+          // Rejected rather than silently substituted: a printed calendar that is confidently
+          // the wrong month is a bad thing to hand a congregation.
+          if (mon < 1 || mon > 12 || year < 1970 || year > 2200) {
+            return sendJson(res, 400, { error: 'That month isn’t valid. Choose a month from 1 to 12.' });
+          }
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          return void res.end(renderMonthPrintHtml(tt, year, mon));
         }
       }
 

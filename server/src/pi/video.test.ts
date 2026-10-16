@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, cameraFailureText, stripFfmpegTag, retryDelayMs, FF_PROTOCOLS, probeArgs } from './video';
+import { videoArgs, redactCreds, shouldDropHardware, ranHealthily, pickTimeoutFlag, cameraFailureText, stripFfmpegTag, retryDelayMs, FF_PROTOCOLS, probeArgs, redactUrlForLog } from './video';
 import type { FbGeometry } from './framebuffer';
 import type { DecodePlan } from './decode';
 
@@ -457,4 +457,38 @@ test('software decoding passes no decoder flag at all', () => {
   const a = videoArgs('rtsp://cam', HD, { plan: SOFTWARE, device: '/dev/fb0' }).join(' ');
   assert.ok(!a.includes('-hwaccel'), 'no hwaccel');
   assert.ok(!a.includes('v4l2m2m'), 'and no m2m decoder');
+});
+
+// ── what reaches the journal ─────────────────────────────────────────────────
+
+test('a camera address in the log keeps the host and loses the rest', () => {
+  // `user:pass@` is the only credential an RTSP URL is SUPPOSED to carry, and it is not the only
+  // one they do. A UniFi stream is addressed by a path segment that IS the access token, with no
+  // password anywhere for a userinfo rule to find — observed on real hardware, written in full
+  // to a journal that `adm` can read.
+  assert.equal(
+    redactUrlForLog('rtsps://192.168.1.1:7441/LhrdC1EoTEY24tnc?enableSrtp'),
+    'rtsps://192.168.1.1:7441/…',
+    'the UniFi path token must not survive',
+  );
+  // The userinfo rule still applies, and both together.
+  assert.equal(
+    redactUrlForLog('rtsp://admin:hunter2@10.0.0.9:554/Streaming/Channels/101'),
+    'rtsp://***@10.0.0.9:554/…',
+  );
+  // Nothing to hide, nothing changed — the host is what somebody diagnosing needs.
+  assert.equal(redactUrlForLog('rtsp://10.0.0.9:554'), 'rtsp://10.0.0.9:554');
+});
+
+test('no camera path survives into a log line, whatever shape it is', () => {
+  for (const u of [
+    'rtsp://h/a/b/c',
+    'rtsps://h:7441/tok?q=1',
+    'rtmp://h:1935/live/secretkey',
+    'rtsp://user:pw@h:554/x',
+  ]) {
+    const out = redactUrlForLog(u);
+    assert.ok(!/\/[A-Za-z0-9]{6,}/.test(out.replace(/^\w+:\/\//, '')), `${u} -> ${out}`);
+    assert.ok(!out.includes('pw'), out);
+  }
 });

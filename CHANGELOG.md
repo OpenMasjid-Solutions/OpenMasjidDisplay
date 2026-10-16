@@ -38,6 +38,9 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
+- **A camera's address is no longer written in full to the screen's log.** Some cameras — UniFi
+  among them — put the access token in the address itself rather than in a password, so the log
+  now keeps the camera's host and drops the rest.
 - **Cameras now work on a standalone Raspberry Pi screen**, and a new screen sets its output to
   1080p. A Pi 4 driving a 4K television spends most of a processor core upscaling the picture,
   which makes a camera stutter and looks no sharper — the timetable is drawn at 1080p either way.
