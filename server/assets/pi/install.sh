@@ -617,6 +617,27 @@ fi
 #
 # This is a DEFAULT, not a lock: the per-screen resolution override rewrites this same `video=`
 # line (and removes it entirely for "auto"), so a masjid that wants 4K can still have it.
+#
+# ── DO NOT "TIDY" THE MODE STRING BELOW ──────────────────────────────────────
+#
+# `1920x1080M@60D`, and every character of it earns its place. Measured on a Pi 4 with an HDMI
+# capture card attached:
+#
+#   video=HDMI-A-1:1920x1080M@60D   works — /dev/fb0 exists, connector reads "connected"
+#   video=HDMI-A-1:1920x1080@60     NO FRAMEBUFFER AT ALL, connector reads "disconnected"
+#
+# The trailing `D` forces the digital output ON regardless of hotplug detect. Some displays —
+# capture cards and a good number of commercial panels — do not assert HPD reliably, and without
+# `D` the connector stays off, no framebuffer is created, and the screen is black with nothing in
+# the agent's log to explain it, because the agent never gets a framebuffer to complain about.
+#
+# The kernel ALSO logs `User-defined mode not supported: "1920x1080"` for this string, and that
+# message is a red herring: `M` asks for a CVT-computed timing, the driver declines it and falls
+# back to the display's own EDID 1080p mode, which is exactly what is wanted. Removing `M` to
+# silence the warning takes `D` with it if you are not careful, and that is a black screen.
+#
+# Only HDMI-A-1 is named. Forcing a mode on HDMI-A-2 while nothing is plugged into it was part of
+# the same failed experiment; a second output is handled by phase 3, not here.
 if [ -f "$BOOTCMD" ] && ! grep -q 'video=HDMI-A-1:' "$BOOTCMD" 2>/dev/null; then
   say 'setting the display output to 1080p (a Pi 4 upscaling to 4K costs most of a core)'
   sed -i 's/$/ video=HDMI-A-1:1920x1080M@60D/' "$BOOTCMD"

@@ -451,9 +451,28 @@ connector, each keeping its own negotiated mode with the content scaled and aspe
 Hotplug is a DRM uevent. A single connected output must keep working, and the per-screen
 resolution override and its auto-revert must survive.
 
-**This needs a hardware test before it is designed further**, and it is the one phase I would not
-start from a laptop. Phase 3 begins with that test; if fbdev surprises me and can mirror, the
-smaller change wins.
+**The hardware test has now been done, with one display attached.** What it establishes:
+
+- **`/dev/fb0` is `vc4drmfb` — DRM fbdev emulation, not a legacy fbdev driver.** That matters a
+  great deal, because `drm_fb_helper` already clones one framebuffer across every connected
+  connector, choosing a mode they can share. So the likely answer to "can the current fbdev path
+  mirror" is **yes, already**, and the DRM/KMS rewrite may not be needed at all.
+- Both connectors exist and are addressable: `card1-HDMI-A-1` (connected) and `card1-HDMI-A-2`
+  (disconnected). Five pixelvalves are bound, so there is a CRTC for each.
+- **4K was running at 30Hz**, not 60: the kernel says `The core clock cannot reach frequencies
+  high enough to support 4k @ 60Hz`. Another reason the 1080p default is right.
+
+**What cannot be settled without a second display plugged in:** whether the shared mode
+`drm_fb_helper` picks is sensible when the two panels differ, and whether hotplug re-clones
+cleanly. The test is: plug the second display, confirm `/dev/fb0` still reports one size, confirm
+both show the same picture, unplug one, confirm the other survives, replug, confirm recovery.
+
+**A near-miss worth recording.** Changing the mode string from `1920x1080M@60D` to the
+apparently-cleaner `1920x1080@60` — to silence a kernel warning — produced **no framebuffer at
+all** and a black screen, because the trailing `D` forces the output on for displays that do not
+assert hotplug detect. The warning it would have silenced is a red herring. This is written at
+the line itself in `install.sh`, because the tidy-up is the obvious thing for the next person to
+do.
 
 ---
 
