@@ -1733,6 +1733,12 @@ function localState(store: Store, live: Live): void {
       logo: tt?.logoImage ? logoDataUri(tt.logoImage) : null,
       announcements: ann.map((f) => announcementDataUri(f)).filter((u): u is string => !!u),
     },
+    // Only for an ENABLED source — a disabled one is "off", not "try anyway". The same rule
+    // the server applies when it builds this for an adopted screen.
+    stream: ref.kind === 'source' ? (() => {
+      const src = db.sources.find((x) => x.id === ref.id);
+      return src && src.enabled ? { url: src.url, mode: src.mode } : null;
+    })() : null,
     fonts: [],
     fontFamilies: {
       default: FONTS.defaultFontFamily,
@@ -1744,7 +1750,6 @@ function localState(store: Store, live: Live): void {
     // has not set a wallpaper — the common case on a screen configured from its own panel.
     bgLight: false,
     autoAccent: null,
-    stream: null,
     serverNow: Date.now(),
     clockSuspect: clockSuspect(),
     pollMs: POLL_MS,
@@ -1847,6 +1852,8 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
   server.listen(PANEL_PORT, () => log(`panel listening on port ${PANEL_PORT}`));
 
   const live = new Live('');
+  const player = new VideoPlayer(FB_DEVICE, log);
+  let cameraDownSince = 0;
   // Named explicitly rather than left to resvg's system-font search — see FONTS.
   live.fontFiles = FONTS.fontFiles ?? [];
   const arabic = (FONTS.fontFiles ?? []).some((f) => /arabic|amiri/i.test(f));
@@ -1885,10 +1892,58 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
 
     localState(store, live);
     applyDisplaySchedule(live);
+    /**
+     * The camera is decided BEFORE "is there a timetable", and the order is the bug this comment
+     * exists for: a screen showing a camera HAS no timetable, so checking for one first sent
+     * every camera to the "Nothing to show yet" card and the player was never reached. From the
+     * hall that is indistinguishable from a camera that will not connect. The adopted loop has
+     * always been in this order.
+     */
+
+    /**
+     * A camera and the timetable are the same pixels, so exactly one of them may be running:
+     * ffmpeg draws straight to the framebuffer, and anything drawn here would flicker over it.
+     *
+     * The same handling the adopted path uses, including the gap. Some cameras tear the session
+     * down on their own schedule — a UniFi one measured on real hardware ends it cleanly about
+     * every seventy seconds — and painting "Camera unavailable" into that gap put a warning on
+     * the wall every minute on a camera that was working. The framebuffer still holds the last
+     * frame ffmpeg wrote, so drawing nothing leaves the picture up and the reconnect is invisible.
+     */
+    const stream = live.state?.stream;
+    if (stream && screen) {
+      player.play(stream.url, screen.geo);
+      const st = player.status();
+      if (st.playing) {
+        cameraDownSince = 0;
+        await sleep(2_000);
+        continue;
+      }
+      if (!cameraDownSince) cameraDownSince = Date.now();
+      if (Date.now() - cameraDownSince < CAMERA_GRACE_MS) {
+        await sleep(400);
+        continue;
+      }
+      // Past the grace period it is not a hiccup. Saying which camera and what went wrong turns
+      // "the screen is black" into something whoever is standing there can act on.
+      screen.show(
+        messageSvg('Camera unavailable', st.lastError ? st.lastError.slice(0, 120) : 'Trying to reach the camera'),
+        live.fontFiles,
+        live.state?.fontFamilies,
+      );
+      await sleep(3_000);
+      continue;
+    }
+    player.stop();
+
     if (!live.state?.timetable) {
       // Not black. A screen with nothing configured and a screen that is broken look identical
       // in the dark, and only one of them is somebody's job to fix.
-      screen?.show(messageSvg('Nothing to show yet', `Add a timetable at http://${facts.ip || 'this screen'}`));
+      screen?.show(
+        messageSvg('Nothing to show yet', `Add a timetable at http://${facts.ip || 'this screen'}`),
+        live.fontFiles,
+        live.state?.fontFamilies,
+      );
       await sleep(2_000);
       continue;
     }

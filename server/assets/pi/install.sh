@@ -600,6 +600,29 @@ if [ -f "$BOOTCMD" ] && ! grep -q 'consoleblank=0' "$BOOTCMD" 2>/dev/null; then
   NEEDS_REBOOT=1
 fi
 
+# ── default the output to 1080p ──────────────────────────────────────────────
+#
+# A 4K television negotiates 4K, and on a Pi 4 that is the wrong trade for this product.
+# Measured on a Pi 4 Model B with a 720p H.264 camera, cpu-seconds per 10 seconds of wall clock
+# (4.0 is one whole core):
+#
+#   decode only, no scale        3.1    the decode is nearly free
+#   scale to 3840x2160          17.7    the UPSCALE is the cost, 4.7x the decode
+#   scale to 1920x1080          10.5
+#
+# And the framebuffer write is four times the bytes at 4K: 16.6 MB a frame at 16bpp, against
+# 4.1 MB. Nothing is gained for it — the timetable is rendered at 1920x1080 and upscaled either
+# way, and a camera is almost never above 1080p — so a 4K mode spends most of a core to make the
+# same picture softer.
+#
+# This is a DEFAULT, not a lock: the per-screen resolution override rewrites this same `video=`
+# line (and removes it entirely for "auto"), so a masjid that wants 4K can still have it.
+if [ -f "$BOOTCMD" ] && ! grep -q 'video=HDMI-A-1:' "$BOOTCMD" 2>/dev/null; then
+  say 'setting the display output to 1080p (a Pi 4 upscaling to 4K costs most of a core)'
+  sed -i 's/$/ video=HDMI-A-1:1920x1080M@60D/' "$BOOTCMD"
+  NEEDS_REBOOT=1
+fi
+
 # ── systemd ──────────────────────────────────────────────────────────────────
 
 step 'Installing the service'

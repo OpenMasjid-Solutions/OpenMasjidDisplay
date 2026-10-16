@@ -38,6 +38,10 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
+- **Cameras now work on a standalone Raspberry Pi screen**, and a new screen sets its output to
+  1080p. A Pi 4 driving a 4K television spends most of a processor core upscaling the picture,
+  which makes a camera stutter and looks no sharper — the timetable is drawn at 1080p either way.
+  If you want 4K, the resolution setting still gives it to you.
 - **A Raspberry Pi screen can now run on its own.** Installed with no display server, it shows a
   one-time code on the television and serves its own control panel on the masjid's network: open
   the address on the screen, enter the code, and choose a password. It is the same control panel
