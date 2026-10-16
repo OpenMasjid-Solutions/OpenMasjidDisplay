@@ -323,7 +323,11 @@ your box read your prayer times instead of being told them twice.
   did not, and flags the ones the platform later admits it never delivered — instead of leaving a
   tick beside a message nobody received.
 
-### Fixed
+### Fixed
+- **A safety net against a screen drawing a panel as nothing.** The renderer is now checked, in
+  fourteen real configurations, that every colour and glow it asks for is one it actually
+  defined. Nothing was wrong — this catches a future mistake that would otherwise show up as a
+  missing background or panel on a wall and look deliberate.
 - **Prayer times were an hour wrong on the two nights a year the clocks change.** On the night the
   clocks go forward, a screen drawn between midnight and 2am showed every one of that day's prayer
   times an hour early — Fajr as 04:53 when it was really 05:53 — and the countdown and the Adhan
