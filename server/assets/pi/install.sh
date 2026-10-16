@@ -24,6 +24,50 @@ SERVER='@@SERVER@@'
 RESVG_VERSION='@@RESVG@@'
 AGENT_VERSION='@@AGENT_VERSION@@'
 
+# ── served by a display server, or installed on its own? ─────────────────────
+#
+# The placeholder above is replaced by the display server when IT serves this script. Fetched
+# from GitHub by pi.sh, nothing replaces it — and that surviving placeholder is the signal that
+# this screen has no server and is being installed STANDALONE.
+#
+# Written as two halves joined by the shell so that the substitution, which is a plain global
+# string replace, cannot rewrite this comparison as well and make every install look standalone.
+#
+# OMD_BUNDLE is where pi.sh unpacked the verified release: the agent and the control panel come
+# from there instead of being downloaded from a server that does not exist.
+STANDALONE=0
+case "$SERVER" in
+  '@@'SERVER'@@'|'') STANDALONE=1; SERVER='' ;;
+esac
+BUNDLE="${OMD_BUNDLE:-}"
+[ "$STANDALONE" = 1 ] && [ -z "$BUNDLE" ] && STANDALONE=2
+
+# ── the OTHER two placeholders ───────────────────────────────────────────────
+#
+# `@@SERVER@@` is not the only one. The renderer version and the agent version are filled in by
+# the display server too, and a bundle has no server to fill them in — so standalone reads them
+# from the MANIFEST that ships beside the agent.
+#
+# This was found by running the installer on a real Pi, which got as far as:
+#
+#   npm ERR! Invalid tag name "@@RESVG@@" of package "@resvg/resvg-js@@@RESVG@@"
+#
+# — eight minutes of apt, and then a failure at the one step that needed a value nobody had set.
+# Hence the check below as well: an unsubstituted placeholder now stops this at the top with a
+# sentence that says which one, rather than at whichever command happens to be handed it first.
+if [ "$STANDALONE" = 1 ] && [ -r "$BUNDLE/MANIFEST" ]; then
+  _m=$(sed -n 's/^resvg=//p' "$BUNDLE/MANIFEST" | head -1)
+  [ -n "$_m" ] && RESVG_VERSION="$_m"
+  _m=$(sed -n 's/^version=//p' "$BUNDLE/MANIFEST" | head -1)
+  [ -n "$_m" ] && AGENT_VERSION="$_m"
+fi
+for _pair in "renderer:$RESVG_VERSION" "agent:$AGENT_VERSION"; do
+  case "${_pair#*:}" in
+    *@@*|'') printf '\n\033[31mError:\033[0m the %s version was never filled in (got "%s").\n  This bundle is broken — it should carry a MANIFEST naming it.\n' \
+               "${_pair%%:*}" "${_pair#*:}" >&2; exit 1 ;;
+  esac
+done
+
 PREFIX=/opt/openmasjid-screen
 # Where the server's own certificate is pinned, when it turns out to be self-signed. Kept beside
 # the config because it is part of how this device trusts its server, not disposable state.
@@ -127,12 +171,25 @@ wait_for_apt() {
 # which is the hardest thing to debug from a phone call.
 
 step 'Checking this device'
-[ "$(id -u)" = 0 ] || die "run this with sudo:  curl -fsSL $SERVER/pi.sh | sudo sh"
+if [ "$STANDALONE" = 2 ]; then
+  die 'this installer was fetched without its release bundle.
+  Install a standalone screen with:
+    curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidDisplay/main/pi.sh | sudo sh'
+fi
+if [ "$STANDALONE" = 1 ]; then
+  [ "$(id -u)" = 0 ] || die 'run this with sudo'
+else
+  [ "$(id -u)" = 0 ] || die "run this with sudo:  curl -fsSL $SERVER/pi.sh | sudo sh"
+fi
 command -v apt-get >/dev/null 2>&1 || die 'this installer expects Raspberry Pi OS or another Debian-based system'
 MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || uname -m)
 say "model:  $MODEL"
 say "os:     $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -sr)"
-say "server: $SERVER"
+if [ "$STANDALONE" = 1 ]; then
+  say 'mode:   standalone (this screen runs on its own)'
+else
+  say "server: $SERVER"
+fi
 
 # ── the board this needs ─────────────────────────────────────────────────────
 #
@@ -202,9 +259,16 @@ fi
 # The one thing that must not happen quietly is falling back to no verification at all. If pinning
 # does not work either (usually a certificate with no name matching the address you used), that is
 # said loudly, here and in the log, rather than being smoothed over.
-step 'Working out how to trust the display server'
 CURL_OPTS=''
 NODE_TLS_ENV=''
+
+# A standalone screen never calls a display server, so there is no certificate to decide about.
+# What it DOES trust is the release bundle, and pi.sh has already checked that by sha256 before
+# this script was run at all.
+if [ "$STANDALONE" = 1 ]; then
+  say 'standalone: no display server to trust'
+else
+step 'Working out how to trust the display server'
 
 case "$SERVER" in
   https://*)
@@ -310,6 +374,7 @@ case "$SERVER" in
     say 'plain HTTP — no certificate to check'
     ;;
 esac
+fi
 
 mkdir -p "$PREFIX"
 # Single-quoted values, and the only things that can appear in them are curl flags and a path we
@@ -445,13 +510,30 @@ fi
 
 # Downloaded to a temporary name and moved into place, so an interrupted download cannot leave a
 # truncated agent that systemd then restarts forever.
+if [ "$STANDALONE" = 1 ]; then
+  say 'installing the agent from the release bundle'
+  [ -s "$BUNDLE/agent.js" ] || die 'the release bundle has no agent.js in it'
+  cp "$BUNDLE/agent.js" "$PREFIX/agent.new.js"
+else
 say "downloading $SERVER/pi/agent.js"
 # shellcheck disable=SC2086
 curl -fsSL $CURL_OPTS "$SERVER/pi/agent.js" -o "$PREFIX/agent.new.js" || die "could not download the agent from $SERVER"
+fi
 [ -s "$PREFIX/agent.new.js" ] || die 'the downloaded agent was empty'
 node --check "$PREFIX/agent.new.js" || die 'the downloaded agent is not valid JavaScript'
 mv "$PREFIX/agent.new.js" "$PREFIX/agent.js"
 say "agent $AGENT_VERSION installed ($(wc -c < "$PREFIX/agent.js") bytes)"
+
+# The control panel a standalone screen serves for itself. Replaced wholesale rather than merged:
+# it is build output, and a half-old bundle is a panel whose JavaScript does not match its HTML.
+if [ "$STANDALONE" = 1 ] && [ -d "$BUNDLE/web" ]; then
+  rm -rf "$PREFIX/web.new"
+  cp -r "$BUNDLE/web" "$PREFIX/web.new"
+  [ -s "$PREFIX/web.new/index.html" ] || die 'the release bundle has no control panel in it'
+  rm -rf "$PREFIX/web"
+  mv "$PREFIX/web.new" "$PREFIX/web"
+  say "control panel installed ($(find "$PREFIX/web" -type f | wc -l) files)"
+fi
 
 # ── the service account ──────────────────────────────────────────────────────
 #
@@ -1790,6 +1872,15 @@ fi
 if [ "${NEEDS_REBOOT:-0}" = 1 ]; then
   say 'Display settings changed — reboot to apply them:  sudo reboot'
 fi
-say 'This screen should now show a setup code. Enter it in the dashboard under Screens.'
-say 'This screen will keep itself up to date with the display server from now on.'
+if [ "$STANDALONE" = 1 ]; then
+  # There is no dashboard to type the code into — the code is typed into THIS screen's own
+  # panel, on the masjid's network, which is the whole difference. Saying otherwise sends
+  # somebody looking for a server that does not exist.
+  _ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  say "This screen should now show a setup code. Open http://${_ip:-its address} on this"
+  say 'network and enter it there to finish setting it up.'
+else
+  say 'This screen should now show a setup code. Enter it in the dashboard under Screens.'
+  say 'This screen will keep itself up to date with the display server from now on.'
+fi
 say 'If it does not:  sudo journalctl -u openmasjid-screen -n 50 --no-pager'

@@ -13,6 +13,17 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **One command installs a Raspberry Pi screen that runs on its own.** On a fresh Raspberry Pi OS
+  Lite:
+
+  ```
+  curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidDisplay/main/pi.sh | sudo sh
+  ```
+
+  It fetches the latest release, checks it against the published checksum, and installs the
+  screen and its control panel. Add `--channel dev` to install the newest pre-release instead.
+  Installing from a display server works exactly as before — it is the same installer either
+  way, so a screen set up on its own and one adopted by a server cannot drift apart.
 - **Groundwork for Raspberry Pi screens that run on their own.** The control panel now asks the
   machine serving it what it supports, so the same panel can be served by a Pi later with the
   parts a Pi does not have left out rather than shown greyed out. Nothing is different on an

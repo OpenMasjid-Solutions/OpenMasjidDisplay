@@ -129,8 +129,17 @@ test('the real installer template renders with nothing left unfilled', () => {
   const tpl = installerTemplate();
   assert.ok(tpl, 'the installer template should be findable from a source checkout');
   const out = renderInstaller(tpl as string, 'http://192.168.1.18:7860', '2.6.2', '0.70.0-dev.8');
-  assert.ok(!out.includes('@@'), `unfilled placeholder: ${/@@[A-Z_]+@@/.exec(out)?.[0] ?? ''}`);
+  // The PATTERN, not the two characters. The script deliberately contains `'@@'SERVER'@@'` —
+  // the placeholder's own name, split so that the substitution (a plain global replace)
+  // cannot rewrite the comparison that detects a STANDALONE install and make every install
+  // look like one. A bare `includes('@@')` cannot tell that apart from a real leftover.
+  const leftover = /@@[A-Z_]+@@/.exec(out);
+  assert.equal(leftover, null, `unfilled placeholder: ${leftover?.[0] ?? ''}`);
   assert.ok(out.includes("SERVER='http://192.168.1.18:7860'"));
+  // And the split guard must SURVIVE rendering, or a server-served installer would decide it
+  // had no server and install a standalone screen pointed at nothing.
+  assert.ok(out.includes("'@@'SERVER'@@'"), 'the standalone guard was substituted away');
+  assert.match(out, /^STANDALONE=0$/m, 'a served installer starts out not-standalone');
 });
 
 test('the installer is POSIX sh, refuses to half-run, and never resets an adopted screen', () => {
