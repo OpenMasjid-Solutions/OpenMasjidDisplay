@@ -18,7 +18,7 @@ import { parseGeometry, packFrame, Framebuffer } from './framebuffer';
 import { parseFbset } from './fbset';
 import { fitMode, blitCentered } from './raster';
 import { pickLanIp, deviceFacts } from './device';
-import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, isUsableConfig, normaliseServerOrigin, type AgentConfig } from './agentConfig';
+import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, isUsableConfig, normaliseServerOrigin, isLoopbackHost, type AgentConfig } from './agentConfig';
 import { pairingSvg, messageSvg } from './pairing';
 
 // ── framebuffer geometry ─────────────────────────────────────────────────────
@@ -590,7 +590,7 @@ test('a query or a fragment is dropped, because concatenation swallows the path 
     ['http://192.168.1.55:7860/#/settings', 'http://192.168.1.55:7860'],
     ['https://masjid.example/display?x=1#y', 'https://masjid.example/display'],
   ] as const) {
-    assert.equal(normaliseServerOrigin(typed), want, typed);
+    assert.deepEqual(normaliseServerOrigin(typed), { origin: want }, typed);
   }
 });
 
@@ -598,26 +598,27 @@ test('the PATH is kept — it is the part that looks droppable and is not', () =
   // The platform mounts this app under a prefix, so `https://masjid.example/display` is a real
   // address and `https://masjid.example` is a different, wrong one. Dropping the path here would
   // send every tunnelled screen to the platform's root.
-  assert.equal(normaliseServerOrigin('https://masjid.example/display'), 'https://masjid.example/display');
-  assert.equal(normaliseServerOrigin('https://masjid.example/display/'), 'https://masjid.example/display');
+  assert.deepEqual(normaliseServerOrigin('https://masjid.example/display'), { origin: 'https://masjid.example/display' });
+  assert.deepEqual(normaliseServerOrigin('https://masjid.example/display/'), { origin: 'https://masjid.example/display' });
 });
 
 test('a trailing slash goes, because every caller appends its own', () => {
-  assert.equal(normaliseServerOrigin('http://192.168.1.55:7860/'), 'http://192.168.1.55:7860');
-  assert.equal(normaliseServerOrigin('http://192.168.1.55:7860///'), 'http://192.168.1.55:7860');
-  assert.equal(normaliseServerOrigin('  http://192.168.1.55:7860  '), 'http://192.168.1.55:7860');
+  for (const typed of ['http://192.168.1.55:7860/', 'http://192.168.1.55:7860///', '  http://192.168.1.55:7860  ']) {
+    assert.deepEqual(normaliseServerOrigin(typed), { origin: 'http://192.168.1.55:7860' }, typed);
+  }
 });
 
 test('empty is standalone, not a failure', () => {
   // Clearing the address is how a screen is set free from its own panel, so '' has to survive as
   // a VALUE. Returning null for it would turn "stay standalone" into "that is not an address".
-  assert.equal(normaliseServerOrigin(''), '');
-  assert.equal(normaliseServerOrigin('   '), '');
+  assert.deepEqual(normaliseServerOrigin(''), { origin: '' });
+  assert.deepEqual(normaliseServerOrigin('   '), { origin: '' });
 });
 
 test('anything that is not a web address is refused', () => {
   for (const bad of ['192.168.1.55:7860', 'ftp://host', 'javascript:alert(1)', 'http://', 'http://a b', 'not an address']) {
-    assert.equal(normaliseServerOrigin(bad), null, bad);
+    const r = normaliseServerOrigin(bad);
+    assert.ok('error' in r, bad);
   }
 });
 
@@ -631,10 +632,46 @@ test('what comes out can always be concatenated into a working URL', () => {
     'https://masjid.example/display',
     'https://masjid.example/display/?a=b#c',
   ]) {
-    const server = normaliseServerOrigin(typed)!;
-    const url = new URL(`${server}/pi/enrol`);
+    const r = normaliseServerOrigin(typed);
+    assert.ok(!('error' in r), typed);
+    const url = new URL(`${r.origin}/pi/enrol`);
     assert.ok(url.pathname.endsWith('/pi/enrol'), `${typed} -> ${url.href}`);
     assert.equal(url.search, '', `${typed} left a query behind`);
     assert.equal(url.hash, '', `${typed} left a fragment behind`);
+  }
+});
+
+test('a display server is never on this screen own loopback', () => {
+  // From a Raspberry Pi, localhost IS the Pi. An address like that produces a screen that joins
+  // and then cannot reach anything, for ever, with the dashboard showing it offline and nothing
+  // saying why — which reads as a network fault rather than the typo it is.
+  for (const bad of [
+    'http://localhost:7860',
+    'http://LOCALHOST:7860',
+    'http://127.0.0.1:7860',
+    'http://127.1.2.3',
+    'http://[::1]:7860',
+    'http://[::ffff:127.0.0.1]',
+  ]) {
+    const r = normaliseServerOrigin(bad);
+    assert.ok('error' in r, `${bad} must be refused`);
+    // And the sentence has to say what is actually wrong. "That is not a web address" is false
+    // of http://localhost:7860 and sends somebody looking for a typo that is not there.
+    assert.match(r.error, /means this screen itself/, `${bad} got the wrong reason: ${r.error}`);
+  }
+  // And a real address on the network is still fine, including one that merely looks similar.
+  for (const ok of ['http://192.168.1.55:7860', 'http://127-0-0-1.example', 'http://localhost.masjid.example']) {
+    assert.ok(!('error' in normaliseServerOrigin(ok)), `${ok} must be accepted`);
+  }
+});
+
+test('the loopback test knows the name as well as the literals', () => {
+  // The name is the one that matters in practice: `localhost` is what an admin's address bar says
+  // when they are running the server on their own machine.
+  for (const h of ['localhost', 'LocalHost', 'x.localhost', '127.0.0.1', '127.255.255.254', '::1', '::ffff:127.0.0.1', '::ffff:7f00:1']) {
+    assert.equal(isLoopbackHost(h), true, h);
+  }
+  for (const h of ['192.168.1.55', '10.0.0.1', 'localhost.example', '128.0.0.1', '::2', '', 'raspberrypi.local']) {
+    assert.equal(isLoopbackHost(h), false, h);
   }
 });

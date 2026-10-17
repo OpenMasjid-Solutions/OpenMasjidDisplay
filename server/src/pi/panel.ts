@@ -782,10 +782,9 @@ export function createPiPanel(deps: PanelDeps) {
          * URL the agent builds — see normaliseServerOrigin. The failure is silent and permanent,
          * so the shapes that cannot be part of an address are dropped here rather than stored.
          */
-        const server = normaliseServerOrigin(String(body.server ?? ''));
-        if (server === null) {
-          return sendJson(res, 400, { error: 'That is not a web address. It should look like http://192.168.1.18:7860.' });
-        }
+        const parsed = normaliseServerOrigin(String(body.server ?? ''));
+        if ('error' in parsed) return sendJson(res, 400, { error: parsed.error });
+        const server = parsed.origin;
 
         /**
          * Credentials, when a display server sent them — all three together or none at all.

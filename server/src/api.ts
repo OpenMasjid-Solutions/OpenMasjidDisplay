@@ -61,6 +61,7 @@ import {
 import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
 import { capabilitiesFor } from './capabilities';
 import { parseLinkAddress, resolveLinkTarget, piPanelSignIn, piPanelHandOver, LINK_TIMEOUT_MS } from './piLink';
+import { isLoopbackHost } from './pi/agentConfig';
 import { statePayload } from './statePayload';
 import { saveSoundClip, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
 
@@ -1860,14 +1861,39 @@ export function createApi(deps: Deps) {
           });
         }
 
+        /**
+         * The address the screen will be told to call back on must mean something FROM the screen.
+         *
+         * `originFor` derives it from the Host header — the address this panel is being viewed on
+         * — which is right for every case but one: an admin who runs the server on their own
+         * machine and opens it at `http://localhost:7860`. The screen is then handed an address
+         * that, from the screen, is the screen. It adopts, polls its own loopback for ever, and
+         * the dashboard shows it offline with nothing saying why.
+         *
+         * Refused only when the SCREEN is somewhere else. A loopback origin adopting a loopback
+         * target is a development setup where both halves genuinely are one machine, and that
+         * works exactly as it reads.
+         */
+        if (isLoopbackHost(new URL(origin).hostname) && !isLoopbackHost(new URL(resolved.origin).hostname)) {
+          return sendJson(res, 400, {
+            error:
+              `This panel is open at ${origin}, which from that screen means the screen itself — so it ` +
+              `would never reach this server. Open the panel on the address the screen can reach you at, ` +
+              `then adopt it again.`,
+          });
+        }
+
         if (atCap(res, store.db.tvs)) return;
 
-        if (linking.has(target.origin)) {
+        // Keyed on the RESOLVED address, not the typed one: `192.168.1.30` and
+        // `raspberrypi.local` are two spellings of one screen, and keying on what was typed would
+        // let them run side by side — which is the very overlap this exists to stop.
+        if (linking.has(resolved.origin)) {
           return sendJson(res, 409, {
             error: 'That screen is already being set up. Give it a moment — it takes a few seconds.',
           });
         }
-        linking.add(target.origin);
+        linking.add(resolved.origin);
 
         // Both calls share one deadline. A screen that accepts the connection and then says
         // nothing would otherwise hold this request open for as long as it liked, and an admin is
@@ -1904,7 +1930,7 @@ export function createApi(deps: Deps) {
           return sendJson(res, 200, { tv: created });
         } finally {
           clearTimeout(deadline);
-          linking.delete(target.origin);
+          linking.delete(resolved.origin);
         }
       }
 

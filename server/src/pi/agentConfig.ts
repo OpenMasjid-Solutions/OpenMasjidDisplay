@@ -37,6 +37,28 @@ export const CONFIG_PATH = process.env.OMD_SCREEN_CONFIG || `${CONFIG_DIR}/confi
 export const SERVER_ORIGIN_RE = /^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/;
 
 /**
+ * Is this host the machine asking the question?
+ *
+ * Used for one rule, stated from two sides: a display server's address must never be a loopback
+ * one. From a Raspberry Pi, `localhost` is the Pi — it is not a display server and never will be
+ * — so an address like that produces a screen that joins and then cannot reach anything, for ever,
+ * with the dashboard showing it offline and nothing saying why.
+ *
+ * The name matters as much as the literals. An admin opening their own server at
+ * `http://localhost:7860` and adopting a screen from there is the likeliest way to hit this, and
+ * `localhost` is what their address bar says.
+ */
+export function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '::1' || h === '::ffff:127.0.0.1') return true;
+  if (/^127\./.test(h)) return true;
+  // The hex spelling of an IPv4-mapped loopback, which is what `new URL` normalises one into.
+  if (/^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(h)) return true;
+  return false;
+}
+
+/**
  * What somebody typed into the panel, turned into an address this agent can build URLs on.
  *
  * `SERVER_ORIGIN_RE` decides whether a string is plausible. It is deliberately not the whole
@@ -57,25 +79,39 @@ export const SERVER_ORIGIN_RE = /^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/;
  * `https://masjid.example/display` is a real address and `https://masjid.example` is a different,
  * wrong one.
  *
- * Returns null for anything that is not an address at all. An empty string means standalone and
- * is returned as-is, because that is a valid answer rather than a failure.
+ * Each way of being wrong gets its OWN sentence, which is why this returns a result rather than
+ * a null. `http://localhost:7860` is a perfectly good web address — telling somebody it is not
+ * one, when the real problem is that it points at the screen they are typing into, sends them
+ * looking for a typo that is not there. An empty string means standalone and is a valid answer
+ * rather than a failure.
  */
-export function normaliseServerOrigin(raw: string): string | null {
+export function normaliseServerOrigin(raw: string): { origin: string } | { error: string } {
   const text = raw.trim();
-  if (!text) return '';
-  // Refused before parsing: `new URL` is lenient about things that cannot be a server address,
+  if (!text) return { origin: '' };
+
+  const shapeError = { error: 'That is not a web address. It should look like http://192.168.1.18:7860.' };
+  // Checked before parsing: `new URL` is lenient about things that cannot be a server address,
   // and the pattern is the agreed shape for what may end up in the config file.
-  if (!SERVER_ORIGIN_RE.test(text.replace(/\/+$/, ''))) return null;
+  if (!SERVER_ORIGIN_RE.test(text.replace(/\/+$/, ''))) return shapeError;
   let url: URL;
   try {
     url = new URL(text);
   } catch {
-    return null;
+    return shapeError;
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { error: 'Use a web address — http:// or https://.' };
+  }
+  if (isLoopbackHost(url.hostname)) {
+    return {
+      error:
+        `${url.host} means this screen itself, so it would never reach a display server. ` +
+        `Use the address you open the server on from here — something like http://192.168.1.18:7860.`,
+    };
+  }
   // Rebuilt from the parts that are an address, which is also what drops the query and fragment.
   // The trailing slash goes because every caller appends its own.
-  return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  return { origin: `${url.origin}${url.pathname}`.replace(/\/+$/, '') };
 }
 
 export interface AgentConfig {

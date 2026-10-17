@@ -92,6 +92,11 @@ CLAUDE.md § *The changelog has two audiences*.
   reason shown and the one command that turns them on. Until now they looked available, said
   "asked", and nothing happened.
 
+- **An address that points at the machine you are sitting at is refused, with the reason.** Open
+  the panel at `localhost` and adopt a screen from there and the screen would be told to talk to
+  itself — it joins, never connects, and shows as offline with nothing explaining why. Both the
+  dashboard and a screen's own panel now say so instead of accepting it.
+
 - **Forgetting a screen you added by its address now gives it back to itself.** It returns to its
   own panel, its own timetables and its own password, instead of sitting on the television asking
   to rejoin a dashboard you have just removed it from.
