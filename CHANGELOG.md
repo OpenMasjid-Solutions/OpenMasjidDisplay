@@ -26,7 +26,9 @@ CLAUDE.md § *The changelog has two audiences*.
   to join. That works when the server is not in the building at all, which the first way cannot:
   use whatever address you reach the server on from there. The screen then shows a code — on its
   own page as well as on the television — and you enter that code in the server's dashboard to
-  finish. Typed the wrong address? Correct it in the same box; nothing has moved yet.
+  finish. The screen's page says so the moment the code is accepted, rather than going on
+  asking for it while it hands over. Typed the wrong address? Correct it in the same box;
+  nothing has moved yet.
 
   Either way the screen keeps everything it had. If you ever set it free again, its own
   timetables and its password are exactly as you left them.

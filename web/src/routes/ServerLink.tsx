@@ -82,6 +82,36 @@ export function ServerLinkSection() {
     );
   }
 
+  /**
+   * Approved, and about to hand over.
+   *
+   * Its own state, above the waiting one, for two reasons — and the second is not cosmetic.
+   *
+   * The code is SPENT the moment the server accepts it, but the agent keeps reporting it until it
+   * restarts five or six seconds later. Left to the branch below, the page would go on saying
+   * "enter this code" at the exact moment the thing worked, which reads as a failure to whoever
+   * just typed it.
+   *
+   * And the Cancel button below must not be reachable here. Pressing it in that window writes an
+   * empty server and drops the token the screen has just been given, so the screen stays
+   * standalone while the display server keeps an adopted row for a device that will never call —
+   * a screen that is permanently offline on one side and absent on the other.
+   */
+  if (st.server && st.adopted) {
+    return (
+      <div>
+        <p style={{ marginBlockStart: 0 }}>
+          <b>Accepted.</b> This screen is joining{' '}
+          <b style={{ fontFamily: 'monospace' }}>{st.server}</b> now.
+        </p>
+        <p className="hint" style={{ margin: 0 }}>
+          <Spinner /> It restarts once to hand over, which takes a few seconds. After that this
+          page becomes a status page and everything about this screen is managed from that server.
+        </p>
+      </div>
+    );
+  }
+
   // Waiting to be approved. The code is the whole content of this state, so it leads.
   if (st.server) {
     return (
