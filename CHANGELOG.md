@@ -18,6 +18,9 @@ CLAUDE.md § *The changelog has two audiences*.
   Pi** and open *The screen is already running on its own*. Give its address and the password you
   set on it, and it joins — no keyboard, and nothing to read off the television.
 
+  Pressing Adopt twice — the usual reason being a slow screen and a reloaded page — adds the
+  screen once, not twice.
+
 - **And the other way round: a screen can be pointed at a server from its own panel.** On the
   screen, under **Settings → Display server**, type the address of the display server you want it
   to join. That works when the server is not in the building at all, which the first way cannot:

@@ -332,6 +332,21 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 export function createApi(deps: Deps) {
   const { store, orchestrator, volunteer, whatsapp, commands } = deps;
   const loginLimiter = new LoginLimiter();
+  /**
+   * Screens currently being adopted by address, so two attempts at one screen cannot overlap.
+   *
+   * Adopting mints a FRESH identity, which means two requests running together each create a
+   * device and a screen, and the second's handover overwrites the first's on the Pi. What is left
+   * behind is an ADOPTED row for a screen that will never come online — and `forgetPendingDevice`
+   * deliberately will not touch an adopted row, so nothing cleans it up but an admin noticing a
+   * permanently offline screen and forgetting it.
+   *
+   * The button in the panel is disabled while a request is in flight, which covers a double
+   * click and does NOT cover the case that actually produces this: a slow Pi, an admin who
+   * decides it has hung, a page reload, and a second press. Keyed by origin rather than globally,
+   * because adopting two different screens at once is a perfectly reasonable thing to do.
+   */
+  const linking = new Set<string>();
   // Public widget: 120 requests per minute per CLIENT. The embedded page polls every 30s,
   // so a real viewer uses ~2 (a few more with several tabs); this only bites on abuse.
   // Keyed via clientKey(), which prefers X-Forwarded-For's first hop — keying on the socket
@@ -1834,6 +1849,13 @@ export function createApi(deps: Deps) {
 
         if (atCap(res, store.db.tvs)) return;
 
+        if (linking.has(target.origin)) {
+          return sendJson(res, 409, {
+            error: 'That screen is already being set up. Give it a moment — it takes a few seconds.',
+          });
+        }
+        linking.add(target.origin);
+
         // Both calls share one deadline. A screen that accepts the connection and then says
         // nothing would otherwise hold this request open for as long as it liked, and an admin is
         // watching a spinner while it does.
@@ -1869,6 +1891,7 @@ export function createApi(deps: Deps) {
           return sendJson(res, 200, { tv: created });
         } finally {
           clearTimeout(deadline);
+          linking.delete(target.origin);
         }
       }
 

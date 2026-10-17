@@ -92,3 +92,49 @@ test('the device route still refuses what it always refused', () => {
   assert.ok(re.test(`/pi/${TOKEN}/asset/tt_6e46aea7.logo.png`));
   assert.ok(re.test(`/pi/${TOKEN}/font/NotoSans-Regular.ttf`));
 });
+
+/**
+ * Adopting one screen twice at once, and the release that must follow it.
+ *
+ * `POST /api/pi/link` mints a FRESH identity every time, so two overlapping requests for one
+ * screen each create a device and a screen, and the second's handover overwrites the first's on
+ * the Pi. What is left is an ADOPTED row for a screen that will never come online — and
+ * `forgetPendingDevice` deliberately refuses to touch an adopted row, so nothing cleans it up.
+ * The panel's button is disabled while a request is in flight, which covers a double click and
+ * does not cover the case that produces this: a slow Pi, an admin who thinks it has hung, a page
+ * reload, and a second press.
+ *
+ * The guard is a set of origins currently being adopted. What makes it worth a test is not the
+ * `add` — it is the RELEASE: a release on the success path only would lock an address out of
+ * being adopted for the lifetime of the process the first time a screen refused, and the symptom
+ * would be "it says it is already being set up" for ever, with nothing to restart but the server.
+ */
+test('an adoption in flight is released however it ends', () => {
+  const src = apiSrc();
+  const start = src.indexOf("if (pathname === '/api/pi/link' && method === 'POST')");
+  assert.ok(start > 0, 'could not find the adopt-by-address route — has it been renamed?');
+  const end = src.indexOf('// Forget a device:', start);
+  assert.ok(end > start, 'could not find the end of the route');
+  // Comments stripped FIRST. This repository has twice shipped a test satisfied by the prose
+  // explaining the rule rather than by the rule, and the prose above names every symbol below.
+  const body = src
+    .slice(start, end)
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n');
+
+  assert.ok(/linking\.add\(/.test(body), 'the route must mark the screen as being adopted');
+  assert.ok(/linking\.has\(/.test(body), 'and refuse a second attempt while it is');
+
+  const fin = body.indexOf('} finally {');
+  assert.ok(fin > 0, 'the route must have a finally block to release in');
+  assert.ok(
+    /linking\.delete\(/.test(body.slice(fin)),
+    'the release must be in the finally block: on the success path only, one screen that refuses ' +
+      'to be adopted locks its address out until the server is restarted',
+  );
+  assert.ok(
+    !/linking\.delete\(/.test(body.slice(0, fin)),
+    'and ONLY there — an earlier release would reopen the window it exists to close',
+  );
+});
