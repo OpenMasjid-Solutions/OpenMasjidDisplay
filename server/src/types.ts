@@ -396,6 +396,18 @@ export interface PiDevice {
   model: string;
   agentVersion: string;
   lastSeenAt: string;
+  /**
+   * Whether ROOT on that device has a display-server address it trusts.
+   *
+   * False on a screen adopted from a panel rather than by running this server's installer: the
+   * installer is the only thing that writes `trust.env`, and `trust.env` is the only address root
+   * will fetch a script from or dial a root terminal out to. So on such a screen the Update and
+   * Terminal buttons cannot work, and the panel says so instead of asking and being ignored.
+   *
+   * Optional because a screen running an older agent has never reported it — which must read as
+   * "not known", not as "no". See rootLinked() in pi/index.ts.
+   */
+  rootLinked?: boolean;
   /** The screen this device drives, once adopted. */
   tvId?: string;
   /** What this device should do next, left for it to collect on its own poll. Cleared as soon

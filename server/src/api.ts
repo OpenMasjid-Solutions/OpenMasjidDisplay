@@ -50,6 +50,9 @@ import {
   markDeviceSeen,
   markPreviewWanted,
   makeDeviceToken,
+  createAdoptedDevice,
+  removeAdoptedDevice,
+  forgetPendingDevice,
   piState,
   prunePending,
   PI_POLL_MS,
@@ -57,6 +60,7 @@ import {
 } from './piAgent';
 import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
 import { capabilitiesFor } from './capabilities';
+import { parseLinkAddress, privateTargetRefusal, piPanelSignIn, piPanelHandOver, LINK_TIMEOUT_MS } from './piLink';
 import { statePayload } from './statePayload';
 import { saveSoundClip, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
 
@@ -1719,6 +1723,9 @@ export function createApi(deps: Deps) {
             // nothing — the agent ships from the same commit as the server, so one string
             // describes both.
             upToDate: !!d.agentVersion && d.agentVersion === appVersion(),
+            // Whether Update and Terminal can work on this screen at all — see PiDevice.rootLinked.
+            // Undefined means the device has never said, which the panel must not read as "no".
+            rootLinked: d.rootLinked,
             // The collected journal, ANSI-stripped here rather than in the browser so every
             // consumer gets it readable. Absent until somebody asks for it.
             journal: d.journal ? stripAnsi(d.journal) : undefined,
@@ -1775,6 +1782,94 @@ export function createApi(deps: Deps) {
           created = tv;
         });
         return sendJson(res, 200, { tv: created });
+      }
+
+      /**
+       * Adopt the Raspberry Pi at an address, by signing in to its own panel.
+       *
+       * The other way round — the Pi shows a code and somebody types it here — needs the Pi to
+       * have been installed from this server in the first place, which is a command run with a
+       * keyboard on the Pi. This is for the screens already on the network: give the address and
+       * the screen's own password, and it joins.
+       *
+       * ## The order of the three steps is the security of the thing
+       *
+       *   1. **Check the address is on this network.** Not a courtesy — this route makes the
+       *      server open a connection to wherever it is told and post a credential there, and
+       *      `piLink.ts` explains why the check is on RESOLVED addresses rather than on the name.
+       *   2. **Sign in to the Pi with the password the admin gave.** This proves two separate
+       *      things at once, and both are needed: that whoever is asking administers that screen,
+       *      and that the thing at that address is one of our panels at all. Nothing is created
+       *      and nothing is sent until it has succeeded.
+       *   3. **Create the screen, then hand it over.** If the handover fails, the row created a
+       *      moment earlier is deleted again — otherwise a mistyped address would leave a screen
+       *      in this masjid's dashboard that no device will ever claim, holding a live token.
+       *
+       * The Pi is told THIS server's address as the panel is currently being reached, exactly as
+       * the installer bakes in whatever address it was fetched from. Open the panel on the LAN and
+       * the screen talks to the LAN; open it through the platform's tunnel and it talks through
+       * the tunnel.
+       */
+      if (pathname === '/api/pi/link' && method === 'POST') {
+        const body = await readBody(req, 4_000).catch(() => null);
+        if (!body) return sendJson(res, 400, { error: 'That request was too large.' });
+
+        const target = parseLinkAddress(body.address);
+        if ('error' in target) return sendJson(res, 400, { error: target.error });
+        const password = typeof body.password === 'string' ? body.password : '';
+        if (!password) return sendJson(res, 400, { error: 'Enter the password for that screen’s own panel.' });
+        const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
+
+        const refusal = await privateTargetRefusal(target.hostname);
+        if (refusal) return sendJson(res, 400, { error: refusal });
+
+        // The address to give the Pi, worked out from how this panel is being reached. Refused
+        // rather than guessed: a screen told a mangled address joins and then never connects.
+        const origin = originFor(req, pathname, '/api/pi/link');
+        if (!origin) {
+          return sendJson(res, 400, {
+            error: 'Could not work out this server’s address from your request. Open the panel on an address the screen can reach.',
+          });
+        }
+
+        if (atCap(res, store.db.tvs)) return;
+
+        // Both calls share one deadline. A screen that accepts the connection and then says
+        // nothing would otherwise hold this request open for as long as it liked, and an admin is
+        // watching a spinner while it does.
+        const ctrl = new AbortController();
+        const deadline = setTimeout(() => ctrl.abort(), LINK_TIMEOUT_MS);
+        try {
+          const session = await piPanelSignIn(target.origin, password, ctrl.signal);
+          if ('error' in session) return sendJson(res, session.status, { error: session.error });
+
+          // Everything is proved. Create the screen and its device, then hand the credentials
+          // over — and undo it if that last step does not land.
+          let created!: Tv;
+          let credentials!: { deviceId: string; deviceSecret: string; token: string };
+          store.update((db) => {
+            const made = createAdoptedDevice(db, { hostname: name || target.hostname, ip: target.hostname }, Date.now());
+            const tv = normTv({ name: name || made.device.hostname || 'Screen', kind: 'pi', defaultContent: { kind: 'off' } });
+            tv.piDeviceId = made.device.id;
+            made.device.tvId = tv.id;
+            db.tvs.push(tv);
+            created = tv;
+            credentials = { deviceId: made.device.id, deviceSecret: made.deviceSecret, token: made.device.token! };
+          });
+
+          const handed = await piPanelHandOver(target.origin, session.cookie, { server: origin, ...credentials }, ctrl.signal);
+          if ('error' in handed) {
+            store.update((db) => removeAdoptedDevice(db, credentials.deviceId));
+            return sendJson(res, handed.status, { error: handed.error });
+          }
+
+          // The row this screen used to be, if it had one here. Only ever a pending one.
+          if (handed.previousDeviceId) store.update((db) => forgetPendingDevice(db, handed.previousDeviceId));
+          log.info(`Pi screen "${created.name}" adopted at ${target.origin}`);
+          return sendJson(res, 200, { tv: created });
+        } finally {
+          clearTimeout(deadline);
+        }
       }
 
       // Forget a device: drop its token so it falls back to pending and shows a fresh code.

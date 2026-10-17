@@ -62,7 +62,7 @@ import { isWifiAction, type WifiAction } from './control';
 // whoever is serving it. httpio imports nothing but node's own types, so the agent bundle pays
 // nothing for this.
 import { UPLOAD_HEADERS } from '../httpio';
-import type { AgentConfig } from './agentConfig';
+import { SERVER_ORIGIN_RE, type AgentConfig } from './agentConfig';
 
 /**
  * The panel's own header set. A panel on a masjid's LAN gets the same treatment as one behind
@@ -127,6 +127,16 @@ export interface PanelDeps {
    * shown broken.
    */
   device?: PanelDevice;
+  /**
+   * How enrolment with a display server is going, once one has been set here.
+   *
+   * The panel only ever READS this. Nothing in this file starts, stops or restarts enrolment —
+   * it writes the server address into the config and the agent's own loop notices on its next
+   * pass. That is deliberate: a handler that could end the process would end it mid-response.
+   *
+   * Absent in a test, and on a screen that has never been pointed at a server.
+   */
+  linkState?: () => { code: string; connected: boolean; status: string };
 }
 
 export interface PanelDevice {
@@ -178,7 +188,7 @@ function readBody(req: IncomingMessage, maxBytes = 64_000): Promise<Record<strin
 }
 
 export function createPiPanel(deps: PanelDeps) {
-  const { store, readConfig, writeConfig, webDir, screens, device } = deps;
+  const { store, readConfig, writeConfig, webDir, screens, device, linkState } = deps;
   const loginLimiter = new LoginLimiter();
   /**
    * The volunteer page, served by this same listener.
@@ -711,6 +721,115 @@ export function createPiPanel(deps: PanelDeps) {
           db.settings.volunteerEnabled = enabled;
         });
         return sendJson(res, 200, { ok: true, enabled, pinSet: !!store.db.volunteerAuth });
+      }
+
+      /**
+       * Which display server manages this screen — read, and set.
+       *
+       * ## One route, two callers, and that is the design rather than a coincidence
+       *
+       * It is reached by an admin signed in to THIS screen's panel, who types a server address;
+       * and by a display SERVER, which signs in here with this screen's own password and then
+       * hands over credentials for a screen it has already created. Both are the same act —
+       * "this screen now belongs to that server" — and both have proved the same thing, because
+       * the credential for both is this screen's admin password. A second route for the server
+       * would be a second place to get the write wrong.
+       *
+       * What differs is only how much arrives. An admin sends an address, and the screen then
+       * enrols and shows a pairing code for somebody to approve in that server's dashboard — the
+       * server's admin gets to decide whether a screen joins their masjid, which is not something
+       * whoever holds this Pi's password should be able to settle alone. A server sends the
+       * address AND the credentials, because it has already made that decision by creating the
+       * screen; there is nothing left to approve and no code to read.
+       *
+       * ## What this route does NOT do
+       *
+       * It does not restart anything, and it does not touch `trust.env`. The agent's own loop
+       * re-reads the config every pass and acts on what it finds, so the only thing that happens
+       * here is a file being written. `trust.env` is root-owned and names the address root will
+       * fetch a script from and dial a root terminal out to; an address arriving over HTTP must
+       * never reach it, which is exactly why the installer is still the only thing that writes
+       * it. See docs/PI_ADOPTION.md for what that costs and how an admin gets it back.
+       */
+      if (pathname === '/api/pi/link' && method === 'GET') {
+        const cfg = readConfig();
+        /**
+         * The enrolment status is reported only while there IS a server to enrol with.
+         *
+         * The agent's loop clears it on the pass after the address is withdrawn, and that pass can
+         * be fifteen seconds away — it sleeps longer between attempts when it cannot reach
+         * anything, which is exactly the case somebody cancels out of. Reading it here regardless
+         * answers a request for "this screen has no server" with a sentence about failing to reach
+         * one, which is a payload contradicting itself even if no page happens to render it.
+         */
+        const st = cfg?.server ? linkState?.() : undefined;
+        return sendJson(res, 200, {
+          server: cfg?.server ?? '',
+          adopted: !!cfg?.token,
+          code: st?.code ?? '',
+          connected: st?.connected ?? false,
+          status: st?.status ?? '',
+        });
+      }
+
+      if (pathname === '/api/pi/link' && method === 'POST') {
+        const cfg = readConfig();
+        if (!cfg) return sendJson(res, 503, { error: 'This screen cannot read its own settings right now.' });
+
+        const server = String(body.server ?? '').trim().replace(/\/+$/, '');
+        if (server && !SERVER_ORIGIN_RE.test(server)) {
+          return sendJson(res, 400, { error: 'That is not a web address. It should look like http://192.168.1.18:7860.' });
+        }
+
+        /**
+         * Credentials, when a display server sent them — all three together or none at all.
+         *
+         * A token without the identity that earned it is a config this screen cannot enrol with
+         * and cannot prove, and `parseConfig` would later refuse the whole file. Checking the trio
+         * here turns that into a 400 somebody can read instead of a screen that comes back from
+         * its next restart asking to be set up.
+         */
+        const deviceId = String(body.deviceId ?? '').trim();
+        const deviceSecret = String(body.deviceSecret ?? '').trim();
+        const token = String(body.token ?? '').trim();
+        const credentials = [deviceId, deviceSecret, token];
+        if (credentials.some(Boolean) && !credentials.every(Boolean)) {
+          return sendJson(res, 400, { error: 'An adoption needs the device id, its secret and a token together.' });
+        }
+        if (token && !server) {
+          return sendJson(res, 400, { error: 'A screen cannot hold a token for no server.' });
+        }
+        if (credentials.some((v) => v.length > 200 || /[^A-Za-z0-9_-]/.test(v))) {
+          return sendJson(res, 400, { error: 'Those credentials are not shaped like ours.' });
+        }
+
+        /**
+         * The token is dropped whenever one was not supplied.
+         *
+         * Pointing a screen at a different server while it still holds the old one's token would
+         * have it presenting a credential the new server has never issued — which that server
+         * answers with a 404, which this agent reads as "I have been forgotten". The screen would
+         * loop between the two states and never settle, and nothing would say why.
+         */
+        /**
+         * The id being given up is reported back, and that is not bookkeeping.
+         *
+         * A server adopting by address mints a FRESH identity — it has to, because it mints the
+         * secret — so this screen's old id is left behind on that server as a pending row, with a
+         * pairing code that still looks live in the dashboard. An admin seeing it would type that
+         * code and get a second screen nothing will ever drive. Saying which id was replaced lets
+         * the server drop it; the server is the one that decides whether to, and only for a row
+         * that was never adopted.
+         */
+        const previousDeviceId = deviceId && cfg.deviceId && cfg.deviceId !== deviceId ? cfg.deviceId : '';
+
+        writeConfig({
+          ...cfg,
+          server,
+          ...(deviceId ? { deviceId, deviceSecret } : {}),
+          token: token || undefined,
+        });
+        return sendJson(res, 200, { ok: true, server, adopted: !!token, ...(previousDeviceId ? { previousDeviceId } : {}) });
       }
 
       if (pathname === '/api/settings' && method === 'PUT') {

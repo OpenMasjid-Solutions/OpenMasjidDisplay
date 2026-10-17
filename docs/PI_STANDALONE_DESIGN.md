@@ -535,35 +535,35 @@ enrol as one device with a pairing code, not as a second row.
 
 The one bad cell in that table is the panel, which is §11.3.
 
-### 11.2 STOP AND ASK — a "join a server" button would invert what makes `reinstall` safe
+### 11.2 ~~STOP AND ASK~~ — DECIDED: both directions are built, and root keeps its boundary
 
-The obvious feature is a field in the standalone panel: type the server's address, press Connect.
-It cannot be built as it stands, and the reason is specific rather than general caution.
+**Decided by Hasan on 2026-10-16: build the adoption system in both directions.** Done in
+0.71.0 — the full account is [PI_ADOPTION.md](PI_ADOPTION.md); what follows is what the
+stop-and-ask asked and how it was answered.
 
-Joining a server is not just storing an address. The installer also pins the server's certificate
-(`openssl s_client` → `$PREFIX`, then `NODE_EXTRA_CA_CERTS`), and most masjids reach their server
-over HTTPS with a self-signed certificate for a private address. Only root can write `$PREFIX`.
-So a panel button would have to ask root, through the spool, to fetch and run a script from an
-address the **unprivileged agent supplied**.
+The objection recorded here was specific and it still stands: joining a server pins the server's
+certificate into `$PREFIX`, which only root can write, so a Connect button *that did the whole
+installer's job* would mean root fetching and running a script from an address the unprivileged
+agent supplied. That would invert the one thing making the `reinstall` verb safe, and the root
+terminal reads its origin from the same file.
 
-Compare the `reinstall` verb that exists now. It runs the same script as root — but from
-`$SERVER` in `trust.env`, which is root-owned and the one file the agent cannot write. That is
-precisely why it is safe, and its own comment says so: *"over the SAME verified channel as
-everything else"*. A verb carrying an address would turn "root runs a script from the address
-root recorded" into "root runs a script from an address this process chose", which hands a
-compromised agent root on the box. That is the closed verb set's whole point, so it is a
-stop-and-ask rather than a judgement call.
+**The answer was to stop trying to do the whole installer's job.** Panel adoption writes
+`config.json` — a file the agent already owns and rewrites on every adoption — and does not go
+near `trust.env`. No new verb, no change to the closed set, and the boundary is not weakened in
+any direction. Option 3 above (the server pushes the adoption) is built as well, and it needed no
+exception either, for the same reason: the Pi's panel is the thing that writes, and it is the same
+process whichever side asked.
 
-**Options, if it is wanted:**
+What that costs is real and is now *reported* rather than discovered: a screen adopted this way
+has no root-trusted address, so Update and Terminal cannot work on it. The agent says so on every
+check-in (`rootHasTrustedServer`), the panel disables both with the reason, and names the one
+command that turns them on. Those two used to fail **silently** on any screen whose trust.env was
+missing, which was already true before this feature existed.
 
-1. Leave it. Joining a server is `curl … | sudo sh`, which is also how a screen is installed in
-   the first place, and it is documented. **Recommended.**
-2. Allow it for `http://` **private addresses only**, validated by root, no certificate pinning
-   involved. Narrow, but still root fetching a script from an agent-chosen host.
-3. Have the SERVER push the adoption (flow A), so the address the Pi ends up with came from an
-   authenticated call *in* rather than from the agent. This is the brief's flow A and it is the
-   principled answer; it needs the Pi to accept an authenticated inbound call, which the panel
-   already is.
+One thing was deleted rather than added: `update.sh`'s fallback to reading `config.json` when
+trust.env named neither a server nor a channel. It could not fire on any device running that
+updater — the installer writes both files in one run, trust.env first — so removing it cost
+nothing and turned "root never follows an address the agent wrote" into a rule a test can check.
 
 ### 11.3 ~~STOP AND ASK~~ — DECIDED: an adopted Pi serves a status page
 

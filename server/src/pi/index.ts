@@ -54,7 +54,7 @@ import { fontOptions } from '../render/fonts';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
 import { netFacts, scanNetworks, type NetFacts, type AccessPoint } from './network';
-import { makeControl, readWifiResult, isWifiAction } from './control';
+import { makeControl, readWifiResult, isWifiAction, rootHasTrustedServer } from './control';
 
 // Bound once to this module's logger, so no call site has to pass one. The panel on a
 // standalone screen builds its own with its own logger and writes the same files.
@@ -1065,6 +1065,10 @@ async function checkIn(
     networks,
     // Cheap enough to send every time: three world-readable files, no privilege, no subprocess.
     stats: piStats(),
+    // Whether root here has a server address it trusts. Sent on every check-in rather than only
+    // at enrolment because re-running the installer is how a screen GAINS one, and the dashboard
+    // should stop warning about it without waiting for a restart. See rootLinked().
+    rootLinked: rootHasTrustedServer(),
     displayOff: displayIsOff(),
     videoMode: readVideoMode(),
     // A provisional mode: root left this marker and will put the old one back in a few minutes
@@ -1082,60 +1086,92 @@ async function checkIn(
 // ── waiting to be adopted ─────────────────────────────────────────────────────
 
 /**
- * Not yet adopted: show a code, and keep asking whether somebody has typed it.
+ * What one enrolment attempt came back with, in the words the television and the panel use.
  *
- * Enrolment is re-sent on every pass rather than once, for two reasons. It is how the device
- * finds out it has been adopted — the token comes back in the reply — and it is how the panel's
- * list stays current, since the facts sent along with it are what that list shows.
+ * Shared because there are now two callers and they want the same answer on different schedules.
+ * A screen the INSTALLER pointed at a server waits here until it is adopted and has nothing else
+ * to do; a screen pointed at one from its OWN panel re-reads its config between attempts, because
+ * the address can be corrected or withdrawn in that panel while this is running. One loop could
+ * not serve both — the first blocks for ever by design, and the second must not — so what is
+ * shared is the attempt rather than the loop around it.
  */
-async function waitForAdoption(screen: Screen | null, cfg: AgentConfig, facts: DeviceFacts): Promise<string> {
-  let code = '';
-  let connected = false;
-  let status = 'Contacting the display server…';
+interface EnrolPass {
+  /** the code to show; carried over from the last attempt when this one could not reach anybody */
+  code: string;
+  connected: boolean;
+  /** one plain sentence about what is going on, for the screen and for the panel */
+  status: string;
+  /** present only once somebody has approved this screen in the server's dashboard */
+  token?: string;
+}
 
-  for (;;) {
-    const reply = await postJson<EnrolReply>(`${cfg.server}/pi/enrol`, {
-      deviceId: cfg.deviceId,
-      deviceSecret: cfg.deviceSecret,
-      hostname: facts.hostname,
-      ip: facts.ip,
-      model: facts.model,
-      agentVersion: AGENT_VERSION,
-    }).catch((e: Error) => {
-      // A name that will not resolve, a refused connection, a timeout: all the same to the
-      // person looking at the screen, and all fixed by looking at the network.
-      log('enrol failed:', e.message);
-      return { httpStatus: 0 };
-    });
+/** One attempt, with `lastCode` kept so a failed pass does not blank a code already on screen. */
+async function enrolOnce(cfg: AgentConfig, facts: DeviceFacts, lastCode: string): Promise<EnrolPass> {
+  const reply = await postJson<EnrolReply>(`${cfg.server}/pi/enrol`, {
+    deviceId: cfg.deviceId,
+    deviceSecret: cfg.deviceSecret,
+    hostname: facts.hostname,
+    ip: facts.ip,
+    model: facts.model,
+    agentVersion: AGENT_VERSION,
+    rootLinked: rootHasTrustedServer(),
+  }).catch((e: Error) => {
+    // A name that will not resolve, a refused connection, a timeout: all the same to the person
+    // looking at the screen, and all fixed by looking at the network.
+    log('enrol failed:', e.message);
+    return { httpStatus: 0 };
+  });
 
-    if (failed(reply)) {
-      connected = false;
-      status =
+  if (failed(reply)) {
+    return {
+      code: lastCode,
+      connected: false,
+      status:
         reply.httpStatus === 429
           ? 'The display server is busy. Retrying…'
-          : `Cannot reach the display server at ${cfg.server}`;
-    } else {
-      connected = true;
-      code = reply.code || code;
-      status = 'Waiting for this code to be entered in the dashboard';
-      if (reply.token) {
-        log('adopted; saving credentials');
-        return reply.token;
-      }
-    }
+          : `Cannot reach the display server at ${cfg.server}`,
+    };
+  }
+  return {
+    code: reply.code || lastCode,
+    connected: true,
+    status: 'Waiting for this code to be entered in the dashboard',
+    ...(reply.token ? { token: reply.token } : {}),
+  };
+}
 
+/**
+ * Not yet adopted: show a code, and keep asking whether somebody has typed it.
+ *
+ * The path a screen the INSTALLER set up takes. It has no local account and no panel of its own —
+ * it was built to belong to a display server — so there is nothing to do here but wait, and the
+ * television is the only thing it can say it with.
+ *
+ * Enrolment is re-sent on every pass rather than once, for two reasons. It is how the device finds
+ * out it has been adopted — the token comes back in the reply — and it is how the panel's list
+ * stays current, since the facts sent along with it are what that list shows.
+ */
+async function waitForAdoption(screen: Screen | null, cfg: AgentConfig, facts: DeviceFacts): Promise<string> {
+  let pass: EnrolPass = { code: '', connected: false, status: 'Contacting the display server…' };
+
+  for (;;) {
+    pass = await enrolOnce(cfg, facts, pass.code);
+    if (pass.token) {
+      log('adopted; saving credentials');
+      return pass.token;
+    }
     screen?.show(
       pairingSvg({
-        code,
+        code: pass.code,
         ip: facts.ip,
         hostname: facts.hostname,
         server: cfg.server,
-        status,
-        connected,
+        status: pass.status,
+        connected: pass.connected,
         agentVersion: AGENT_VERSION,
       }),
     );
-    await sleep(connected ? POLL_MS : Math.min(POLL_MS * 3, 15_000));
+    await sleep(pass.connected ? POLL_MS : Math.min(POLL_MS * 3, 15_000));
   }
 }
 
@@ -1798,6 +1834,14 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
   // than the empty cache — which the panel would otherwise have to draw as something.
   refreshNet();
 
+  /**
+   * How enrolment is going, once somebody has pointed this screen at a display server.
+   *
+   * Read by the panel and written by the loop below. A plain object for the same reason `Live` is
+   * one: two readers, neither of which yields in the middle of touching it.
+   */
+  const linkStatus = { code: '', connected: false, status: '' };
+
   const panel = createPiPanel({
     store,
     device: {
@@ -1814,6 +1858,7 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
     // stale copy here would keep accepting one that has already been used.
     readConfig: () => loadConfig(),
     writeConfig: (next) => saveConfig(next),
+    linkState: () => linkStatus,
     webDir: WEB_DIR,
     /**
      * This screen's own status.
@@ -1859,7 +1904,70 @@ async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: Dev
   const cadence = new RenderCadence();
 
   for (;;) {
-    const code = loadConfig()?.setupCode ?? '';
+    /**
+     * Has somebody pointed this screen at a display server?
+     *
+     * Read off DISK every pass rather than from the config this function was started with, because
+     * the panel this same process is serving can change it at any moment — and that is the whole
+     * mechanism: the panel writes the file, this notices. Nothing restarts anything, so a mistyped
+     * address can be corrected in the same panel a second later, which is the one thing the
+     * alternative (restart straight into the enrolment loop) could not offer. The admin would have
+     * been left looking at a read-only page reporting a server that does not exist, with no way
+     * back short of a keyboard and a monitor.
+     */
+    const disk = loadConfig();
+    if (disk?.server) {
+      // Handed a token as well — by a display server that signed in here and created the screen
+      // itself. There is nothing left to wait for, and nothing in this function can draw an
+      // adopted screen, so end the process and let systemd start it in the adopted mode five
+      // seconds later. The panel is replaced by the read-only one at that point, which is correct:
+      // the server owns this screen now.
+      if (disk.token) {
+        log(`adopted by ${disk.server}; restarting as a managed screen`);
+        screen?.show(messageSvg('Joining a display server', 'This screen is being set up — it will be ready in a moment.'));
+        await sleep(1_000);
+        process.exit(0);
+      }
+
+      // Only an address so far: enrol, and put the code on the television AND in the panel. The
+      // server's own admin has to approve it there, which is the point — holding this screen's
+      // password should not be enough to insert a screen into somebody else's masjid.
+      //
+      // One attempt per pass, not a loop: the config is re-read at the top of this one, so a
+      // mistyped address can be corrected — or withdrawn — in the panel this process is still
+      // serving. `waitForAdoption` blocks on the same attempt for ever, which is right for a
+      // screen the installer built and has no panel of its own to be rescued from.
+      const pass = await enrolOnce(disk, facts, linkStatus.code);
+      Object.assign(linkStatus, { code: pass.code, connected: pass.connected, status: pass.status });
+      if (pass.token) {
+        log('adopted; saving credentials');
+        saveConfig({ ...disk, token: pass.token });
+        continue; // picked up by the branch above on the next pass
+      }
+
+      screen?.show(
+        pairingSvg({
+          code: linkStatus.code,
+          ip: facts.ip,
+          hostname: facts.hostname,
+          server: disk.server,
+          status: linkStatus.status,
+          connected: linkStatus.connected,
+          agentVersion: AGENT_VERSION,
+        }),
+      );
+      await sleep(linkStatus.connected ? POLL_MS : Math.min(POLL_MS * 3, 15_000));
+      continue;
+    }
+    // Pointed at nothing — or pointed back at nothing after a mistyped address was cleared. Drop
+    // whatever the last enrolment attempt said so the panel does not keep reporting it.
+    if (linkStatus.code || linkStatus.status) {
+      linkStatus.code = '';
+      linkStatus.connected = false;
+      linkStatus.status = '';
+    }
+
+    const code = disk?.setupCode ?? '';
     if (!store.db.admin && code) {
       screen?.show(
         pairingSvg({
@@ -1994,28 +2102,55 @@ async function main(): Promise<void> {
     log(`minted a device identity: ${live.deviceId}`);
   }
 
-  // No server means this screen is its own: it serves a panel and is configured on the LAN,
-  // and nothing below this line — enrolment, polling, the adopted loops — applies to it.
-  if (!live.server) {
-    log('no display server configured; running standalone');
-    await runStandalone(screen, live, facts);
-  }
-
   // The failure hook is the point of passing anything here: a background that will not download
   // used to be completely silent, so the only symptom was a screen showing the themed scene while
   // the dashboard insisted a wallpaper was set.
   const cache = new AssetCache(undefined, undefined, (m) => log('asset:', m));
 
   for (;;) {
+    // No server means this screen is its own: it serves a panel, is configured on the LAN, and
+    // none of the adopted machinery applies to it. It never returns — a screen pointed at a server
+    // from its own panel ends the process once it has a token, and systemd starts it again here.
+    if (!live.server) {
+      log('no display server configured; running standalone');
+      await runStandalone(screen, live, facts);
+    }
+
     if (!live.token) {
       const token = await waitForAdoption(screen, live, facts);
       live = { ...live, token };
       saveConfig(live);
     }
     await runAdopted(screen, live, cache, facts);
-    // Forgotten. Drop the token and go back to showing a code; keep the identity, so the panel
-    // recognises the same device rather than growing a second row for it.
-    live = { server: live.server, deviceId: live.deviceId, deviceSecret: live.deviceSecret };
+
+    /**
+     * Forgotten by the server. Drop the token and keep the identity, so re-adopting this screen
+     * does not grow a second row for it — and decide where it goes back TO.
+     *
+     * Those are two different places, and TWO facts decide between them — one is not enough.
+     *
+     * The INSTALLER writes the address into root's own trust.env, so a screen built that way
+     * belongs to that server and goes back to showing a pairing code for it, exactly as it always
+     * has. A screen pointed at a server from its OWN panel has nothing in trust.env, and has a
+     * password, timetables and a panel sitting untouched underneath — so forgetting it should
+     * return it to those rather than leave it asking to rejoin a dashboard it was just removed
+     * from. That second case would otherwise loop in `waitForAdoption`, which serves no panel at
+     * all, and the only way back would be a keyboard plugged into the Pi.
+     *
+     * The LOCAL ACCOUNT is the second fact, and it is what stops this being wrong for a real
+     * screen in the field: a Pi installed before trust.env existed has none either, and it can
+     * still reach this version of the agent because the old updater replaces agent.js without
+     * rewriting anything beside it. Such a screen has no password and no standalone life, so
+     * sending it there would strand it on a setup code nobody asked for. Only a screen that can
+     * actually be signed in to goes back to being its own.
+     */
+    const ownPanel = !rootHasTrustedServer() && !!new Store().db.admin;
+    if (ownPanel) log('forgotten, and this screen has a panel of its own to go back to; going standalone');
+    live = {
+      server: ownPanel ? '' : live.server,
+      deviceId: live.deviceId,
+      deviceSecret: live.deviceSecret,
+    };
     saveConfig(live);
   }
 }

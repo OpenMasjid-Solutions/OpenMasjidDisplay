@@ -191,6 +191,24 @@ sh "$R/update.sh" > "$R/out" 2>&1 || bad "exited non-zero"
 grep -q 'nothing to update from' "$R/out" && ok "refused cleanly" || bad "unexpected: $(cat "$R/out")"
 
 echo
+echo "-- root never follows an address the AGENT wrote"
+# The agent owns config.json — it rewrites it on adoption, and since 0.71.0 a panel can point a
+# screen at a display server by writing `server` into it. Nothing privileged may read that file:
+# root fetching a shell script from an address this agent chose is the whole machine, and it is
+# why the root terminal and `reinstall` both take their address from trust.env instead.
+#
+# The updater used to fall back to config.json when trust.env named neither a server nor a
+# channel. It could not fire on a device running this updater — the installer writes both files in
+# one run, trust.env first — so deleting it cost nothing and made the rule checkable.
+#
+# The check is STRUCTURAL, on the source, and that is the honest shape for it. A behavioural
+# version would have to point $CONF at a fixture, and $CONF no longer exists to point anywhere;
+# written as "it refused with a config.json sitting next to it" the assertion passes whether or
+# not the fallback is there, because the fallback reads a path this harness never populates.
+# Verified by restoring the fallback: only the line below turns red.
+reset
+grep -v '^[[:space:]]*#' "$R/update.sh" | grep -q 'config\.json'   && bad "the updater reads config.json, which the agent can write"   || ok "no line of the updater names config.json"
+
 echo "-- a trust.env with no VERSION line still gets one"
 # `sed -i s/^VERSION=//` matching nothing SUCCEEDS and says nothing, which would strand the
 # screen re-downloading the same release for ever. The updater appends instead.

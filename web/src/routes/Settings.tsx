@@ -8,6 +8,7 @@ import { usePrefs, prefsStore, WALLPAPERS, fetchOmosAppearance } from '../prefs'
 import { timezoneOptions } from '../timezones';
 import { useCaps } from '../capabilities';
 import { WifiSection } from './WifiPanel';
+import { ServerLinkSection } from './ServerLink';
 
 interface Props {
   state: AppState;
@@ -152,6 +153,16 @@ export function SettingsPage({ state, refetch }: Props) {
         <div className="panel glass">
           <h3 className="section-title" style={{ marginTop: 0 }}>Wi-Fi</h3>
           <WifiSection device={state.pi} badge={null} />
+        </div>
+      )}
+
+      {/* Joining a display server — only on a screen that is still its own.
+          A server has nothing to join, and an adopted screen serves a different page entirely
+          (ManagedScreen), so `caps.host === 'pi'` is the whole condition this needs. */}
+      {caps.host === 'pi' && (
+        <div className="panel glass">
+          <h3 className="section-title" style={{ marginTop: 0 }}>Display server</h3>
+          <ServerLinkSection />
         </div>
       )}
 

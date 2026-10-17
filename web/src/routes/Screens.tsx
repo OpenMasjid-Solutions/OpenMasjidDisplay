@@ -519,6 +519,14 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [copiedCmd, setCopiedCmd] = useState(false);
+  // Adopting a screen that is already running on its own. Its own state rather than reusing the
+  // fields above: the two forms are visible at the same time, and a half-typed address appearing
+  // in the code box would be nonsense.
+  const [address, setAddress] = useState('');
+  const [piPassword, setPiPassword] = useState('');
+  const [linkName, setLinkName] = useState('');
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
 
   // Built from the address this panel is open on, which is the address that just worked from a
   // browser on this network — so it is the one most likely to work from the Pi too. It is also
@@ -562,6 +570,24 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
       toast(e instanceof Error ? e.message : 'Could not set that screen up.', 'error');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const link = async () => {
+    setLinkBusy(true);
+    try {
+      await api.piLink(address.trim(), piPassword, linkName.trim());
+      setAddress('');
+      setPiPassword('');
+      setLinkName('');
+      await load();
+      await refetch();
+      toast('Screen adopted. It will join in a few seconds.');
+      onAdopted();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not adopt that screen.', 'error');
+    } finally {
+      setLinkBusy(false);
     }
   };
 
@@ -661,6 +687,64 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
       <button className="btn btn--primary btn--sm" onClick={adopt} disabled={busy || code.trim().length < 4} style={{ marginBlockStart: '0.8rem' }}>
         {busy ? <><Spinner /> Setting up…</> : 'Set up this screen'}
       </button>
+
+      {/* The other way in: a screen that is already running on its own.
+          Folded rather than shown beside the code, because it is the second-most likely thing
+          somebody wants and two forms side by side read as a choice you have to make before you
+          understand either. The house fold (`pi-fold`), not a bare <details> — that would be the
+          one control on this page with no design system behind it. */}
+      <div className={`pi-fold${linkOpen ? ' is-open' : ''}`} style={{ marginBlockStart: '1.1rem' }}>
+        <button type="button" className="pi-fold__head" aria-expanded={linkOpen} onClick={() => setLinkOpen((v) => !v)}>
+          <span className="pi-fold__chev" aria-hidden="true" />
+          <span className="pi-fold__title">The screen is already running on its own</span>
+        </button>
+        {linkOpen && (
+        <div className="pi-fold__body">
+        <p className="hint" style={{ margin: '0.6rem 0' }}>
+          A Raspberry Pi set up on its own has a panel of its own and a password you chose. Give
+          its address and that password and it joins this server — no keyboard, and nothing to read
+          off the television. It has to be on this network: a screen somewhere else cannot be
+          reached from here, and you point it at this server from its own panel instead.
+        </p>
+        <div className="grid2">
+          <Field label="The screen's address" hint="As you'd open it in a browser — e.g. 192.168.1.30.">
+            <input
+              className="input"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="192.168.1.30"
+              style={{ fontFamily: 'monospace' }}
+            />
+          </Field>
+          <Field label="That screen's password" hint="The one set when it was first switched on.">
+            <input
+              className="input"
+              type="password"
+              value={piPassword}
+              onChange={(e) => setPiPassword(e.target.value)}
+              autoComplete="off"
+            />
+          </Field>
+        </div>
+        <Field label="Name this screen" hint="What you'll call it here — e.g. Main hall.">
+          <input className="input" value={linkName} onChange={(e) => setLinkName(e.target.value)} placeholder="Main hall" />
+        </Field>
+        <button
+          className="btn btn--primary btn--sm"
+          onClick={link}
+          disabled={linkBusy || !address.trim() || !piPassword}
+          style={{ marginBlockStart: '0.8rem' }}
+        >
+          {linkBusy ? <><Spinner /> Adopting…</> : 'Adopt this screen'}
+        </button>
+        <p className="hint" style={{ marginBlockStart: '0.6rem' }}>
+          Its own timetables and password stay on it, untouched, in case you ever set it free
+          again. Update and Terminal for it will say they need the installer — adopting this way
+          cannot give this server the kind of access those two need.
+        </p>
+        </div>
+        )}
+      </div>
 
       {adopted.length > 0 && (
         <div style={{ marginBlockStart: pending.length ? '1.2rem' : '0.8rem' }}>

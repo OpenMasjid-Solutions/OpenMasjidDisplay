@@ -891,7 +891,6 @@ cat > "$PREFIX/update.sh" <<'UPD'
 # Fetch the screen agent this display server is shipping, and switch to it if it differs.
 set -eu
 PREFIX=/opt/openmasjid-screen
-CONF=/etc/openmasjid-screen/config.json
 
 # The server address and the trust decision, exactly as the installer worked them out.
 #
@@ -907,10 +906,19 @@ REPO="OpenMasjid-Solutions/OpenMasjidDisplay"
 if [ -f "$PREFIX/trust.env" ]; then
   . "$PREFIX/trust.env"
 fi
-if [ -z "$SERVER" ] && [ -z "$CHANNEL" ]; then
-  # Only for a device installed before trust.env existed. Re-running the installer writes one.
-  SERVER=$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).server||""))}catch{}' "$CONF" 2>/dev/null || true)
-fi
+
+# There is NO fallback to config.json, and its absence is the point.
+#
+# There used to be one, for devices installed before trust.env existed. It could not fire on any
+# device running THIS updater — this file and trust.env are written by the same run of the same
+# installer, trust.env first — so it cost nothing to delete. What it bought is an invariant worth
+# stating: root fetches code only from an address ROOT recorded.
+#
+# config.json is writable by the agent, by design: the agent rewrites it when it is adopted or
+# forgotten, and since 0.71.0 a panel can point a screen at a display server by writing it. That is
+# safe precisely because nothing privileged reads it. A compromised agent setting `server` there
+# gets to choose where its own app talks; with this fallback it would also have chosen where root
+# downloads and runs a shell script from, which is the whole machine.
 
 [ -n "$SERVER" ] || [ -n "$CHANNEL" ] || { echo "nothing to update from"; exit 0; }
 

@@ -1,0 +1,322 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+/**
+ * piLink.ts — the address checking behind "adopt the screen at 192.168.1.30".
+ *
+ * Two panels now take an address from somebody and act on it, and they are opposite halves of the
+ * same feature (docs/PI_ADOPTION.md):
+ *
+ *   • a Display server's panel is given a **Raspberry Pi's** address and calls it, to hand it the
+ *     credentials for a screen it has just created;
+ *   • a standalone Pi's panel is given a **display server's** address and writes it into its own
+ *     config, so the screen enrols there and shows a code.
+ *
+ * The second is a string going into a file this process already owns, and `SERVER_ORIGIN_RE` in
+ * pi/agentConfig.ts has always been the check for it. The FIRST is different in kind: it makes
+ * this server open a connection to wherever an address says, and then post a credential there.
+ * That is a request-forgery primitive, and the fact that an admin typed the address is a reason to
+ * take it seriously rather than to wave it through — the point of the check is that a mistyped or
+ * malicious address cannot turn into "this masjid's screen token was posted to a stranger".
+ *
+ * So the guard here is on **resolved addresses, not on names**. `pi/lanHost.ts` says of itself
+ * that it is "a heuristic about names, not a security check", and it is right: it exists to decide
+ * whether `curl` will need `-k`, where guessing wrong costs a needless flag. Deciding whether to
+ * post a token somewhere needs the other thing — ask the resolver what the name actually points
+ * at, and require every answer to be on a private network.
+ *
+ * ## Why private-only is not a restriction
+ *
+ * A server adopting a Pi has to be able to open a connection TO the Pi. A masjid's Pi sits on the
+ * masjid's LAN behind NAT, so that only ever works when the server is on that LAN with it. There
+ * is no deployment where a public address here would have worked and this refuses it — a display
+ * server in the cloud cannot reach a Pi at all, which is exactly why the Pi-side direction exists.
+ * Requiring a private address therefore costs nothing real and removes the whole class of
+ * "make the server fetch this URL for me".
+ *
+ * A DNS name that resolves privately is still accepted, because `raspberrypi.local` is how plenty
+ * of people reach these boxes. The resolve-then-connect window is a rebinding opportunity in
+ * theory; it is bounded by the caller refusing to send anything until the Pi's own panel has
+ * accepted an admin password, which a stranger's host cannot do.
+ */
+import dns from 'node:dns';
+
+/**
+ * Where a link request is pointed, after parsing.
+ *
+ * `origin` is scheme + host + port with no path, which is what both halves of the feature store
+ * and send. `hostname` is kept separately because the privacy check is about the host and nothing
+ * else, and re-deriving it at the call site is how the two end up disagreeing.
+ */
+export interface LinkTarget {
+  origin: string;
+  hostname: string;
+}
+
+/**
+ * What somebody typed, turned into an origin.
+ *
+ * Deliberately forgiving about the SHAPE and strict about everything else. An admin reading an
+ * address off a sticker types `192.168.1.30`, and refusing that because it has no scheme would be
+ * a puzzle with no clue in it — so a bare host gets `http://`, which is what a Pi's panel serves
+ * anyway (port 80, no certificate). What is NOT guessed at is the scheme when one is given: a
+ * `file:` or `gopher:` URL is a refusal rather than something to coerce.
+ *
+ * A path is dropped rather than refused. People paste the address bar, and
+ * `http://192.168.1.30/settings` means the same screen as `http://192.168.1.30`.
+ */
+export function parseLinkAddress(raw: unknown): LinkTarget | { error: string } {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text) return { error: 'Enter the address of the screen, for example 192.168.1.30.' };
+  if (text.length > 255) return { error: 'That address is too long to be one.' };
+  // A space cannot appear in a host or a scheme, and `new URL` would percent-encode it into a
+  // path rather than refusing — which would silently accept "192.168.1.30 please".
+  if (/\s/.test(text)) return { error: 'An address cannot contain spaces.' };
+
+  // No scheme: assume the one a Pi's panel actually serves. `//host` is treated the same way;
+  // it is what a half-pasted URL looks like.
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text.replace(/^\/+/, '')}`;
+
+  let url: URL;
+  try {
+    url = new URL(withScheme);
+  } catch {
+    return { error: 'That does not look like an address. Try something like 192.168.1.30.' };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { error: 'Use a web address — http:// or https://.' };
+  }
+  if (url.username || url.password) {
+    return { error: 'Leave the username and password out of the address; there is a box for the password.' };
+  }
+  if (!url.hostname) return { error: 'That address has no host in it.' };
+
+  return { origin: url.origin, hostname: url.hostname.replace(/^\[|\]$/g, '') };
+}
+
+/**
+ * Is this a literal address on a private network?
+ *
+ * Takes a PARSED address, never a name — a name is whatever a resolver says it is, and this is the
+ * question asked about each of those answers. Covers the ranges a masjid's own network is actually
+ * built from, including carrier NAT (100.64/10), which is the range Tailscale hands out and so a
+ * real way to reach a screen across sites.
+ *
+ * Link-local is private and answers TRUE here, which is the truthful answer to the question this
+ * function asks. It is refused anyway, one level up, for a reason that has nothing to do with
+ * privacy — see `privateTargetRefusal`.
+ */
+export function isPrivateAddress(ip: string): boolean {
+  const h = ip.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return false;
+
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const parts = v4.slice(1).map(Number);
+    if (parts.some((n) => n > 255)) return false;
+    const [a, b] = parts;
+    if (a === 10 || a === 127) return true; // private, loopback
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 169 && b === 254) return true; // link-local, and the cloud metadata address
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+    return false;
+  }
+
+  if (!h.includes(':')) return false; // not an address at all
+
+  // An IPv4 address wearing an IPv6 hat — ::ffff:192.168.1.30 — is the same machine, and a
+  // resolver will hand one back on a dual-stack box. Judge it as the v4 address it is.
+  const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(h);
+  if (mapped) return isPrivateAddress(mapped[1]);
+
+  if (h === '::1' || h === '::') return true;
+  if (h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return true; // fe80::/10
+  if (/^f[cd]/.test(h)) return true; // fc00::/7 unique-local
+  return false;
+}
+
+/**
+ * Ask the resolver where this host points, and insist every answer is on a private network.
+ *
+ * `all: true` matters: a name with both a private and a public address would otherwise pass on
+ * whichever one came first, and which one that is depends on the resolver's mood. Every address
+ * has to be private, because we do not get to choose which one the connection uses.
+ *
+ * Returns null when the target is acceptable, or a sentence for the admin when it is not.
+ */
+export async function privateTargetRefusal(hostname: string): Promise<string | null> {
+  let found: { address: string }[];
+  try {
+    found = await dns.promises.lookup(hostname, { all: true, verbatim: true });
+  } catch {
+    return `Nothing on this network answers to "${hostname}". Check the address and that the screen is switched on.`;
+  }
+  if (!found.length) return `Nothing on this network answers to "${hostname}".`;
+
+  const publicOnes = found.filter((a) => !isPrivateAddress(a.address));
+  if (publicOnes.length) {
+    return (
+      `"${hostname}" is on the public internet (${publicOnes[0].address}), and this only adopts a screen ` +
+      `on your own network. If the screen is somewhere else, set this server's address on the screen itself instead.`
+    );
+  }
+
+  /**
+   * Link-local is refused separately, and not because it is public — it is as private as an
+   * address gets.
+   *
+   * 169.254.0.0/16 is what a machine gives itself when DHCP fails, so a screen there is not a
+   * working screen and adopting one is not a thing anybody is trying to do. It is also where cloud
+   * metadata services live (169.254.169.254), which makes it the one private range where "make
+   * this server open a connection for me" is worth something to somebody. Costing nothing and
+   * removing a probe, it is refused — with its own sentence, because telling an admin that
+   * 169.254.169.254 is "on the public internet" would be a lie and an unhelpful one.
+   */
+  const linkLocal = found.find((a) => /^169\.254\./.test(a.address) || /^fe[89ab]/i.test(a.address));
+  if (linkLocal) {
+    return (
+      `${linkLocal.address} is a link-local address — what a machine gives itself when it cannot ` +
+      `get one from the network. Give the screen's real address on your network instead.`
+    );
+  }
+  return null;
+}
+
+/**
+ * What went wrong, in a sentence an admin can act on, plus the status to answer with.
+ *
+ * Carried rather than thrown because every one of these is an ordinary outcome of typing an
+ * address — a typo, a wrong password, a screen that is switched off — and a thrown error at this
+ * boundary becomes a 500, which says "this server is broken" about a situation where it is not.
+ */
+export interface LinkFailure {
+  status: number;
+  error: string;
+}
+
+/** How long the whole conversation with a screen may take. An admin is watching a spinner. */
+export const LINK_TIMEOUT_MS = 12_000;
+
+/**
+ * POST to a screen's own panel.
+ *
+ * `redirect: 'error'` is the same guard every outbound call in this app carries, and here it is
+ * load-bearing in a specific way: a redirect is exactly how an address that passed the private
+ * check sends us somewhere that would not have. Following one would undo the whole of
+ * `privateTargetRefusal`.
+ */
+function askPi(origin: string, path: string, payload: unknown, signal: AbortSignal, cookie?: string): Promise<Response> {
+  return fetch(`${origin}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify(payload),
+    signal,
+    redirect: 'error',
+  });
+}
+
+/**
+ * Sign in to the screen's own panel, and come back with its session.
+ *
+ * This is the whole authorisation for adopting by address, and it proves two things at once —
+ * both of which are needed. That whoever is asking administers that screen, which is the consent;
+ * and that the thing at that address is one of OUR panels, which is why no credential of ours is
+ * sent until this has succeeded. A stranger's web server cannot produce a 200 with a session
+ * cookie from `/api/login` against a password it has never seen.
+ */
+export async function piPanelSignIn(
+  origin: string,
+  password: string,
+  signal: AbortSignal,
+): Promise<{ cookie: string } | LinkFailure> {
+  let res: Response;
+  try {
+    res = await askPi(origin, '/api/login', { password }, signal);
+  } catch (e) {
+    return {
+      status: 502,
+      error:
+        `Could not reach a screen at ${origin} (${e instanceof Error ? e.message : 'no answer'}). ` +
+        'Check the address, and that the screen is switched on and set up.',
+    };
+  }
+  if (res.status === 401) return { status: 401, error: 'That password was not accepted by the screen.' };
+  if (res.status === 429) {
+    return { status: 429, error: 'That screen is refusing sign-ins for a moment after too many tries. Wait, then try again.' };
+  }
+  if (res.status === 400) {
+    return {
+      status: 502,
+      error: 'That screen has not been set up yet. Open its address in a browser and give it a password first.',
+    };
+  }
+  /**
+   * 405 is a screen that ALREADY belongs to a display server.
+   *
+   * An adopted screen serves `managedPanel.ts`, which answers nothing but GET and HEAD — so the
+   * sign-in is refused by the method, before any password is looked at. Worth its own sentence
+   * rather than the catch-all below, which would report a wrong password for a screen whose
+   * password was never the problem.
+   */
+  if (res.status === 405) {
+    return {
+      status: 409,
+      error: `The screen at ${origin} is already managed by a display server. Forget it there first, or set it free from that server.`,
+    };
+  }
+  if (!res.ok) {
+    return { status: 502, error: `The screen at ${origin} answered unexpectedly (HTTP ${res.status}). Is that address a screen's panel?` };
+  }
+
+  // `set-cookie` can legitimately arrive as several headers. `getSetCookie` keeps them apart,
+  // where reading the joined string would splice two cookies into one value that matches neither.
+  const cookie = res.headers
+    .getSetCookie()
+    .map((c) => c.split(';')[0])
+    .filter(Boolean)
+    .join('; ');
+  if (!cookie) {
+    return { status: 502, error: `The screen at ${origin} signed in but issued no session. Is that address a screen's panel?` };
+  }
+  return { cookie };
+}
+
+/**
+ * Hand the screen its new identity.
+ *
+ * Called only after `piPanelSignIn`, and only after the caller has created the device row the
+ * credentials belong to. A failure here means that row must be deleted again — see the link route
+ * in api.ts — because a token nobody holds is a live credential for a screen that will never
+ * appear, sitting in the masjid's own data.
+ */
+export async function piPanelHandOver(
+  origin: string,
+  cookie: string,
+  payload: { server: string; deviceId: string; deviceSecret: string; token: string },
+  signal: AbortSignal,
+): Promise<{ ok: true; previousDeviceId: string } | LinkFailure> {
+  let res: Response;
+  try {
+    res = await askPi(origin, '/api/pi/link', payload, signal, cookie);
+  } catch (e) {
+    return {
+      status: 502,
+      error: `The screen signed in but then stopped answering (${e instanceof Error ? e.message : 'no answer'}). Nothing was changed.`,
+    };
+  }
+  if (res.ok) {
+    // The id this screen is giving up, so its old pending row can go with it. Read defensively:
+    // an older screen does not send it, and the body is a device's word for what it used to be
+    // called — which is why the caller only ever uses it to drop a row that has no token.
+    const body = (await res.json().catch(() => ({}))) as { previousDeviceId?: unknown };
+    const previous = typeof body.previousDeviceId === 'string' ? body.previousDeviceId.slice(0, 64) : '';
+    return { ok: true, previousDeviceId: previous };
+  }
+  return {
+    status: 502,
+    error:
+      res.status === 404
+        ? 'That screen\'s software is too old to be adopted this way. Update it, or run this server\'s installer on it.'
+        : `That screen refused to join (HTTP ${res.status}). Nothing was changed.`,
+  };
+}

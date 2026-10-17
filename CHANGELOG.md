@@ -13,6 +13,21 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **You can now add a Raspberry Pi screen that is already running, without touching it.** If a
+  screen is set up on its own and on the same network, go to **Screens → Add screen → Raspberry
+  Pi** and open *The screen is already running on its own*. Give its address and the password you
+  set on it, and it joins — no keyboard, and nothing to read off the television.
+
+- **And the other way round: a screen can be pointed at a server from its own panel.** On the
+  screen, under **Settings → Display server**, type the address of the display server you want it
+  to join. That works when the server is not in the building at all, which the first way cannot:
+  use whatever address you reach the server on from there. The screen then shows a code — on its
+  own page as well as on the television — and you enter that code in the server's dashboard to
+  finish. Typed the wrong address? Correct it in the same box; nothing has moved yet.
+
+  Either way the screen keeps everything it had. If you ever set it free again, its own
+  timetables and its password are exactly as you left them.
+
 - **A screen managed by a Display server now has a page of its own again.** Open the screen's own
   address and it tells you which server manages it, whether that server is answering, what is on
   the television and which board and version it is. It needs no password and changes nothing —
@@ -65,6 +80,16 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
+- **Update and Terminal now say when they cannot work, instead of doing nothing.** Those two need
+  the screen to have been set up by running this server's installer on it, because they work by
+  giving the screen's system — not just the app — somewhere it trusts to fetch from. A screen
+  added by its address has not been through that, so both are now switched off for it with the
+  reason shown and the one command that turns them on. Until now they looked available, said
+  "asked", and nothing happened.
+
+- **Forgetting a screen you added by its address now gives it back to itself.** It returns to its
+  own panel, its own timetables and its own password, instead of sitting on the television asking
+  to rejoin a dashboard you have just removed it from.
 - **Documentation for a screen that runs on its own.** A new guide covers setting one up,
   what the panel can and cannot do without a server, how it updates itself, and what to do
   when something is wrong. The README now starts with a table of the three ways to put a

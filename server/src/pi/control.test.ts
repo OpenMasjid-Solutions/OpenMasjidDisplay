@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { makeControl, readWifiResult, isWifiAction, WIFI_ACTIONS } from './control';
+import { makeControl, readWifiResult, isWifiAction, WIFI_ACTIONS, rootHasTrustedServer } from './control';
 
 function sandbox(): { dir: string; ctl: ReturnType<typeof makeControl>; said: string[] } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omd-control-'));
@@ -116,4 +116,42 @@ test('only the five Wi-Fi verbs pass isWifiAction', () => {
   for (const a of ['reboot', 'update', 'shell', 'shell-session', 'wifi', 'wifi-', '', null, 7]) {
     assert.ok(!isWifiAction(a), `${String(a)} must not be a Wi-Fi action`);
   }
+});
+
+// ── what root trusts, which the agent may read and never write ───────────────
+
+test('an installer-set server address means root has something to act on', () => {
+  const { dir } = sandbox();
+  fs.writeFileSync(path.join(dir, 'trust.env'), "SERVER='https://masjid.example'\nCURL_OPTS=''\n");
+  assert.equal(rootHasTrustedServer(dir), true);
+});
+
+test('a standalone screen is NOT linked, though the line is there', () => {
+  // This is the case that decides it. The installer writes `SERVER=''` for a screen with no
+  // server, so a check for the line's presence rather than its contents would report every
+  // standalone screen in the world as linked — and the panel would offer Update and Terminal on
+  // machines where both do nothing.
+  const { dir } = sandbox();
+  fs.writeFileSync(path.join(dir, 'trust.env'), "SERVER=''\nCURL_OPTS=''\nCHANNEL='stable'\nVERSION='0.71.0'\n");
+  assert.equal(rootHasTrustedServer(dir), false);
+});
+
+test('a screen adopted from a panel has no trust.env entry at all', () => {
+  // The whole point of the feature: a panel writes the server into the agent's own config.json,
+  // which root never reads. So root is left with nothing, and the dashboard has to say so.
+  const { dir } = sandbox();
+  assert.equal(rootHasTrustedServer(dir), false, 'no file means no trusted address');
+  fs.writeFileSync(path.join(dir, 'trust.env'), "CURL_OPTS=''\nCHANNEL='stable'\n");
+  assert.equal(rootHasTrustedServer(dir), false, 'and neither does a file without the line');
+});
+
+test('the address is read off its own line, not found anywhere in the file', () => {
+  const { dir } = sandbox();
+  // A commented-out address, and the word SERVER inside another value. Neither is root's address,
+  // and reading either as one would re-enable two buttons that cannot work.
+  fs.writeFileSync(
+    path.join(dir, 'trust.env'),
+    "# SERVER='https://old.example'\nCURL_OPTS='--cacert /etc/SERVER='\nSERVER=''\n",
+  );
+  assert.equal(rootHasTrustedServer(dir), false);
 });

@@ -234,6 +234,17 @@ export interface PiDeviceInfo {
   lastSeenAt: string;
   /** true when this device already runs what the server would give it, so Update is a no-op */
   upToDate?: boolean;
+  /**
+   * Whether ROOT on that screen has a server address it trusts.
+   *
+   * False on a screen adopted from this panel by address rather than by running the installer on
+   * it: the installer is the only thing that writes the root-owned file naming the server, and
+   * that file is what root fetches an installer from and dials a terminal out to. So on such a
+   * screen Update and Terminal cannot work, and the panel says so instead of pretending.
+   *
+   * Undefined means an older agent that has never reported it, which is NOT the same as false.
+   */
+  rootLinked?: boolean;
   /** the last lines the agent logged, as it saw them. Display text only. */
   recentLog?: string[];
   logAt?: string;

@@ -134,6 +134,8 @@ export interface EnrolInput {
   videoModeResult?: unknown;
   /** the timezone the device's system is actually set to */
   timezone?: unknown;
+  /** whether root on that device has a trusted server address — see PiDevice.rootLinked */
+  rootLinked?: unknown;
 }
 
 export interface EnrolResult {
@@ -182,6 +184,7 @@ export function enrolDevice(db: DB, input: EnrolInput, nowMs: number): { device:
     device.ip = str(input.ip, 64) || device.ip;
     device.model = str(input.model, 64) || device.model;
     device.agentVersion = str(input.agentVersion, 32) || device.agentVersion;
+    if (typeof input.rootLinked === 'boolean') device.rootLinked = input.rootLinked;
     device.lastSeenAt = now;
   } else {
     // A device id is accepted from the agent so a reboot is not a new device, but it is only
@@ -195,6 +198,7 @@ export function enrolDevice(db: DB, input: EnrolInput, nowMs: number): { device:
       ip: str(input.ip, 64),
       model: str(input.model, 64),
       agentVersion: str(input.agentVersion, 32),
+      ...(typeof input.rootLinked === 'boolean' ? { rootLinked: input.rootLinked } : {}),
       lastSeenAt: now,
     };
     devices.push(device);
@@ -215,6 +219,87 @@ export function enrolDevice(db: DB, input: EnrolInput, nowMs: number): { device:
       pollMs: PI_POLL_MS,
     },
   };
+}
+
+/**
+ * A device row created ALREADY ADOPTED, for a screen this server is about to go and configure.
+ *
+ * The ordinary way round is the other one: a Pi enrols, mints its own secret, shows a code, and an
+ * admin types that code to adopt it. That order exists because the Pi speaks first and this server
+ * has no way to reach it. When an admin gives us the Pi's address and its password, we speak
+ * first — so the identity is minted HERE and carried to the device over the connection the
+ * password just opened.
+ *
+ * Minting it here rather than letting the Pi keep its own is what closes the race in the obvious
+ * alternative. "Pre-approve this device id, adopt it when it enrols" would hand the adoption to
+ * whichever device enrolled with that id first, and a device id is a lookup key that anything on
+ * the network may claim — it is not secret and was never meant to be. With the secret minted here
+ * there is no window: the row is complete before anybody is told it exists, and a device that
+ * cannot present the secret is simply a different device.
+ *
+ * The caller MUST hand the returned secret to that one device and keep it nowhere else, and must
+ * delete the row again if it could not (see the link route in api.ts). It is returned rather than
+ * stored in the clear for the same reason the agent's own is: only the hash belongs on disk.
+ */
+export function createAdoptedDevice(db: DB, facts: { hostname?: string; ip?: string }, nowMs: number): {
+  device: PiDevice;
+  deviceSecret: string;
+} {
+  const deviceSecret = crypto.randomBytes(16).toString('base64url');
+  const device: PiDevice = {
+    id: `pi_${crypto.randomBytes(6).toString('hex')}`,
+    secretHash: hashSecret(deviceSecret),
+    // Spent on creation, never shown. A code is the proof of standing in front of a television,
+    // and this device was adopted by a different proof entirely — but the field is not optional,
+    // and leaving it empty would make this row match `findPendingByCode('')`-shaped mistakes.
+    code: makePairingCode(),
+    token: makeDeviceToken(),
+    hostname: str(facts.hostname, 64) || 'raspberrypi',
+    ip: str(facts.ip, 64),
+    model: '',
+    agentVersion: '',
+    lastSeenAt: new Date(nowMs).toISOString(),
+  };
+  (db.piDevices ??= []).push(device);
+  return { device, deviceSecret };
+}
+
+/**
+ * Undo a `createAdoptedDevice` that could not be delivered.
+ *
+ * The row and the screen it drives are created BEFORE the device is told about them, because the
+ * device has to be handed a token that already exists. So every path where the handover fails —
+ * a mistyped address that happened to answer, a screen that signed in and then lost power, a
+ * version too old to know the route — has to come back here. What it leaves otherwise is a live
+ * token in the masjid's own data for a screen that will never appear, and a screen in the
+ * dashboard that can never be anything but offline.
+ *
+ * Takes the device id rather than the pair: the screen is found through the device's own `tvId`,
+ * so a caller cannot delete the wrong one by passing a stale id for the second half.
+ */
+export function removeAdoptedDevice(db: DB, deviceId: string): void {
+  const device = (db.piDevices ?? []).find((d) => d.id === deviceId);
+  if (!device) return;
+  const tvId = device.tvId;
+  db.piDevices = (db.piDevices ?? []).filter((d) => d.id !== deviceId);
+  if (tvId) db.tvs = db.tvs.filter((t) => t.id !== tvId);
+}
+
+/**
+ * Drop a device row that was never adopted — the one a screen has just told us it is giving up.
+ *
+ * A server adopting by address mints a fresh identity, so the screen's previous id is left on this
+ * server as a pending row with a live-looking pairing code. An admin who typed that code would get
+ * a second screen that nothing will ever drive.
+ *
+ * The id comes from the device, over a connection its own password opened, and is therefore
+ * treated as a hint rather than as authority: an ADOPTED row is never touched, whatever is
+ * claimed. The worst a lying device can do is make us forget a pending row, which is a code
+ * somebody has to re-read off a television — not a screen anybody loses.
+ */
+export function forgetPendingDevice(db: DB, deviceId: string): void {
+  if (!deviceId) return;
+  db.piDevices = (db.piDevices ?? []).filter((d) => d.id !== deviceId || !!d.token);
 }
 
 /** Forget stale pending devices, then the oldest if still over the cap. Adopted devices are
@@ -473,6 +558,9 @@ export function updateDeviceFacts(db: DB, deviceId: string, input: EnrolInput, n
   if (ip) device.ip = ip;
   if (model) device.model = model;
   if (agentVersion) device.agentVersion = agentVersion;
+  // Only when the device actually said something. An older agent sends nothing, and writing
+  // `false` for silence would report every screen in the masjid as broken the day this shipped.
+  if (typeof input.rootLinked === 'boolean') device.rootLinked = input.rootLinked;
 
   // Bounded on BOTH axes and stripped of control characters, because every byte here was chosen by
   // an unprivileged device and is going straight into a page. Eighty lines is what the agent keeps;

@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { AgentConfig } from './agentConfig';
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'omd-panel-'));
 process.env.DATA_DIR = DIR;
@@ -105,15 +106,29 @@ function panel(opts: { claimed?: boolean; code?: string | undefined; noDevice?: 
   store.update((db) => {
     db.admin = null;
   });
-  let cfg = { server: '', deviceId: 'pi_a', deviceSecret: 's', setupCode: opts.code === undefined && !('code' in opts) ? CODE : opts.code };
+  let cfg: AgentConfig = {
+    server: '',
+    deviceId: 'pi_a',
+    deviceSecret: 's',
+    setupCode: opts.code === undefined && !('code' in opts) ? CODE : opts.code,
+  };
   // A stand-in for the Raspberry Pi: it records what it was asked for instead of writing a spool
   // file, so the tests are about what the ROUTE lets through rather than about nmcli.
   const asked: { action: string; wifi?: { ssid: string; psk: string } }[] = [];
+  // What the agent's enrolment loop would be reporting. Mutable so a test can leave it stale,
+  // which is the state this fixture exists to cover: the loop clears it a pass LATER.
+  const link = { code: '', connected: false, status: '' };
   const handler = createPiPanel({
     store,
-    readConfig: () => cfg as never,
+    linkState: () => link,
+    readConfig: () => cfg,
     writeConfig: (next) => {
-      cfg = next as never;
+      // The real saveConfig MERGES, and drops `token`/`setupCode` when they are absent. The route
+      // relies on that to clear a token, so the fixture has to behave the same way or the test
+      // would pass against a writer the device does not have.
+      cfg = { ...cfg, ...next };
+      if (next.token === undefined) delete cfg.token;
+      if (next.setupCode === undefined) delete cfg.setupCode;
     },
     webDir: WEB,
     screens: { getStatuses: () => [] },
@@ -135,7 +150,7 @@ function panel(opts: { claimed?: boolean; code?: string | undefined; noDevice?: 
       db.admin = { hash: 'x', salt: 'y', createdAt: new Date().toISOString() };
     });
   }
-  return { handler, store, config: () => cfg, asked };
+  return { handler, store, config: () => cfg, asked, link };
 }
 
 // ── what is reachable without signing in ─────────────────────────────────────
@@ -602,4 +617,183 @@ test('the state carries this screen own network facts, so the panel polls once',
   const pi = j.pi as Record<string, unknown>;
   assert.equal(pi.id, 'tv_self');
   assert.deepEqual(pi.net, { link: 'ethernet', ssid: '', hasWifi: true });
+});
+
+// ── joining a display server ─────────────────────────────────────────────────
+//
+// One route, two callers: an admin on this screen's own panel typing an address, and a display
+// SERVER that has signed in here with this screen's password and is handing over credentials for a
+// screen it has already created. The tests below are about the things that must hold whichever of
+// the two is calling — it needs a session, a token never arrives alone, and a change of server
+// never leaves the previous server's token behind.
+
+test('pointing a screen at a server needs a session, like everything else that writes', async () => {
+  const { handler, config } = panel({ claimed: true });
+  for (const m of ['GET', 'POST'] as const) {
+    const r = await call(handler, m, '/api/pi/link', m === 'POST' ? { server: 'http://192.168.1.18:7860' } : undefined);
+    assert.equal(r.status, 401, `${m} must be refused without a session`);
+  }
+  assert.equal(config().server, '', 'and nothing was written');
+});
+
+test('an admin gives an address, and that is all it takes to start enrolling', async () => {
+  const { handler, config } = panel();
+  const cookie = await claim(handler);
+  const r = await call(handler, 'POST', '/api/pi/link', { server: 'http://192.168.1.18:7860/' }, cookie);
+  assert.equal(r.status, 200, r.body);
+  assert.equal(r.json().adopted, false, 'an address alone does not adopt anything');
+  // The trailing slash is dropped, because every URL the agent builds appends its own.
+  assert.equal(config().server, 'http://192.168.1.18:7860');
+  assert.equal(config().token, undefined);
+});
+
+test('a server hands over an address AND credentials, and the screen is adopted outright', async () => {
+  const { handler, config } = panel();
+  const cookie = await claim(handler);
+  const r = await call(
+    handler,
+    'POST',
+    '/api/pi/link',
+    { server: 'https://masjid.example', deviceId: 'pi_99', deviceSecret: 'sec-99', token: 'tok-99' },
+    cookie,
+  );
+  assert.equal(r.status, 200, r.body);
+  assert.equal(r.json().adopted, true);
+  assert.deepEqual(
+    { server: config().server, deviceId: config().deviceId, deviceSecret: config().deviceSecret, token: config().token },
+    { server: 'https://masjid.example', deviceId: 'pi_99', deviceSecret: 'sec-99', token: 'tok-99' },
+  );
+});
+
+test('the screen says which id it is giving up, so its old row can go with it', async () => {
+  // A server adopting by address mints a FRESH identity, so this screen's previous id is left
+  // behind there as a pending row with a code that still looks live. Saying which one it was lets
+  // the server drop it; the server decides whether to, and only for a row that was never adopted.
+  const { handler } = panel();
+  const cookie = await claim(handler);
+  const r = await call(
+    handler,
+    'POST',
+    '/api/pi/link',
+    { server: 'http://s', deviceId: 'pi_new', deviceSecret: 'sec', token: 'tok' },
+    cookie,
+  );
+  assert.equal(r.json().previousDeviceId, 'pi_a', 'the fixture started life as pi_a');
+
+  // An address with no new identity changes nothing about who this screen is, so there is nothing
+  // to give up and nothing to report.
+  const same = await call(handler, 'POST', '/api/pi/link', { server: 'http://s2' }, cookie);
+  assert.equal(same.json().previousDeviceId, undefined);
+});
+
+test('a token never arrives on its own', async () => {
+  // Required as a trio because a token without the identity that earned it is a config the agent
+  // can neither enrol with nor prove — and parseConfig refuses the whole file, which reads on the
+  // television as a screen that has never been set up.
+  const { handler, config } = panel();
+  const cookie = await claim(handler);
+  for (const body of [
+    { server: 'http://s', token: 'tok' },
+    { server: 'http://s', deviceId: 'pi_1', token: 'tok' },
+    { server: 'http://s', deviceId: 'pi_1', deviceSecret: 's' },
+    { server: '', deviceId: 'pi_1', deviceSecret: 's', token: 'tok' },
+  ]) {
+    const r = await call(handler, 'POST', '/api/pi/link', body, cookie);
+    assert.equal(r.status, 400, `${JSON.stringify(body)} must be refused`);
+  }
+  assert.equal(config().server, '', 'and none of them wrote anything');
+});
+
+test('credentials have to be shaped like ours', async () => {
+  const { handler } = panel();
+  const cookie = await claim(handler);
+  for (const bad of ['tok en', 'tok;en', '../../etc', 'a'.repeat(201), 'tok"en']) {
+    const r = await call(handler, 'POST', '/api/pi/link', { server: 'http://s', deviceId: 'pi_1', deviceSecret: 'sec', token: bad }, cookie);
+    assert.equal(r.status, 400, `${JSON.stringify(bad)} must be refused as a token`);
+  }
+});
+
+test('a nonsense address is refused rather than written and puzzled over later', async () => {
+  const { handler, config } = panel();
+  const cookie = await claim(handler);
+  for (const bad of ['192.168.1.18', 'ftp://host', 'http://', 'javascript:alert(1)', 'http://a b']) {
+    const r = await call(handler, 'POST', '/api/pi/link', { server: bad }, cookie);
+    assert.equal(r.status, 400, `${JSON.stringify(bad)} must be refused`);
+  }
+  assert.equal(config().server, '');
+});
+
+test('moving a screen to a different server drops the previous one token', async () => {
+  // Keeping it would have the screen presenting a credential the new server never issued, which
+  // that server answers with a 404 — and a 404 is what this agent reads as "I have been
+  // forgotten". The screen would flip between the two states for ever and say nothing about why.
+  const { handler, config } = panel();
+  const cookie = await claim(handler);
+  await call(handler, 'POST', '/api/pi/link', { server: 'http://one', deviceId: 'pi_1', deviceSecret: 's', token: 'tok-one' }, cookie);
+  assert.equal(config().token, 'tok-one');
+  await call(handler, 'POST', '/api/pi/link', { server: 'http://two' }, cookie);
+  assert.equal(config().server, 'http://two');
+  assert.equal(config().token, undefined, 'the old server token must not survive the move');
+});
+
+test('clearing the address sets a screen free again, and keeps everything it owns', async () => {
+  const { handler, store, config } = panel();
+  const cookie = await claim(handler);
+  await call(handler, 'POST', '/api/pi/link', { server: 'http://one', deviceId: 'pi_1', deviceSecret: 's', token: 'tok' }, cookie);
+  const r = await call(handler, 'POST', '/api/pi/link', { server: '' }, cookie);
+  assert.equal(r.status, 200, r.body);
+  assert.equal(config().server, '');
+  assert.equal(config().token, undefined);
+  // The screen's own identity and its admin account are untouched: this is the way back from a
+  // mistyped address, and it must not cost somebody their password.
+  assert.equal(config().deviceId, 'pi_1');
+  assert.ok(store.db.admin, 'the local account survives being set free');
+});
+
+test('the link status reports what the enrolment loop is doing, and never a credential', async () => {
+  const { handler } = panel();
+  const cookie = await claim(handler);
+  await call(handler, 'POST', '/api/pi/link', { server: 'http://one', deviceId: 'pi_1', deviceSecret: 'sec-secret', token: 'tok-secret' }, cookie);
+  const r = await call(handler, 'GET', '/api/pi/link', undefined, cookie);
+  assert.equal(r.status, 200);
+  assert.equal(r.json().server, 'http://one');
+  assert.equal(r.json().adopted, true);
+  assert.ok(!r.body.includes('tok-secret'), r.body);
+  assert.ok(!r.body.includes('sec-secret'), r.body);
+});
+
+test('a screen with no server reports no enrolment status either', async () => {
+  // The agent's loop clears it on the pass AFTER an address is withdrawn, and that pass can be
+  // fifteen seconds away — it sleeps longer between attempts when it cannot reach anything, which
+  // is exactly the case somebody cancels out of. The payload must not answer "this screen has no
+  // server" with a sentence about failing to reach one.
+  const { handler, link } = panel();
+  const cookie = await claim(handler);
+  await call(handler, 'POST', '/api/pi/link', { server: 'http://typo' }, cookie);
+  Object.assign(link, { code: 'ZZZZZZ', connected: false, status: 'Cannot reach the display server at http://typo' });
+
+  const during = (await call(handler, 'GET', '/api/pi/link', undefined, cookie)).json();
+  assert.equal(during.status, 'Cannot reach the display server at http://typo', 'reported while there IS a server');
+
+  // Cancel. The loop has not run again, so `link` still holds the failure.
+  await call(handler, 'POST', '/api/pi/link', { server: '' }, cookie);
+  const after = (await call(handler, 'GET', '/api/pi/link', undefined, cookie)).json();
+  assert.equal(after.server, '');
+  assert.equal(after.code, '', 'a stale code must not outlive the address it belonged to');
+  assert.equal(after.status, '');
+});
+
+test('the panel cannot restart or reconfigure anything — it only writes the file', async () => {
+  // The agent's own loop re-reads the config every pass and acts on what it finds. That is what
+  // keeps this panel up and writable while a screen is enrolling, which is the only way back from
+  // a mistyped address without a keyboard plugged into the Pi. It is also why nothing here goes
+  // near trust.env: that file is root's, and an address arriving over HTTP must never reach it.
+  const src = fs.readFileSync(path.join(__dirname, 'panel.ts'), 'utf8');
+  const code = src
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n');
+  for (const forbidden of ['process.exit', 'requestPrivileged', 'trust.env', 'child_process']) {
+    assert.ok(!code.includes(forbidden), `the panel must not reference ${forbidden}`);
+  }
 });

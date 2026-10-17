@@ -1171,3 +1171,29 @@ test('root never writes to, or chowns, a path the agent could have replaced with
     assert.ok(code.includes(stage), `${stage} must be staged under the root-owned prefix`);
   }
 });
+
+test('the adopt-by-address route gets the same origin the installer would bake in', () => {
+  // Two routes now need this answer and they are not the same path. The prefix is whatever the
+  // platform mounts this app under, so it has to be stripped off whichever route is asking —
+  // hard-coding /pi.sh and letting the other fall through to "no prefix" would hand a tunnelled
+  // screen the platform's ROOT as its server address. It would install cleanly and never connect.
+  assert.equal(originFor(req({ host: 'h' }), '/api/pi/link', '/api/pi/link'), 'http://h');
+  assert.equal(originFor(req({ host: 'h' }), '/display/api/pi/link', '/api/pi/link'), 'http://h/display');
+  assert.equal(
+    originFor(
+      req({ host: 'internal:7860', 'x-forwarded-host': 'masjid.example', 'x-forwarded-proto': 'https' }),
+      '/display/api/pi/link',
+      '/api/pi/link',
+    ),
+    'https://masjid.example/display',
+  );
+});
+
+test('a path that is not the route asking is refused rather than guessed at', () => {
+  // The route argument is also the validation: a pathname that does not end in it is not a
+  // request this function can answer about, and a best-effort guess would be an address.
+  assert.equal(originFor(req({ host: 'h' }), '/api/pi/link'), null, 'the default route still means /pi.sh');
+  assert.equal(originFor(req({ host: 'h' }), '/evil/pi.sh/x'), null);
+  assert.equal(originFor(req({ host: 'h' }), '/a/b/pi.sh'), null, 'only ONE prefix segment is a prefix');
+  assert.equal(originFor(req({ host: 'h' }), '/UPPER/pi.sh'), null);
+});

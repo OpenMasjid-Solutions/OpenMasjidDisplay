@@ -133,6 +133,45 @@ export function makeControl(log: (...args: unknown[]) => void, stateDir: string 
 }
 
 /**
+ * Where root keeps the things the agent may read but never write.
+ *
+ * The agent's own unit grants it `ReadWritePaths` for its config and its state directory and
+ * nothing else, so this whole tree is readable and read-only to it. That asymmetry is the point.
+ */
+export const PREFIX = '/opt/openmasjid-screen';
+
+/**
+ * Does ROOT on this device know which display server to trust?
+ *
+ * Two things on a Pi are done by root rather than by the agent: re-running the installer, and
+ * opening a root terminal. Both take their address from `SERVER` in `$PREFIX/trust.env` —
+ * root-owned, written only by the installer, and the one file the agent cannot write. That is the
+ * whole reason either is safe to offer from a dashboard: the address root acts on is not an
+ * address this process chose. The agent's own `config.json` IS agent-writable, which is exactly
+ * why nothing privileged reads it.
+ *
+ * The consequence is that a screen adopted from a panel rather than by the installer has a server
+ * in its own config and nothing in trust.env, so both of those buttons do nothing at all. They
+ * used to do nothing SILENTLY, which is the part worth fixing — a dashboard reporting "asked"
+ * about a machine that will never hear is worse than one saying it cannot. So this is reported on
+ * every check-in and the panel explains the one command that fixes it.
+ *
+ * Read fresh rather than cached: re-running the installer writes that file, and a screen just
+ * repaired should say so without waiting to be restarted. An EMPTY `SERVER=''` is the standalone
+ * case and must read as false — it is what the installer writes when there is no server, so a
+ * test for the line's presence rather than its contents would report every standalone screen as
+ * linked.
+ */
+export function rootHasTrustedServer(prefix: string = PREFIX): boolean {
+  try {
+    return /^SERVER='[^']+'/m.test(fs.readFileSync(`${prefix}/trust.env`, 'utf8'));
+  } catch {
+    // No file, or not readable. Either way root has nothing to act on, which is the answer.
+    return false;
+  }
+}
+
+/**
  * What root said about the last Wi-Fi join, if it has said anything since we last looked.
  *
  * Read-and-delete: the result is a one-off answer to one request, and leaving it would have the

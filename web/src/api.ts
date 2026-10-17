@@ -154,6 +154,14 @@ export const api = {
 
   /** Adopt the screen showing this code, creating the screen it will drive. */
   piAdopt: (code: string, name: string) => req<{ tv: Tv }>('POST', '/api/pi/adopt', { code, name }),
+  /** Adopt a Pi by its address, signing in to its own panel. See the link route in api.ts. */
+  piLink: (address: string, password: string, name: string) =>
+    req<{ tv: Tv }>('POST', '/api/pi/link', { address, password, name }),
+  /** The two below are served by a PI's own panel, not by a display server — see ServerLink.tsx. */
+  piLinkStatus: () =>
+    req<{ server: string; adopted: boolean; code: string; connected: boolean; status: string }>('GET', '/api/pi/link'),
+  /** Point this screen at a display server, or at none when given ''. */
+  piJoinServer: (server: string) => req<{ ok: boolean; server: string; adopted: boolean }>('POST', '/api/pi/link', { server }),
 
   /** Ask a Pi to do something. 202 means QUEUED, not done: the device is not reachable from here,
    *  it collects the instruction on its own poll within about five seconds. */
