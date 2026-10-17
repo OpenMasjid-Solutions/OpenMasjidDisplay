@@ -1,12 +1,14 @@
 {
   "name": "openmasjid-display-web",
   "private": true,
-  "version": "0.71.0-dev.56",
+  "version": "0.71.0-dev.57",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "typecheck:tests": "tsc -p tsconfig.check.json",
+    "test": "node --import tsx --import ./testing/assets.mjs --test \"src/**/*.test.ts\"",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -17,9 +19,11 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
   },

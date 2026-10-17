@@ -335,16 +335,22 @@ export function createApi(deps: Deps) {
   /**
    * Screens currently being adopted by address, so two attempts at one screen cannot overlap.
    *
-   * Adopting mints a FRESH identity, which means two requests running together each create a
-   * device and a screen, and the second's handover overwrites the first's on the Pi. What is left
-   * behind is an ADOPTED row for a screen that will never come online — and `forgetPendingDevice`
-   * deliberately will not touch an adopted row, so nothing cleans it up but an admin noticing a
-   * permanently offline screen and forgetting it.
+   * Adopting mints a FRESH identity, so two requests running together each create a device and a
+   * screen. Left alone, the loser's row stays behind ADOPTED, for a device that will never come
+   * online — and `forgetPendingDevice` deliberately will not touch an adopted row, so nothing
+   * tidies it up but an admin noticing a permanently offline screen.
    *
-   * The button in the panel is disabled while a request is in flight, which covers a double
-   * click and does NOT cover the case that actually produces this: a slow Pi, an admin who
-   * decides it has hung, a page reload, and a second press. Keyed by origin rather than globally,
-   * because adopting two different screens at once is a perfectly reasonable thing to do.
+   * **This is not the guard that makes that safe**, and the distinction matters because this one
+   * lives in a single process: a restart mid-adoption, or a second replica, has its own empty
+   * set. What holds regardless is on the PI — its link route refuses a second handover while it
+   * already holds a token, with no await between reading its config and writing it, so the check
+   * and the write cannot interleave. The second server is refused and rolls its own row back.
+   * `panel.test.ts` fires two handovers at one screen and pins that exactly one wins.
+   *
+   * What this set adds is the better answer: refused here in milliseconds with a sentence about
+   * waiting, rather than after a twelve-second round trip that creates a screen and deletes it
+   * again. It is keyed by origin rather than globally, because adopting two different screens at
+   * once is a perfectly reasonable thing to do.
    */
   const linking = new Set<string>();
   // Public widget: 120 requests per minute per CLIENT. The embedded page polls every 30s,

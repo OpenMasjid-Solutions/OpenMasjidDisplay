@@ -746,6 +746,35 @@ test('a screen that is mid-handover refuses to be re-pointed or recalled', async
   assert.equal(config().token, 'tok-one');
 });
 
+test('two servers handing over at the same moment: exactly one wins', async () => {
+  // This is what actually makes adopting one screen twice safe, and it is worth being precise
+  // about which guard does it. The server has an in-flight set keyed by origin, but that lives in
+  // ONE process — two replicas, or a server restarted mid-adoption, would each have their own.
+  //
+  // The guard that holds regardless is HERE: between reading the config and writing it there is
+  // no await, so on a single-threaded runtime the check and the write cannot interleave. The
+  // second handover sees a token and is refused, whoever sent it, and the server that lost rolls
+  // its own row back.
+  //
+  // Fired without awaiting in between, so both requests are genuinely in flight: `call` feeds the
+  // body on a microtask, so both handlers do reach their `await readBody` before either writes.
+  const { handler, config } = panel();
+  const cookie = await claim(handler);
+  const [a, b] = await Promise.all([
+    call(handler, 'POST', '/api/pi/link', { server: 'http://one', deviceId: 'pi_1', deviceSecret: 's1', token: 'tok-one' }, cookie),
+    call(handler, 'POST', '/api/pi/link', { server: 'http://two', deviceId: 'pi_2', deviceSecret: 's2', token: 'tok-two' }, cookie),
+  ]);
+
+  const codes = [a.status, b.status].sort();
+  assert.deepEqual(codes, [200, 409], `one must win and one must be refused, got ${codes.join(' and ')}`);
+
+  // And the screen belongs to exactly one of them — never a blend of the two.
+  const won = a.status === 200 ? 'one' : 'two';
+  assert.equal(config().server, `http://${won}`);
+  assert.equal(config().token, won === 'one' ? 'tok-one' : 'tok-two');
+  assert.equal(config().deviceId, won === 'one' ? 'pi_1' : 'pi_2');
+});
+
 test('cancelling before the code is approved sets a screen free, and keeps everything it owns', async () => {
   // The real shape of the cancel path: an address has been set and the screen is enrolling, so
   // there is no token yet. This is the way back from a mistyped address, and it must not cost

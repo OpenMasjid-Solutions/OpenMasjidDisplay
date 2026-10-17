@@ -1,0 +1,20 @@
+{
+  // Typecheck-only config that INCLUDES the test files.
+  //
+  // The same split the server makes, and for the same reason. tsconfig.json excludes
+  // `**/*.test.tsx` because that config is what `vite build` typechecks the APP with, and the app
+  // is a browser bundle: letting node's types in there would make `import fs from 'node:fs'`
+  // typecheck cleanly in a file that cannot run. So the tests, which legitimately need
+  // `node:test`, are compiled here instead.
+  //
+  // Without this they would never be typechecked at all — tsx strips types without checking them,
+  // so a test could call a function that no longer exists and still pass until the assertion
+  // happened to reach it. That is how a green suite stops being evidence.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src", "testing"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -25,12 +25,30 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { Field, Spinner, useToast, IconCheck } from '../ui';
 
-interface LinkState {
+export interface LinkState {
   server: string;
   adopted: boolean;
   code: string;
   connected: boolean;
   status: string;
+}
+
+/**
+ * Everything the view needs, so that it needs nothing else.
+ *
+ * Split out from the section below for one reason: the states this page moves through are the
+ * feature, and none of them could be rendered in a test while the component fetched its own data
+ * and read a toast out of context. As a pure function of its props it renders under
+ * `renderToStaticMarkup` with no network, no providers and no DOM — see ServerLink.test.tsx,
+ * which is what caught that an approved screen went on asking for its code.
+ */
+export interface ServerLinkViewProps {
+  /** null while the first poll is in flight */
+  st: LinkState | null;
+  address: string;
+  busy: boolean;
+  onAddress: (value: string) => void;
+  onSave: (server: string) => void;
 }
 
 export function ServerLinkSection() {
@@ -74,6 +92,10 @@ export function ServerLinkSection() {
     }
   };
 
+  return <ServerLinkView st={st} address={address} busy={busy} onAddress={setAddress} onSave={(s) => void save(s)} />;
+}
+
+export function ServerLinkView({ st, address, busy, onAddress, onSave }: ServerLinkViewProps) {
   if (!st) {
     return (
       <p className="hint">
@@ -153,7 +175,7 @@ export function ServerLinkSection() {
             somewhere else on the internet, use the address you reach it on from here.
           </p>
         )}
-        <button className="btn btn--ghost btn--sm" onClick={() => void save('')} disabled={busy} style={{ marginBlockStart: '0.8rem' }}>
+        <button className="btn btn--ghost btn--sm" onClick={() => onSave('')} disabled={busy} style={{ marginBlockStart: '0.8rem' }}>
           {busy ? <><Spinner /> Working…</> : 'Cancel and stay standalone'}
         </button>
       </div>
@@ -174,14 +196,14 @@ export function ServerLinkSection() {
         <input
           className="input"
           value={address}
-          onChange={(e) => setAddress(e.target.value)}
+          onChange={(e) => onAddress(e.target.value)}
           placeholder="http://192.168.1.18:7860"
           style={{ fontFamily: 'monospace' }}
         />
       </Field>
       <button
         className="btn btn--primary btn--sm"
-        onClick={() => void save(address.trim())}
+        onClick={() => onSave(address.trim())}
         disabled={busy || !address.trim()}
         style={{ marginBlockStart: '0.8rem' }}
       >

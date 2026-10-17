@@ -104,8 +104,11 @@ test('the device route still refuses what it always refused', () => {
  * does not cover the case that produces this: a slow Pi, an admin who thinks it has hung, a page
  * reload, and a second press.
  *
- * The guard is a set of origins currently being adopted. What makes it worth a test is not the
- * `add` — it is the RELEASE: a release on the success path only would lock an address out of
+ * The guard is a set of origins currently being adopted. It is not what makes the overlap SAFE —
+ * that is the Pi's own refusal to accept a second handover while it holds a token, which holds
+ * across processes and is pinned in pi/panel.test.ts. This one buys the better answer: refused in
+ * milliseconds rather than after a twelve-second round trip that creates a screen and deletes it
+ * again. What makes it worth a test of its own is not the `add` — it is the RELEASE: a release on the success path only would lock an address out of
  * being adopted for the lifetime of the process the first time a screen refused, and the symptom
  * would be "it says it is already being set up" for ever, with nothing to restart but the server.
  */

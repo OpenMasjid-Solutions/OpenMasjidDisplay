@@ -181,7 +181,7 @@ jobs:
           '
 
   web:
-    name: web — typecheck, build, audit
+    name: web — typecheck, build, test, audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -196,6 +196,19 @@ jobs:
 
       # `npm run build` is `tsc --noEmit && vite build`, so this typechecks as well as bundles.
       - run: npm run build
+        working-directory: web
+
+      # Tests are excluded from the config `vite build` typechecks with, because that one is
+      # for the browser bundle and must not see node's types. Same split as the server, same
+      # reason: tsx strips types without checking them, so without this a test could call a
+      # function that no longer exists and still pass.
+      - run: npm run typecheck:tests
+        working-directory: web
+
+      # The panel's own states, rendered and asserted — node:test plus react-dom/server, no
+      # browser and no test framework. Every bug found in the adoption page so far has been
+      # the right words at the wrong moment, which is exactly what this catches.
+      - run: npm test
         working-directory: web
 
       # The web half carries the only dependency advisory this app has had; fail on a new
