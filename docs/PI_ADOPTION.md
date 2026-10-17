@@ -39,10 +39,18 @@ set up standalone on the masjid's network: no keyboard, nothing to read off the 
 
 The order of the steps is the security of it, and `api.ts` says so at the route:
 
-1. **The address must resolve onto a private network.** Not a courtesy — this route makes the
-   server open a connection to wherever it is told and post a credential there. See
+1. **Resolve the address once, and connect to what it resolved to.** Not a courtesy — this route
+   makes the server open a connection to wherever it is told and post a credential there. See
    `piLink.ts`: the check is on *resolved addresses*, never on the spelling of the name, because
    `pi/lanHost.ts` is explicitly a heuristic about names and says so itself.
+
+   The resolved address is also what gets **connected to**, and that is the half that is easy to
+   leave out. Checking a name and then handing the name to `fetch` resolves it twice, and nothing
+   makes the two answers agree — a record that is private for the check and public for the
+   connection walks through a guard written that way, and what waits on the far side is a device
+   token. Resolving once removes the window rather than narrowing it. It also means obfuscated
+   literals (`http://2130706433`, `http://0x7f000001`) cannot bypass anything: what is judged is
+   whatever the resolver hands back, never the spelling it was asked about.
 2. **Sign in to the Pi's own panel with the password given.** This proves two things at once and
    both are needed: that whoever is asking administers that screen, and that the thing at that
    address is one of our panels at all. Nothing of ours is sent until it has succeeded.
@@ -131,7 +139,12 @@ standalone screen, so a presence test would report every standalone Pi in the wo
   it left them. The second case matters — `waitForAdoption` serves no panel at all, so leaving a
   panel-linked screen there would make a keyboard the only way back.
 - **Cancel, from the Pi's panel.** While a screen is enrolling, *Cancel and stay standalone*
-  clears the address. This is the way back from a typo.
+  clears the address. This is the way back from a typo — and it stops being offered the moment the
+  screen is approved. A token visible to that panel means one thing: the credentials have landed
+  and the agent has not restarted yet. In those five or six seconds, re-adopting leaves the first
+  server holding a row for a device that will never call, and cancelling drops the token the
+  screen has just been given, which is the same orphan from the other side. The route refuses
+  both outright; hiding the button is the courtesy, not the rule.
 - **An adopted screen's panel is read-only** (`pi/managedPanel.ts`) and that is asserted by a test
   that reads the file, so there is no *Leave* button there. Un-adopting an adopted screen is done
   from the server that owns it.

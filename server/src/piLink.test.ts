@@ -99,6 +99,12 @@ test('private address ranges are judged on the parsed address, not on the name',
     'fc00::1',
     'fe80::1',
     '::ffff:192.168.1.30', // the same machine wearing an IPv6 hat
+    // …and the SAME address in hex, which is what `new URL` normalises a typed literal into.
+    // Measured: `http://[::ffff:127.0.0.1]` arrives as `::ffff:7f00:1`, and without this it was
+    // judged public — refusing an admin's own screen with a sentence that was simply untrue.
+    '::ffff:7f00:1', // 127.0.0.1
+    '::ffff:c0a8:11e', // 192.168.1.30
+    '::ffff:ac10:1', // 172.16.0.1
   ]) {
     assert.equal(isPrivateAddress(ok), true, `${ok} is a private address`);
   }
@@ -111,6 +117,8 @@ test('private address ranges are judged on the parsed address, not on the name',
     '100.128.0.1', // just above CGNAT
     '2606:4700::1111',
     '::ffff:8.8.8.8',
+    '::ffff:808:808', // 8.8.8.8 in hex — the mapping must not make a public address private
+    'fec0::1', // deprecated site-local: not a range this allows, and refusing is the safe way to be wrong
     '999.1.1.1',
     'not-an-address',
     '',

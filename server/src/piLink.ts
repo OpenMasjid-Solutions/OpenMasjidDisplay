@@ -103,7 +103,7 @@ export function parseLinkAddress(raw: unknown): LinkTarget | { error: string } {
  *
  * Link-local is private and answers TRUE here, which is the truthful answer to the question this
  * function asks. It is refused anyway, one level up, for a reason that has nothing to do with
- * privacy — see `privateTargetRefusal`.
+ * privacy — see `resolveLinkTarget`.
  */
 export function isPrivateAddress(ip: string): boolean {
   const h = ip.trim().toLowerCase().replace(/^\[|\]$/g, '');
@@ -124,10 +124,26 @@ export function isPrivateAddress(ip: string): boolean {
 
   if (!h.includes(':')) return false; // not an address at all
 
-  // An IPv4 address wearing an IPv6 hat — ::ffff:192.168.1.30 — is the same machine, and a
-  // resolver will hand one back on a dual-stack box. Judge it as the v4 address it is.
-  const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(h);
-  if (mapped) return isPrivateAddress(mapped[1]);
+  /**
+   * An IPv4 address wearing an IPv6 hat — the same machine, judged as the v4 address it is.
+   *
+   * BOTH spellings, which is the part that is easy to miss. `::ffff:192.168.1.30` is how it is
+   * usually written, but it is equally `::ffff:c0a8:11e` in hex, and that is what `new URL`
+   * normalises a typed literal into — measured, on `http://[::ffff:127.0.0.1]`, which came back
+   * as `::ffff:7f00:1` and was judged public.
+   *
+   * The direction of that mistake is safe (a private address refused, never a public one allowed)
+   * but it is not harmless: the admin is told their own screen "is on the public internet", which
+   * is both false and impossible to act on.
+   */
+  const mappedDotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(h);
+  if (mappedDotted) return isPrivateAddress(mappedDotted[1]);
+  const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1], 16);
+    const lo = parseInt(mappedHex[2], 16);
+    return isPrivateAddress(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
+  }
 
   if (h === '::1' || h === '::') return true;
   if (h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return true; // fe80::/10
@@ -240,7 +256,7 @@ export const LINK_TIMEOUT_MS = 12_000;
  * `redirect: 'error'` is the same guard every outbound call in this app carries, and here it is
  * load-bearing in a specific way: a redirect is exactly how an address that passed the private
  * check sends us somewhere that would not have. Following one would undo the whole of
- * `privateTargetRefusal`.
+ * `resolveLinkTarget`.
  */
 function askPi(origin: string, path: string, payload: unknown, signal: AbortSignal, cookie?: string): Promise<Response> {
   return fetch(`${origin}${path}`, {
