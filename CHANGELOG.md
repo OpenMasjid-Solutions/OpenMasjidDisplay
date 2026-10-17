@@ -22,8 +22,8 @@ CLAUDE.md § *The changelog has two audiences*.
   screen once, not twice.
 
 - **And the other way round: a screen can be pointed at a server from its own panel.** On the
-  screen, under **Settings → Display server**, type the address of the display server you want it
-  to join. That works when the server is not in the building at all, which the first way cannot:
+  screen, under **Settings → Display server**, paste the address of the display server you want
+  it to join — straight out of your browser's address bar is fine. That works when the server is not in the building at all, which the first way cannot:
   use whatever address you reach the server on from there. The screen then shows a code — on its
   own page as well as on the television — and you enter that code in the server's dashboard to
   finish. The screen's page says so the moment the code is accepted, rather than going on

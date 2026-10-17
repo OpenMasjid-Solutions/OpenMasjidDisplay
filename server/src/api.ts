@@ -60,7 +60,7 @@ import {
 } from './piAgent';
 import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
 import { capabilitiesFor } from './capabilities';
-import { parseLinkAddress, privateTargetRefusal, piPanelSignIn, piPanelHandOver, LINK_TIMEOUT_MS } from './piLink';
+import { parseLinkAddress, resolveLinkTarget, piPanelSignIn, piPanelHandOver, LINK_TIMEOUT_MS } from './piLink';
 import { statePayload } from './statePayload';
 import { saveSoundClip, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
 
@@ -1835,8 +1835,15 @@ export function createApi(deps: Deps) {
         if (!password) return sendJson(res, 400, { error: 'Enter the password for that screen’s own panel.' });
         const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
 
-        const refusal = await privateTargetRefusal(target.hostname);
-        if (refusal) return sendJson(res, 400, { error: refusal });
+        /**
+         * Resolved ONCE, and the address it resolved to is what gets connected to.
+         *
+         * Checking the name and then handing the name to `fetch` resolves it twice, and nothing
+         * makes the two answers agree — which is a rebinding window, and the thing on the other
+         * side of it is a device token. See resolveLinkTarget.
+         */
+        const resolved = await resolveLinkTarget(target);
+        if ('error' in resolved) return sendJson(res, resolved.status, { error: resolved.error });
 
         // The address to give the Pi, worked out from how this panel is being reached. Refused
         // rather than guessed: a screen told a mangled address joins and then never connects.
@@ -1862,7 +1869,7 @@ export function createApi(deps: Deps) {
         const ctrl = new AbortController();
         const deadline = setTimeout(() => ctrl.abort(), LINK_TIMEOUT_MS);
         try {
-          const session = await piPanelSignIn(target.origin, password, ctrl.signal);
+          const session = await piPanelSignIn(resolved.origin, resolved.display, password, ctrl.signal);
           if ('error' in session) return sendJson(res, session.status, { error: session.error });
 
           // Everything is proved. Create the screen and its device, then hand the credentials
@@ -1879,7 +1886,7 @@ export function createApi(deps: Deps) {
             credentials = { deviceId: made.device.id, deviceSecret: made.deviceSecret, token: made.device.token! };
           });
 
-          const handed = await piPanelHandOver(target.origin, session.cookie, { server: origin, ...credentials }, ctrl.signal);
+          const handed = await piPanelHandOver(resolved.origin, session.cookie, { server: origin, ...credentials }, ctrl.signal);
           if ('error' in handed) {
             store.update((db) => removeAdoptedDevice(db, credentials.deviceId));
             return sendJson(res, handed.status, { error: handed.error });
@@ -1887,7 +1894,7 @@ export function createApi(deps: Deps) {
 
           // The row this screen used to be, if it had one here. Only ever a pending one.
           if (handed.previousDeviceId) store.update((db) => forgetPendingDevice(db, handed.previousDeviceId));
-          log.info(`Pi screen "${created.name}" adopted at ${target.origin}`);
+          log.info(`Pi screen "${created.name}" adopted at ${resolved.display}`);
           return sendJson(res, 200, { tv: created });
         } finally {
           clearTimeout(deadline);

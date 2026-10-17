@@ -62,7 +62,7 @@ import { isWifiAction, type WifiAction } from './control';
 // whoever is serving it. httpio imports nothing but node's own types, so the agent bundle pays
 // nothing for this.
 import { UPLOAD_HEADERS } from '../httpio';
-import { SERVER_ORIGIN_RE, type AgentConfig } from './agentConfig';
+import { normaliseServerOrigin, type AgentConfig } from './agentConfig';
 
 /**
  * The panel's own header set. A panel on a masjid's LAN gets the same treatment as one behind
@@ -776,8 +776,14 @@ export function createPiPanel(deps: PanelDeps) {
         const cfg = readConfig();
         if (!cfg) return sendJson(res, 503, { error: 'This screen cannot read its own settings right now.' });
 
-        const server = String(body.server ?? '').trim().replace(/\/+$/, '');
-        if (server && !SERVER_ORIGIN_RE.test(server)) {
+        /**
+         * Normalised, not just checked. An address copied out of a browser's address bar carries a
+         * query or a fragment, both of which pass the pattern and then swallow the path of every
+         * URL the agent builds — see normaliseServerOrigin. The failure is silent and permanent,
+         * so the shapes that cannot be part of an address are dropped here rather than stored.
+         */
+        const server = normaliseServerOrigin(String(body.server ?? ''));
+        if (server === null) {
           return sendJson(res, 400, { error: 'That is not a web address. It should look like http://192.168.1.18:7860.' });
         }
 
@@ -789,6 +795,30 @@ export function createPiPanel(deps: PanelDeps) {
          * here turns that into a 400 somebody can read instead of a screen that comes back from
          * its next restart asking to be set up.
          */
+        /**
+         * A token already held means a handover is IN PROGRESS, and nothing else.
+         *
+         * This panel is served only while a screen is its own: once it has been adopted the agent
+         * restarts and `managedPanel.ts` answers here instead. So the one window in which this
+         * route can see a token is the five or six seconds between the credentials landing and
+         * that restart — and both things reachable in that window are wrong.
+         *
+         * Adopting again creates a SECOND device and screen on the server while the first keeps
+         * its token, leaving a row for a device that will never call: offline for ever on one
+         * side, absent on the other. Clearing the address instead drops the token the screen has
+         * just been given, so the screen stays standalone while the server keeps an adopted row
+         * for it — the same orphan from the other direction.
+         *
+         * The panel no longer offers either, but a button is a courtesy and this is the rule. A
+         * screen that genuinely needs to leave is released from the server that owns it, which is
+         * also the only place that can tidy up its own row.
+         */
+        if (cfg.token) {
+          return sendJson(res, 409, {
+            error: 'This screen has already joined a display server and is handing over. Manage it from that server.',
+          });
+        }
+
         const deviceId = String(body.deviceId ?? '').trim();
         const deviceSecret = String(body.deviceSecret ?? '').trim();
         const token = String(body.token ?? '').trim();
@@ -804,12 +834,14 @@ export function createPiPanel(deps: PanelDeps) {
         }
 
         /**
-         * The token is dropped whenever one was not supplied.
+         * The config is written from what ARRIVED, so a token not supplied is a token removed.
          *
-         * Pointing a screen at a different server while it still holds the old one's token would
-         * have it presenting a credential the new server has never issued — which that server
-         * answers with a 404, which this agent reads as "I have been forgotten". The screen would
-         * loop between the two states and never settle, and nothing would say why.
+         * With the handover guard above, a token can never be present here to remove — the write
+         * is stated this way because it is the rule, not because the branch is reachable. Stated
+         * the other way round, as a merge, it would quietly keep a credential the new server has
+         * never issued the first time that guard was relaxed; that server answers such a token
+         * with a 404, and a 404 is what this agent reads as "I have been forgotten". The screen
+         * would flip between the two states for ever and say nothing about why.
          */
         /**
          * The id being given up is reported back, and that is not bookkeeping.

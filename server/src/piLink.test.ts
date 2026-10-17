@@ -23,7 +23,7 @@ import type { AddressInfo } from 'node:net';
 import {
   parseLinkAddress,
   isPrivateAddress,
-  privateTargetRefusal,
+  resolveLinkTarget,
   piPanelSignIn,
   piPanelHandOver,
 } from './piLink';
@@ -119,6 +119,9 @@ test('private address ranges are judged on the parsed address, not on the name',
   }
 });
 
+/** The resolver guard, asked the way the route asks it. */
+const resolve = (host: string) => resolveLinkTarget({ origin: `http://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}`, hostname: host });
+
 test('an address on the public internet is refused', async () => {
   // Resolved, not guessed from the spelling. `pi/lanHost.ts` says of itself that it is a heuristic
   // about names rather than a security check, and it is right — this is the other thing.
@@ -127,9 +130,9 @@ test('an address on the public internet is refused', async () => {
   // a literal, so this asserts the refusal without the test depending on a working resolver. A
   // network-dependent test in CI fails for reasons that have nothing to do with the code.
   for (const host of ['8.8.8.8', '2606:4700:4700::1111']) {
-    const refusal = await privateTargetRefusal(host);
-    assert.ok(refusal, `${host} must be refused`);
-    assert.match(refusal, /public internet/);
+    const r = await resolve(host);
+    assert.ok('error' in r, `${host} must be refused`);
+    assert.match(r.error, /public internet/);
   }
 });
 
@@ -140,10 +143,10 @@ test('a link-local address is refused, and not called public', async () => {
   // services live, which makes it the one private range worth probing.
   for (const host of ['169.254.169.254', '169.254.1.1', 'fe80::1']) {
     assert.equal(isPrivateAddress(host), true, `${host} really is private`);
-    const refusal = await privateTargetRefusal(host);
-    assert.ok(refusal, `${host} must still be refused`);
-    assert.match(refusal, /link-local/);
-    assert.doesNotMatch(refusal, /public internet/, 'calling it public would be a lie');
+    const r = await resolve(host);
+    assert.ok('error' in r, `${host} must still be refused`);
+    assert.match(r.error, /link-local/);
+    assert.doesNotMatch(r.error, /public internet/, 'calling it public would be a lie');
   }
 });
 
@@ -159,7 +162,7 @@ test('a screen that already belongs to a server says so, not "wrong password"', 
     },
   });
   try {
-    const r = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(5000));
+    const r = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(5000));
     assert.ok('error' in r);
     assert.equal(r.status, 409);
     assert.match(r.error, /already managed by a display server/i);
@@ -168,13 +171,46 @@ test('a screen that already belongs to a server says so, not "wrong password"', 
   }
 });
 
+test('the address that was CHECKED is the address that gets connected to', async () => {
+  // The whole point of resolving here rather than letting `fetch` do it. Checking a NAME and then
+  // handing that name to fetch resolves it twice, and nothing makes the two answers agree — a
+  // record that is private for the check and public for the connection walks through a guard
+  // written that way, and what is posted on the other side of it is a device token.
+  //
+  // `localhost` is the case that shows it: a NAME, resolved here, and what comes back must be the
+  // literal it resolved to rather than the name, because a name handed onward is a name resolved
+  // again.
+  const r = await resolve('localhost');
+  assert.ok(!('error' in r));
+  const host = new URL(r.origin).hostname;
+  assert.notEqual(host, 'localhost', 'the name must not survive into the address we connect to');
+  assert.ok(isPrivateAddress(host.replace(/^\[|\]$/g, '')), `connected host ${host} must be the private literal`);
+  assert.equal(r.display, 'http://localhost', 'but the admin is still told what they typed');
+});
+
+test('a port survives resolution, and an IPv6 literal keeps its brackets', () => {
+  // Rebuilding the origin around a new host is where both of these get dropped. A screen on a
+  // non-default port would be connected to on port 80, and an unbracketed IPv6 host does not
+  // parse at all.
+  return (async () => {
+    const withPort = await resolveLinkTarget({ origin: 'http://127.0.0.1:8080', hostname: '127.0.0.1' });
+    assert.ok(!('error' in withPort));
+    assert.equal(withPort.origin, 'http://127.0.0.1:8080');
+
+    const v6 = await resolveLinkTarget({ origin: 'http://[::1]:7860', hostname: '::1' });
+    assert.ok(!('error' in v6), JSON.stringify(v6));
+    assert.equal(v6.origin, 'http://[::1]:7860');
+  })();
+});
+
 test('loopback and a name that does not resolve are told apart', async () => {
   // Both resolve out of the hosts file or fail outright, so neither needs a resolver either.
-  assert.equal(await privateTargetRefusal('127.0.0.1'), null);
-  assert.equal(await privateTargetRefusal('localhost'), null);
-  const gone = await privateTargetRefusal('this-host-does-not-exist.invalid');
-  assert.ok(gone, 'an unresolvable name must be refused');
-  assert.match(gone, /Nothing on this network answers/);
+  assert.deepEqual(await resolve('127.0.0.1'), { origin: 'http://127.0.0.1', display: 'http://127.0.0.1' });
+  const named = await resolve('localhost');
+  assert.ok(!('error' in named), 'localhost resolves privately');
+  const gone = await resolve('this-host-does-not-exist.invalid');
+  assert.ok('error' in gone, 'an unresolvable name must be refused');
+  assert.match(gone.error, /Nothing on this network answers/);
 });
 
 // ── the handshake with the screen ────────────────────────────────────────────
@@ -219,7 +255,7 @@ const ok = (res: http.ServerResponse, cookies: string[] = ['omd=abc; HttpOnly; P
 test('signing in carries the password, and comes back with the session', async () => {
   const pi = await fakePi({ '/api/login': (_q, res) => ok(res) });
   try {
-    const r = await piPanelSignIn(pi.origin, 'a-good-password', AbortSignal.timeout(5000));
+    const r = await piPanelSignIn(pi.origin, pi.origin, 'a-good-password', AbortSignal.timeout(5000));
     assert.ok(!('error' in r), JSON.stringify(r));
     assert.equal(r.cookie, 'omd=abc');
     assert.deepEqual(JSON.parse(pi.seen[0].body), { password: 'a-good-password' });
@@ -235,7 +271,7 @@ test('several Set-Cookie headers are kept apart rather than spliced into one', a
     '/api/login': (_q, res) => ok(res, ['omd=abc; Path=/', 'other=1; Path=/']),
   });
   try {
-    const r = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(5000));
+    const r = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(5000));
     assert.ok(!('error' in r));
     assert.equal(r.cookie, 'omd=abc; other=1');
   } finally {
@@ -257,7 +293,7 @@ test('each way a sign-in can fail gets its own sentence, and none of them is a 5
       },
     });
     try {
-      const r = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(5000));
+      const r = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(5000));
       assert.ok('error' in r, `HTTP ${code} should fail`);
       assert.match(r.error, want);
       assert.notEqual(r.status, 500, 'a screen behaving badly is not this server being broken');
@@ -275,7 +311,7 @@ test('a 200 with no session is refused — that is not one of our panels', async
     },
   });
   try {
-    const r = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(5000));
+    const r = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(5000));
     assert.ok('error' in r);
     assert.match(r.error, /issued no session/);
   } finally {
@@ -298,7 +334,7 @@ test('a redirect is never followed, however inviting', async () => {
     },
   });
   try {
-    const r = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(5000));
+    const r = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(5000));
     assert.ok('error' in r, 'a redirect must not be followed into a success');
     assert.equal(r.status, 502);
     assert.deepEqual(elsewhere.seen, [], 'and the host it pointed at was never contacted');
@@ -318,7 +354,7 @@ test('nothing reaches the screen until it has accepted the password', async () =
     },
   });
   try {
-    const r = await piPanelSignIn(pi.origin, 'wrong', AbortSignal.timeout(5000));
+    const r = await piPanelSignIn(pi.origin, pi.origin, 'wrong', AbortSignal.timeout(5000));
     assert.ok('error' in r);
     assert.equal(pi.seen.length, 1, 'exactly one request, and it was the sign-in');
     assert.equal(pi.seen[0].path, '/api/login');
@@ -334,7 +370,7 @@ test('the handover carries the session and the whole credential set', async () =
     '/api/pi/link': (_q, res) => ok(res, []),
   });
   try {
-    const session = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(5000));
+    const session = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(5000));
     assert.ok(!('error' in session));
     const payload = { server: 'http://masjid.lan:7860', deviceId: 'pi_1', deviceSecret: 'sec', token: 'tok' };
     const r = await piPanelHandOver(pi.origin, session.cookie, payload, AbortSignal.timeout(5000));
@@ -350,7 +386,7 @@ test('the handover carries the session and the whole credential set', async () =
 test('a screen too old to know this route says so, rather than reporting a mystery', async () => {
   const pi = await fakePi({ '/api/login': (_q, res) => ok(res) });
   try {
-    const session = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(5000));
+    const session = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(5000));
     assert.ok(!('error' in session));
     const r = await piPanelHandOver(
       pi.origin,
@@ -371,7 +407,7 @@ test('a screen that accepts the connection and then goes quiet does not hang the
   const pi = await fakePi({ '/api/login': () => {} });
   try {
     const started = Date.now();
-    const r = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(300));
+    const r = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(300));
     assert.ok('error' in r);
     assert.ok(Date.now() - started < 3000, 'it must give up when the deadline says so');
     assert.match(r.error, /Could not reach a screen/);
@@ -399,7 +435,7 @@ test('the screen reports which id it is giving up, and a lie about it is bounded
       },
     });
     try {
-      const session = await piPanelSignIn(pi.origin, 'pw', AbortSignal.timeout(5000));
+      const session = await piPanelSignIn(pi.origin, pi.origin, 'pw', AbortSignal.timeout(5000));
       assert.ok(!('error' in session));
       const r = await piPanelHandOver(
         pi.origin,

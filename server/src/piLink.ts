@@ -136,29 +136,53 @@ export function isPrivateAddress(ip: string): boolean {
 }
 
 /**
- * Ask the resolver where this host points, and insist every answer is on a private network.
+ * Ask the resolver where this host points, insist every answer is on a private network, and come
+ * back with the address to actually CONNECT to.
  *
  * `all: true` matters: a name with both a private and a public address would otherwise pass on
  * whichever one came first, and which one that is depends on the resolver's mood. Every address
  * has to be private, because we do not get to choose which one the connection uses.
  *
- * Returns null when the target is acceptable, or a sentence for the admin when it is not.
+ * ## Why it returns an address rather than a verdict
+ *
+ * Checking a NAME and then handing that name to `fetch` resolves it twice, and nothing says the
+ * two answers agree. A name whose record is private for the check and public for the connection —
+ * DNS rebinding, which costs an attacker a zero-TTL record and nothing else — would walk straight
+ * through a check written that way. The consequence here is not abstract: the caller goes on to
+ * post a device TOKEN, and a token is a live credential for reading this masjid's timetable and
+ * its camera URLs, passwords and all.
+ *
+ * So the resolved address is what gets connected to, and the name is never resolved a second
+ * time. There is no window left to race, which is a different and better thing than a window too
+ * small to be worth racing.
+ *
+ * The cost is one real case: an HTTPS target whose certificate is issued for the NAME would now
+ * fail to verify, because the connection is made to the address. A Raspberry Pi's panel is plain
+ * HTTP on port 80 — that is what the installer sets up and what the television prints — so this
+ * costs nothing that exists. An address typed as a literal is used exactly as typed and never
+ * goes near the resolver at all.
  */
-export async function privateTargetRefusal(hostname: string): Promise<string | null> {
+export async function resolveLinkTarget(target: LinkTarget): Promise<{ origin: string; display: string } | LinkFailure> {
+  const { hostname } = target;
   let found: { address: string }[];
   try {
     found = await dns.promises.lookup(hostname, { all: true, verbatim: true });
   } catch {
-    return `Nothing on this network answers to "${hostname}". Check the address and that the screen is switched on.`;
+    return {
+      status: 400,
+      error: `Nothing on this network answers to "${hostname}". Check the address and that the screen is switched on.`,
+    };
   }
-  if (!found.length) return `Nothing on this network answers to "${hostname}".`;
+  if (!found.length) return { status: 400, error: `Nothing on this network answers to "${hostname}".` };
 
   const publicOnes = found.filter((a) => !isPrivateAddress(a.address));
   if (publicOnes.length) {
-    return (
-      `"${hostname}" is on the public internet (${publicOnes[0].address}), and this only adopts a screen ` +
-      `on your own network. If the screen is somewhere else, set this server's address on the screen itself instead.`
-    );
+    return {
+      status: 400,
+      error:
+        `"${hostname}" is on the public internet (${publicOnes[0].address}), and this only adopts a screen ` +
+        `on your own network. If the screen is somewhere else, set this server's address on the screen itself instead.`,
+    };
   }
 
   /**
@@ -174,12 +198,25 @@ export async function privateTargetRefusal(hostname: string): Promise<string | n
    */
   const linkLocal = found.find((a) => /^169\.254\./.test(a.address) || /^fe[89ab]/i.test(a.address));
   if (linkLocal) {
-    return (
-      `${linkLocal.address} is a link-local address — what a machine gives itself when it cannot ` +
-      `get one from the network. Give the screen's real address on your network instead.`
-    );
+    return {
+      status: 400,
+      error:
+        `${linkLocal.address} is a link-local address — what a machine gives itself when it cannot ` +
+        `get one from the network. Give the screen's real address on your network instead.`,
+    };
   }
-  return null;
+
+  // Rebuilt around the address that was just checked. An IPv6 literal needs its brackets back;
+  // `URL` strips them from `hostname` and refuses to parse without them.
+  const picked = found[0].address;
+  const literal = picked.includes(':') ? `[${picked}]` : picked;
+  const url = new URL(target.origin);
+  url.hostname = literal;
+  // `display` is what the ADMIN typed. Messages quote that rather than the address it resolved
+  // to: being told that "raspberrypi.local" did not answer is actionable, and being told that
+  // 10.0.0.5 did not is a puzzle about a number they never saw. For an address typed as a literal
+  // — which is almost all of them — the two are the same string.
+  return { origin: url.origin, display: target.origin };
 }
 
 /**
@@ -226,6 +263,7 @@ function askPi(origin: string, path: string, payload: unknown, signal: AbortSign
  */
 export async function piPanelSignIn(
   origin: string,
+  display: string,
   password: string,
   signal: AbortSignal,
 ): Promise<{ cookie: string } | LinkFailure> {
@@ -236,7 +274,7 @@ export async function piPanelSignIn(
     return {
       status: 502,
       error:
-        `Could not reach a screen at ${origin} (${e instanceof Error ? e.message : 'no answer'}). ` +
+        `Could not reach a screen at ${display} (${e instanceof Error ? e.message : 'no answer'}). ` +
         'Check the address, and that the screen is switched on and set up.',
     };
   }
@@ -261,11 +299,11 @@ export async function piPanelSignIn(
   if (res.status === 405) {
     return {
       status: 409,
-      error: `The screen at ${origin} is already managed by a display server. Forget it there first, or set it free from that server.`,
+      error: `The screen at ${display} is already managed by a display server. Forget it there first, or set it free from that server.`,
     };
   }
   if (!res.ok) {
-    return { status: 502, error: `The screen at ${origin} answered unexpectedly (HTTP ${res.status}). Is that address a screen's panel?` };
+    return { status: 502, error: `The screen at ${display} answered unexpectedly (HTTP ${res.status}). Is that address a screen's panel?` };
   }
 
   // `set-cookie` can legitimately arrive as several headers. `getSetCookie` keeps them apart,
@@ -276,7 +314,7 @@ export async function piPanelSignIn(
     .filter(Boolean)
     .join('; ');
   if (!cookie) {
-    return { status: 502, error: `The screen at ${origin} signed in but issued no session. Is that address a screen's panel?` };
+    return { status: 502, error: `The screen at ${display} signed in but issued no session. Is that address a screen's panel?` };
   }
   return { cookie };
 }

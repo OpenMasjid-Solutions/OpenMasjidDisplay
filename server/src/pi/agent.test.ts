@@ -18,7 +18,7 @@ import { parseGeometry, packFrame, Framebuffer } from './framebuffer';
 import { parseFbset } from './fbset';
 import { fitMode, blitCentered } from './raster';
 import { pickLanIp, deviceFacts } from './device';
-import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, isUsableConfig, type AgentConfig } from './agentConfig';
+import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, isUsableConfig, normaliseServerOrigin, type AgentConfig } from './agentConfig';
 import { pairingSvg, messageSvg } from './pairing';
 
 // ── framebuffer geometry ─────────────────────────────────────────────────────
@@ -575,5 +575,66 @@ test('saving the config flushes it, and still merges and round-trips', () => {
     assert.ok(!fs.existsSync(`${file}.tmp`), 'no temp file may be left behind');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── the address somebody types into a screen's panel ─────────────────────────
+
+test('a query or a fragment is dropped, because concatenation swallows the path behind them', () => {
+  // Every URL the agent builds is `${server}/pi/…` — plain concatenation. So an address carrying
+  // a query or a fragment lands on the server's ROOT with the real path swallowed, the screen
+  // never enrols, and the only thing anybody sees is "Cannot reach the display server" for ever.
+  // The input that produces it is the likeliest there is: a copy out of a browser's address bar.
+  for (const [typed, want] of [
+    ['http://192.168.1.55:7860/?tab=screens', 'http://192.168.1.55:7860'],
+    ['http://192.168.1.55:7860/#/settings', 'http://192.168.1.55:7860'],
+    ['https://masjid.example/display?x=1#y', 'https://masjid.example/display'],
+  ] as const) {
+    assert.equal(normaliseServerOrigin(typed), want, typed);
+  }
+});
+
+test('the PATH is kept — it is the part that looks droppable and is not', () => {
+  // The platform mounts this app under a prefix, so `https://masjid.example/display` is a real
+  // address and `https://masjid.example` is a different, wrong one. Dropping the path here would
+  // send every tunnelled screen to the platform's root.
+  assert.equal(normaliseServerOrigin('https://masjid.example/display'), 'https://masjid.example/display');
+  assert.equal(normaliseServerOrigin('https://masjid.example/display/'), 'https://masjid.example/display');
+});
+
+test('a trailing slash goes, because every caller appends its own', () => {
+  assert.equal(normaliseServerOrigin('http://192.168.1.55:7860/'), 'http://192.168.1.55:7860');
+  assert.equal(normaliseServerOrigin('http://192.168.1.55:7860///'), 'http://192.168.1.55:7860');
+  assert.equal(normaliseServerOrigin('  http://192.168.1.55:7860  '), 'http://192.168.1.55:7860');
+});
+
+test('empty is standalone, not a failure', () => {
+  // Clearing the address is how a screen is set free from its own panel, so '' has to survive as
+  // a VALUE. Returning null for it would turn "stay standalone" into "that is not an address".
+  assert.equal(normaliseServerOrigin(''), '');
+  assert.equal(normaliseServerOrigin('   '), '');
+});
+
+test('anything that is not a web address is refused', () => {
+  for (const bad of ['192.168.1.55:7860', 'ftp://host', 'javascript:alert(1)', 'http://', 'http://a b', 'not an address']) {
+    assert.equal(normaliseServerOrigin(bad), null, bad);
+  }
+});
+
+test('what comes out can always be concatenated into a working URL', () => {
+  // The property this exists for, asserted as the property rather than case by case.
+  for (const typed of [
+    'http://192.168.1.55:7860',
+    'http://192.168.1.55:7860/',
+    'http://192.168.1.55:7860/?tab=screens',
+    'http://192.168.1.55:7860/#/settings',
+    'https://masjid.example/display',
+    'https://masjid.example/display/?a=b#c',
+  ]) {
+    const server = normaliseServerOrigin(typed)!;
+    const url = new URL(`${server}/pi/enrol`);
+    assert.ok(url.pathname.endsWith('/pi/enrol'), `${typed} -> ${url.href}`);
+    assert.equal(url.search, '', `${typed} left a query behind`);
+    assert.equal(url.hash, '', `${typed} left a fragment behind`);
   }
 });

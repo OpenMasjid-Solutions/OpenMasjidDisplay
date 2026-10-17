@@ -36,6 +36,48 @@ export const CONFIG_PATH = process.env.OMD_SCREEN_CONFIG || `${CONFIG_DIR}/confi
  */
 export const SERVER_ORIGIN_RE = /^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/;
 
+/**
+ * What somebody typed into the panel, turned into an address this agent can build URLs on.
+ *
+ * `SERVER_ORIGIN_RE` decides whether a string is plausible. It is deliberately not the whole
+ * answer, because every URL the agent builds is `${server}/pi/…` — plain concatenation — and two
+ * shapes that pass the pattern break that silently:
+ *
+ *     http://host:7860/?tab=screens   ->  http://host:7860/?tab=screens/pi/enrol
+ *     http://host:7860/#/settings     ->  http://host:7860/#/settings/pi/enrol
+ *
+ * Both land on the server's ROOT with the real path swallowed by the query or the fragment, so
+ * the screen never enrols and the only thing anybody sees is "Cannot reach the display server"
+ * for ever. And the input that produces them is the likeliest one there is: an address copied out
+ * of a browser's address bar while looking at the dashboard.
+ *
+ * So a query and a fragment are DROPPED rather than refused — neither can be part of a server's
+ * address, so there is nothing to lose and a confusing failure to avoid. The PATH is kept, which
+ * is the part that looks droppable and is not: the platform mounts this app under a prefix, so
+ * `https://masjid.example/display` is a real address and `https://masjid.example` is a different,
+ * wrong one.
+ *
+ * Returns null for anything that is not an address at all. An empty string means standalone and
+ * is returned as-is, because that is a valid answer rather than a failure.
+ */
+export function normaliseServerOrigin(raw: string): string | null {
+  const text = raw.trim();
+  if (!text) return '';
+  // Refused before parsing: `new URL` is lenient about things that cannot be a server address,
+  // and the pattern is the agreed shape for what may end up in the config file.
+  if (!SERVER_ORIGIN_RE.test(text.replace(/\/+$/, ''))) return null;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  // Rebuilt from the parts that are an address, which is also what drops the query and fragment.
+  // The trailing slash goes because every caller appends its own.
+  return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+}
+
 export interface AgentConfig {
   /**
    * The display server's origin, baked in by the installer from the URL it was fetched from —

@@ -723,30 +723,43 @@ test('a nonsense address is refused rather than written and puzzled over later',
   assert.equal(config().server, '');
 });
 
-test('moving a screen to a different server drops the previous one token', async () => {
-  // Keeping it would have the screen presenting a credential the new server never issued, which
-  // that server answers with a 404 — and a 404 is what this agent reads as "I have been
-  // forgotten". The screen would flip between the two states for ever and say nothing about why.
+test('a screen that is mid-handover refuses to be re-pointed or recalled', async () => {
+  // A token visible to THIS panel means one thing: the credentials have landed and the agent has
+  // not restarted yet. Five or six seconds, and both things reachable in it are wrong — adopting
+  // again leaves the first server holding a row for a device that will never call, and clearing
+  // the address drops the token the screen has just been given, which leaves the same orphan from
+  // the other side.
+  //
+  // This test used to assert the opposite, because the window was not thought about. It is kept
+  // pointing the other way rather than deleted: the behaviour it described is reachable, it is a
+  // real bug, and a test is the only thing that stops it being reintroduced as a convenience.
   const { handler, config } = panel();
   const cookie = await claim(handler);
   await call(handler, 'POST', '/api/pi/link', { server: 'http://one', deviceId: 'pi_1', deviceSecret: 's', token: 'tok-one' }, cookie);
   assert.equal(config().token, 'tok-one');
-  await call(handler, 'POST', '/api/pi/link', { server: 'http://two' }, cookie);
-  assert.equal(config().server, 'http://two');
-  assert.equal(config().token, undefined, 'the old server token must not survive the move');
+
+  for (const body of [{ server: 'http://two' }, { server: '' }, { server: 'http://two', deviceId: 'pi_2', deviceSecret: 's2', token: 'tok-two' }]) {
+    const r = await call(handler, 'POST', '/api/pi/link', body, cookie);
+    assert.equal(r.status, 409, `${JSON.stringify(body)} must be refused mid-handover`);
+  }
+  assert.equal(config().server, 'http://one', 'and nothing moved');
+  assert.equal(config().token, 'tok-one');
 });
 
-test('clearing the address sets a screen free again, and keeps everything it owns', async () => {
+test('cancelling before the code is approved sets a screen free, and keeps everything it owns', async () => {
+  // The real shape of the cancel path: an address has been set and the screen is enrolling, so
+  // there is no token yet. This is the way back from a mistyped address, and it must not cost
+  // somebody their password.
   const { handler, store, config } = panel();
   const cookie = await claim(handler);
-  await call(handler, 'POST', '/api/pi/link', { server: 'http://one', deviceId: 'pi_1', deviceSecret: 's', token: 'tok' }, cookie);
+  await call(handler, 'POST', '/api/pi/link', { server: 'http://typo' }, cookie);
+  assert.equal(config().server, 'http://typo');
+
   const r = await call(handler, 'POST', '/api/pi/link', { server: '' }, cookie);
   assert.equal(r.status, 200, r.body);
   assert.equal(config().server, '');
   assert.equal(config().token, undefined);
-  // The screen's own identity and its admin account are untouched: this is the way back from a
-  // mistyped address, and it must not cost somebody their password.
-  assert.equal(config().deviceId, 'pi_1');
+  assert.equal(config().deviceId, 'pi_a', 'the screen keeps the identity it has always had');
   assert.ok(store.db.admin, 'the local account survives being set free');
 });
 
