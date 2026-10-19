@@ -410,7 +410,7 @@ export function activeTicker(tt: Timetable, now: Date): { text: string; prohibit
   if (activeOverlay(tt, m, nowHours)) return { text: '', prohibited: false };
   // Ticker-mode prohibited window → a red message that overrides any normal ticker,
   // for the whole window (it clears itself when prayer is allowed again).
-  if (tt.prohibitedNotice?.ticker && prohibitedWindow(tt, m, nowHours)) {
+  if (prohibitedOnTicker(tt) && prohibitedWindow(tt, m, nowHours)) {
     return { text: prohibitedMessage(tt, m), prohibited: true };
   }
   return { text: activeTickerText(tt, m.parts), prohibited: false };
@@ -2051,9 +2051,11 @@ function layoutSimple(a: Box, m: Model, c: Ctx): string {
   const gap = Math.min(a.w, a.h) * 0.03;
   const leftFrac = 0.3;
   const leftW = (a.w - gap) * leftFrac;
-  out.push(brandColumn({ x: a.x, y: a.y, w: leftW, h: a.h }, m, c));
   const rightX = a.x + leftW + gap;
-  out.push(simpleTable({ x: rightX, y: a.y, w: a.x + a.w - rightX, h: a.h }, m, c));
+  const table: Box = { x: rightX, y: a.y, w: a.x + a.w - rightX, h: a.h };
+  const { rowH } = simpleGeom(table, simpleLines(m, c).length);
+  out.push(brandColumn({ x: a.x, y: a.y, w: leftW, h: a.h }, m, c, table.y + table.h - rowH / 2));
+  out.push(simpleTable(table, m, c));
   return out.join('');
 }
 
@@ -2112,35 +2114,11 @@ function announcementView(a: Box, m: Model, c: Ctx, image: string, isSimple: boo
   return out.join('');
 }
 
-/**
- * The Simple column's one line during the prohibited (zawāl) window: "Prohibited time — adhan in
- * 5min", in red. It is the only place this design says the window is on in WORDS when the ticker
- * is off, and a red tint alone does not tell a volunteer which of the several red things is
- * happening. With the countdown turned off it is still a warning, so it is drawn without the
- * amount rather than not at all.
- */
-function prohibitedLine(b: Box, c: Ctx): string {
-  const sec = Math.max(0, c.remainingSec);
-  const h = Math.floor(sec / 3600);
-  const mm = Math.floor((sec % 3600) / 60);
-  const amount = sec < 60 ? `${sec % 60} sec` : h > 0 ? `${h}hr ${mm}min` : `${mm}min`;
-  const word = c.eventWord.toLowerCase();
-  const label = c.L.prohibitedTime ?? 'Prohibited time';
-  const line = c.showCountdown ? `${label} — ${word} in ${amount}` : `${label} — until ${word}`;
-  const avail = b.w * 0.95;
-  let ls = clamp(b.h * 0.42, 12, 40);
-  const w = () => approxWidth(line, ls);
-  if (w() > avail) ls = Math.max(9, (ls * avail) / w());
-  const fitted = ellipsize(line, ls, avail);
-  return fitted
-    ? text(b.x + b.w / 2, b.y + b.h * 0.5 + ls * 0.36, fitted, { size: ls, fill: TICKER_RED, family: FONT_SANS, weight: 600, anchor: 'middle' })
-    : '';
-}
-
 /** Left column for the "simple" layout: brand, the big clock, the two dates, the countdown in
- *  words and a small sunrise/sunset row under them — sitting directly on the flat page, no card
- *  behind any of it. */
-function brandColumn(b: Box, m: Model, c: Ctx): string {
+ *  words and a small sunrise/sunset row — sitting directly on the flat page, no card behind any
+ *  of it. `sunMid` is the y of the table row the sun times should sit level with, when the table
+ *  is beside the column; without it they go under the countdown. */
+function brandColumn(b: Box, m: Model, c: Ctx, sunMid?: number): string {
   const out: string[] = [];
   const avail = b.w * 0.95;
   const cx = b.x + b.w / 2;
@@ -2194,7 +2172,7 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   let dateH = showDateLine ? ds * (twoDates ? 3.5 : 2) : 0;
 
   /**
-   * Sunrise and sunset, SIDE BY SIDE under the date — small, and out of the way.
+   * Sunrise and sunset, SIDE BY SIDE at the foot of the column — small, and out of the way.
    *
    * They have been above the clock twice now, stacked and large the second time, and both times
    * the head of this column read as cluttered: logo, name, two lines of sun times and then the
@@ -2230,13 +2208,16 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   let cdH = c.showCountdown ? countdownH(cdSize) : 0;
 
   /**
-   * The countdown wheel is gone — the highlighted row in the table already says which prayer is
-   * next, and the wheel was most of what made this column busy. What it must not take with it is
-   * the PROHIBITED-TIME wording: with the notice on and the ticker off, the wheel was the only
-   * place this design said so in words. So inside that window, and only then, one red line comes
-   * back under the sun times. Outside it nothing is reserved.
+   * Clear space around each GROUP, not the same tight spacing between every line.
+   *
+   * Packed edge to edge and centred as one block — name, clock, two dates, countdown, sun times —
+   * a masjid read this column as cluttered: nothing looked like it belonged with anything else.
+   * So the clock and both dates are one group (what time and what day it is), the countdown is
+   * another, and `gap` is the room each keeps around it. It is the minimum; a landscape column
+   * with room to spare spreads the groups further, up to twice it.
    */
-  let prohibH = c.prohibited ? clamp(b.w * 0.06, 12, 30) * 1.8 : 0;
+  let gap = clamp(b.h * 0.045, 8, 56);
+  const stackH = (hs: number[]) => hs.filter((h) => h > 0).reduce((s, h, i) => s + h + (i ? gap : 0), 0);
 
   /**
    * Everything above is sized from the box WIDTH, which is right while this column is the full
@@ -2251,21 +2232,51 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
    * scaled to fit first, and then centred — one factor across every size, so the proportions the
    * design depends on are unchanged and it simply gets smaller.
    */
-  let totalH = headerH + clockH + dateH + cdH + sunriseH + prohibH;
+  let totalH = stackH([headerH, clockH + dateH, cdH, sunriseH]);
   const room = b.h * 0.98;
   if (totalH > room && totalH > 0) {
     const k = room / totalH;
-    ms *= k; ns *= k; ss *= k; ts *= k; ds *= k; cdSize *= k;
-    headerH *= k; sunriseH *= k; clockH *= k; dateH *= k; prohibH *= k;
+    ms *= k; ns *= k; ss *= k; ts *= k; ds *= k; cdSize *= k; gap *= k;
+    headerH *= k; sunriseH *= k; clockH *= k; dateH *= k;
     // Re-measured, not scaled: `countdownH` is not proportional (the unit word's size is clamped),
     // so a scaled reserve would be short of what gets drawn at small sizes.
     cdH = c.showCountdown ? countdownH(cdSize) : 0;
-    totalH = headerH + clockH + dateH + cdH + sunriseH + prohibH;
+    totalH = stackH([headerH, clockH + dateH, cdH, sunriseH]);
   }
-  let y = b.y + Math.max(0, (b.h - totalH) / 2);
+
+  /**
+   * Beside the table, sunrise and sunset sit level with its LAST row — the Jumu'ah row on most
+   * screens — rather than under the countdown. That puts the reference line at the foot of the
+   * column, where it lines up with something, and leaves the head for what the room reads.
+   *
+   * Only when the rest still fits above it with a gap to spare; otherwise (a short box, a huge
+   * logo) the column falls back to one centred stack, which always fits because it was scaled to.
+   */
+  const above = [headerH, clockH + dateH, cdH].filter((h) => h > 0);
+  const aboveH = above.reduce((s, h) => s + h, 0);
+  const pinY = sunMid != null && c.showSunrise ? sunMid + ss * 0.35 : null;
+  const pinRoom = pinY == null ? 0 : pinY - ss * 1.3 - b.y;
+  const pinned = pinY != null && aboveH + gap * (above.length + 1) <= pinRoom;
+  let between = gap;
+  let y: number;
+  if (pinned) {
+    // Spread evenly, top margin and the space over the sun row included — then centred, so a
+    // capped gap leaves the slack shared above and below rather than piled at one end.
+    between = Math.min(gap * 2, (pinRoom - aboveH) / (above.length + 1));
+    y = b.y + (pinRoom - aboveH - between * Math.max(0, above.length - 1)) / 2;
+  } else {
+    y = b.y + Math.max(0, (b.h - totalH) / 2);
+  }
+  let drawnAny = false;
+  /** The space before a group — none before the first one drawn. */
+  const beforeGroup = () => {
+    if (drawnAny) y += between;
+    drawnAny = true;
+  };
 
   // Logo above the name, both centred as one unit directly over the clock — not
   // left-aligned the way the rest of the app's cards are.
+  if (headerH > 0) beforeGroup();
   if (c.showLogo && c.showName) {
     out.push(mark(cx - ms / 2, y, ms, c.p.primary, c.logo));
     out.push(text(cx, y + ms + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 500, anchor: 'middle', editId: 'masjidName' }));
@@ -2281,6 +2292,7 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   // The big clock, centred as one unit — replacing the ring's job of "what time is
   // it right now". A lighter weight than a typical display clock reads calmer at
   // this size, not shoutier.
+  beforeGroup();
   const tBase = y + ts * 0.82;
   const clockX = cx - clockW() / 2;
   out.push(text(clockX, tBase, c.clock.time, { size: ts, fill: c.p.text, family: FONT_DISPLAY, weight: 400, anchor: 'start', letter: -ts * 0.01, blink: true }));
@@ -2290,10 +2302,8 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   if (c.clock.period) out.push(text(markX, tBase - (stackedSec ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
   y = tBase + ts * 0.3;
 
-  // One combined, centred date line (Hijri | Gregorian) rather than two stacked ones. The
-  // separator between them is a drawn bar, not a "|" glyph — a character at this weight (300,
-  // deliberately thin for the dates themselves) is too faint to read as a divider, so it's
-  // bolded by being a shape instead of relying on font weight.
+  // The two dates, stacked under the clock and part of its group — see `ds` above for why they
+  // are on two lines rather than one.
   if (showDateLine) {
     // Both centred on the column, so there is nothing to anchor against and nothing to get
     // wrong: the divider bar this replaces had to be POSITIONED from a width estimate, and
@@ -2307,13 +2317,15 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   }
 
   if (cdH > 0) {
+    beforeGroup();
     out.push(countdownText(cx, y, avail, cdSize, c));
     y += cdH;
   }
 
-  // Sunrise and sunset on one row under the date, each centred in its half — plain text, no icons.
+  // Sunrise and sunset on one row, each centred in its half — plain text, no icons.
   if (c.showSunrise) {
-    const rowY = y + ss * 1.3;
+    if (!pinned) beforeGroup();
+    const rowY = pinY != null && pinned ? pinY : y + ss * 1.3;
     // At the quarter points of a narrow column, but no further apart than a short gap between
     // them: on a wide one (a portrait screen) the quarter points left them reading as two
     // unrelated labels at opposite edges.
@@ -2323,8 +2335,6 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     out.push(text(cx + off, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: SUN_TRACK }));
     y += sunriseH;
   }
-
-  if (prohibH > 0) out.push(prohibitedLine({ x: b.x, y, w: b.w, h: prohibH }, c));
   return out.join('');
 }
 
@@ -2346,7 +2356,22 @@ export function prayerIcon(key: string, cx: number, cy: number, r: number): stri
       return `<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${color}" stroke-width="${f(Math.max(1.2, r * 0.16))}" stroke-linecap="round"/>`;
     }).join('');
   switch (key) {
-    case 'ishraq': // the sun just up — the same art as Fajr, which is the one sunrise icon here
+    case 'ishraq': {
+      // The sun just CLEAR of the horizon: a whole disc lifted off the line, short rays all round
+      // its upper half. It used to borrow Fajr's half-sun, so the two rows read as the same thing
+      // twice; a full disc over the line is "risen", where Fajr's half disc on it is "rising".
+      const sr = r * 0.52;
+      const sy = cy - r * 0.18;
+      const ray = (deg: number) => {
+        const a = (deg * Math.PI) / 180;
+        return `<line x1="${f(cx + Math.cos(a) * sr * 1.45)}" y1="${f(sy + Math.sin(a) * sr * 1.45)}" x2="${f(cx + Math.cos(a) * sr * 2)}" y2="${f(sy + Math.sin(a) * sr * 2)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}" stroke-linecap="round"/>`;
+      };
+      return (
+        `<line x1="${f(cx - r * 1.4)}" y1="${f(cy + r * 0.62)}" x2="${f(cx + r * 1.4)}" y2="${f(cy + r * 0.62)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}"/>` +
+        `<circle cx="${f(cx)}" cy="${f(sy)}" r="${f(sr)}" fill="${SUN}"/>` +
+        [-180, -135, -90, -45, 0].map(ray).join('')
+      );
+    }
     case 'fajr': // sunrise: half sun sitting on a horizon line, rays fanning up
       return (
         `<line x1="${f(cx - r * 1.4)}" y1="${f(cy)}" x2="${f(cx + r * 1.4)}" y2="${f(cy)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}"/>` +
@@ -2424,13 +2449,21 @@ export function prayerIcon(key: string, cx: number, cy: number, r: number): stri
  *  inline Arabic gloss, no glass, no per-row highlight beyond a slightly deeper band
  *  for the CURRENT prayer — just the alternating bands the reference photo used to
  *  separate rows for the eye. */
-function simpleTable(b: Box, m: Model, c: Ctx): string {
-  const out: string[] = [];
-  const pad = b.w * 0.03;
-  const titleSize = clamp(b.h * 0.038, 14, 24);
+type SimpleLine = {
+  key: string;
+  name: string;
+  t1: number | null;
+  t2: number | null;
+  /** Jumu'ah only: which jamā'ah each time is (1st, 2nd, …), or 0 for no ordinal. */
+  o1?: number;
+  o2?: number;
+  highlight?: boolean;
+};
 
-  type Line = { key: string; name: string; t1: number | null; t2: number | null; highlight?: boolean };
-  const lines: Line[] = m.rows
+/** The Simple table's rows, in order. Its own function because the column beside the table lines
+ *  its sun times up with the LAST of these, so both have to count the same rows. */
+function simpleLines(m: Model, c: Ctx): SimpleLine[] {
+  const lines: SimpleLine[] = m.rows
     .filter((r) => r.key !== 'sunrise')
     // `r.active` means "the last prayer whose Adhan has passed" — a broad daytime window that
     // stays true for Dhuhr all the way until Asr's Adhan, long after Dhuhr's own Iqamah has
@@ -2438,28 +2471,55 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     // because Dhuhr was still "active" while Asr had already become "next". Only `next` — the
     // one row the countdown sentence above is actually counting down to — should highlight.
     .map((r) => ({ key: r.key, name: rowName(r, c.L).toUpperCase(), t1: r.adhan, t2: r.iqamah, highlight: !!r.next }));
-  if (m.jumuah.length) {
-    // The name is just "JUMU'AH". It used to carry a "1/2" suffix to explain that the two times in
-    // the row were the first and second jamā'ah rather than an Adhan and an Iqāmah — but "1/2"
-    // reads as a fraction, and the other layout had already solved this properly: it labels each
-    // TIME with its ordinal. So does this one now (see `ordinal` in the row draw).
-    const multi = m.jumuah.length > 1;
+  /**
+   * Jumu'ah, two jamā'āt to a row, each time labelled with its ordinal.
+   *
+   * The name is just "JUMU'AH". It used to carry a "1/2" suffix to explain that the two times in
+   * the row were the first and second jamā'ah rather than an Adhan and an Iqāmah — but "1/2"
+   * reads as a fraction, and the other layout had already solved this properly: it labels each
+   * TIME with its ordinal. So does this one (see `timeAt` in the row draw).
+   *
+   * Two to a row because the row has two time columns. It used to be ONE row, full stop, so a
+   * masjid with a third Jumu'ah had it silently left off this design while Modern showed all
+   * three. A third (and fourth) now takes a second row, its first time under Iqāmah, the way a
+   * single Jumu'ah's time is the row's only one.
+   */
+  const jum = m.jumuah;
+  const multi = jum.length > 1;
+  for (let j = 0; j < jum.length; j += 2) {
+    const pair = jum.slice(j, j + 2);
+    const two = pair.length === 2;
     lines.push({
       key: 'jumuah',
       name: (c.L.jumuah ?? "Jumu'ah").toUpperCase(),
-      t1: multi ? m.jumuah[0] : null,
-      t2: m.jumuah[multi ? 1 : 0],
+      t1: two ? pair[0] : null,
+      t2: pair[pair.length - 1],
+      o1: multi && two ? j + 1 : 0,
+      o2: multi ? j + pair.length : 0,
       // On a Friday the countdown is counting to Jumu'ah, so `buildModel` leaves every DAILY row
       // un-`next` — which left this table with no highlighted row at all from Fajr until the last
       // jamā'ah, on the day the hall is fullest. The row the sentence above is counting down to is
-      // the row that should be lit, and on a Friday that is this one.
-      highlight: !!m.nextJumuah,
+      // the row that should be lit, and on a Friday that is the one holding that jamā'ah (the
+      // Adhan phase counts as ordinal 1, so it lights the first row).
+      highlight: !!m.nextJumuah && m.nextJumuah.ordinal > j && m.nextJumuah.ordinal <= j + 2,
     });
   }
+  return lines;
+}
 
+/** Where the Simple table's rows go in box `b`: the header band's type size, the top of the first
+ *  row, and the height of each of `n` rows. */
+function simpleGeom(b: Box, n: number): { titleSize: number; listTop: number; rowH: number } {
+  const titleSize = clamp(b.h * 0.038, 14, 24);
   const listTop = b.y + titleSize * 2.6;
-  const listH = b.y + b.h - listTop;
-  const rowH = listH / Math.max(1, lines.length);
+  return { titleSize, listTop, rowH: (b.y + b.h - listTop) / Math.max(1, n) };
+}
+
+function simpleTable(b: Box, m: Model, c: Ctx): string {
+  const out: string[] = [];
+  const pad = b.w * 0.03;
+  const lines = simpleLines(m, c);
+  const { titleSize, listTop, rowH } = simpleGeom(b, lines.length);
   const colIq = b.x + b.w - pad;
   const colAd = b.x + b.w * 0.62;
   const iconR = rowH * 0.22 * 0.75; // 25% smaller than the first pass
@@ -2641,7 +2701,7 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     ordinal ? clamp(t * 0.46, 9, 22) * 2.6 + approxWidth(str, t) * 1.12 : approxWidth(str, t);
 
   const shape = lines.map((l) => {
-    const ord = l.key === 'jumuah' && m.jumuah.length > 1;
+    const ord = !!(l.o1 || l.o2);
     const adStr = l.t1 == null ? null : fmtShort(l.t1, c.timeFormat);
     const iqStr = fmtShort(l.t2, c.timeFormat);
     return {
@@ -2740,14 +2800,18 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
      * it. Between their visual centres, not their right edges: both columns are right-anchored, so
      * the midpoint of the edges would sit the time noticeably right of centre.
      */
-    const single = shape[i].adU === 0;
+    // A lone time WITHOUT an ordinal: a third Jumu'ah alone on its row keeps its "3rd" and stays
+    // under Iqāmah, in line with the jamā'āt above it, rather than drifting to the middle.
+    const single = shape[i].adU === 0 && !shape[i].ord;
     const iqW = approxWidth(shape[i].iqStr, timeSize);
     const singleX = ((colAd - iqW * 0.92 / 2) + (colIq - iqW / 2)) / 2;
     const nameRoomHere =
       (single
         ? // The name runs until the centred time's LEFT edge.
           singleX - iqW / 2
-        : colAd - slotW(shape[i].adStr!, timeSize * 0.92, shape[i].ord)) -
+        : shape[i].adStr
+          ? colAd - slotW(shape[i].adStr, timeSize * 0.92, shape[i].ord)
+          : colIq - slotW(shape[i].iqStr, timeSize, shape[i].ord)) -
       nameX -
       pad;
     const nameStr = ellipsize(line.name, nameSize, nameRoomHere, 1);
@@ -2778,17 +2842,16 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
       out.push(text(gx + ordBox, midY, ordinal, { size: os, fill: hexToRgba(fill, 0.75), family: FONT_SANS, weight: 700, anchor: 'end' }));
       out.push(text(gx + ordBox + ordGap, midY, str, { size, fill, family: FONT_DISPLAY, weight, anchor: 'start' }));
     };
-    const jum = line.key === 'jumuah' && m.jumuah.length > 1;
     // Against the BAND, for the same reason `iqColor` is: the quiet Adhan ink is the one colour
     // on this table that was still being chosen by a light-or-dark guess about the page.
     // The highlighted row is bold ACROSS — name, Adhan and Iqāmah. The Adhan keeps its quieter
     // colour so the two time columns do not compete, but a row lit up in two places of three
     // read as a mistake rather than as "this one".
-    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, readableOn(c.p.textDim, band), line.highlight ? 600 : 300, jum ? ordinalEn(1) : '');
+    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, readableOn(c.p.textDim, band), line.highlight ? 600 : 300, line.o1 ? ordinalEn(line.o1) : '');
     if (single) {
       out.push(text(singleX, midY, fmtShort(line.t2, c.timeFormat), { size: timeSize, fill: iqColor, family: FONT_DISPLAY, weight: line.highlight ? 600 : 500, anchor: 'middle' }));
     } else {
-      timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, jum ? ordinalEn(2) : '');
+      timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, line.o2 ? ordinalEn(line.o2) : '');
     }
   });
   return out.join('');
@@ -2891,6 +2954,17 @@ function prohibitedWindow(tt: Timetable, m: Model, nowHours: number): { secsLeft
   const win = Math.max(1, pn.minutes) / 60;
   if (nowHours >= dhuhr - win && nowHours < dhuhr) return { secsLeft: Math.max(0, (dhuhr - nowHours) * 3600) };
   return null;
+}
+
+/**
+ * Whether the prohibited-time notice goes to the bottom ticker rather than the countdown ring.
+ *
+ * Simple has no ring — its countdown is words — so on Simple it is the ticker whatever the
+ * setting says. The ring mode used to fall back to one small red line in the left column there,
+ * which was easy to miss from the back of a hall and was the only place the window was named.
+ */
+function prohibitedOnTicker(tt: Timetable): boolean {
+  return !!tt.prohibitedNotice?.ticker || tt.layout === 'simple';
 }
 
 /** The red scrolling message shown along the bottom during a ticker-mode prohibited window.
@@ -3513,11 +3587,11 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   const greg = gregorian(m.parts, tt.language, tt.gregorianOffset ?? 0);
   const hij = hijri(m.parts, tt.language, tt.hijriOffset ?? 0);
   // Ticker-mode prohibited window shows a red message that overrides the normal ticker.
-  const prohibitedTickerOn = !!tt.prohibitedNotice?.ticker && !!prohibitedWindow(tt, m, nowHours);
+  const prohibitedTickerOn = prohibitedOnTicker(tt) && !!prohibitedWindow(tt, m, nowHours);
   const tickerText = prohibitedTickerOn ? prohibitedMessage(tt, m) : activeTickerText(tt, m.parts);
   // Non-ticker prohibited window → the next-prayer ring reframes as a "Prohibited time"
   // notice (no more full-screen takeover), counting down to the Dhuhr adhan.
-  const prohibitedRing = !!tt.prohibitedNotice?.enabled && !tt.prohibitedNotice.ticker && !!prohibitedWindow(tt, m, nowHours);
+  const prohibitedRing = !prohibitedOnTicker(tt) && !!prohibitedWindow(tt, m, nowHours);
 
   const P = Math.round(Math.min(W, H) * 0.05);
   const cel = celestialPos(m.times, nowHours, W, H, P);

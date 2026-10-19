@@ -488,8 +488,12 @@ export class IqamahCommand {
     if (out.commit) {
       const entry = out.commit;
       let saved: IqamahScheduleEntry | undefined;
+      // Onto the timetable whose times these ARE. One that follows another has its schedule
+      // overwritten by the link on this very write, so saving to it reported "Saved" and kept
+      // nothing; saved to the one it follows, every screen that follows it moves together.
+      const target = tt.linkedTo || tt.id;
       this.store.update((db) => {
-        const idx = db.timetables.findIndex((t) => t.id === tt.id);
+        const idx = db.timetables.findIndex((t) => t.id === target);
         if (idx < 0) return;
         const rows = mergeScheduleEntry(db.timetables[idx].iqamahSchedule, entry);
         db.timetables[idx].iqamahSchedule = rows;

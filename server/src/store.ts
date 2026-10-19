@@ -197,19 +197,29 @@ const SYNCED_FIELDS = [
  * itself, is dropped rather than honoured — so deleting a main quietly frees its children.
  */
 function applyLinks(db: DB): void {
-  const byId = new Map(db.timetables.map((t) => [t.id, t]));
-  for (const t of db.timetables) {
-    const main = t.linkedTo ? byId.get(t.linkedTo) : undefined;
-    if (!main || main.id === t.id || main.linkedTo) {
-      t.linkedTo = '';
-      continue;
-    }
-    for (const k of SYNCED_FIELDS) {
-      const v = main[k];
-      // Structured clone, not a reference: two timetables sharing one `iqamah` object would
-      // mean editing the child silently rewrote the main.
-      (t as unknown as Record<string, unknown>)[k] = v == null ? v : structuredClone(v);
-    }
+  for (const t of db.timetables) followLink(t, db.timetables);
+}
+
+/**
+ * Give one timetable its main's times, by the rules `applyLinks` describes above — or clear a link
+ * that cannot be honoured.
+ *
+ * Exported for the live PREVIEW, which renders the editor's unsaved form rather than a stored row
+ * and so never passes through `Store.update`. Without it a screen set to follow another was
+ * previewed with its OWN old Iqamah times — the form still carried them — until it had been saved
+ * and the editor closed and reopened, which reads as "following does not include the Iqamah".
+ */
+export function followLink(t: Timetable, all: Timetable[]): void {
+  const main = t.linkedTo ? all.find((o) => o.id === t.linkedTo) : undefined;
+  if (!main || main.id === t.id || main.linkedTo) {
+    t.linkedTo = '';
+    return;
+  }
+  for (const k of SYNCED_FIELDS) {
+    const v = main[k];
+    // Structured clone, not a reference: two timetables sharing one `iqamah` object would
+    // mean editing the child silently rewrote the main.
+    (t as unknown as Record<string, unknown>)[k] = v == null ? v : structuredClone(v);
   }
 }
 

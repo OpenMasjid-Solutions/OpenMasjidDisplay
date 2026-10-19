@@ -6,6 +6,7 @@
 import { rid, screenToken, defaultIqamah } from './store';
 import { THEMES } from './render/theme';
 import { parseHHMM } from './prayer/engine';
+import { keepRuleUnderSchedule } from './iqamahSchedule';
 import type {
   Timetable,
   Source,
@@ -328,7 +329,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
       : '';
   const jumuahIn = Array.isArray(o.jumuah) ? o.jumuah : base?.jumuah ?? ['13:30'];
   const jumuah = jumuahIn.slice(0, 8).map((x) => hhmmOrNull(x)).filter((x): x is string => x != null);
-  return {
+  const tt: Timetable = {
     id: base?.id ?? rid('tt'),
     name: str(o.name, base?.name ?? 'Timetable', 80) || 'Timetable',
     themeId: oneOf(o.themeId, THEME_IDS, base?.themeId ?? 'emerald'),
@@ -400,6 +401,10 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     footerNote: str(o.footerNote, base?.footerNote ?? '', 160),
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };
+  // The panel shows a fixed Iqamah time as it stands TODAY, scheduled changes included — so what
+  // comes back has to be read against that, not against the stored rule. See the function.
+  if (base) keepRuleUnderSchedule(tt, base, new Date());
+  return tt;
 }
 
 /** Only stream protocols are allowed for a source URL — blocks ffmpeg/MediaMTX

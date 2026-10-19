@@ -158,6 +158,27 @@ test('a whole change can be made through the endpoint, and it lands in the store
   assert.deepEqual(s.db.timetables[0].iqamahSchedule, [{ from: '2026-09-01', fajr: '05:45' }]);
 });
 
+test('a change sent to a timetable that follows another lands on the one it follows', async () => {
+  // Saved onto the follower it was overwritten by the link in the same write: "Saved." and gone.
+  const s = store();
+  s.update((db) => {
+    const main = normTimetable({ ...db.timetables[0], name: 'Main' });
+    main.id = 'main';
+    db.timetables[0].linkedTo = 'main';
+    db.timetables.push(main);
+  });
+  const say = exchange(commands(s));
+  await say('');
+  await say('2026-09-01');
+  await say('1');
+  await say('5:45 am');
+  const done = await say('save');
+  assert.equal(done.body.ok, true);
+  const want = [{ from: '2026-09-01', fajr: '05:45' }];
+  assert.deepEqual(s.db.timetables.find((t) => t.id === 'main')!.iqamahSchedule, want, 'on the main');
+  assert.deepEqual(s.db.timetables[0].iqamahSchedule, want, 'and so on the follower too');
+});
+
 test('nothing is written until save', async () => {
   const s = store();
   const say = exchange(commands(s));

@@ -28,7 +28,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { prayerIcon } from './svg';
 
-const KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha', 'jumuah'];
+const KEYS = ['fajr', 'ishraq', 'dhuhr', 'asr', 'maghrib', 'isha', 'jumuah'];
+
+test('every row has its own icon — Ishraq is not Fajr again', () => {
+  const art = KEYS.map((k) => prayerIcon(k, 100, 100, 20));
+  assert.equal(new Set(art).size, KEYS.length, 'two rows share one picture');
+});
 
 test('every prayer icon renders something, at a few sizes', () => {
   for (const key of KEYS) {

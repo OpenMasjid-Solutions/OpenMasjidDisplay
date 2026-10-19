@@ -12,7 +12,21 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
-### Added
+### Added
+- **The printed monthly calendar now marks the days the Iqamah changes.** Each day a scheduled
+  change (or a day from your yearly CSV) takes effect is outlined and labelled *Iqamah change*,
+  with the new times in bold. The sheet also shows sunrise every day, and Ishrāq beside it when
+  the display shows Ishrāq.
+
+- **A scheduled Iqamah change can now change any Jumu'ah.** In **Salah times → Scheduled Iqamah
+  changes**, press *Change Jumu'ah* on a change: it starts from the Jumu'ah times in force before
+  that date, numbered 1st, 2nd and so on, so you can move either one, add a third, or remove the
+  second. It used to start empty with a single time.
+
+- **Ishrāq has its own icon on the Simple layout** — a sun just clear of the horizon — instead of
+  borrowing Fajr's.
+
+
 - **You can now add a Raspberry Pi screen that is already running, without touching it.** If a
   screen is set up on its own and on the same network, go to **Screens → Add screen → Raspberry
   Pi** and open *The screen is already running on its own*. Give its address and the password you
@@ -84,7 +98,28 @@ CLAUDE.md § *The changelog has two audiences*.
 - **A 3D-printable case for a Raspberry Pi 4 screen.** The base, the lid, and a ready-to-slice
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
-### Changed
+### Changed
+- **The Simple layout's left column has room to breathe.** The clock and both dates sit together
+  as one group with space around it, the countdown has space of its own, and sunrise and sunset
+  have moved to the bottom, level with the Jumu'ah row.
+
+- **On the Simple layout, the prohibited-time notice is always the red message along the
+  bottom.** Simple has no countdown ring, so the choice between the ring and the bottom message
+  is gone for Simple: the notice scrolls in red along the bottom for the whole window, in place
+  of any scrolling announcements while it lasts.
+
+- **"Sun & moon in the background" is hidden when the Simple layout is chosen** — Simple is a
+  flat page, so the setting did nothing there.
+
+- **A fixed Iqamah time in the "Iqamah times" list now shows the time in force today.** Once a
+  scheduled change has taken effect, the list shows the new time instead of the one typed before
+  it. Changing the time there changes it from today on.
+
+- **A timetable that follows another no longer shows prayer-time settings of its own.** Its
+  **Salah times** tab now says which timetable it follows. Anything typed there was being
+  replaced by the other timetable's times when you saved.
+
+
 - **Update and Terminal now say when they cannot work, instead of doing nothing.** Those two need
   the screen to have been set up by running this server's installer on it, because they work by
   giving the screen's system — not just the app — somewhere it trusts to fetch from. A screen
@@ -187,7 +222,20 @@ CLAUDE.md § *The changelog has two audiences*.
   release meant a masjid got new software on its screens and no explanation of what changed. It
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
-### Fixed
+### Fixed
+- **A timetable that follows another now previews with that timetable's Iqamah times.** The
+  preview went on showing its own old times until the editor was closed and opened again. The
+  screens themselves were already right.
+
+- **A third Jumu'ah now shows on the Simple layout.** It was being left off without a word, while
+  Modern showed all three. A third (and fourth) Jumu'ah goes on a second Jumu'ah row, each time
+  labelled 3rd, 4th.
+
+- **An Iqamah change made over WhatsApp is no longer lost when the chosen timetable follows
+  another.** The reply said "Saved." and the change disappeared. It now goes onto the timetable
+  being followed, so every screen that follows it changes together.
+
+
 - **A slideshow picture could freeze a screen until its decoder box was unplugged.** When an
   announcement image appeared, the video for that moment could be far larger than the stream is
   meant to carry. Some decoder boxes could not take it, lost part of the picture and stopped
@@ -333,7 +381,8 @@ timetable, plays your cameras, and is managed entirely from the dashboard — an
 brings cameras to browser screens, a second screen design, and lets the other OpenMasjid apps on
 your box read your prayer times instead of being told them twice.
 
-### Added
+### Added
+
 - **Wi-Fi settings on a screen that runs on its own.** **Settings → Wi-Fi** lists the networks
   the screen can see and joins one, so a Pi set up on a cable can be moved onto Wi-Fi, and one
   whose network password has changed can be put back on without fetching a keyboard. When the
@@ -372,7 +421,8 @@ your box read your prayer times instead of being told them twice.
   musalli's phone is yours. Read-only, never leaves your own box, and OpenMasjidOS decides which apps
   are allowed to ask.
 
-### Changed
+### Changed
+
 - **Adding a screen now offers a Raspberry Pi first.** The list of ways a screen can receive
   the picture is ordered best-first, and the RTSP decoder box is marked **legacy** — it still
   works exactly as it always has, and every screen already set up that way is untouched. What
@@ -395,7 +445,8 @@ your box read your prayer times instead of being told them twice.
   did not, and flags the ones the platform later admits it never delivered — instead of leaving a
   tick beside a message nobody received.
 
-### Fixed
+### Fixed
+
 - **A safety net against a screen drawing a panel as nothing.** The renderer is now checked, in
   fourteen real configurations, that every colour and glow it asks for is one it actually
   defined. Nothing was wrong — this catches a future mistake that would otherwise show up as a
@@ -422,7 +473,8 @@ your box read your prayer times instead of being told them twice.
 
 ## 0.69.0
 
-### Added
+### Added
+
 - **The panel says when a screen is running on its own.** A **Standalone** label sits beside the
   name at the top of the control panel on a Raspberry Pi that has no Display server, so it is
   always clear which kind of screen you are looking at. It is in the panel only — never on the
@@ -449,7 +501,8 @@ your box read your prayer times instead of being told them twice.
 > blocked by WhatsApp, so delivery takes a few minutes and longer inside quiet hours. Nothing important
 > depends on it — alerts still go by email and webhook.
 
-### Changed
+### Changed
+
 - **How to move a screen between running on its own and being managed by a server is now
   written down** — both directions, with what is kept. A standalone screen joins a server by
   running that server’s install command on it, and comes back by running the standalone one
@@ -465,7 +518,8 @@ your box read your prayer times instead of being told them twice.
 - Scheduled Iqamah changes that have already happened drop off the list a few days later, so it shows what
   is still to come. The change itself stays in effect.
 
-### Fixed
+### Fixed
+
 - **A test that could fail for no reason, and one that could pass for the wrong one.** An
   internal check of the WhatsApp announcement log waited a fixed moment for a disk write instead
   of waiting for the write, so it failed once on a busy build machine while the app itself was

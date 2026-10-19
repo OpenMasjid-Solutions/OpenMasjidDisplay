@@ -18,7 +18,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderDisplaySvg, approxWidth, dimsFor } from './svg';
+import { renderDisplaySvg, approxWidth, dimsFor, activeTicker } from './svg';
 import { normTimetable } from '../validate';
 import type { Timetable } from '../types';
 
@@ -270,17 +270,67 @@ test("the labels this app ships with are never shortened", () => {
   assert.deepEqual(bad.slice(0, 6), [], `${bad.length} default labels shortened`);
 });
 
-test('the prohibited window still says so in words, not only in red', () => {
-  // With the countdown gone, the one red line in its place is the only thing that names the
-  // window when the ticker is off — a red tint alone does not tell a volunteer what is happening.
+test('on Simple the prohibited window is the red ticker, whatever the toggle says', () => {
+  // Simple has no ring, so "show it on the ring" has nowhere to go. It used to become one small
+  // red line in the column; now it is the bottom ticker, which names the window in words and in
+  // red. `activeTicker` is the half a VIDEO screen uses (ffmpeg draws its ticker), so it must agree.
+  const at = new Date('2026-09-11T16:52:00Z');
   for (const quality of ['1080p', '720p']) {
     for (const orientation of ['landscape', 'portrait']) {
-      const svg = renderDisplaySvg(
-        tt({ layout: 'simple', quality, orientation, prohibitedNotice: { enabled: true, minutes: 10 } }),
-        new Date('2026-09-11T16:52:00Z'),
-        {},
-      );
-      assert.match(svg, /PROHIBITED|Prohibited/, `${quality}/${orientation}: the state is not named`);
+      const t = tt({ layout: 'simple', quality, orientation, prohibitedNotice: { enabled: true, minutes: 10, ticker: false } });
+      const svg = renderDisplaySvg(t, at, {});
+      assert.match(svg, /Prohibited time for prayer/, `${quality}/${orientation}: not on the ticker`);
+      assert.equal(activeTicker(t, at).prohibited, true, `${quality}/${orientation}: the video ticker disagrees`);
+    }
+  }
+  // Modern keeps the choice: ring mode stays off the ticker.
+  const modern = tt({ prohibitedNotice: { enabled: true, minutes: 10, ticker: false } });
+  assert.equal(activeTicker(modern, at).prohibited, false);
+});
+
+// ── room around each group, and the sun times at the foot ────────────────────
+
+test('the clock and dates keep clear space from the countdown', () => {
+  // Packed at one line-gap apart, the column read as cluttered: nothing grouped with anything.
+  for (const orientation of ['landscape', 'portrait']) {
+    const svg = renderDisplaySvg(tt({ layout: 'simple', orientation }), NOW, {});
+    const H = dimsFor(orientation, '1080p').height;
+    const rs = runs(svg);
+    const greg = rs.find((r) => /September/.test(r.body))!;
+    const unit = rs.find((r) => /^(SECOND|MINUTE|HOUR)S?$/.test(r.body))!;
+    const name = rs.find((r) => r.body === BASE.masjidName)!;
+    const clock = clockRun(svg);
+    assert.ok(unit.t - greg.b >= H * 0.035, `${orientation}: dates to countdown is ${(unit.t - greg.b).toFixed(0)}px`);
+    assert.ok(clock.t - name.b >= H * 0.025, `${orientation}: name to clock is ${(clock.t - name.b).toFixed(0)}px`);
+  }
+});
+
+test('beside the table, sunrise and sunset sit level with its last row', () => {
+  for (const quality of ['1080p', '720p']) {
+    for (const jumuah of [['13:30', '14:30'], [], ['13:00', '14:00', '15:00']]) {
+      const where = `${quality}, ${jumuah.length} Jumu'ah`;
+      const rs = runs(renderDisplaySvg(tt({ layout: 'simple', quality, jumuah }), NOW, {}));
+      const sun = rs.find((r) => /^SUNRISE /.test(r.body))!;
+      // The last row's name: the lowest left-anchored run in the table.
+      const last = rs.filter((r) => r.anchor === 'start' && /^(JUMU|ISHA)/.test(r.body)).sort((a, b) => b.t - a.t)[0];
+      const mid = (r: Run) => (r.t + r.b) / 2;
+      assert.ok(Math.abs(mid(sun) - mid(last)) < last.size * 0.5, `${where}: sun row at ${mid(sun).toFixed(0)}, ${last.body} at ${mid(last).toFixed(0)}`);
+    }
+  }
+});
+
+// ── a third Jumu'ah ──────────────────────────────────────────────────────────
+
+test("a third Jumu'ah is on the Simple table, with its ordinal", () => {
+  // The table used to have ONE Jumu'ah row of two time columns, so a third jamā'ah was dropped
+  // from this design without a word while Modern showed all three.
+  for (const orientation of ['landscape', 'portrait']) {
+    for (const ann of [null, IMG]) {
+      const where = `${orientation}${ann ? ' +pic' : ''}`;
+      const svg = renderDisplaySvg(tt({ layout: 'simple', orientation, jumuah: ['13:00', '14:00', '15:00'] }), NOW, ann ? { announcement: IMG } : {});
+      const bodies = runs(svg).map((r) => r.body);
+      for (const t of ['1:00 PM', '2:00 PM', '3:00 PM']) assert.ok(bodies.includes(t), `${where}: ${t} missing`);
+      for (const o of ['1st', '2nd', '3rd']) assert.ok(bodies.includes(o), `${where}: "${o}" missing`);
     }
   }
 });

@@ -123,9 +123,19 @@ export function Timetables({ state, refetch }: Props) {
 
 type Form = Omit<Timetable, 'latitude' | 'longitude'> & { latitude: string; longitude: string };
 
-function toForm(tt: Timetable | null, state: AppState): Form {
+export function toForm(tt: Timetable | null, state: AppState): Form {
   if (tt) {
-    return { ...tt, latitude: tt.latitude == null ? '' : String(tt.latitude), longitude: tt.longitude == null ? '' : String(tt.longitude) };
+    // A FIXED Iqamah time is shown as it stands today: once a scheduled change has taken effect,
+    // the "Iqamah times" table shows the changed time, not the one typed before it. The server
+    // reads the form back the same way (`keepRuleUnderSchedule`), so saving this unchanged is
+    // not an edit, and changing it changes the time from now on.
+    const now = scheduledToday(tt);
+    const iqamah = { ...tt.iqamah };
+    for (const k of SCHEDULED_PRAYERS) {
+      const t = now[k];
+      if (t && iqamah[k].mode === 'fixed') iqamah[k] = { ...iqamah[k], fixed: t };
+    }
+    return { ...tt, iqamah, latitude: tt.latitude == null ? '' : String(tt.latitude), longitude: tt.longitude == null ? '' : String(tt.longitude) };
   }
   return {
     id: '', name: 'New timetable', themeId: 'emerald', accent: undefined, textColor: '',
@@ -139,6 +149,21 @@ function toForm(tt: Timetable | null, state: AppState): Form {
     jumuah: ['13:30'], showSunrise: true, ishraqMinutes: 0, linkedTo: '', sound: { adhan: false, iqamah: false, clip: '' }, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
     backgroundImage: '', logoImage: '', footerNote: '', tickerSpeed: 5, createdAt: '',
   };
+}
+
+const SCHEDULED_PRAYERS = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
+
+/** The time each daily prayer's latest scheduled change gives it today — `resolveSchedule` on the
+ *  server, for the one date the panel needs. */
+function scheduledToday(tt: Timetable): Partial<Record<(typeof SCHEDULED_PRAYERS)[number], string>> {
+  const today = todayIn(tt.timezone);
+  const out: Partial<Record<(typeof SCHEDULED_PRAYERS)[number], string>> = {};
+  const byDate = [...(tt.iqamahSchedule ?? [])].sort((a, b) => a.from.localeCompare(b.from));
+  for (const e of byDate) {
+    if (e.from > today) break;
+    for (const k of SCHEDULED_PRAYERS) if (e[k]) out[k] = e[k];
+  }
+  return out;
 }
 
 /** Form (with string lat/long) → a timetable body for save/preview. */
@@ -559,7 +584,22 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     </>
   );
 
-  const salah = (
+  // A timetable that follows another takes ALL of this tab from it (store.ts `SYNCED_FIELDS`), and
+  // the server overwrites anything typed here on save. So the tab says so instead of offering
+  // controls that would silently do nothing — and the preview above already shows the times it
+  // will actually use.
+  const followed = f.linkedTo ? state.timetables.find((o) => o.id === f.linkedTo) : undefined;
+  const salah = followed ? (
+    <div className="card section">
+      <h3 className="section-title">These times follow “{followed.name}”</h3>
+      <p className="hint" style={{ marginBlockStart: 0 }}>
+        This timetable takes its calculation, Iqamah times, Adhan delays, Jumu'ah times and scheduled
+        Iqamah changes from “{followed.name}”. Change them there and this screen follows, including on
+        the day a scheduled change takes effect. To set times for this timetable on its own, choose
+        “Its own” under <b>Prayer times</b> on the General tab.
+      </p>
+    </div>
+  ) : (
     <>
       <div className="card section">
         <h3 className="section-title">Calculation</h3>
@@ -649,7 +689,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
               shift). Leave a prayer blank to keep it on your normal rule (or the previous change). Maghrib
               always follows the calculated sunset time plus its offset, so it isn't set here.
             </p>
-            <IqamahScheduleEditor schedule={iqSchedule} onSave={saveIqSchedule} timezone={f.timezone} />
+            <IqamahScheduleEditor schedule={iqSchedule} onSave={saveIqSchedule} timezone={f.timezone} baseJumuah={f.jumuah} />
             <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.9rem', flexWrap: 'wrap', paddingBlockStart: '0.9rem', borderBlockStart: '1px solid var(--color-border)' }}>
               <button type="button" className="btn btn--ghost btn--sm" onClick={downloadChangeImage} disabled={posterBusy}>
                 <IconDownload size={14} /> {posterBusy ? 'Preparing…' : 'Download announcement image'}
@@ -877,7 +917,8 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
               onChange={(e) => set('ishraqMinutes', Math.max(0, Math.min(120, Number(e.target.value.replace(/\D/g, '')) || 0)))}
             />
           </div>
-          <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />
+          {/* Simple is a flat page with no scene behind it, so the sun and moon have nowhere to be drawn. */}
+          {f.layout !== 'simple' && <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />}
           <ToggleRow label="Calculation-method footnote" checked={f.showFooter} onChange={(v) => set('showFooter', v)} />
         </div>
         {f.showSeconds && (
@@ -970,15 +1011,25 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
         </div>
         {pn.enabled && (
           <>
-            <Field label="Show for (minutes before the Dhuhr Adhan)" hint="During this window the next-prayer ring becomes a “Prohibited time” notice counting down to the Dhuhr Adhan, when prayer is allowed again.">
+            <Field
+              label="Show for (minutes before the Dhuhr Adhan)"
+              hint={
+                f.layout === 'simple'
+                  ? 'During this window a red message scrolls along the bottom of the screen until the Dhuhr Adhan, when prayer is allowed again. It replaces any scrolling announcements for the whole window.'
+                  : 'During this window the next-prayer ring becomes a “Prohibited time” notice counting down to the Dhuhr Adhan, when prayer is allowed again.'
+              }
+            >
               <input className="input" type="number" min={1} max={45} value={pn.minutes} onChange={(e) => setPn({ minutes: Number(e.target.value) })} />
             </Field>
-            <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
-              <span className="label" style={{ margin: 0 }}>
-                Show as a red scroll message at the bottom <span className="hint">— instead of the ring notice; overrides any ticker for the whole window</span>
-              </span>
-              <Toggle checked={!!pn.ticker} onChange={(v) => setPn({ ticker: v })} label="Show as a bottom scroll message" />
-            </div>
+            {/* Simple has no ring, so on Simple the notice is always the bottom message — there is no choice to offer. */}
+            {f.layout !== 'simple' && (
+              <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
+                <span className="label" style={{ margin: 0 }}>
+                  Show as a red scroll message at the bottom <span className="hint">— instead of the ring notice; overrides any ticker for the whole window</span>
+                </span>
+                <Toggle checked={!!pn.ticker} onChange={(v) => setPn({ ticker: v })} label="Show as a bottom scroll message" />
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1442,16 +1493,26 @@ function IqamahRow({ name, rule, onChange, disabled }: { name: string; rule: Iqa
   );
 }
 
-function JumuahEditor({ times, onChange }: { times: string[]; onChange: (t: string[]) => void }) {
+/** `ordinals` labels each time 1st, 2nd and so on — for a scheduled change, where the point is to
+ *  say WHICH Jumu'ah is moving. */
+function JumuahEditor({ times, onChange, ordinals }: { times: string[]; onChange: (t: string[]) => void; ordinals?: boolean }) {
+  const nth = (n: number) => `${n}${['th', 'st', 'nd', 'rd'][n] ?? 'th'}`; // shortcut: wrong from 21st on; fine while Jumu'ah is capped at 8
+  // A new one starts an hour after the last rather than on top of it: two equal times are one
+  // Jumu'ah to the server, which drops the duplicate on save.
+  const after = (t?: string) => {
+    const m = t ? /^(\d{1,2}):(\d{2})$/.exec(t) : null;
+    return m ? `${String((Number(m[1]) + 1) % 24).padStart(2, '0')}:${m[2]}` : '13:30';
+  };
   return (
     <div className="row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
       {times.map((t, i) => (
         <span key={i} className="row" style={{ gap: '0.3rem' }}>
-          <input className="input" style={{ width: '8rem' }} type="time" value={t} onChange={(e) => onChange(times.map((x, j) => (j === i ? e.target.value : x)))} />
-          <button className="icon-btn" aria-label="Remove time" onClick={() => onChange(times.filter((_, j) => j !== i))}><IconTrash size={15} /></button>
+          {ordinals && <span className="hint" style={{ margin: 0 }}>{nth(i + 1)}</span>}
+          <input className="input" style={{ width: '8rem' }} type="time" value={t} aria-label={ordinals ? `${nth(i + 1)} Jumu'ah` : undefined} onChange={(e) => onChange(times.map((x, j) => (j === i ? e.target.value : x)))} />
+          <button type="button" className="icon-btn" aria-label={ordinals ? `Remove the ${nth(i + 1)} Jumu'ah` : 'Remove time'} onClick={() => onChange(times.filter((_, j) => j !== i))}><IconTrash size={15} /></button>
         </span>
       ))}
-      <button className="btn btn--ghost btn--sm" onClick={() => onChange([...times, '13:30'])}><IconPlus size={14} /> Add time</button>
+      <button type="button" className="btn btn--ghost btn--sm" onClick={() => onChange([...times, after(times[times.length - 1])])}><IconPlus size={14} /> {ordinals ? "Add a Jumu'ah" : 'Add time'}</button>
     </div>
   );
 }
@@ -1477,7 +1538,7 @@ function todayIn(tz?: string): string {
  *  schedule rather than a growing archive. */
 const KEEP_PAST_DAYS = 3;
 
-function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: IqamahScheduleEntry[]; onSave: (next: IqamahScheduleEntry[]) => Promise<IqamahScheduleEntry[]>; timezone?: string }) {
+function IqamahScheduleEditor({ schedule, onSave, timezone, baseJumuah }: { schedule: IqamahScheduleEntry[]; onSave: (next: IqamahScheduleEntry[]) => Promise<IqamahScheduleEntry[]>; timezone?: string; baseJumuah: string[] }) {
   const toast = useToast();
   const PR = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
   const [rows, setRows] = useState<IqamahScheduleEntry[]>(() => JSON.parse(JSON.stringify(schedule)));
@@ -1536,6 +1597,18 @@ function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: Iqamah
     setRows((rs) => rs.filter((_, j) => j !== i));
     setHidden((h) => h.filter((_, j) => j !== i));
   };
+  /**
+   * The Jumu'ah times in force just BEFORE `from` — what a change on that date starts from.
+   *
+   * A change's Jumu'ah list replaces the whole list, so it used to start empty, with one "Add
+   * time": a masjid with two Jumu'ahs that only wanted to move the second had to know to re-enter
+   * the first as well, and it read as "a change can only set one Jumu'ah". Starting from the
+   * current times turns it into editing them: change the 1st or the 2nd, add a 3rd, remove one.
+   */
+  const jumuahBefore = (from: string): string[] => {
+    const earlier = rows.filter((o) => o.from && o.from < from && o.jumuah?.length).sort((a, b) => a.from.localeCompare(b.from));
+    return earlier.length ? earlier[earlier.length - 1].jumuah! : baseJumuah;
+  };
 
   const save = async () => {
     setBusy(true);
@@ -1587,8 +1660,22 @@ function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: Iqamah
             ))}
           </div>
           <div style={{ marginBlockStart: '0.7rem' }}>
-            <span className="label">Jumu'ah from this date (optional)</span>
-            <JumuahEditor times={r.jumuah ?? []} onChange={(j) => update(i, { jumuah: j.length ? j : undefined })} />
+            <span className="label">Jumu'ah from this date</span>
+            {r.jumuah?.length ? (
+              <>
+                <JumuahEditor ordinals times={r.jumuah} onChange={(j) => update(i, { jumuah: j.length ? j : undefined })} />
+                <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.4rem' }} onClick={() => update(i, { jumuah: undefined })}>
+                  Keep Jumu'ah as it is
+                </button>
+              </>
+            ) : (
+              <div className="row" style={{ gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span className="hint" style={{ margin: 0 }}>Stays {jumuahBefore(r.from).join(' & ') || 'as it is'}.</span>
+                <button type="button" className="btn btn--ghost btn--sm" onClick={() => update(i, { jumuah: [...jumuahBefore(r.from)] })}>
+                  Change Jumu'ah
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )))}

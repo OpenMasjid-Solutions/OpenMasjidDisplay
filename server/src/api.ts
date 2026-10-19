@@ -9,6 +9,7 @@ import { config } from './config';
 import { makeLog } from './logger';
 import { openShellSession, closeShellSession, closeShellSessionsFor, SHELL_CLAIM_MS } from './piShell';
 import type { Store } from './store';
+import { followLink } from './store';
 import type { Orchestrator } from './orchestrator';
 import {
   hashPassword,
@@ -1556,6 +1557,8 @@ export function createApi(deps: Deps) {
         // appear in the live preview of unsaved edits.
         const pvBase = typeof body.id === 'string' && body.id ? store.db.timetables.find((t) => t.id === body.id) : undefined;
         const tt = normTimetable(body, pvBase);
+        // A follower is previewed with the times it will actually show, not the form's own.
+        followLink(tt, store.db.timetables);
         // Background + logo are stripped by the validator, so take them from the raw
         // body — an unsaved upload should still appear in the live preview.
         const bgFile = typeof body.backgroundImage === 'string' ? body.backgroundImage : '';
@@ -1576,6 +1579,7 @@ export function createApi(deps: Deps) {
         const body = await readBody(req);
         const pvBase = typeof body.id === 'string' && body.id ? store.db.timetables.find((t) => t.id === body.id) : undefined;
         const tt = normTimetable(body, pvBase);
+        followLink(tt, store.db.timetables);
         const hotspots = await renderPreviewMeta(tt, Date.now());
         return sendJson(res, 200, { hotspots });
       }

@@ -11,7 +11,7 @@
  * run on a Raspberry Pi alongside the render loop).
  */
 import { zonedNoon } from './prayer/engine';
-import { buildModel } from './render/svg';
+import { buildModel, findIqamahChange } from './render/svg';
 import { logoDataUri } from './render/background';
 import type { Timetable } from './types';
 
@@ -55,8 +55,11 @@ const PRAYERS = [
 
 interface DayCell {
   day: number;
-  rows: { label: string; adhan: string; iqamah: string | null }[];
+  /** `minor`: Sunrise and Ishraq, which have no jama'ah. `changed`: its Iqamah moves today. */
+  rows: { label: string; adhan: string; iqamah: string | null; minor?: boolean; changed?: boolean }[];
   jumuah: string | null;
+  /** A scheduled (or CSV) Iqamah change takes effect on this day. */
+  change: boolean;
 }
 
 /**
@@ -94,17 +97,41 @@ export function renderMonthPrintHtml(tt: Timetable, year: number, month: number)
    * none of its own. `zonedNoon` is the required anchor — see buildModel.
    */
   const cells: DayCell[] = [];
+  const firstOfMonth = zonedNoon(year, month, 1, tz);
   for (let day = 1; day <= daysInMonth; day++) {
     const m = buildModel(tt, zonedNoon(year, month, day, tz));
     const row = (key: string) => m.rows.find((r) => r.key === key);
+    /**
+     * Is this a day the Iqamah changes? Asked of `findIqamahChange` — the one test the on-screen
+     * reminder, the WhatsApp post and the poster already share — for exactly this day, rather than
+     * by comparing the sheet's own columns: an Iqamah set as minutes after the Adhan moves a
+     * minute most days with the sun, and that is not a change anyone needs telling about.
+     */
+    const change = findIqamahChange(tt, firstOfMonth, { minDays: day - 1, maxDays: day - 1 });
+    const changed = new Set<string>(change?.changed.map((c) => c.key) ?? []);
+    const prayer = (p: (typeof PRAYERS)[number]) => ({
+      label: p.label,
+      adhan: fmt(row(p.key)?.adhan ?? null, tt.timeFormat),
+      iqamah: fmt(row(p.key)?.iqamah ?? null, tt.timeFormat),
+      changed: changed.has(p.key),
+    });
+    // Sunrise always — it is the end of Fajr, and the sheet is where people look it up — and
+    // Ishraq when this display shows it, from the model's own row so the two cannot disagree.
+    // ONE line between them, sunrise on the left and Ishraq on the right: as two lines they took
+    // the room of two prayers and shrank every time on the sheet to make it.
+    const sunrise = fmt(m.times.sunrise, tt.timeFormat);
+    const ishraq = row('ishraq');
     cells.push({
       day,
+      change: !!change,
       jumuah: m.isFriday ? jumuahLabel(m.jumuah, tt.timeFormat) : null,
-      rows: PRAYERS.map((p) => ({
-        label: p.label,
-        adhan: fmt(row(p.key)?.adhan ?? null, tt.timeFormat),
-        iqamah: fmt(row(p.key)?.iqamah ?? null, tt.timeFormat),
-      })),
+      rows: [
+        prayer(PRAYERS[0]),
+        ishraq
+          ? { label: `Sunrise ${sunrise}`, adhan: `Ishrāq ${fmt(ishraq.adhan, tt.timeFormat)}`, iqamah: null, minor: true }
+          : { label: 'Sunrise', adhan: sunrise, iqamah: null, minor: true },
+        ...PRAYERS.slice(1).map(prayer),
+      ],
     });
   }
 
@@ -124,12 +151,13 @@ export function renderMonthPrintHtml(tt: Timetable, year: number, month: number)
     const rowsHtml = c.rows
       .map(
         (r) =>
-          `<div class="pr"><span class="pn">${r.label}</span><span class="pt">${r.adhan}${r.iqamah ? ` / ${r.iqamah}` : ''}</span></div>`,
+          `<div class="pr${r.minor ? ' minor' : ''}${r.changed ? ' changed' : ''}"><span class="pn">${r.label}</span><span class="pt">${r.adhan}${r.iqamah ? ` / ${r.iqamah}` : ''}</span></div>`,
       )
       .join('');
+    const cls = [fri ? 'fri' : '', c.change ? 'chg' : ''].filter(Boolean).join(' ');
     return (
-      `<td class="${fri ? 'fri' : ''}">` +
-      `<div class="dnum">${c.day}</div>` +
+      `<td class="${cls}">` +
+      `<div class="dnum">${c.day}${c.change ? '<span class="chgtag">Iqamah change</span>' : ''}</div>` +
       (c.jumuah ? `<div class="jum">Jumu'ah ${esc(c.jumuah)}</div>` : '') +
       `<div class="prs">${rowsHtml}</div>` +
       '</td>'
@@ -160,7 +188,10 @@ export function renderMonthPrintHtml(tt: Timetable, year: number, month: number)
   // ~545px of usable height at 96dpi (landscape Letter, 8mm margins, minus chrome).
   const rows = weeks.length;
   const rowH = Math.floor(545 / rows);
-  const prayerFs = Math.max(9, Math.min(13, Math.floor((rowH - 30) / 6.8)));
+  // Lines per cell, in units of the prayer size: the five prayers at 1.3 each plus a little, and
+  // the Sunrise/Ishraq line, which is set smaller and tighter (0.85 x 1.15, see `.pr.minor`).
+  const prayerFs = Math.max(8, Math.min(13, Math.floor((rowH - 30) / (6.8 + 0.98))));
+  const minorFs = (prayerFs * 0.85).toFixed(1);
   const dnumFs = Math.min(16, prayerFs + 4);
   const jumFs = Math.max(9, prayerFs - 1);
 
@@ -173,7 +204,7 @@ export function renderMonthPrintHtml(tt: Timetable, year: number, month: number)
 <style>
   :root {
     --ink:#16241e; --dim:#5b6b63; --line:#d9e0db; --paper:#e7e7e4;
-    --green:#143027; --emerald:#1fa37a; --gold:#a8801f; --gold-bg:#f4ecd6; --gold-soft:#b9912a;
+    --green:#143027; --emerald:#1fa37a; --gold:#a8801f; --gold-bg:#f4ecd6; --gold-soft:#b9912a; --chg-bg:#dcefe6;
   }
   * { box-sizing: border-box; }
   html,body { margin:0; padding:0; }
@@ -187,6 +218,7 @@ export function renderMonthPrintHtml(tt: Timetable, year: number, month: number)
   .subtitle { font-size:15px; margin:2px 0 0; color:var(--emerald); font-weight:700; }
   .legend { text-align:right; color:var(--dim); font-size:12px; line-height:1.55; padding-top:2px; white-space:nowrap; }
   .legend .em { color:var(--gold); font-style:italic; }
+  .legend .chgkey { color:var(--emerald); font-weight:700; }
   .nav { color:var(--emerald); text-decoration:none; font-weight:600; margin-left:10px; font-size:12px; }
 
   table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; }
@@ -199,12 +231,17 @@ export function renderMonthPrintHtml(tt: Timetable, year: number, month: number)
   tbody tr td:last-child { border-right:none; }
   tbody td.empty { background:transparent; border-right-color:transparent; }
   tbody td.fri { background:var(--gold-bg); }
+  tbody td.chg { background:var(--chg-bg); box-shadow:inset 0 0 0 2px var(--emerald); }
+  .chgtag { float:right; font-size:${jumFs}px; font-weight:700; color:var(--emerald); line-height:${dnumFs}px; }
   .dnum { font-size:${dnumFs}px; font-weight:700; color:var(--emerald); line-height:1; margin-bottom:2px; }
   .jum { font-size:${jumFs}px; font-weight:700; color:var(--gold); margin-bottom:2px; }
   .prs { display:flex; flex-direction:column; gap:0; }
   .pr { display:flex; justify-content:space-between; gap:6px; font-size:${prayerFs}px; line-height:1.3; }
   .pn { color:var(--ink); }
   .pt { color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .pr.minor { font-size:${minorFs}px; line-height:1.15; }
+  .pr.minor .pn, .pr.minor .pt { color:var(--dim); }
+  .pr.changed .pt { color:var(--ink); font-weight:700; }
 
   footer { margin-top:8px; text-align:center; color:var(--dim); font-size:11px; }
   .print-btn { display:inline-block; margin-left:14px; padding:6px 14px; border:1px solid var(--emerald); border-radius:8px;
@@ -229,6 +266,7 @@ export function renderMonthPrintHtml(tt: Timetable, year: number, month: number)
   </div>
   <div class="legend">
     Each cell: Adhan / Iqamah &nbsp;·&nbsp; ${fmtLabel}<br />
+    ${cells.some((c) => c.change) ? '<span class="chgkey">Outlined days: the Iqamah changes (new time in bold)</span><br />' : ''}
     <span class="em">${methodLabel} &nbsp;·&nbsp; Asr: ${esc(tt.asrMadhab)}</span><br />
     ${navLink(prev.y, prev.m, '‹ Prev')}${navLink(next.y, next.m, 'Next ›')}
     <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>

@@ -19,7 +19,7 @@ import path from 'node:path';
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'omd-link-test-'));
 process.env.DATA_DIR = DIR;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { Store } = require('./store') as typeof import('./store');
+const { Store, followLink } = require('./store') as typeof import('./store');
 
 /**
  * One store, reset to three known timetables per test.
@@ -113,4 +113,21 @@ test('deleting the main frees the screens that followed it', () => {
   const child = s.db.timetables.find((t) => t.id === b)!;
   assert.equal(child.linkedTo, '');
   assert.equal(child.timezone, 'Asia/Riyadh');
+});
+
+test("the preview of a follower shows the main's Iqamah, not the form's own", () => {
+  // The preview renders the editor's unsaved FORM, which still carries the follower's own old
+  // Iqamah rules, so it never goes through `Store.update`. `followLink` is what it calls instead.
+  const [s, a, b] = seed();
+  s.update((db) => {
+    const main = db.timetables.find((t) => t.id === a)!;
+    main.iqamah = { ...main.iqamah, fajr: { mode: 'fixed', fixed: '06:15' } };
+    main.iqamahSchedule = [{ from: '2026-11-01', asr: '15:30' }];
+  });
+  const form = { ...structuredClone(s.db.timetables.find((t) => t.id === b)!), linkedTo: a };
+  form.iqamah = { ...form.iqamah, fajr: { mode: 'offset', offset: 20 } };
+  followLink(form, s.db.timetables);
+  assert.deepEqual(form.iqamah.fajr, { mode: 'fixed', fixed: '06:15' });
+  assert.deepEqual(form.iqamahSchedule, [{ from: '2026-11-01', asr: '15:30' }]);
+  assert.equal(form.linkedTo, a, 'and it is still following');
 });
