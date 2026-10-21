@@ -10,6 +10,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { accentFor } from './omosAccents';
+import { BASE } from './base';
 
 export interface Prefs {
   theme: 'system' | 'dark' | 'light';
@@ -265,7 +266,11 @@ export function usePrefs(): Prefs {
 export async function fetchOmosAppearance(omosBase: string): Promise<void> {
   if (!omosBase) return;
   try {
-    const res = await fetch(`${omosBase}/api/public/appearance`, { credentials: 'omit' });
+    // From outside the masjid (under the tunnel prefix) the platform's LAN address is out of
+    // reach — and plain http from an https page — but this same hostname IS the platform, which
+    // serves its public appearance at the root.
+    const at = BASE ? '/api/public/appearance' : `${omosBase}/api/public/appearance`;
+    const res = await fetch(at, { credentials: 'omit' });
     if (!res.ok) return;
     if (!prefsStore.get().followOmos) return;
     prefsStore.patch(appearancePatch((await res.json()) as OmosAppearance));

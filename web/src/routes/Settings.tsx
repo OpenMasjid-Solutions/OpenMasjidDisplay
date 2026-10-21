@@ -2,6 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { BASE } from '../base';
 import type { AppState, Settings, WhatsAppStatus, WhatsAppReason, WhatsAppLogEntry } from '../types';
 import { Field, Toggle, Spinner, IconCheck, useToast } from '../ui';
 import { usePrefs, prefsStore, WALLPAPERS, fetchOmosAppearance } from '../prefs';
@@ -619,9 +620,14 @@ function VolunteerPanel({ state, refetch }: Props) {
   // Port 0 means "this same listener" — a standalone screen serves the volunteer page from the
   // panel's own address rather than a second port. Without this the panel printed a literal
   // `http://192.168.1.30:0`, which is not an address anybody can open.
-  const volUrl = state.volunteer.port
-    ? `http://${window.location.hostname}:${state.volunteer.port}`
-    : `http://${window.location.host}/volunteer`;
+  // Opened from outside the masjid (under the tunnel prefix) there is no LAN address to read off
+  // this page, and its own port is not reachable from here, so give the /volunteer path on the
+  // address this panel IS on — the hint below promises exactly that.
+  const volUrl = BASE
+    ? `${window.location.origin}${BASE}/volunteer`
+    : state.volunteer.port
+      ? `http://${window.location.hostname}:${state.volunteer.port}`
+      : `http://${window.location.host}/volunteer`;
   // Public address behind the OS remote-access tunnel (the volunteer page now rides the main
   // port under /volunteer). Empty unless remote access is on.
   const [publicUrl, setPublicUrl] = useState('');

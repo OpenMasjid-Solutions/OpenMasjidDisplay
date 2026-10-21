@@ -16,6 +16,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { BASE } from '../base';
 import type { PiDeviceInfo } from '../types';
 import { Modal, Spinner, IconDownload, IconPower, IconCheck, IconSparkle, IconCopy, IconTerminal, copyText, useToast } from '../ui';
 import { WifiSection } from './WifiPanel';
@@ -124,7 +125,7 @@ function useLiveDevice(initial: PiDeviceInfo, everyMs: number): PiDeviceInfo {
  * root-owned file, and both buttons start working on the next check-in.
  */
 function InstallerNeeded({ what }: { what: string }) {
-  const { command } = installCommand(window.location.origin);
+  const { command } = installCommand(window.location.origin + BASE);
   return (
     <p className="hint muted pi-note">
       <strong>{what} needs this server&rsquo;s installer.</strong> This screen was adopted by its

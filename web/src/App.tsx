@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useAppState } from './state';
 import { api } from './api';
+import { withBase } from './base';
 import { usePrefs, prefsStore, resolveTheme, useOmosAppearanceSync, useReadableTheme } from './prefs';
 import {
   ToastProvider,
@@ -99,7 +100,7 @@ function EditorPage({ id, state, refetch }: { id: string; state: AppState; refet
 }
 
 function Root() {
-  const { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, setupCodeRequired, loading, refetch, onAuthed } = useAppState();
+  const { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, setupCodeRequired, passwordSignIn, loading, refetch, onAuthed } = useAppState();
   const [tab, setTab] = useState<Tab>('screens');
   const [setupInstead, setSetupInstead] = useState(false);
   const editId = new URLSearchParams(window.location.search).get('edit');
@@ -153,15 +154,19 @@ function Root() {
     return <CapabilitiesProvider value={caps}>{inner}</CapabilitiesProvider>;
   }
   if (loading) return <Splash />;
-  // Not signed in. Standalone first run (or a chosen fallback) → create a password.
-  if (!hasPassword && (setupInstead || !ssoEnabled)) return <Setup onDone={onAuthed} needsCode={setupCodeRequired} />;
+  // Not signed in. Standalone first run (or a chosen fallback) → create a password — never from
+  // outside the masjid, where the server refuses one and OpenMasjidOS is the only way in.
+  if (passwordSignIn && !hasPassword && (setupInstead || !ssoEnabled)) {
+    return <Setup onDone={onAuthed} needsCode={setupCodeRequired} />;
+  }
   return (
     <Login
       onDone={onAuthed}
       ssoEnabled={ssoEnabled}
       ssoReachable={ssoReachable}
       hasPassword={hasPassword}
-      onSetupInstead={!hasPassword ? () => setSetupInstead(true) : undefined}
+      passwordSignIn={passwordSignIn}
+      onSetupInstead={!hasPassword && passwordSignIn ? () => setSetupInstead(true) : undefined}
     />
   );
 }
@@ -333,7 +338,7 @@ function ManagedShell() {
     <div className="shell">
       <Scene />
       <header className="topbar">
-        <a className="brand" href="/" aria-label="OpenMasjid Display — home">
+        <a className="brand" href={withBase('/')} aria-label="OpenMasjid Display — home">
           <MasjidMark size={22} />
           <b>OpenMasjid&nbsp;Display</b>
         </a>
@@ -380,7 +385,7 @@ function Shell({
     <div className="shell">
       <Scene />
       <header className="topbar">
-        <a className="brand" href="/" aria-label="OpenMasjid Display — home">
+        <a className="brand" href={withBase('/')} aria-label="OpenMasjid Display — home">
           <MasjidMark size={22} />
           <b>OpenMasjid&nbsp;Display</b>
         </a>
@@ -411,17 +416,20 @@ function Shell({
   );
 }
 
-function Login({
+/** Exported for its test (login.test.ts); the app reaches it only through Root. */
+export function Login({
   onDone,
   ssoEnabled,
   ssoReachable,
   hasPassword,
+  passwordSignIn,
   onSetupInstead,
 }: {
   onDone: () => void;
   ssoEnabled: boolean;
   ssoReachable: boolean;
   hasPassword: boolean;
+  passwordSignIn: boolean;
   onSetupInstead?: () => void;
 }) {
   const [password, setPassword] = useState('');
@@ -433,7 +441,9 @@ function Login({
   // platform is unreachable (a restore onto a new box, OS briefly down), SSO can't
   // complete — so guide the admin to the always-available local-password recovery
   // instead of letting "continue" loop silently.
-  if (ssoEnabled && !hasPassword) {
+  // From outside the masjid, whatever else is true: the server refuses a password there, so
+  // OpenMasjidOS is the only way in and a password box would be a dead end.
+  if (!passwordSignIn || (ssoEnabled && !hasPassword)) {
     const unreachable = !ssoReachable;
     return (
       <div className="auth-wrap">
@@ -444,7 +454,7 @@ function Login({
           {unreachable ? (
             <p className="page-sub" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
               Can’t reach OpenMasjidOS right now, so automatic sign-in isn’t available.
-              Try again in a moment, or set a password to get in.
+              {onSetupInstead ? ' Try again in a moment, or set a password to get in.' : ' Try again in a moment.'}
             </p>
           ) : (
             <p className="page-sub" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>

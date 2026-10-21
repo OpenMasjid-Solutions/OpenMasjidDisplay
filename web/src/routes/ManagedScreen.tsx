@@ -15,6 +15,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Spinner, IconCheck } from '../ui';
+import { withBase } from '../base';
 
 interface Status {
   screenName: string;
@@ -57,7 +58,7 @@ export function ManagedScreen() {
     let live = true;
     const load = async (): Promise<void> => {
       try {
-        const r = await fetch('/api/pi/self', { cache: 'no-store' });
+        const r = await fetch(withBase('/api/pi/self'), { cache: 'no-store' });
         if (!r.ok) throw new Error(String(r.status));
         const j = (await r.json()) as Status;
         if (live) {

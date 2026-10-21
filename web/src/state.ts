@@ -2,6 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useCallback, useEffect, useState } from 'react';
 import { api, setUnauthHandler } from './api';
+import { wsUrl } from './base';
 import type { AppState, TvStatus, Capabilities } from './types';
 import { ALL_CAPABILITIES } from './types';
 
@@ -20,6 +21,8 @@ export interface UseApp {
   caps: Capabilities;
   /** first run on a screen that wants the code off its own television before it will be claimed */
   setupCodeRequired: boolean;
+  /** whether a local password may be used from where this panel was opened — not from outside */
+  passwordSignIn: boolean;
   loading: boolean;
   refetch: () => Promise<void>;
   onAuthed: () => void;
@@ -33,6 +36,7 @@ export function useAppState(): UseApp {
   const [ssoReachable, setSsoReachable] = useState(true);
   const [caps, setCaps] = useState<Capabilities>(ALL_CAPABILITIES);
   const [setupCodeRequired, setSetupCodeRequired] = useState(false);
+  const [passwordSignIn, setPasswordSignIn] = useState(true);
   const [loading, setLoading] = useState(true);
 
   const refetch = useCallback(async () => {
@@ -58,6 +62,7 @@ export function useAppState(): UseApp {
       // A host too old to answer keeps every feature, which is what it had.
       if (s.capabilities) setCaps(s.capabilities);
       setSetupCodeRequired(!!s.setupCodeRequired);
+      setPasswordSignIn(s.passwordSignIn !== false);
       if (s.authed) {
         await refetch();
         return;
@@ -84,8 +89,8 @@ export function useAppState(): UseApp {
     let ws: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const connect = () => {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      // Under the tunnel prefix when there is one, or this would be the dashboard's host root.
+      ws = new WebSocket(wsUrl('/ws'));
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data) as { type: string; data: unknown };
@@ -125,5 +130,5 @@ export function useAppState(): UseApp {
     void checkSession();
   }, [checkSession]);
 
-  return { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, setupCodeRequired, loading, refetch, onAuthed };
+  return { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, setupCodeRequired, passwordSignIn, loading, refetch, onAuthed };
 }

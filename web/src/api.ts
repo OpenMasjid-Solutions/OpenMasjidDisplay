@@ -16,6 +16,7 @@ import type {
   PiDeviceInfo,
   Capabilities,
 } from './types';
+import { withBase } from './base';
 
 let onUnauth: () => void = () => {};
 export function setUnauthHandler(fn: () => void): void {
@@ -23,7 +24,8 @@ export function setUnauthHandler(fn: () => void): void {
 }
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  // Every call is an absolute in-app path; behind the tunnel it must stay under our prefix.
+  const res = await fetch(withBase(path), {
     method,
     headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -57,6 +59,9 @@ export const api = {
       /** a Raspberry Pi running on its own wants the code from its television before it will
        *  create an account; an OpenMasjidOS server has no such code and never sends this */
       setupCodeRequired?: boolean;
+      /** false when the panel was reached from outside the masjid (through the OpenMasjidOS
+       *  tunnel): the server refuses a password there, so none is offered. Absent = allowed. */
+      passwordSignIn?: boolean;
     }>('GET', '/api/session'),
   setup: (password: string, code?: string) => req<{ ok: boolean }>('POST', '/api/setup', { password, ...(code ? { code } : {}) }),
   login: (password: string) => req<{ ok: boolean }>('POST', '/api/login', { password }),
@@ -89,23 +94,23 @@ export const api = {
   saveIqamahSchedule: (id: string, schedule: IqamahScheduleEntry[]) =>
     req<{ ok: boolean; entries: number; schedule: IqamahScheduleEntry[] }>('PUT', `/api/timetables/${id}/iqamah-schedule`, { schedule }),
   iqamahCsvUrl: (id: string, mode?: 'template') =>
-    `/api/timetables/${id}/iqamah-csv${mode ? `?mode=${mode}` : ''}`,
+    withBase(`/api/timetables/${id}/iqamah-csv${mode ? `?mode=${mode}` : ''}`),
 
   /** The announcement poster for the NEXT scheduled Iqamah change (PNG attachment).
    *  404s with a JSON reason when nothing is scheduled ahead, so fetch it rather than
    *  linking straight to it. */
-  iqamahChangeImageUrl: (id: string) => `/api/timetables/${id}/iqamah-change.png`,
+  iqamahChangeImageUrl: (id: string) => withBase(`/api/timetables/${id}/iqamah-change.png`),
 
   uploadAnnouncement: (id: string, dataUrl: string) =>
     req<Timetable>('POST', `/api/timetables/${id}/announcements`, { data: dataUrl }),
   removeAnnouncement: (id: string, file: string) =>
     req<Timetable>('DELETE', `/api/timetables/${id}/announcements/${encodeURIComponent(file)}`),
   announcementImageUrl: (id: string, file: string) =>
-    `/api/timetables/${id}/announcements/${encodeURIComponent(file)}`,
+    withBase(`/api/timetables/${id}/announcements/${encodeURIComponent(file)}`),
 
   /** Live PNG preview of an unsaved timetable form; returns an object URL. */
   previewLive: async (body: Partial<Timetable>): Promise<string> => {
-    const res = await fetch('/api/preview', {
+    const res = await fetch(withBase('/api/preview'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -123,7 +128,7 @@ export const api = {
   previewMeta: (body: Partial<Timetable>) => req<{ hotspots: Hotspot[] }>('POST', '/api/preview-meta', body),
 
   /** Printable month of computed prayer times (browser "Save as PDF"). */
-  timetablePrintUrl: (id: string) => `/api/timetables/${id}/print`,
+  timetablePrintUrl: (id: string) => withBase(`/api/timetables/${id}/print`),
 
   /** Embed info for the public web widget: the VERIFIED public-tunnel URL (or '') and
    *  whether remote access is configured. The LAN URL + snippet are built client-side
@@ -289,19 +294,17 @@ export interface NewReport {
   images: string[];
   targets: string[];
 }
-// Volunteer calls are prefixed with the app's base path (injected as window.__OMD_BASE__ when
-// the page is served under the OS tunnel at /<appId>/volunteer), so "/api/volunteer/…" resolves
-// under that same prefix. Empty on the LAN / volunteer port, so it's a no-op there.
-const VOL_BASE = (typeof window !== 'undefined' && window.__OMD_BASE__) || '';
+// Under the OS tunnel (/<appId>/volunteer) these resolve under the prefix like every other call:
+// `req` and `withBase` add it (base.ts). Empty on the LAN / volunteer port.
 export const volApi = {
-  session: () => req<{ enabled: boolean; authed: boolean }>('GET', `${VOL_BASE}/api/volunteer/session`),
-  login: (pin: string) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/login`, { pin }),
-  logout: () => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/logout`),
-  tvs: () => req<VolunteerData>('GET', `${VOL_BASE}/api/volunteer/tvs`),
-  set: (id: string, content: ContentRef) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/tvs/${id}/set`, { content }),
-  resume: (id: string) => req<{ ok: boolean }>('POST', `${VOL_BASE}/api/volunteer/tvs/${id}/resume`),
-  reports: () => req<VolunteerReportsData>('GET', `${VOL_BASE}/api/volunteer/reports`),
-  addReport: (body: NewReport) => req<{ report: VolunteerReport }>('POST', `${VOL_BASE}/api/volunteer/reports`, body),
-  removeReport: (id: string) => req<{ ok: boolean }>('DELETE', `${VOL_BASE}/api/volunteer/reports/${id}`),
-  reportImageUrl: (id: string) => `${VOL_BASE}/api/volunteer/reports/${id}/image`,
+  session: () => req<{ enabled: boolean; authed: boolean }>('GET', `/api/volunteer/session`),
+  login: (pin: string) => req<{ ok: boolean }>('POST', `/api/volunteer/login`, { pin }),
+  logout: () => req<{ ok: boolean }>('POST', `/api/volunteer/logout`),
+  tvs: () => req<VolunteerData>('GET', `/api/volunteer/tvs`),
+  set: (id: string, content: ContentRef) => req<{ ok: boolean }>('POST', `/api/volunteer/tvs/${id}/set`, { content }),
+  resume: (id: string) => req<{ ok: boolean }>('POST', `/api/volunteer/tvs/${id}/resume`),
+  reports: () => req<VolunteerReportsData>('GET', `/api/volunteer/reports`),
+  addReport: (body: NewReport) => req<{ report: VolunteerReport }>('POST', `/api/volunteer/reports`, body),
+  removeReport: (id: string) => req<{ ok: boolean }>('DELETE', `/api/volunteer/reports/${id}`),
+  reportImageUrl: (id: string) => withBase(`/api/volunteer/reports/${id}/image`),
 };

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useState, useEffect } from 'react';
 import { api } from '../api';
+import { BASE } from '../base';
 import type { AppState, Tv, TvKind, ContentRef, TvStatus, PiDeviceInfo, PiDeviceNet } from '../types';
 // The same helper the server tests, rather than a second copy of the rule living in the panel.
 import { installCommand } from '../../../server/src/pi/lanHost';
@@ -246,7 +247,7 @@ function ScreenCard({
   // working if the line drops. A screen elsewhere (or a display hosted in the cloud) needs the
   // public one. Showing only whichever exists made the local address vanish the moment remote
   // access was turned on, which is exactly backwards for the screens that are on this network.
-  const localUrl = `${location.origin}/s/${tv.webToken ?? ''}`;
+  const localUrl = `${location.origin}${BASE}/s/${tv.webToken ?? ''}`;
   const url = isWeb ? localUrl : `rtsp://${location.hostname}:${state.rtsp.port}/${tv.id}`;
   const localHost = /^(localhost|127\.|0\.0\.0\.0|::1|\[)/.test(location.hostname);
   const sourceTag =
@@ -538,7 +539,7 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
   // will issue for 192.168.x.x — so `curl` refuses it and the command needs -k for that first
   // fetch. That is called out below rather than slipped in, because pasting an unverified script
   // into `sudo sh` is not something anybody should do without being told.
-  const { command: installCmd, insecureFirstHop } = installCommand(window.location.origin);
+  const { command: installCmd, insecureFirstHop } = installCommand(window.location.origin + BASE);
 
   // A failed poll must NOT clear the list. It used to, and the consequence was maddening rather
   // than subtle: the code and name inputs below were rendered only while a device was pending, so

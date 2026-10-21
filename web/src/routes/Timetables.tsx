@@ -2,6 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
+import { BASE, withBase } from '../base';
 import type { AppState, Timetable, IqamahRule, IqamahConfig, IqamahYear, IqamahScheduleEntry, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, IconDownload, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
@@ -83,7 +84,7 @@ export function Timetables({ state, refetch }: Props) {
         {state.timetables.map((tt) => (
           <div key={tt.id} className="screen-card glass">
             <PreviewImg
-              src={`/api/preview/${tt.id}?v=${tick}`}
+              src={withBase(`/api/preview/${tt.id}?v=${tick}`)}
               portrait={tt.orientation === 'portrait'}
               alt={`Preview of ${tt.name}`}
             />
@@ -1298,7 +1299,7 @@ function WidgetEmbed({ id }: { id: string }) {
   if (!info) return <p className="hint"><Spinner /> Preparing embed code…</p>;
   // Build the LAN link from the page's OWN origin so it uses the exact scheme + port
   // the admin is using right now (e.g. the HTTPS proxy port) — never a guessed http://.
-  const localUrl = `${window.location.origin}/w/${id}`;
+  const localUrl = `${window.location.origin}${BASE}/w/${id}`;
   const url = info.publicUrl || localUrl;
   const snippet = `<iframe src="${url}" title="Prayer times" loading="lazy" style="border:0;width:100%;max-width:420px;height:480px"></iframe>`;
   const copy = async (text: string, what: string) => {
