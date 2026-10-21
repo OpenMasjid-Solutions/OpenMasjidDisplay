@@ -83,7 +83,8 @@ import {
 } from './webScreen';
 import { clockSuspect } from './render/renderer';
 import { fontOptions } from './render/fonts';
-import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE } from './httpio';
+import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE, pageUnderBase } from './httpio';
+import { rawPath } from './fabricInbound';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
@@ -276,8 +277,7 @@ function serveScreenPage(res: ServerResponse, basePrefix: string): void {
     res.end('OpenMasjid Display is running, but the screen page was not built.');
     return;
   }
-  let html = fs.readFileSync(file, 'utf8');
-  if (basePrefix) html = html.replace(/="\/assets\//g, `="${basePrefix}/assets/`);
+  const html = pageUnderBase(fs.readFileSync(file, 'utf8'), basePrefix);
   res.writeHead(200, {
     ...SECURITY_HEADERS,
     'content-type': MIME['.html'],
@@ -305,11 +305,31 @@ async function backgroundTone(tt: Timetable): Promise<{ bgLight: boolean; autoAc
   }
 }
 
-function serveIndex(res: ServerResponse): void {
+/** First segments that are this app's own routes at the root, and so never a tunnel prefix. */
+const ROOT_SEGMENTS = new Set(['api', 'assets', 's', 'w', 'pi', 'volunteer', 'fabric', 'healthz', 'ws']);
+
+/**
+ * The `/<basePath>` the CONTROL PANEL was reached under, or '' at the root.
+ *
+ * Behind the OpenMasjidOS tunnel the panel is `https://<apps' hostname>/<basePath>/`, the
+ * platform does not strip the prefix, and everything else on that hostname is the dashboard's.
+ * So the page, its API and its assets all arrive under `/<basePath>`. A first segment that is
+ * not one of this app's own root routes is that prefix — derived from the request, as the
+ * screen and volunteer routes do, so it is right whatever the admin named the path. Every
+ * root path the LAN uses starts with one of ROOT_SEGMENTS, or is `/` or a file name with a dot,
+ * so on the LAN this answers ''.
+ */
+export function panelPrefix(pathname: string): string {
+  const m = /^(\/[a-z0-9-]{1,80})(?:\/.*)?$/.exec(pathname);
+  return m && !ROOT_SEGMENTS.has(m[1].slice(1)) ? m[1] : '';
+}
+
+/** The control panel's page, pointed at the prefix it was reached under (see pageUnderBase). */
+function serveIndex(res: ServerResponse, basePrefix: string): void {
   const idx = path.join(config.publicDir, 'index.html');
   if (fs.existsSync(idx)) {
     res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
-    fs.createReadStream(idx).pipe(res);
+    res.end(pageUnderBase(fs.readFileSync(idx, 'utf8'), basePrefix));
   } else {
     res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
     res.end('OpenMasjid Display is running. The control panel build was not found.');
@@ -421,7 +441,8 @@ export function createApi(deps: Deps) {
 
   return async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    const pathname = url.pathname;
+    // Reassigned once, below, where the control panel's own routes begin — see panelPrefix.
+    let pathname = url.pathname;
     const method = req.method ?? 'GET';
 
     try {
@@ -974,6 +995,32 @@ export function createApi(deps: Deps) {
         return;
       }
 
+      // ---- The control panel, here or behind the OpenMasjidOS tunnel --------
+      //
+      // Behind the tunnel it is all under /<basePath>/ (see panelPrefix). Strip that once, here,
+      // so every route below matches exactly as it does at the root on the LAN. Everything
+      // above handles its own optional prefix and never sees this.
+      const panelBase = panelPrefix(pathname);
+      const requestPath = pathname;
+      if (panelBase) pathname = pathname.slice(panelBase.length) || '/';
+      /**
+       * Was this request for a root path, spelled exactly that way on the wire?
+       *
+       * Password sign-in and first-run setup are for the masjid's own network: from outside the
+       * admin signs in through OpenMasjidOS (the SSO in /api/session) and nothing else. Every
+       * request the tunnel delivers carries the prefix, so it is never at the root — and the
+       * RAW target is compared, not `pathname`, because `new URL()` has already folded
+       * `/display/../api/login` and `%2e%2e` onto the bare path (fabricInbound.ts `rawPath`).
+       */
+      const atRoot = rawPath(req) === pathname;
+      const passwordSignInHere = (): boolean => {
+        if (atRoot) return true;
+        sendJson(res, 403, {
+          error: 'Password sign-in only works on the masjid’s own network. From outside, open Display from your OpenMasjidOS dashboard.',
+        });
+        return false;
+      };
+
       if (pathname === '/api/session' && method === 'GET') {
         let isAuthed = authed(req);
         let username: string | undefined;
@@ -988,7 +1035,10 @@ export function createApi(deps: Deps) {
           const probe = await probePlatform(req);
           reachable = probe.reachable;
           if (probe.username) {
-            res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret, SSO_SESSION_MS), SSO_SESSION_MS, isSecureRequest(req)));
+            res.setHeader(
+              'set-cookie',
+              setCookieHeader(makeToken(store.secret, SSO_SESSION_MS), SSO_SESSION_MS, isSecureRequest(req), panelBase),
+            );
             isAuthed = true;
             username = probe.username;
           }
@@ -999,6 +1049,8 @@ export function createApi(deps: Deps) {
           needsSetup: !store.db.admin && !ssoConfigured(),
           authed: isAuthed,
           hasPassword: !!store.db.admin,
+          // False from outside, so the panel offers no password form the server would refuse.
+          passwordSignIn: atRoot,
           sso: { enabled: ssoConfigured(), reachable, username },
           // What this host supports. The Raspberry Pi serves the same panel from the same
           // bundle and answers 'pi' here, which is the only thing that makes the two differ.
@@ -1006,6 +1058,7 @@ export function createApi(deps: Deps) {
         });
       }
       if (pathname === '/api/setup' && method === 'POST') {
+        if (!passwordSignInHere()) return;
         const body = await readBody(req);
         if (store.db.admin) return sendJson(res, 409, { error: 'The control panel is already set up.' });
         // The local password is a recovery path — but under OpenMasjidOS SSO the
@@ -1036,6 +1089,7 @@ export function createApi(deps: Deps) {
         return sendJson(res, 200, { ok: true });
       }
       if (pathname === '/api/login' && method === 'POST') {
+        if (!passwordSignInHere()) return;
         const wait = loginLimiter.retryAfterMs(req);
         if (wait > 0) return sendJson(res, 429, { error: `Too many attempts. Try again in ${Math.ceil(wait / 1000)}s.` });
         const body = await readBody(req);
@@ -1049,14 +1103,22 @@ export function createApi(deps: Deps) {
         return sendJson(res, 401, { error: 'Incorrect password.' });
       }
       if (pathname === '/api/logout' && method === 'POST') {
-        res.setHeader('set-cookie', clearCookieHeader(isSecureRequest(req)));
+        // Under the prefix, clear `/` as well: a cookie at the root of that hostname would be
+        // sent here too, and signing out must not leave one behind. At the root, `/` is all.
+        const secure = isSecureRequest(req);
+        res.setHeader(
+          'set-cookie',
+          panelBase ? [...clearCookieHeader(secure, panelBase), ...clearCookieHeader(secure)] : clearCookieHeader(secure),
+        );
         return sendJson(res, 200, { ok: true });
       }
 
       // ---- Static + SPA (GET) ---------------------------------------------
       if (!pathname.startsWith('/api/') && method === 'GET') {
-        if (serveStatic(res, pathname)) return;
-        return serveIndex(res);
+        // The page itself always goes through serveIndex: served raw it names /assets/ at the root.
+        const isPage = pathname === '/' || pathname === '/index.html';
+        if (!isPage && serveStatic(res, pathname)) return;
+        return serveIndex(res, panelBase);
       }
 
       // ---- Everything else requires auth ----------------------------------
@@ -1858,7 +1920,8 @@ export function createApi(deps: Deps) {
 
         // The address to give the Pi, worked out from how this panel is being reached. Refused
         // rather than guessed: a screen told a mangled address joins and then never connects.
-        const origin = originFor(req, pathname, '/api/pi/link');
+        // The path as it ARRIVED, prefix and all: originFor keeps the prefix in the address.
+        const origin = originFor(req, requestPath, '/api/pi/link');
         if (!origin) {
           return sendJson(res, 400, {
             error: 'Could not work out this server’s address from your request. Open the panel on an address the screen can reach.',

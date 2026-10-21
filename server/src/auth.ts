@@ -166,18 +166,32 @@ export function hasValidSession(req: IncomingMessage, secret: Buffer): boolean {
   );
 }
 
+/**
+ * The `Path` a session cookie is scoped to: the app's own prefix behind the OpenMasjidOS tunnel,
+ * `/` everywhere else.
+ *
+ * Behind the tunnel every app — and the OpenMasjidOS dashboard — shares ONE hostname, and the
+ * platform strips only ITS OWN cookies from what it forwards. A `Path=/` session cookie set there
+ * would be sent to every other app's server on that hostname, any of which could replay it at
+ * `/<basePath>/api/…` and drive this panel. Scoped to the prefix, the browser sends it to this
+ * app alone. Anything that is not a plain prefix gets `/`, which is the LAN's value.
+ */
+const cookiePath = (path: string): string => (/^\/[a-z0-9-]{1,80}$/.test(path) ? path : '/');
+
 /** @param secure add `Secure` AND use the Secure cookie name — pass isSecureRequest(req),
- *  so an HTTPS caller's cookie is protected while the plain-HTTP flow keeps its own. */
-export function setCookieHeader(token: string, maxAgeMs = MAX_AGE_MS, secure = FORCE_SECURE): string {
+ *  so an HTTPS caller's cookie is protected while the plain-HTTP flow keeps its own.
+ *  @param path the tunnel prefix the panel was reached under ('' or '/' at the root) */
+export function setCookieHeader(token: string, maxAgeMs = MAX_AGE_MS, secure = FORCE_SECURE, path = '/'): string {
   const name = secure ? COOKIE_S : COOKIE;
-  return `${name}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}${secureAttr(secure)}`;
+  return `${name}=${token}; HttpOnly; SameSite=Lax; Path=${cookiePath(path)}; Max-Age=${Math.floor(maxAgeMs / 1000)}${secureAttr(secure)}`;
 }
 
 /** Clear EVERY name this scheme could have authenticated with, so a logout is never
- *  partial. Returns an array — `res.setHeader('set-cookie', …)` accepts one. */
-export function clearCookieHeader(secure = FORCE_SECURE): string[] {
+ *  partial. Returns an array — `res.setHeader('set-cookie', …)` accepts one. `path` must be
+ *  the one the cookie was set with, or the browser keeps it. */
+export function clearCookieHeader(secure = FORCE_SECURE, path = '/'): string[] {
   const gone = (name: string, sec: boolean) =>
-    `${name}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(sec)}`;
+    `${name}=; HttpOnly; SameSite=Lax; Path=${cookiePath(path)}; Max-Age=0${secureAttr(sec)}`;
   // Over HTTPS hasValidSession accepts either name, so both must go. Over plain HTTP the
   // Secure cookie is neither sent nor clearable (and cannot authenticate), so leave it.
   return secure ? [gone(COOKIE_S, true), gone(COOKIE, false)] : [gone(COOKIE, false)];
@@ -195,13 +209,13 @@ export function hasValidVolunteerSession(req: IncomingMessage, secret: Buffer): 
   );
 }
 
-export function setVolunteerCookieHeader(token: string, secure = FORCE_SECURE): string {
+export function setVolunteerCookieHeader(token: string, secure = FORCE_SECURE, path = '/'): string {
   const name = secure ? VOL_COOKIE_S : VOL_COOKIE;
-  return `${name}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(VOL_MAX_AGE_MS / 1000)}${secureAttr(secure)}`;
+  return `${name}=${token}; HttpOnly; SameSite=Lax; Path=${cookiePath(path)}; Max-Age=${Math.floor(VOL_MAX_AGE_MS / 1000)}${secureAttr(secure)}`;
 }
 
-export function clearVolunteerCookieHeader(secure = FORCE_SECURE): string[] {
+export function clearVolunteerCookieHeader(secure = FORCE_SECURE, path = '/'): string[] {
   const gone = (name: string, sec: boolean) =>
-    `${name}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(sec)}`;
+    `${name}=; HttpOnly; SameSite=Lax; Path=${cookiePath(path)}; Max-Age=0${secureAttr(sec)}`;
   return secure ? [gone(VOL_COOKIE_S, true), gone(VOL_COOKIE, false)] : [gone(VOL_COOKIE, false)];
 }

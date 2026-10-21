@@ -32,7 +32,7 @@ import {
   isSecureRequest,
 } from './auth';
 import { normContent } from './validate';
-import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody } from './httpio';
+import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, pageUnderBase } from './httpio';
 import { LoginLimiter } from './rateLimit';
 import { rid } from './store';
 import { saveReportImages, removeReportImage, reportImageFile } from './render/background';
@@ -66,13 +66,6 @@ const MIME: Record<string, string> = {
 const readBody = (req: IncomingMessage, maxBytes = 100_000): Promise<Record<string, unknown>> =>
   readJsonBody(req, maxBytes);
 
-/** Inline boot script: flips the shared SPA bundle into the volunteer view and tells it the
- *  base path it's served under (so its /api/volunteer/… calls resolve under the tunnel prefix).
- *  It's a classic (non-module) script, so it runs before the deferred module bundle. */
-function volunteerBootScript(basePrefix: string): string {
-  return `<script>window.__OMD_VOLUNTEER__=true;window.__OMD_BASE__=${JSON.stringify(basePrefix)};</script>`;
-}
-
 /** Serve the SPA. index.html gets the boot script injected (and, under a tunnel base path, its
  *  asset URLs repointed under that prefix) so the same build boots the volunteer UI. */
 function serveSpa(res: ServerResponse, pathname: string, basePrefix: string): void {
@@ -96,10 +89,9 @@ function serveSpa(res: ServerResponse, pathname: string, basePrefix: string): vo
   // inject the boot script.
   const idx = path.join(config.publicDir, 'index.html');
   if (fs.existsSync(idx)) {
-    let html = fs.readFileSync(idx, 'utf8');
-    if (basePrefix) html = html.replace(/="\/assets\//g, `="${basePrefix}/assets/`);
-    const boot = volunteerBootScript(basePrefix);
-    html = html.includes('</head>') ? html.replace('</head>', `${boot}</head>`) : boot + html;
+    // The control panel's own page and helper, flipped into the volunteer view by a flag in the
+    // same classic script that carries the base path — so it runs before the deferred bundle.
+    const html = pageUnderBase(fs.readFileSync(idx, 'utf8'), basePrefix, 'window.__OMD_VOLUNTEER__=true;');
     res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
     res.end(html);
   } else {
@@ -156,14 +148,14 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenSta
         const pin = String(body.pin ?? '');
         if (store.db.volunteerAuth && verifyPassword(pin, store.db.volunteerAuth)) {
           loginLimiter.succeed(req);
-          res.setHeader('set-cookie', setVolunteerCookieHeader(makeVolunteerToken(store.secret), isSecureRequest(req)));
+          res.setHeader('set-cookie', setVolunteerCookieHeader(makeVolunteerToken(store.secret), isSecureRequest(req), basePrefix));
           return sendJson(res, 200, { ok: true });
         }
         loginLimiter.fail(req);
         return sendJson(res, 401, { error: 'Wrong PIN.' });
       }
       if (pathname === '/api/volunteer/logout' && method === 'POST') {
-        res.setHeader('set-cookie', clearVolunteerCookieHeader(isSecureRequest(req)));
+        res.setHeader('set-cookie', clearVolunteerCookieHeader(isSecureRequest(req), basePrefix));
         return sendJson(res, 200, { ok: true });
       }
 

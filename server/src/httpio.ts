@@ -62,6 +62,26 @@ export function sendJson(res: ServerResponse, status: number, obj: unknown): voi
 }
 
 /**
+ * A built page (`index.html`, `screen.html`), pointed at the path it is being served under.
+ *
+ * Behind the OpenMasjidOS tunnel this app lives at `/<basePath>/…` on a hostname whose root
+ * belongs to the dashboard, so an absolute `/assets/…` fetched from there reaches the dashboard,
+ * not us. The page's own asset URLs are repointed under the prefix, and `window.__OMD_BASE__`
+ * hands the bundle the same prefix for its API calls, its sockets and the asset URLs Vite builds
+ * at runtime (`renderBuiltUrl` in web/vite.config.ts). The script runs before the bundle, which
+ * is a deferred module. At the root `base` is '' and nothing moves.
+ *
+ * `base` is checked again here so nothing but a plain path segment can ever reach the page.
+ * `boot` is extra script the caller owns (the volunteer page's flag), never request data.
+ */
+export function pageUnderBase(html: string, base: string, boot = ''): string {
+  const b = /^\/[a-z0-9-]{1,80}$/.test(base) ? base : '';
+  const page = b ? html.replace(/="\/assets\//g, `="${b}/assets/`) : html;
+  const script = `<script>${boot}window.__OMD_BASE__=${JSON.stringify(b)};</script>`;
+  return page.includes('</head>') ? page.replace('</head>', `${script}</head>`) : script + page;
+}
+
+/**
  * Read a JSON request body, capped at `maxBytes`.
  *
  * The chunks are buffered and decoded ONCE at the end rather than appended as strings as

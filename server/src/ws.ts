@@ -41,7 +41,9 @@ export class WsHub {
     server.on('upgrade', (req, socket, head) => {
       try {
         const path = (req.url ?? '').split('?')[0];
-        if (path !== '/ws') {
+        // `/<basePath>/ws` is the same socket behind the OpenMasjidOS tunnel, which keeps the
+        // prefix (api.ts panelPrefix). Authenticated by the same cookie either way.
+        if (!/^(?:\/[a-z0-9-]{1,80})?\/ws$/.test(path)) {
           // Anything else is either one of the extra routes or nothing at all. The route decides
           // its own authentication — the panel cookie is right for one of them and wrong for the
           // other, which is a device presenting its own credential.
