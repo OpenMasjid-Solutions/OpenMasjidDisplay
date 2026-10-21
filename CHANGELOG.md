@@ -389,6 +389,8 @@ CLAUDE.md § *The changelog has two audiences*.
   advisory. It is a development tool, never part of the running app.
 - Updated another build-time dependency (`source-map-js`) for the same reason: a newly published
   high-severity advisory. It is only used while building the control panel, never at run time.
+- Updated the tool that builds the control panel (`vite`) to clear newly published high-severity
+  advisories. It is only used while building, never part of the running app.
 
 ## 0.70.0
 
