@@ -457,6 +457,25 @@ this file.
   whether to warn that the secret is crossing a public network in cleartext.)
 - Behind the OS proxy you may trust `X-Forwarded-*` **only because the platform's ingress now
   sanitises them** — never trust them when the app is reached directly.
+- **The control panel from outside: everything under `/<basePath>`, and OpenMasjidOS is the only
+  way in.** Through the tunnel the app is `https://<apps' hostname>/<basePath>/…`, the prefix is
+  not stripped, and the hostname's root is the dashboard. `api.ts` `panelPrefix` strips it once,
+  AFTER the routes that take their own optional prefix (fabric, volunteer, pi, `/s/`, `/w/`) —
+  moving it above them would route `/<basePath>/fabric/commands/run` to the command handler. The
+  page gets the prefix from `httpio.ts` `pageUnderBase` (`window.__OMD_BASE__`), the bundle from
+  `web/src/base.ts`, and asset URLs built inside the JS from `renderBuiltUrl` in
+  `web/vite.config.ts`; an absolute URL that skips them reaches the dashboard. Three rules hold
+  it safe, each pinned in `remoteAccess.test.ts`:
+  - **`/api/login` and `/api/setup` answer only a RAW request target equal to the root path**
+    (`rawPath`, as the Fabric routes do), so nothing the tunnel delivers — prefixed, `..`,
+    `%2e%2e` — reaches a password. Before this, `/display/%2e%2e/api/login` reaching us unnormalised
+    signed in with the local password. `/api/session` reports `passwordSignIn: false` there, and the
+    page shows "open it from your OpenMasjidOS dashboard" instead of a password box.
+  - **A session cookie set under the prefix has `Path=/<basePath>`**, never `/`: every app on the
+    tunnel hostname shares it and the platform forwards our cookies to the others, so a `Path=/`
+    cookie could be replayed at our API by any of them. Sign-out under the prefix clears both.
+  - **The prefix is a plain `/[a-z0-9-]{1,80}` segment** wherever it reaches a page, a cookie or a
+    URL — checked again at each, so no request text is ever written into HTML.
 - **There are exactly TWO inbound Fabric routes, and they are different trust boundaries** sharing
   the `/fabric/` prefix. That prefix is not a permission. Both are authenticated the same single
   way — by the caller presenting **our own** `OPENMASJID_APP_SECRET` back to us, constant-time

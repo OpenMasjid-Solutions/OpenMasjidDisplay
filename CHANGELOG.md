@@ -223,6 +223,22 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **Display now opens from outside the masjid.** Pressing *Open* on Display in the OpenMasjidOS
+  dashboard while away from the masjid showed a blank white page. The whole control panel now works
+  there — every page, uploads and downloads, live updates, previews and the Raspberry Pi terminal —
+  and OpenMasjidOS signs you in, with no password to type. The volunteer page opened that way shows
+  its logo again.
+
+- **Addresses the panel shows from outside now point at Display.** A screen's link, the website
+  widget's link, the volunteer page and the Raspberry Pi install command used to point at the
+  OpenMasjidOS dashboard when the panel was opened from outside the masjid.
+
+- **From outside the masjid, the control panel's password can't be used.** Away from the masjid
+  the only way in is OpenMasjidOS, with its two-step sign-in; the sign-in screen says so instead of
+  showing a password box. On the masjid's own network the password works as before. Display's
+  sign-in, and the volunteer page's, are also kept to Display's own address instead of being sent
+  to every other app on it.
+
 - **A timetable that follows another now previews with that timetable's Iqamah times.** The
   preview went on showing its own old times until the editor was closed and opened again. The
   screens themselves were already right.
