@@ -190,8 +190,10 @@ export interface TimetableSound {
   adhan: boolean;
   /** play when a congregation lines up — on a Friday that is each Jumu'ah, not Dhuhr */
   iqamah: boolean;
-  /** the uploaded clip's stored filename, or '' for the built-in chime */
-  clip: string;
+  /** each slot's uploaded clip, by stored filename, or '' for the built-in beep. The two may name
+   *  the same file — a timetable from before they were separate plays its one clip at both. */
+  adhanClip: string;
+  iqamahClip: string;
 }
 
 /** Public embeddable web widget: a compact vertical list of just the prayer times +

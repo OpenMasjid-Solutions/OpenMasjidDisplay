@@ -344,6 +344,41 @@ test('announcement pictures add, list and remove one at a time', async () => {
   assert.deepEqual(store.db.timetables[0].announcements?.images, [images[1]], 'only the named one went');
 });
 
+// ── sound ────────────────────────────────────────────────────────────────────
+
+test('each slot can be played back as a WAV, the built-in beep included, and only signed in', async () => {
+  const { handler, store } = panel();
+  const id = store.db.timetables[0].id;
+  assert.equal((await call(handler, 'GET', `/api/timetables/${id}/sound/adhan`)).status, 401);
+  const cookie = await claim(handler);
+  for (const slot of ['adhan', 'iqamah']) {
+    const r = await call(handler, 'GET', `/api/timetables/${id}/sound/${slot}`, undefined, cookie);
+    assert.equal(r.status, 200, r.body);
+    assert.equal(r.headers['content-type'], 'audio/wav');
+    assert.match(String(r.headers['content-security-policy']), /sandbox/, 'served as an upload is');
+    assert.equal(r.body.slice(0, 4), 'RIFF');
+  }
+  assert.equal((await call(handler, 'GET', `/api/timetables/${id}/sound/fajr`, undefined, cookie)).status, 404);
+});
+
+test("removing one slot's sound leaves the other, and never touches the pictures", async () => {
+  // What follows /sound is a slot, and the announcement route below it takes a FILE in that place.
+  // Falling through, DELETE /sound/adhan would delete a picture called "adhan".
+  const { handler, store } = panel();
+  const cookie = await claim(handler);
+  const id = store.db.timetables[0].id;
+  store.update((db) => {
+    const t = db.timetables[0];
+    t.sound = { adhan: true, iqamah: true, adhanClip: 'a.pcm', iqamahClip: 'b.pcm' };
+    t.announcements = { enabled: true, images: ['adhan'], start: '', end: '', everySeconds: 60, forSeconds: 20, imageSeconds: 8 };
+  });
+  const r = await call(handler, 'DELETE', `/api/timetables/${id}/sound/adhan`, undefined, cookie);
+  assert.equal(r.status, 200, r.body);
+  assert.equal(store.db.timetables[0].sound.adhanClip, '');
+  assert.equal(store.db.timetables[0].sound.iqamahClip, 'b.pcm', 'Iqamah keeps its own');
+  assert.deepEqual(store.db.timetables[0].announcements?.images, ['adhan']);
+});
+
 test('an upload for a timetable that does not exist is refused', async () => {
   const { handler } = panel();
   const cookie = await claim(handler);

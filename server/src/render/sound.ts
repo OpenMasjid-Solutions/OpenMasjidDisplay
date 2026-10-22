@@ -28,7 +28,7 @@ import type { Writable } from 'node:stream';
 import { config } from '../config';
 import { buildModel } from './svg';
 import { zonedNoon } from '../prayer/engine';
-import type { Timetable } from '../types';
+import type { Timetable, TimetableSound } from '../types';
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
@@ -62,29 +62,25 @@ export function soundOn(tt: Timetable): boolean {
   return !!tt.sound && (tt.sound.adhan || tt.sound.iqamah);
 }
 
-// ── the built-in chime ───────────────────────────────────────────────────────
+// ── the built-in beep ────────────────────────────────────────────────────────
 
 let chime: Buffer | null = null;
 
-/** The sound used when a masjid has not uploaded one: two short tones, a fifth apart, with
- *  fades at both ends so it does not click. Generated rather than shipped as a file — it is
- *  nine lines of arithmetic and an asset we would have to licence. */
+/** How long the built-in beep lasts. */
+export const BEEP_SECONDS = 1.5;
+
+/** The sound used when a masjid has not uploaded one: one long beep at 880 Hz, faded in and out
+ *  so it does not click. It was two short tones, which a masjid found too easy to miss across a
+ *  hall. Generated rather than shipped as a file — a few lines of arithmetic, and no asset we
+ *  would have to licence. */
 export function beepPcm(): Buffer {
   if (chime) return chime;
-  const tones = [
-    { hz: 880, at: 0, len: 0.18 },
-    { hz: 1318.5, at: 0.2, len: 0.32 },
-  ];
-  const total = Math.round(SOUND_RATE * 0.56);
-  const buf = Buffer.alloc(total * 2);
-  for (const t of tones) {
-    const from = Math.round(t.at * SOUND_RATE);
-    const n = Math.round(t.len * SOUND_RATE);
-    for (let i = 0; i < n; i++) {
-      const s = i / SOUND_RATE;
-      const env = Math.max(0, Math.min(1, s / 0.008, (t.len - s) / 0.06));
-      buf.writeInt16LE(Math.round(Math.sin(2 * Math.PI * t.hz * s) * 11000 * env), (from + i) * 2);
-    }
+  const n = Math.round(SOUND_RATE * BEEP_SECONDS);
+  const buf = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) {
+    const s = i / SOUND_RATE;
+    const env = Math.max(0, Math.min(1, s / 0.01, (BEEP_SECONDS - s) / 0.08));
+    buf.writeInt16LE(Math.round(Math.sin(2 * Math.PI * 880 * s) * 11000 * env), i * 2);
   }
   chime = buf;
   return buf;
@@ -127,7 +123,7 @@ export function soundClipPcm(file: string): Buffer | null {
  * probes it to decide what it is, and several container formats can name an external resource —
  * so the decode is penned in to the one file we handed it.
  */
-export async function saveSoundClip(id: string, data: Buffer): Promise<{ file: string } | { error: string }> {
+export async function saveSoundClip(id: string, slot: SoundSlot, data: Buffer): Promise<{ file: string } | { error: string }> {
   const safeId = safeName(id);
   if (!safeId) return { error: 'Unknown timetable.' };
   fs.mkdirSync(soundsDir(), { recursive: true });
@@ -137,8 +133,9 @@ export async function saveSoundClip(id: string, data: Buffer): Promise<{ file: s
     const pcm = await decodeToPcm(tmp);
     if ('error' in pcm) return pcm;
     if (pcm.pcm.length < SOUND_RATE) return { error: 'That file has no sound in it that we could read.' };
-    const name = `${safeId}.${crypto.randomBytes(4).toString('hex')}.pcm`;
-    removeSoundClipsFor(safeId);
+    // Nothing is removed here: the file this replaces may still be the OTHER slot's. `setSoundClip`
+    // decides that once the new name is in the store.
+    const name = `${safeId}.${slot}.${crypto.randomBytes(4).toString('hex')}.pcm`;
     fs.writeFileSync(path.join(soundsDir(), name), pcm.pcm);
     return { file: name };
   } catch (e) {
@@ -185,7 +182,34 @@ function decodeToPcm(file: string): Promise<{ pcm: Buffer } | { error: string }>
   });
 }
 
-/** Delete every stored clip belonging to a timetable (there is at most one). */
+/** Adhan and Iqāmah each have a sound of their own. */
+export type SoundSlot = 'adhan' | 'iqamah';
+const CLIP_KEY = { adhan: 'adhanClip', iqamah: 'iqamahClip' } as const;
+
+/**
+ * Point one slot at `file` ('' for the built-in beep), and delete the file it leaves behind —
+ * unless the OTHER slot still plays it. They share one file after the move from a single clip
+ * (see `migrateTimetable`), so deleting on replace alone would silence the other slot.
+ */
+export function setSoundClip(sound: TimetableSound, slot: SoundSlot, file: string): void {
+  const old = sound[CLIP_KEY[slot]];
+  sound[CLIP_KEY[slot]] = file;
+  const other = sound[CLIP_KEY[slot === 'adhan' ? 'iqamah' : 'adhan']];
+  if (old && old !== file && old !== other) removeSoundClip(old);
+}
+
+function removeSoundClip(file: string): void {
+  const name = safeName(file);
+  if (!name) return;
+  try {
+    fs.unlinkSync(path.join(soundsDir(), name));
+  } catch {
+    /* already gone */
+  }
+  clipCache.delete(name);
+}
+
+/** Delete every stored clip belonging to a timetable. */
 export function removeSoundClipsFor(id: string): void {
   const safeId = safeName(id);
   if (!safeId) return;
@@ -237,7 +261,7 @@ export interface SoundEvent {
  * Adhan comes from the daily ROWS (the five calls, Dhuhr included on a Friday — the call is
  * still made). Iqāmah comes from `jamaah`, which is the list of moments a congregation actually
  * lines up: on a Friday that is the Jumu'ah times, one entry each, and NOT the Dhuhr row's
- * Iqāmah. Reading Iqāmah off `rows` instead would sound a chime for a jamā'ah that nobody holds.
+ * Iqāmah. Reading Iqāmah off `rows` instead would sound for a jamā'ah that nobody holds.
  */
 export function soundEvents(tt: Timetable, now: Date): SoundEvent[] {
   if (!soundOn(tt)) return [];
@@ -254,9 +278,36 @@ export function soundEvents(tt: Timetable, now: Date): SoundEvent[] {
   return out;
 }
 
-/** The PCM a timetable plays — its uploaded clip, or the built-in chime if it has none. */
-export function soundPcmFor(tt: Timetable): Buffer {
-  return (tt.sound?.clip && soundClipPcm(tt.sound.clip)) || beepPcm();
+/** The PCM a timetable plays at Adhan or at Iqāmah — that slot's uploaded clip, or the built-in
+ *  beep if it has none (or its file has gone). */
+export function soundPcmFor(tt: Timetable, slot: SoundSlot): Buffer {
+  const clip = tt.sound?.[CLIP_KEY[slot]];
+  return (clip && soundClipPcm(clip)) || beepPcm();
+}
+
+/**
+ * What a slot plays, as a WAV file the panel can play back.
+ *
+ * Stored clips are bare PCM, which no browser will play, and a preview has to be the sound the
+ * stream will actually carry — so it is that PCM behind a 44-byte header rather than the file
+ * that was uploaded, which no longer exists.
+ */
+export function soundWav(tt: Timetable, slot: SoundSlot): Buffer {
+  const pcm = soundPcmFor(tt, slot);
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0);
+  h.writeUInt32LE(36 + pcm.length, 4);
+  h.write('WAVEfmt ', 8);
+  h.writeUInt32LE(16, 16); // fmt chunk size
+  h.writeUInt16LE(1, 20); // PCM
+  h.writeUInt16LE(1, 22); // mono
+  h.writeUInt32LE(SOUND_RATE, 24);
+  h.writeUInt32LE(SOUND_RATE * 2, 28); // bytes per second
+  h.writeUInt16LE(2, 32); // bytes per frame
+  h.writeUInt16LE(16, 34); // bits per sample
+  h.write('data', 36);
+  h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
 }
 
 // ── the track itself ─────────────────────────────────────────────────────────

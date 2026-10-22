@@ -717,8 +717,7 @@ class TimetablePipeline extends FfmpegPipeline {
       this.lastSoundScan = now;
       const tt = this.getTt();
       if (tt) {
-        const pcm = soundPcmFor(tt);
-        for (const e of soundEvents(tt, new Date(now))) this.sound.playAt(e.at, pcm);
+        for (const e of soundEvents(tt, new Date(now))) this.sound.playAt(e.at, soundPcmFor(tt, e.kind));
       }
     }
     this.sound.pump(now);

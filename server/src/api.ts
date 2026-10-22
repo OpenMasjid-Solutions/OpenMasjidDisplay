@@ -64,7 +64,7 @@ import { capabilitiesFor } from './capabilities';
 import { parseLinkAddress, resolveLinkTarget, piPanelSignIn, piPanelHandOver, LINK_TIMEOUT_MS } from './piLink';
 import { isLoopbackHost } from './pi/agentConfig';
 import { statePayload } from './statePayload';
-import { saveSoundClip, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
+import { saveSoundClip, setSoundClip, soundWav, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
 
 /**
  * How long one "somebody is watching" beat keeps a screen sending pictures.
@@ -1207,7 +1207,10 @@ export function createApi(deps: Deps) {
         if (src.iqamahSchedule) copy.iqamahSchedule = JSON.parse(JSON.stringify(src.iqamahSchedule));
         copy.backgroundImage = src.backgroundImage ? copyAsset(src.backgroundImage, copy.id, 'bg') : '';
         copy.logoImage = src.logoImage ? copyAsset(src.logoImage, copy.id, 'logo') : '';
-        copy.sound.clip = src.sound?.clip ? copySoundClip(src.sound.clip, copy.id) : '';
+        // One copy when both slots play the same file, so the duplicate shares it the same way.
+        const { adhanClip = '', iqamahClip = '' } = src.sound ?? {};
+        copy.sound.adhanClip = adhanClip ? copySoundClip(adhanClip, copy.id) : '';
+        copy.sound.iqamahClip = !iqamahClip ? '' : iqamahClip === adhanClip ? copy.sound.adhanClip : copySoundClip(iqamahClip, copy.id);
         if (copy.announcements?.images?.length) {
           copy.announcements.images = (src.announcements?.images ?? [])
             .map((f) => copyAsset(f, copy.id, 'ann'))
@@ -1318,14 +1321,21 @@ export function createApi(deps: Deps) {
       }
 
       // ---- Timetable Adhan/Iqamah sound --------------------------------------
-      // The uploaded file is DECODED here, once, to the raw audio the stream is written in —
-      // so what is stored is already in the form the renderer needs and nothing has to decode
-      // an mp3 at the moment the Adhan lands.
-      const soundMatch = /^\/api\/timetables\/([\w-]+)\/sound$/.exec(pathname);
+      // One sound per slot. The uploaded file is DECODED here, once, to the raw audio the stream
+      // is written in — so what is stored is already in the form the renderer needs and nothing
+      // has to decode an mp3 at the moment the Adhan lands.
+      const soundMatch = /^\/api\/timetables\/([\w-]+)\/sound\/(adhan|iqamah)$/.exec(pathname);
       if (soundMatch) {
         const id = soundMatch[1];
+        const slot = soundMatch[2] as 'adhan' | 'iqamah';
         const idx = store.db.timetables.findIndex((t) => t.id === id);
         if (idx < 0) return sendJson(res, 404, { error: 'Timetable not found.' });
+        if (method === 'GET') {
+          // The panel's preview: exactly what the stream plays, the built-in beep included.
+          // UPLOAD_HEADERS because the bytes came from somebody's upload.
+          res.writeHead(200, { ...UPLOAD_HEADERS, 'content-type': 'audio/wav', 'cache-control': 'no-store' });
+          return void res.end(soundWav(store.db.timetables[idx], slot));
+        }
         if (method === 'POST') {
           const body = await readBody(req, Math.round(SOUND_MAX_UPLOAD_BYTES * 1.4) + 1_000);
           const m = /^data:[^;,]*;base64,(.+)$/s.exec(String(body.data ?? ''));
@@ -1339,19 +1349,18 @@ export function createApi(deps: Deps) {
           if (buf.length > SOUND_MAX_UPLOAD_BYTES) {
             return sendJson(res, 400, { error: 'That file is too large — please keep it under about 5 MB.' });
           }
-          const saved = await saveSoundClip(id, buf);
+          const saved = await saveSoundClip(id, slot, buf);
           if ('error' in saved) return sendJson(res, 400, { error: saved.error });
           store.update((db) => {
             const t = byId(db.timetables, id);
-            if (t) t.sound.clip = saved.file;
+            if (t) setSoundClip(t.sound, slot, saved.file);
           });
           return sendJson(res, 200, byId(store.db.timetables, id));
         }
         if (method === 'DELETE') {
-          removeSoundClipsFor(id);
           store.update((db) => {
             const t = byId(db.timetables, id);
-            if (t) t.sound.clip = '';
+            if (t) setSoundClip(t.sound, slot, '');
           });
           return sendJson(res, 200, byId(store.db.timetables, id));
         }

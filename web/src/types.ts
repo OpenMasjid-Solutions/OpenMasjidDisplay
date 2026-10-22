@@ -126,8 +126,9 @@ export interface Timetable {
   ishraqMinutes: number;
   /** id of the timetable this one copies its TIMES from, or '' for its own */
   linkedTo: string;
-  /** a sound on this screen's stream at Adhan / Iqāmah; `clip` is set by the upload endpoint */
-  sound: { adhan: boolean; iqamah: boolean; clip: string };
+  /** a sound on this screen's stream at Adhan / Iqāmah; each `…Clip` is set by its upload endpoint,
+   *  '' meaning the built-in beep */
+  sound: { adhan: boolean; iqamah: boolean; adhanClip: string; iqamahClip: string };
   showCountdown: boolean;
   showDates: boolean;
   showLogo: boolean;

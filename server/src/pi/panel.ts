@@ -50,7 +50,7 @@ import {
   sniffImageMime,
   isRenderableImageMime,
 } from '../render/background';
-import { saveSoundClip, removeSoundClipsFor, SOUND_MAX_UPLOAD_BYTES } from '../render/sound';
+import { saveSoundClip, setSoundClip, soundWav, SOUND_MAX_UPLOAD_BYTES } from '../render/sound';
 import { copyAsset } from '../render/background';
 import { parseIqamahCsv, toCsv, templateCsv } from '../iqamahCsv';
 import { normalizeIqamahSchedule } from '../iqamahSchedule';
@@ -479,6 +479,40 @@ export function createPiPanel(deps: PanelDeps) {
         if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
         const back = (): void => sendJson(res, 200, store.db.timetables.find((t) => t.id === ttId));
 
+        // Adhan and Iqamah each have a sound, so what follows /sound is the slot, not a file. All
+        // of it is handled here: falling through, DELETE /sound/adhan would reach the
+        // announcement branch below and try to delete a picture called "adhan".
+        if (kind === 'sound') {
+          const slot = annFile === 'adhan' || annFile === 'iqamah' ? annFile : null;
+          if (!slot) return sendJson(res, 404, { error: 'Not found.' });
+          if (method === 'GET') {
+            // The panel's preview: what this slot plays, the built-in beep included.
+            res.writeHead(200, { ...UPLOAD_HEADERS, 'content-type': 'audio/wav', 'cache-control': 'no-store' });
+            return void res.end(soundWav(tt, slot));
+          }
+          if (method === 'DELETE') {
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) setSoundClip(t.sound, slot, '');
+            });
+            return back();
+          }
+          if (method === 'POST') {
+            const m = /^data:[^;,]*;base64,(.+)$/s.exec(String(body.data ?? ''));
+            if (!m) return sendJson(res, 400, { error: 'That file could not be read.' });
+            const buf = Buffer.from(m[1], 'base64');
+            if (buf.length > SOUND_MAX_UPLOAD_BYTES) return sendJson(res, 400, { error: 'That file is too large — please keep it under about 5 MB.' });
+            const made = await saveSoundClip(ttId, slot, buf);
+            if ('error' in made) return sendJson(res, 400, { error: made.error });
+            store.update((db) => {
+              const t = db.timetables.find((x) => x.id === ttId);
+              if (t) setSoundClip(t.sound, slot, made.file);
+            });
+            return back();
+          }
+          return sendJson(res, 405, { error: 'Not allowed.' });
+        }
+
         // Serving one announcement picture back to the editor's preview.
         if (annFile && method === 'GET') {
           const found = uploadFilePath(decodeURIComponent(annFile));
@@ -506,17 +540,6 @@ export function createPiPanel(deps: PanelDeps) {
             buf = Buffer.from(m[2], 'base64');
           } catch {
             return sendJson(res, 400, { error: 'That file could not be read.' });
-          }
-
-          if (kind === 'sound') {
-            if (buf.length > SOUND_MAX_UPLOAD_BYTES) return sendJson(res, 400, { error: 'That file is too large — please keep it under about 5 MB.' });
-            const made = await saveSoundClip(ttId, buf);
-            if ('error' in made) return sendJson(res, 400, { error: made.error });
-            store.update((db) => {
-              const t = db.timetables.find((x) => x.id === ttId);
-              if (t) t.sound.clip = made.file;
-            });
-            return back();
           }
 
           const sniffed = sniffImageMime(buf);
@@ -565,12 +588,6 @@ export function createPiPanel(deps: PanelDeps) {
             store.update((db) => {
               const t = db.timetables.find((x) => x.id === ttId);
               if (t) t.backgroundImage = '';
-            });
-          } else if (kind === 'sound') {
-            removeSoundClipsFor(ttId);
-            store.update((db) => {
-              const t = db.timetables.find((x) => x.id === ttId);
-              if (t) t.sound.clip = '';
             });
           }
           return back();

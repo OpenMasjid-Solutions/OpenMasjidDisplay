@@ -84,9 +84,13 @@ export const api = {
     req<Timetable>('POST', `/api/timetables/${id}/logo`, { data: dataUrl }),
   removeLogo: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/logo`),
 
-  uploadSound: (id: string, dataUrl: string) =>
-    req<Timetable>('POST', `/api/timetables/${id}/sound`, { data: dataUrl }),
-  removeSound: (id: string) => req<Timetable>('DELETE', `/api/timetables/${id}/sound`),
+  uploadSound: (id: string, slot: 'adhan' | 'iqamah', dataUrl: string) =>
+    req<Timetable>('POST', `/api/timetables/${id}/sound/${slot}`, { data: dataUrl }),
+  removeSound: (id: string, slot: 'adhan' | 'iqamah') => req<Timetable>('DELETE', `/api/timetables/${id}/sound/${slot}`),
+  /** What a slot plays, as a WAV — its uploaded sound or the built-in beep. `v` only defeats a
+   *  cached copy of the previous upload. */
+  soundUrl: (id: string, slot: 'adhan' | 'iqamah', v: string) =>
+    withBase(`/api/timetables/${id}/sound/${slot}?v=${encodeURIComponent(v || 'beep')}`),
 
   importIqamahCsv: (id: string, csvText: string) =>
     req<{ ok: boolean; rows: number; errors: string[]; data: IqamahYear }>('POST', `/api/timetables/${id}/iqamah-csv`, { data: csvText }),

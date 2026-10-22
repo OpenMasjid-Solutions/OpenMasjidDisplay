@@ -180,10 +180,20 @@ test('a detached track writes nothing', () => {
   assert.equal(s.bytes, 0);
 });
 
-test('the built-in chime is short and is not silence', () => {
+test('the built-in sound is one long beep, and not silence', () => {
+  // It was two short tones, which a masjid found too easy to miss across a hall.
   const b = beepPcm();
   const secs = b.length / 2 / SOUND_RATE;
-  assert.ok(secs > 0.2 && secs < 1.5, `${secs.toFixed(2)}s`);
+  assert.ok(secs >= 1 && secs <= 3, `${secs.toFixed(2)}s`);
+  // ONE beep: no gap in the middle the way the two tones had.
+  const mid = b.subarray(Math.floor(b.length / 4) & ~1, Math.floor((b.length * 3) / 4) & ~1);
+  let quiet = 0;
+  for (let i = 0; i + 960 * 2 <= mid.length; i += 960 * 2) {
+    let peak = 0;
+    for (let j = 0; j < 960; j++) peak = Math.max(peak, Math.abs(mid.readInt16LE(i + j * 2)));
+    if (peak < 1000) quiet++;
+  }
+  assert.equal(quiet, 0, 'no silent 20ms anywhere in the middle half');
   let peak = 0;
   for (let i = 0; i < b.length / 2; i++) peak = Math.max(peak, Math.abs(b.readInt16LE(i * 2)));
   assert.ok(peak > 5000, 'audible');

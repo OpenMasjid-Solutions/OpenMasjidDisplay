@@ -147,7 +147,7 @@ export function toForm(tt: Timetable | null, state: AppState): Form {
     method: 'MWL', fajrAngle: 18, ishaAngle: 17, asrMadhab: 'Hanafi', timezone: state.settings.scheduleTimezone ?? '',
     timeFormat: '12h', language: 'en', hijriOffset: 0, gregorianOffset: 0,
     iqamah: { fajr: { mode: 'offset', offset: 20 }, dhuhr: { mode: 'offset', offset: 10 }, asr: { mode: 'offset', offset: 10 }, maghrib: { mode: 'offset', offset: 5 }, isha: { mode: 'offset', offset: 10 } },
-    jumuah: ['13:30'], showSunrise: true, ishraqMinutes: 0, linkedTo: '', sound: { adhan: false, iqamah: false, clip: '' }, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
+    jumuah: ['13:30'], showSunrise: true, ishraqMinutes: 0, linkedTo: '', sound: { adhan: false, iqamah: false, adhanClip: '', iqamahClip: '' }, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
     backgroundImage: '', logoImage: '', footerNote: '', tickerSpeed: 5, createdAt: '',
   };
 }
@@ -267,31 +267,65 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   };
   /** Read the chosen file as a data URL and hand it straight to the server, which decodes it.
    *  No client-side conversion: the browser has no reliable audio decoder to resample with. */
-  const pickSound = (file: File) => {
+  const SLOT_NAME = { adhan: 'Adhan', iqamah: 'Iqamah' } as const;
+  // Only the two file names are taken from the reply. The switches on the form may be unsaved, and
+  // the stored ones would quietly turn them back.
+  const takeClips = (s: Timetable['sound']) =>
+    setF((p) => ({ ...p, sound: { ...p.sound, adhanClip: s.adhanClip, iqamahClip: s.iqamahClip } }));
+  const pickSound = (slot: 'adhan' | 'iqamah', file: File) => {
     if (!tt) return;
     if (file.size > 5_000_000) return toast('That file is too large — please keep it under about 5 MB.', 'error');
     const r = new FileReader();
     r.onerror = () => toast('That file could not be read.', 'error');
     r.onload = async () => {
       try {
-        const updated = await api.uploadSound(tt.id, String(r.result ?? ''));
-        set('sound', updated.sound);
-        toast('Sound uploaded.');
+        const updated = await api.uploadSound(tt.id, slot, String(r.result ?? ''));
+        stopPreview();
+        takeClips(updated.sound);
+        toast(`${SLOT_NAME[slot]} sound uploaded.`);
       } catch (e) {
         toast(e instanceof Error ? e.message : 'Could not upload the sound.', 'error');
       }
     };
     r.readAsDataURL(file);
   };
-  const clearSound = async () => {
+  const clearSound = async (slot: 'adhan' | 'iqamah') => {
     if (!tt) return;
     try {
-      const updated = await api.removeSound(tt.id);
-      set('sound', updated.sound);
-      toast('Back to the built-in chime.');
+      const updated = await api.removeSound(tt.id, slot);
+      stopPreview();
+      takeClips(updated.sound);
+      toast(`${SLOT_NAME[slot]} is back to the built-in beep.`);
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not remove the sound.', 'error');
     }
+  };
+
+  // Listening to a sound here, in the browser. One at a time: Play on the other slot stops this one.
+  const [playing, setPlaying] = useState<'adhan' | 'iqamah' | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const stopPreview = () => {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPlaying(null);
+  };
+  useEffect(() => () => audioRef.current?.pause(), []); // leaving the editor stops it
+  const preview = (slot: 'adhan' | 'iqamah') => {
+    if (!tt) return;
+    const was = playing;
+    stopPreview();
+    if (was === slot) return;
+    const a = new Audio(api.soundUrl(tt.id, slot, f.sound[slot === 'adhan' ? 'adhanClip' : 'iqamahClip']));
+    const failed = () => {
+      if (audioRef.current !== a) return;
+      stopPreview();
+      toast('That sound could not be played here.', 'error');
+    };
+    a.onended = () => audioRef.current === a && stopPreview();
+    a.onerror = failed;
+    audioRef.current = a;
+    setPlaying(slot);
+    a.play().catch(failed);
   };
 
   const clearLogo = async () => {
@@ -470,7 +504,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const setAo = (k: keyof AdhanOffsets, v: number) => set('adhanOffsets', { ...ao, [k]: v });
   const apop: AdhanPopup = f.adhanPopup ?? { enabled: false, seconds: 15 };
   const setApop = (patch: Partial<AdhanPopup>) => set('adhanPopup', { ...apop, ...patch });
-  const snd = f.sound ?? { adhan: false, iqamah: false, clip: '' };
+  const snd = f.sound ?? { adhan: false, iqamah: false, adhanClip: '', iqamahClip: '' };
   const setSnd = (patch: Partial<typeof snd>) => set('sound', { ...snd, ...patch });
   const wg: TimetableWidget = f.widget ?? { enabled: false };
   const setWg = (patch: Partial<TimetableWidget>) => set('widget', { ...wg, ...patch });
@@ -987,15 +1021,26 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           <ToggleRow label="Play at Iqamah" checked={snd.iqamah} onChange={(v) => setSnd({ iqamah: v })} />
         </div>
         {(snd.adhan || snd.iqamah) && (
-          <Field label="What to play" hint="The built-in chime is two short tones. Or upload your own — an MP3, M4A, WAV or OGG up to 5 MB and three minutes; longer files are cut to three minutes.">
+          <Field label="What to play" hint="Adhan and Iqamah each have their own sound. The built-in one is a long beep; or upload your own — an MP3, M4A, WAV or OGG up to 5 MB and three minutes; longer files are cut to three minutes. Play lets you hear it here, on this computer.">
             {tt ? (
-              <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
-                <span className="muted" style={{ fontSize: '0.88rem' }}>{snd.clip ? 'Your own sound is set.' : 'Using the built-in chime.'}</span>
-                <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
-                  <input type="file" accept="audio/*" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickSound(file); e.target.value = ''; }} />
-                  {snd.clip ? 'Replace sound' : 'Upload a sound'}
-                </label>
-                {snd.clip && <button type="button" className="btn btn--ghost btn--sm" onClick={clearSound}>Use the chime</button>}
+              <div className="list">
+                {(['adhan', 'iqamah'] as const).filter((k) => snd[k]).map((k) => {
+                  const clip = snd[k === 'adhan' ? 'adhanClip' : 'iqamahClip'];
+                  return (
+                    <div key={k} className="row" style={{ gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.3rem 0' }}>
+                      <span className="label" style={{ margin: 0, minWidth: '4.5rem' }}>{SLOT_NAME[k]}</span>
+                      <span className="muted" style={{ fontSize: '0.88rem' }}>{clip ? 'Your own sound' : 'Built-in beep'}</span>
+                      <button type="button" className="btn btn--ghost btn--sm" aria-pressed={playing === k} aria-label={`${playing === k ? 'Stop' : 'Play'} the ${SLOT_NAME[k]} sound`} onClick={() => preview(k)}>
+                        {playing === k ? 'Stop' : 'Play'}
+                      </button>
+                      <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
+                        <input type="file" accept="audio/*" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickSound(k, file); e.target.value = ''; }} />
+                        {clip ? 'Replace sound' : 'Upload a sound'}
+                      </label>
+                      {clip && <button type="button" className="btn btn--ghost btn--sm" onClick={() => clearSound(k)}>Use the beep</button>}
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <span className="hint">Create the timetable first, then you can upload a sound.</span>

@@ -13,6 +13,13 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Added
+- **Adhan and Iqamah can each have their own sound.** Under **Sound** on a timetable, upload one
+  file for the Adhan and a different one for the Iqamah, or leave either on the built-in sound. A
+  sound you had already uploaded keeps playing at both, exactly as before, until you change one.
+
+- **You can listen to a sound before the screens play it.** Each sound has a **Play** button —
+  the built-in one included — so you can hear it on the computer you are using.
+
 - **The printed monthly calendar now marks the days the Iqamah changes.** Each day a scheduled
   change (or a day from your yearly CSV) takes effect is outlined and labelled *Iqamah change*,
   with the new times in bold. The sheet also shows sunrise every day, and Ishrāq beside it when
@@ -99,6 +106,9 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
+- **The built-in sound is now one long beep** instead of two short tones, which were easy to miss
+  across a hall.
+
 - **The Simple layout's left column has room to breathe.** The clock and both dates sit together
   as one group with space around it, the countdown has space of its own, and sunrise and sunset
   have moved to the bottom, level with the Jumu'ah row.

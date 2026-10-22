@@ -90,6 +90,6 @@ Credentials in the URL are stored but never displayed in the panel.
 - Audio is stripped only on the **Most compatible (re-encode)** path. A **Direct** source is relayed
   untouched, so whatever audio the camera publishes reaches the decoder as-is.
 - A **timetable** stream carries no audio at all unless you turn on *Play at Adhan* or *Play at Iqamah*
-  under **Sound** on that timetable. With either on, the stream carries silence and the chime plays at
-  the moment, so the television must be able to play the stream's sound and have its volume up. A Pi
+  under **Sound** on that timetable. With either on, the stream carries silence and that moment's sound — the
+  one uploaded for it, or the built-in beep — plays at the moment, so the television must be able to play the stream's sound and have its volume up. A Pi
   screen and a browser screen stay silent.

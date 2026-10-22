@@ -269,7 +269,9 @@ function normSound(v: unknown, base?: TimetableSound): TimetableSound {
   return {
     adhan: bool(o.adhan, base?.adhan ?? false),
     iqamah: bool(o.iqamah, base?.iqamah ?? false),
-    clip: base?.clip ?? '',
+    // Set only by the upload endpoints, never from a form body.
+    adhanClip: base?.adhanClip ?? '',
+    iqamahClip: base?.iqamahClip ?? '',
   };
 }
 function normWidget(v: unknown, base?: TimetableWidget): TimetableWidget | undefined {

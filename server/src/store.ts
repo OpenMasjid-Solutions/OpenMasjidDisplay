@@ -16,6 +16,7 @@ import type {
   Lang,
   Quality,
   IqamahConfig,
+  TimetableSound,
 } from './types';
 
 const log = makeLog('store');
@@ -88,7 +89,7 @@ function seededTimetable(): Timetable {
     iqamah: defaultIqamah(),
     jumuah: ['13:30'],
     showSunrise: true,
-    sound: { adhan: false, iqamah: false, clip: '' },
+    sound: { adhan: false, iqamah: false, adhanClip: '', iqamahClip: '' },
     ishraqMinutes: 0,
     linkedTo: '',
     showCountdown: true,
@@ -111,6 +112,19 @@ function seededTimetable(): Timetable {
 
 /** Backfill fields added in later versions onto a stored timetable, so an upgrade
  *  never silently hides elements that didn't exist as toggles before. */
+/** One clip used to play at both Adhan and Iqamah. It becomes BOTH slots' clip — the same file,
+ *  which `setSoundClip` knows not to delete while either still names it — so a masjid's own sound
+ *  keeps playing exactly where it did. */
+function migrateSound(s: unknown): TimetableSound {
+  const o = (s ?? {}) as Partial<TimetableSound> & { clip?: string };
+  return {
+    adhan: !!o.adhan,
+    iqamah: !!o.iqamah,
+    adhanClip: o.adhanClip ?? o.clip ?? '',
+    iqamahClip: o.iqamahClip ?? o.clip ?? '',
+  };
+}
+
 function migrateTimetable(t: Timetable): Timetable {
   return {
     ...t,
@@ -123,7 +137,7 @@ function migrateTimetable(t: Timetable): Timetable {
     showDates: t.showDates ?? true,
     showLogo: t.showLogo ?? true,
     showSeconds: t.showSeconds ?? false,
-    sound: { adhan: false, iqamah: false, clip: '', ...(t.sound as object | undefined) },
+    sound: migrateSound(t.sound),
     ishraqMinutes: t.ishraqMinutes ?? 0,
     linkedTo: t.linkedTo ?? '',
     // Every timetable stored before this field existed reads back as the original look.
