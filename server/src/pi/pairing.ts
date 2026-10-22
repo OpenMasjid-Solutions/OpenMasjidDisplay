@@ -22,6 +22,7 @@
  * rather than something only a television can tell you.
  */
 import { THEMES } from '../render/theme';
+import { approxWidth, FONT_SANS } from '../render/svg';
 
 /** The brand palette — the same one the panel and the timetable use, so a Pi waiting to be set
  *  up already looks like the product it belongs to rather than a boot message. */
@@ -161,5 +162,50 @@ export function messageSvg(title: string, detail: string): string {
     `<text x="${W / 2}" y="${H / 2 + 56}" text-anchor="middle" font-family="DejaVu Sans, sans-serif" ` +
     `font-size="32" fill="${P.textDim}">${esc(detail)}</text>` +
     `</svg>`
+  );
+}
+
+/** What the badge says. */
+export const CONNECTION_LOST = 'Server connection lost';
+
+/**
+ * A managed screen that cannot reach its display server: a small badge in the top-right corner,
+ * over whatever it is drawing.
+ *
+ * It used to replace the whole picture with a "Lost contact" card. That threw away a timetable
+ * that was still right — the times are worked out here, from the Pi's own clock — and blanked the
+ * wall for as long as the outage lasted. What an outage actually costs is that a change made in
+ * the dashboard may not have arrived, which is for whoever looks after the screens to notice, not
+ * a reason to stop showing the times.
+ *
+ * In the page MARGIN, so it covers nothing: every layout starts its content 5% of the short side
+ * in from the edge (`P` in renderDisplaySvg), and the badge stays inside that strip, its right edge
+ * on the content's. It carries its own dark fill, so the white ink reads on a light page and a
+ * dark one alike. Size and place come from the frame's own `width`/`height`, so it fits a 720p,
+ * a 1080p and a portrait frame the same way.
+ */
+export function withConnectionLost(svg: string): string {
+  const m = /^<svg\b[^>]*?\bwidth="([\d.]+)"[^>]*?\bheight="([\d.]+)"/.exec(svg);
+  const end = svg.lastIndexOf('</svg>');
+  if (!m || end < 0) return svg;
+  const W = Number(m[1]);
+  const H = Number(m[2]);
+  const margin = Math.round(Math.min(W, H) * 0.05);
+  const h = margin * 0.74;
+  const fs = h * 0.46;
+  const dot = fs * 0.3;
+  const pad = h * 0.42;
+  const w = pad + dot * 2 + fs * 0.5 + approxWidth(CONNECTION_LOST, fs) + pad;
+  const x = W - margin - w;
+  const y = (margin - h) / 2;
+  const f = (n: number) => n.toFixed(1);
+  return (
+    svg.slice(0, end) +
+    `<g>` +
+    `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" rx="${f(h / 2)}" fill="#000000" fill-opacity="0.62"/>` +
+    `<circle cx="${f(x + pad + dot)}" cy="${f(y + h / 2)}" r="${f(dot)}" fill="#ff5a4e"/>` +
+    `<text x="${f(x + pad + dot * 2 + fs * 0.5)}" y="${f(y + h / 2 + fs * 0.36)}" font-family="${FONT_SANS}" font-size="${f(fs)}" font-weight="600" fill="#ffffff">${esc(CONNECTION_LOST)}</text>` +
+    `</g>` +
+    svg.slice(end)
   );
 }

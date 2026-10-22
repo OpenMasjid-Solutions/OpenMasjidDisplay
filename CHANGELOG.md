@@ -106,6 +106,12 @@ CLAUDE.md § *The changelog has two audiences*.
   project file are in the `3D Prints` folder of the source code, with print settings in the README.
 
 ### Changed
+- **A Raspberry Pi screen that loses its display server keeps showing the prayer times.** It used
+  to swap the timetable for a full-screen "Lost contact" message. The times are worked out on the
+  screen itself, so they stay right; now the timetable stays up and a small *Server connection
+  lost* badge sits in the top-right corner until the server is back. A camera that is still
+  playing is left as it is.
+
 - **The built-in sound is now one long beep** instead of two short tones, which were easy to miss
   across a hall.
 

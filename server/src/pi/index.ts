@@ -43,7 +43,7 @@ import {
 } from './framebuffer';
 import { VideoPlayer } from './video';
 import { describeFbset } from './fbset';
-import { pairingSvg, messageSvg } from './pairing';
+import { pairingSvg, messageSvg, withConnectionLost } from './pairing';
 import { createPiPanel, PANEL_PORT, WEB_DIR } from './panel';
 import { createManagedPanel, type ManagedStatus } from './managedPanel';
 import { newSetupCode, formatSetupCode } from './claim';
@@ -1346,9 +1346,12 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
     // switched off ON PURPOSE, and one that is misconfigured should say so — a masjid staring at
     // a black television has no way to tell those apart.
     return screen.show(
-      messageSvg(
-        st.content.kind === 'off' ? 'Screen is off' : 'Nothing to show yet',
-        st.screenName || '',
+      lostBadge(
+        live,
+        messageSvg(
+          st.content.kind === 'off' ? 'Screen is off' : 'Nothing to show yet',
+          st.screenName || '',
+        ),
       ),
     );
   }
@@ -1382,7 +1385,18 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
     // still preview does.
   });
 
-  return screen.show(svg, live.fontFiles, live.state?.fontFamilies);
+  return screen.show(lostBadge(live, svg), live.fontFiles, live.state?.fontFamilies);
+}
+
+/**
+ * The frame, with the "server connection lost" badge on it once the server has been silent past
+ * `STALE_AFTER_MS`. The timetable keeps drawing underneath it: its times are computed here. A
+ * playing camera gets no badge — ffmpeg writes it straight to the framebuffer, so there is nothing
+ * of ours to draw on — but a camera RELAYED by the server stops with it, and the card that takes
+ * its place does carry one.
+ */
+function lostBadge(live: Live, svg: string): string {
+  return live.stale() ? withConnectionLost(svg) : svg;
 }
 
 /**
@@ -1565,16 +1579,6 @@ async function runAdopted(
         await sleep(2000);
         continue;
       }
-      if (live.stale() && !player.status().playing) {
-        // Times on screen stay correct — they are computed here — but a change made in the
-        // dashboard may not have reached us, and saying so beats looking healthy.
-        screen?.show(
-          messageSvg('Lost contact with the display server', 'This screen will recover on its own when it comes back.'),
-        );
-        await sleep(5000);
-        continue;
-      }
-
       // A camera and the timetable are the same pixels, so exactly one of them may be running.
       // ffmpeg draws straight to the framebuffer; anything we painted would be a flicker over it.
       const stream = live.state.stream;
@@ -1607,9 +1611,12 @@ async function runAdopted(
         // Between attempts. Saying which camera and what went wrong turns "the screen is black"
         // into something whoever is standing there can act on.
         screen.show(
-          messageSvg(
-            'Camera unavailable',
-            st.lastError ? st.lastError.slice(0, 120) : `Trying to reach the camera for "${live.state.screenName}"`,
+          lostBadge(
+            live,
+            messageSvg(
+              'Camera unavailable',
+              st.lastError ? st.lastError.slice(0, 120) : `Trying to reach the camera for "${live.state.screenName}"`,
+            ),
           ),
         );
         await sleep(3000);
