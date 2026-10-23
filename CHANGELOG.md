@@ -10,406 +10,116 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
-## Unreleased
+## 0.71.0
+
+A security update first: Display now runs on a patched Node.js. The same release lets a Raspberry
+Pi screen run on its own with no display server, plays a sound at the Adhan and the Iqamah, keeps
+the prayer times on screen beside announcement pictures, gets Fridays right, and gives the Simple
+design a portrait layout and much larger times.
 
 ### Added
-- **Adhan and Iqamah can each have their own sound.** Under **Sound** on a timetable, upload one
-  file for the Adhan and a different one for the Iqamah, or leave either on the built-in sound. A
-  sound you had already uploaded keeps playing at both, exactly as before, until you change one.
 
-- **You can listen to a sound before the screens play it.** Each sound has a **Play** button —
-  the built-in one included — so you can hear it on the computer you are using.
-
-- **The printed monthly calendar now marks the days the Iqamah changes.** Each day a scheduled
-  change (or a day from your yearly CSV) takes effect is outlined and labelled *Iqamah change*,
-  with the new times in bold. The sheet also shows sunrise every day, and Ishrāq beside it when
-  the display shows Ishrāq.
-
-- **A scheduled Iqamah change can now change any Jumu'ah.** In **Salah times → Scheduled Iqamah
-  changes**, press *Change Jumu'ah* on a change: it starts from the Jumu'ah times in force before
-  that date, numbered 1st, 2nd and so on, so you can move either one, add a third, or remove the
-  second. It used to start empty with a single time.
-
-- **Ishrāq has its own icon on the Simple layout** — a sun just clear of the horizon — instead of
-  borrowing Fajr's.
-
-
-- **You can now add a Raspberry Pi screen that is already running, without touching it.** If a
-  screen is set up on its own and on the same network, go to **Screens → Add screen → Raspberry
-  Pi** and open *The screen is already running on its own*. Give its address and the password you
-  set on it, and it joins — no keyboard, and nothing to read off the television.
-
-  Pressing Adopt twice — the usual reason being a slow screen and a reloaded page — adds the
-  screen once, not twice.
-
-- **And the other way round: a screen can be pointed at a server from its own panel.** On the
-  screen, under **Settings → Display server**, paste the address of the display server you want
-  it to join — straight out of your browser's address bar is fine. That works when the server is not in the building at all, which the first way cannot:
-  use whatever address you reach the server on from there. The screen then shows a code — on its
-  own page as well as on the television — and you enter that code in the server's dashboard to
-  finish. The screen's page says so the moment the code is accepted, rather than going on
-  asking for it while it hands over. Typed the wrong address? Correct it in the same box;
-  nothing has moved yet.
-
-  Either way the screen keeps everything it had. If you ever set it free again, its own
-  timetables and its password are exactly as you left them.
-
-- **A screen managed by a Display server now has a page of its own again.** Open the screen's own
-  address and it tells you which server manages it, whether that server is answering, what is on
-  the television and which board and version it is. It needs no password and changes nothing —
-  everything about a managed screen still lives on the server.
-
-  This is for one day: the day the server stops answering. Until now an adopted screen served
-  nothing at all on its own address, so a masjid whose server had died had a wall of screens still
-  showing prayer times that could not be reached or asked anything without plugging in a keyboard.
-  Now you can walk up to one and read what it thinks is going on.
-
-- **A standalone screen keeps itself up to date.** A Raspberry Pi installed with the one-line
-  command now checks for a new release a few times a day and installs it on its own — the
-  screen and its control panel together. Downloads are checked against the checksum published
-  with the release, and if a new version will not start the screen puts the previous one back
-  and carries on. A screen that was installed from a Display server still follows that server,
-  as before. Install with `--channel dev` and the screen stays on the dev channel.
-- **One command installs a Raspberry Pi screen that runs on its own.** On a fresh Raspberry Pi OS
-  Lite:
-
-  ```
-  curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidDisplay/main/pi.sh | sudo sh
-  ```
-
-  It fetches the latest release, checks it against the published checksum, and installs the
-  screen and its control panel. Add `--channel dev` to install the newest pre-release instead.
-  Installing from a display server works exactly as before — it is the same installer either
-  way, so a screen set up on its own and one adopted by a server cannot drift apart.
-- **Groundwork for Raspberry Pi screens that run on their own.** The control panel now asks the
-  machine serving it what it supports, so the same panel can be served by a Pi later with the
-  parts a Pi does not have left out rather than shown greyed out. Nothing is different on an
-  OpenMasjidOS server, which supports everything.
-- **A golden record of what the screens draw.** Thirty real configurations — both designs, both
-  orientations, both resolutions, three languages, the slideshow, the ticker and the prohibited
-  time — are pinned, so the upcoming Raspberry Pi work cannot change a screen by accident. This
-  is a safety net for future changes and alters nothing a masjid sees today.
-- **Design notes for standalone Raspberry Pi screens** (`docs/PI_STANDALONE_DESIGN.md`) — the
-  plan for a Pi that runs on its own with its own control panel, and can later be adopted by a
-  Display server. Nothing has changed on a screen yet; this is the written plan and the open
-  questions, published so it can be reviewed before any of it is built.
-- **A sound when the Adhan or the Iqamah arrives.** Under **Sound** on a timetable, turn on
-  *Play at Adhan* and/or *Play at Iqamah*. It plays a built-in chime, or your own recording if
-  you upload one — MP3, M4A, WAV or OGG, up to 5 MB and three minutes. The sound travels on the
-  screen's own video stream, so the television has to be able to play the stream's sound and
-  have its volume up; Raspberry Pi screens and screens shown in a browser stay silent. On a
-  Friday the Iqamah sound follows your Jumu'ah times, not the Dhuhr Iqamah. With both switches
-  off the stream carries no sound at all, exactly as before.
-  If the screen's stream restarts in the minutes after a sound has played — a scrolling-message
-  change does that — the sound is not played a second time.
-- **A 3D-printable case for a Raspberry Pi 4 screen.** The base, the lid, and a ready-to-slice
-  project file are in the `3D Prints` folder of the source code, with print settings in the README.
+- **A sound at the Adhan and the Iqamah.** Under **Sound** on a timetable, turn on *Play at Adhan*
+  and/or *Play at Iqamah*. Each can use the built-in sound — one long beep, easy to hear across a
+  hall — or a recording you upload (MP3, M4A, WAV or OGG, up to 5 MB and three minutes), and a
+  **Play** button lets you listen first on the computer you are using. On a Friday the Iqamah sound
+  follows your Jumu'ah times. The sound travels on the screen's video stream, so it plays on screens
+  fed by a decoder box, with the television's volume up; Raspberry Pi screens and browser screens
+  stay silent. With both switched off, nothing changes.
+- **A Raspberry Pi screen can run on its own, with no display server.** One command on a fresh
+  Raspberry Pi OS Lite installs it (the command is in the README). The television shows a one-time
+  code: open the screen's address on the masjid's network, enter the code and choose a password, and
+  the screen serves its own control panel — timetables, wallpaper, logo, announcement pictures,
+  cameras and the volunteer page, with a **Standalone** label at the top so you always know which
+  kind of screen you are looking at. It keeps itself up to date, checks every download, and puts
+  the previous version back if a new one will not start. If its clock cannot be trusted after a
+  power cut, it says so rather than showing times nobody should rely on.
+- **Wi-Fi settings on a screen that runs on its own.** **Settings → Wi-Fi** lists the networks the
+  screen can see and joins one, so a Pi set up on a cable can move onto Wi-Fi, and one whose network
+  password has changed can be put back on without fetching a keyboard. The screen tells you its new
+  address once it has joined — that is where you manage it from then on.
+- **A screen running on its own can join a display server later, from either end.** On the server:
+  **Screens → Add screen → Raspberry Pi → The screen is already running on its own**, with the
+  screen's address and password. Or on the screen: **Settings → Display server**, paste the server's
+  address — this works even when the server is in another building — and enter the code it shows in
+  the server's dashboard. Forget the screen later and it gets its own timetables and password back
+  exactly as it left them.
+- **A screen managed by a display server copes when the server goes quiet.** It keeps showing the
+  timetable, which it works out itself, with a small *Server connection lost* badge in the corner
+  instead of a full-screen message. Its own address now shows a status page — which server manages
+  it, whether that server is answering, and what is on the television — so you can find out what is
+  going on without plugging in a keyboard.
+- **One timetable's times can drive several screens.** Under **Location & time zone**, a timetable
+  can follow another: it takes the location, calculation method, Iqamah, Jumu'ah and Adhan settings
+  of the one it follows, so you change them once, while how it looks stays its own.
+- **Ishrāq can be shown on the prayer table**, on both designs. Under **Elements**, set how many
+  minutes after sunrise your masjid observes it; leave it blank to hide it.
+- **A scheduled Iqamah change can now change Jumu'ah** — move either time, add a third, or remove
+  the second (**Salah times → Scheduled Iqamah changes → Change Jumu'ah**).
+- **The printed monthly calendar marks the days the Iqamah changes**, with the new times in bold,
+  and shows sunrise every day (and Ishrāq when your screens show it).
+- **The seconds can go inside the clock** (6:22:05) instead of beside it, under **Elements → Where
+  the seconds go**.
+- **A 3D-printable case for a Raspberry Pi 4 screen**, in the `3D Prints` folder of the source code.
 
 ### Changed
-- **A Raspberry Pi screen that loses its display server keeps showing the prayer times.** It used
-  to swap the timetable for a full-screen "Lost contact" message. The times are worked out on the
-  screen itself, so they stay right; now the timetable stays up and a small *Server connection
-  lost* badge sits in the top-right corner until the server is back. A camera that is still
-  playing is left as it is.
 
-- **The built-in sound is now one long beep** instead of two short tones, which were easy to miss
-  across a hall.
-
-- **The Simple layout's left column has room to breathe.** The clock and both dates sit together
-  as one group with space around it, the countdown has space of its own, and sunrise and sunset
-  have moved to the bottom, level with the Jumu'ah row.
-
-- **On the Simple layout, the prohibited-time notice is always the red message along the
-  bottom.** Simple has no countdown ring, so the choice between the ring and the bottom message
-  is gone for Simple: the notice scrolls in red along the bottom for the whole window, in place
-  of any scrolling announcements while it lasts.
-
-- **"Sun & moon in the background" is hidden when the Simple layout is chosen** — Simple is a
-  flat page, so the setting did nothing there.
-
-- **A fixed Iqamah time in the "Iqamah times" list now shows the time in force today.** Once a
-  scheduled change has taken effect, the list shows the new time instead of the one typed before
-  it. Changing the time there changes it from today on.
-
-- **A timetable that follows another no longer shows prayer-time settings of its own.** Its
-  **Salah times** tab now says which timetable it follows. Anything typed there was being
-  replaced by the other timetable's times when you saved.
-
-
-- **Update and Terminal now say when they cannot work, instead of doing nothing.** Those two need
-  the screen to have been set up by running this server's installer on it, because they work by
-  giving the screen's system — not just the app — somewhere it trusts to fetch from. A screen
-  added by its address has not been through that, so both are now switched off for it with the
-  reason shown and the one command that turns them on. Until now they looked available, said
-  "asked", and nothing happened.
-
-- **An address that points at the machine you are sitting at is refused, with the reason.** Open
-  the panel at `localhost` and adopt a screen from there and the screen would be told to talk to
-  itself — it joins, never connects, and shows as offline with nothing explaining why. Both the
-  dashboard and a screen's own panel now say so instead of accepting it.
-
-- **Forgetting a screen you added by its address now gives it back to itself.** It returns to its
-  own panel, its own timetables and its own password, instead of sitting on the television asking
-  to rejoin a dashboard you have just removed it from.
-- **Documentation for a screen that runs on its own.** A new guide covers setting one up,
-  what the panel can and cannot do without a server, how it updates itself, and what to do
-  when something is wrong. The README now starts with a table of the three ways to put a
-  screen on a wall, with the Raspberry Pi first and decoder boxes marked as the older route
-  — they keep working exactly as before.
-- **Corrected which Raspberry Pi boards are accepted.** The documentation said an
-  unrecognised board was allowed through; the installer has always refused anything outside
-  the Pi 4 family, including a Pi 5. The documentation now says what the installer does. A
-  screen already set up is never switched off by this — it simply stops receiving new
-  versions.
-- **The volunteer page works on a standalone Raspberry Pi screen.** Set a PIN in Settings and a
-  volunteer can switch what the screen shows from their phone, on the masjid's network, without
-  the admin password.
-- **A camera's address is no longer written in full to the screen's log.** Some cameras — UniFi
-  among them — put the access token in the address itself rather than in a password, so the log
-  now keeps the camera's host and drops the rest.
-- **Cameras now work on a standalone Raspberry Pi screen**, and a new screen sets its output to
-  1080p. A Pi 4 driving a 4K television spends most of a processor core upscaling the picture,
-  which makes a camera stutter and looks no sharper — the timetable is drawn at 1080p either way.
-  If you want 4K, the resolution setting still gives it to you.
-- **A Raspberry Pi screen can now run on its own.** Installed with no display server, it shows a
-  one-time code on the television and serves its own control panel on the masjid's network: open
-  the address on the screen, enter the code, and choose a password. It is the same control panel
-  the server has, with the parts a Pi does not have left out. Once set up, the screen draws its
-  timetable from its own settings, with its own wallpaper, logo and announcement pictures, and a
-  volunteer's manual override works with no server behind it. If the clock cannot be right — a
-  Pi has no battery-backed clock, so a power cut leaves it believing an old date — the screen
-  says so instead of showing prayer times nobody should trust. The installer now also puts the
-  Arabic fonts on the device, which a screen with no server has nobody to fetch them from. Its
-  control panel shows only what a single screen can do: one screen card for itself, and none of
-  the server-only settings. Still early, and nothing about an existing screen changes.
-- **Fixed: the setup screen on a Raspberry Pi showed no text at all.** On Raspberry Pi OS Lite the
-  pairing screen drew its boxes and its status dot and not one character, so the code a masjid
-  needs to type was invisible. Every screen a Pi draws before it has been set up was affected.
-- **Raspberry Pi screens now install only on the Pi 4 family** — the Pi 4 Model B, the Pi 400 and
-  the Compute Module 4. The Pi 5, the Pi Zero and unrecognised boards are refused with a message
-  naming the board, where before they were allowed through untested. A screen that is **already
-  set up keeps working** and is left alone; it simply stops receiving new versions. This also
-  fixes the Pi 400 and the Compute Module 4, which the old check refused by mistake.
-- **Ishrāq can now be shown on the prayer table**, on both designs. Under Elements, set how many
-  minutes after sunrise your masjid observes it (commonly 15 or 20); leave it blank to hide it.
-  There is no default minute count on purpose — that is your masjid's call, not ours.
-- **One timetable's times can now drive several screens.** Under Location & time zone, a timetable
-  can either set its own times or follow another one. A follower takes the location, calculation
-  method, Iqamah times, Jumu'ah times and Adhan delays of the one it follows, so you edit them
-  once; everything about how it LOOKS — layout, theme, orientation, which elements are on — stays
-  its own. Screens that follow a timetable you delete simply stop following and keep the times
-  they had.
-- **The Simple design's left column is calmer.** Sunrise and sunset now sit side by side on one
-  small line under the date, instead of crowding the top of the column above the clock. The
-  countdown is now words rather than a wheel — the same block the Modern design uses, reading
-  "50 MINUTES / UNTIL JUMU'AH" — which says the same thing in far less of the column. During the
-  prohibited time, if the notice is on and the ticker is off, a single red line under sunrise and
-  sunset still says so in words. On a portrait screen, and beside a slideshow image, the prayer
-  table gets back some of the height the wheel used to take.
-- **In the Simple design, the row for the upcoming salah is now bold all the way across.** The
-  name and Iqamah time were bold but the Adhan time was not, so the row looked only half lit.
-- **A masjid with a single Jumu'ah now sees its time centred** between the Adhan and Iqamah
-  columns in the Simple design, rather than sitting under Iqamah next to an empty Adhan space.
-- **You can now choose where the seconds go.** Under Elements → Where the seconds go, "Beside the
-  clock" is the original and stays the default; "In the clock" sets them in the time itself
-  (6:22:05), the same size as the hours and minutes. The clock shrinks a little to make room for
-  the extra digits. It applies to both designs.
-- **The control panel now follows the accent colour you picked on the OpenMasjidOS dashboard.**
-  It was already inheriting the dashboard's light/dark theme and wallpaper, but not its colour —
-  so four masjids in five were looking at a panel in a colour they had not chosen. All five
-  accents now come across, in both themes, and so does the dashboard's language, which sets the
-  panel's text direction for Arabic and Urdu.
-- **The Simple design now takes the theme colours, not just an accent.** Cycling through the
-  ready-made palettes barely changed a Simple screen: it has no scene or photo to theme, and its
-  page colour was a separate setting that defaulted to white and stayed white. Under Layout →
-  Page colour there are now two theme options — a light page and a dark one — each tinted with
-  whatever accent colour the screen is using, so picking a different palette (or your own colour)
-  moves the whole design with it. White is still the default, so screens already on a wall look
-  exactly as they did until somebody changes them.
-- **The dates under the clock on the Simple design are stacked and much larger.** The Hijri date
-  now sits on its own line above the Gregorian one. Sharing a line meant they were shrunk to fit
-  together — about 21px under a 160px clock, and smaller still in Arabic and Urdu; a line each
-  means neither has to shrink at all on a full-size screen.
-- **The "next prayer in…" line on the Simple design is bigger too** — that column is mostly empty
-  on a landscape screen, and this is the one line on it that changes minute to minute.
-- The release procedure in `CLAUDE.md` now has publishing the GitHub release as a numbered step,
-  with a verification step after it. A tag is not a release, and OpenMasjidOS shows an admin the
-  release notes as "What’s new" once it has updated the app in the background — so a tag with no
-  release meant a masjid got new software on its screens and no explanation of what changed. It
-  was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
+- **Announcement pictures no longer hide the prayer times.** When a slideshow picture comes up the
+  screen now splits — the timetable on one side (or underneath, on a portrait screen) and the
+  picture, whole rather than cropped, on the other — and the scrolling message keeps its own strip
+  along the bottom instead of running across the picture.
+- **The Simple design has grown up.** It has a real portrait layout (choosing Simple on a portrait
+  screen used to give you Modern), names its two columns ADHAN and IQĀMAH, shows much larger prayer
+  times and dates, counts down in words, can use a light or dark page tinted with your theme colour,
+  keeps every accent colour readable, and shows a third Jumu'ah. The Modern design's times are a
+  step larger too.
+- **The control panel follows your OpenMasjidOS dashboard's accent colour**, and its text direction
+  for Arabic and Urdu.
+- **Adding a screen offers a Raspberry Pi first.** The ways a screen can receive the picture are
+  listed best first, and the RTSP decoder box is marked **legacy** — it works exactly as before, and
+  every screen already set up that way is untouched.
+- **Raspberry Pi screens install only on the Pi 4 family** — the Pi 4 Model B, the Pi 400 and the
+  Compute Module 4 (the last two were refused by mistake before). A Pi 5, a Pi Zero or a board it
+  does not recognise is refused with a message naming it; the 0.70.0 notes said "a Pi 4 or newer",
+  which was wrong. A screen already on a wall keeps working either way, but only the Pi 4 family
+  receives new versions.
+- **From outside the masjid, you sign in through OpenMasjidOS.** Away from the masjid the control
+  panel's own password is not accepted; OpenMasjidOS, with its two-step sign-in, signs you in
+  instead. On the masjid's network the password works as before.
+- **Update and Terminal say why when they cannot work** on a screen added by its address, and what
+  turns them on, instead of looking available and doing nothing.
 
 ### Fixed
-- **Display now runs on Node.js 22.23.4.** Node.js is the software the app runs on, and this
-  release fixes ten security problems published on 21 October, one of them serious. If Stripe emailed you about your Node.js version, this is the update it means.
-  Nothing looks or works any differently.
-- **Display now opens from outside the masjid.** Pressing *Open* on Display in the OpenMasjidOS
-  dashboard while away from the masjid showed a blank white page. The whole control panel now works
-  there — every page, uploads and downloads, live updates, previews and the Raspberry Pi terminal —
-  and OpenMasjidOS signs you in, with no password to type. The volunteer page opened that way shows
-  its logo again.
 
-- **Addresses the panel shows from outside now point at Display.** A screen's link, the website
-  widget's link, the volunteer page and the Raspberry Pi install command used to point at the
-  OpenMasjidOS dashboard when the panel was opened from outside the masjid.
-
-- **From outside the masjid, the control panel's password can't be used.** Away from the masjid
-  the only way in is OpenMasjidOS, with its two-step sign-in; the sign-in screen says so instead of
-  showing a password box. On the masjid's own network the password works as before. Display's
-  sign-in, and the volunteer page's, are also kept to Display's own address instead of being sent
-  to every other app on it.
-
-- **A timetable that follows another now previews with that timetable's Iqamah times.** The
-  preview went on showing its own old times until the editor was closed and opened again. The
-  screens themselves were already right.
-
-- **A third Jumu'ah now shows on the Simple layout.** It was being left off without a word, while
-  Modern showed all three. A third (and fourth) Jumu'ah goes on a second Jumu'ah row, each time
-  labelled 3rd, 4th.
-
-- **An Iqamah change made over WhatsApp is no longer lost when the chosen timetable follows
-  another.** The reply said "Saved." and the change disappeared. It now goes onto the timetable
-  being followed, so every screen that follows it changes together.
-
-
-- **A slideshow picture could freeze a screen until its decoder box was unplugged.** When an
-  announcement image appeared, the video for that moment could be far larger than the stream is
-  meant to carry. Some decoder boxes could not take it, lost part of the picture and stopped
-  playing altogether, and the only way back was to power the box off and on. The video now stays
-  within what a decoder expects. Pictures are very slightly more compressed; the timetable looks
-  exactly as it did.
-- **The countdown is now fully in Arabic and Urdu.** It used to read “2 HOURS 58 MINUTES UNTIL
-  الأذان” — half translated. It now reads “26 دقيقة / حتى الأذان” in Arabic and “25 منٹ / اذان تک”
-  in Urdu, with the word order each language actually uses. English screens are unchanged.
-- **A scrolling message on a browser screen is set in the same face as the rest of the screen.**
-  It was falling back to whatever the device happened to use.
-- **Arabic scrolling messages were empty boxes on screens fed by a decoder box.** A message in
-  Arabic or Urdu came out as a row of squares on those screens, while the same message was fine
-  on a Raspberry Pi screen and in a browser. It now reads correctly everywhere. An English
-  message looks exactly as it did before.
-- **The sun no longer sits on top of the clock.** On a dark design in the early afternoon the sun
-  drifted behind the clock and washed out a digit — on a 24-hour clock it covered one completely.
-  It is now softer, as something behind frosted glass should look, and the time stays readable.
-- **Arabic headings are no longer spaced apart letter by letter.** Arabic joins up as it is
-  written, and one heading was being stretched out so the letters came apart. It now reads
-  normally — anywhere in the app, in any language that uses the Arabic script.
-- **Arabic and Urdu screens no longer show half-translated headings.** The Simple design's table
-  header read “الصلاة TIMES” — the first word translated and the second not. It now reads the
-  same way the Modern design's always has. English screens are unchanged.
-- **The next-prayer ring no longer prints the prayer's name twice on an Arabic screen.** It shows
-  the Arabic name above the English one; in Arabic those are the same words, so it read
-  “العصر” over “العصر”. Now it shows the name once, centred.
-- **Pictures you upload are served more defensively.** A logo, background or announcement image
-  is now sent with headers that stop a browser treating it as anything but a picture. Four of the
-  five places that serve these files were missing that; they all have it now. Nothing you do in
-  the panel changes.
-- **A Raspberry Pi running on its own checks a release's name before using it.** A release named
-  in an unexpected way is now refused outright rather than acted on — which also means a screen
-  can no longer be tripped up by an unusual tag.
-- **The clock no longer shows the wrong second.** With the seconds displayed, the digit repeated
-  and then skipped about twice a minute — the time was being rebuilt from a decimal that had
-  already lost a fraction, so flooring it landed on the second before. It affected the
-  full-screen hadith clock too, where it had always been.
-- **The countdown wheel keeps the prayer's name.** "MAGHRIB" was being shortened to "MAGHR..."
-  inside the ring on nearly every screen shape, and beside a slideshow image at 720p the name
-  disappeared altogether — the space allowed for it was measured 14% short of the circle.
-- **On a screen too small for a readable wheel, the countdown goes back to being a sentence.**
-  Beside a slideshow image on a 720p screen the wheel came out a 25px circle with 8px type,
-  which is not a countdown anybody can read.
-- **The countdown could spill out of the left column and across the prayer table.** The spacing
-  between letters does not shrink when the type does, and the fit assumed it did.
-- **The words "Prohibited time" are back on the Simple design** during the zawāl window. The wheel
-  turned red but never said what the red meant.
-- Sunset now has a translation. It had never had one, so Arabic and Urdu screens showed the
-  English word — which the larger sunrise/sunset line made obvious.
-- The Jumu'ah row could be shortened to "JUMU'..." on a portrait screen. It fitted — it missed by
-  a fifth of a pixel, and the shortening was taking two letters off the word to save it.
-- **A custom page colour on the Simple design no longer makes the screen hard to read.** The
-  page's text colour was picked by asking whether the background was light or dark — the right
-  question for white and for near-black, and the wrong one for anything between. On a mid grey
-  the clock, the masjid name, the dates, the Adhan times and the footer all fell below the
-  readable threshold. Every one of them now adjusts to whatever page colour is set.
-- **On Fridays the prayer table now highlights the Jumu'ah row.** Because the countdown is
-  counting to Jumu'ah, no daily prayer counts as "next", and the Jumu'ah row was never marked —
-  so from Fajr until the last jamā'ah no row was highlighted at all, on the day the hall is
-  fullest.
-- **A hadith set to show during Dhuhr now also shows during Jumu'ah.** Only the five daily
-  prayers can be picked in the panel, so once the screen learned that Friday's jamā'ah is
-  Jumu'ah, a masjid that had assigned every hadith to a prayer got no hadith at all on Fridays.
-- **The panel no longer blanks if the dashboard sends an accent colour it doesn't recognise.**
-  Certain values slipped past the fallback and broke the page before it drew anything — and the
-  bad value was remembered, so it stayed broken on every reload.
-- **A standalone panel keeps its own light-theme colours.** Reading the dashboard's accent was
-  overriding them even when no dashboard had sent one.
-- **The volunteer PIN keypad stays 1-2-3 when the panel is mirrored** for an Arabic or Urdu
-  dashboard. Digits read left to right in every language; the keypad was flipping with the rest
-  of the layout.
-- A renamed Jumu'ah row on a masjid with a single jamā'ah could run over its own time.
-- **Fixed unreadable text on coloured buttons in the panel.** The Delete button was white on a
-  light red — measured at 2.77:1, well under the readable threshold — and the same applied to the
-  active tab, the help button and the PIN keypad. Every one of them now takes an ink chosen for
-  the colour behind it. In the light theme this also fixes links, the active menu item and the
-  tag labels, which were below the threshold on a white card.
-- **Accent colours on the Simple design are now guaranteed to be readable.** Several of the
-  ready-made palettes are deliberately pale, and Simple puts the accent on text — the Iqamah
-  times, the Jumu'ah times, the "next prayer in" line. Sunset's yellow Jumu'ah time on its own
-  pale band was well below the readable threshold. Each of them now darkens or lightens as far as
-  it has to, keeping the colour but not the problem. The green header bar was picking its text
-  colour the same too-simple way and has been fixed with it.
-- Prayer names and column headings that a masjid has renamed are now fitted properly. A long
-  custom name could run into the time beside it, and a long custom "Iqamah" heading could run
-  across "Adhan"; names and headings are now measured against the room they actually have, and
-  shortened rather than overlapped when there is not enough.
-- **The Simple design's prayer table now names its two time columns.** It showed two times on
-  every row — the Adhan and the jamā'ah — and said nowhere which was which. ADHAN and IQĀMAH now
-  sit in the green header bar, above the columns they belong to, in whichever language the screen
-  is set to. They cost the rows no height, so the times did not shrink to make room.
-- **The times in the prayer table are bigger, on both designs.** The Simple design's times are up
-  to half as large again on a 1080p screen: the type is now worked out from the room the table
-  actually has rather than from a fixed ratio to the prayer names, which had been capped and was
-  holding the times down with it. The Modern design's times are a step larger too. Prayer names
-  are unchanged on both — the times are what a room full of people is reading.
-- **A slideshow announcement image no longer takes the whole screen — the prayer times stay
-  beside it.** When an image came up, the timetable disappeared for as long as it was showing, on
-  both the Modern and the Simple design. Anyone walking in during those seconds saw a flyer and no
-  prayer times at all. Now the screen splits: the timetable on the left and the picture on the
-  right on a landscape screen, the picture above the timetable on a portrait one.
-- **Announcement images are shown whole rather than cropped to fill.** A poster that is not the
-  shape of the screen used to have its edges cut off. In its own box it fits almost entirely, so
-  nothing is trimmed.
-- **The scrolling ticker no longer runs across an announcement image.** The band now has its own
-  strip at the bottom of the screen and the picture sits above it, so a masjid's own message and
-  its own poster are both readable at once instead of one being printed over the other.
-- **The Simple design now has a real portrait layout.** Choosing Simple and hanging the screen
-  portrait silently gave you the Modern design instead — the setting did nothing. Portrait Simple
-  is now Simple: the masjid name, clock and date above its banded prayer table.
-- **The date under the clock on the Simple design no longer runs off the edge.** The Hijri and
-  Gregorian halves are different lengths, and the line was centred on the divider between them
-  rather than on the line itself, so it hung off to one side and spilled out of its column. Most
-  visible in Arabic and Urdu, where the date is longer, but it was happening in English too.
-- **On Fridays a screen counted down to a Dhuhr Iqamah that nobody was praying, and ignored
-  Jumu’ah entirely.** Three things on the screen ask "is a congregation about to pray?", and all
-  three were looking at the daily prayer table — which carries Dhuhr every day, because a masjid
-  still wants to see the Dhuhr time on a Friday. But on Friday the jama’ah is Jumu’ah. So the
-  full-screen "line up for prayer" countdown announced **Dhuhr Iqamah** while the ring beside it
-  correctly said Jumu’ah — the screen contradicting itself — then the screen blacked out for that
-  same prayer, and the actual Jumu’ah got nothing: no countdown before it and no blackout during
-  it, at the fullest the hall gets all week.
-
-  Now every Jumu’ah gets its own full-screen countdown — **"JUMU’AH 1 IN 04:12"**, numbered when
-  you hold more than one — and the quiet screen (or the hadith, if you show one) runs through each
-  Jumu’ah rather than through a Dhuhr that is not happening. A masjid with no Jumu’ah time set
-  still prays Dhuhr on a Friday and keeps its countdown, and every other day of the week is
-  unchanged. It applies to Raspberry Pi screens, decoder screens and the editor preview alike.
-- Three tests were reading the real system clock against a hardcoded date, so they went red on
-  2026-09-04 having been touched by nobody — the Iqamah wizard refuses a date in the past, and the
-  date they typed had stopped being next week. They now pin the clock the way the wizard’s own
-  tests already did. Nothing shipped was wrong; the tests were.
-- Updated a build-time dependency (`browserslist`) to clear a newly published high-severity
-  advisory. It is a development tool, never part of the running app.
-- Updated another build-time dependency (`source-map-js`) for the same reason: a newly published
-  high-severity advisory. It is only used while building the control panel, never at run time.
-- Updated the tool that builds the control panel (`vite`) to clear newly published high-severity
-  advisories. It is only used while building, never part of the running app.
+- **Security: Display now runs on Node.js 22.23.4**, which fixes ten security problems published on
+  21 October, one of them serious. If Stripe emailed you about your Node.js version, this is the
+  update it means. Nothing looks or works any differently.
+- **Fridays are right.** A screen used to count down to a Dhuhr Iqamah nobody was praying, black out
+  for it, and give the actual Jumu'ah nothing. Every Jumu'ah now gets its own full-screen countdown
+  (numbered when you hold more than one), the quiet screen or hadith runs through it, the Jumu'ah
+  row is highlighted on the prayer table, and a hadith set for Dhuhr shows at Jumu'ah.
+- **Display opens from outside the masjid.** When your OpenMasjidOS dashboard is used from outside
+  the masjid, *Open* on Display used to show a blank white page. The whole control panel now works
+  there, and the links it shows point at Display.
+- **A slideshow picture could freeze a screen until its decoder box was unplugged.** The video now
+  stays within what a decoder box can take.
+- **Arabic and Urdu screens read properly.** Scrolling messages on decoder-box screens were rows of
+  empty boxes; the countdown, the Simple design's headings and the word for sunset were half in
+  English; and Arabic headings were spaced apart letter by letter. English screens are unchanged.
+- **The clock no longer shows the wrong second** — it repeated one and skipped the next about twice
+  a minute.
+- **The countdown wheel keeps the prayer's name** instead of shortening it, no longer spills across
+  the prayer table, and on a screen too small for a readable wheel goes back to being a sentence.
+  "Prohibited time" is written out again on the Simple design.
+- **Text stays readable on any colour** — on a custom page colour on the Simple design, on the
+  coloured buttons in the control panel, and where the sun used to drift behind the clock on a dark
+  design.
+- **An Iqamah change made over WhatsApp is no longer lost** when the timetable follows another one.
+- **The setup screen on a Raspberry Pi shows its code again** — on Raspberry Pi OS Lite it drew no
+  text at all.
+- **A camera's private address is no longer written in full to a screen's log**, and uploaded
+  pictures are served more defensively.
+- Plenty of smaller fixes to the editor preview, the volunteer keypad and the timetable editor.
 
 ## 0.70.0
 
@@ -419,13 +129,6 @@ brings cameras to browser screens, a second screen design, and lets the other Op
 your box read your prayer times instead of being told them twice.
 
 ### Added
-
-- **Wi-Fi settings on a screen that runs on its own.** **Settings → Wi-Fi** lists the networks
-  the screen can see and joins one, so a Pi set up on a cable can be moved onto Wi-Fi, and one
-  whose network password has changed can be put back on without fetching a keyboard. When the
-  join works the screen tells you its new address — that is where you manage it from then on,
-  because the panel is served by the screen itself. Change network with the cable still in if
-  you can; turning the radio off is refused unless a cable is carrying the screen.
 - **Raspberry Pi screens.** One command on a Pi running Raspberry Pi OS Lite, a setup code on the
   television, and that screen is yours. It draws the timetable **itself** — no desktop, no browser —
   and it opens your cameras **directly**, on your own network, so camera video never travels through
@@ -459,11 +162,6 @@ your box read your prayer times instead of being told them twice.
   are allowed to ask.
 
 ### Changed
-
-- **Adding a screen now offers a Raspberry Pi first.** The list of ways a screen can receive
-  the picture is ordered best-first, and the RTSP decoder box is marked **legacy** — it still
-  works exactly as it always has, and every screen already set up that way is untouched. What
-  you get if you do not change the dropdown is also unchanged.
 - **The terminal on a Raspberry Pi screen is a root shell, deliberately.** It used to run as the
   screen's own limited account, which meant `sudo` did not work and `reboot` was impossible — a
   debugging window, not a terminal. It is now the whole machine, to match what the OpenMasjidOS
@@ -483,11 +181,6 @@ your box read your prayer times instead of being told them twice.
   tick beside a message nobody received.
 
 ### Fixed
-
-- **A safety net against a screen drawing a panel as nothing.** The renderer is now checked, in
-  fourteen real configurations, that every colour and glow it asks for is one it actually
-  defined. Nothing was wrong — this catches a future mistake that would otherwise show up as a
-  missing background or panel on a wall and look deliberate.
 - **Prayer times were an hour wrong on the two nights a year the clocks change.** On the night the
   clocks go forward, a screen drawn between midnight and 2am showed every one of that day's prayer
   times an hour early — Fajr as 04:53 when it was really 05:53 — and the countdown and the Adhan
@@ -512,11 +205,6 @@ your box read your prayer times instead of being told them twice.
 
 ### Added
 
-- **The panel says when a screen is running on its own.** A **Standalone** label sits beside the
-  name at the top of the control panel on a Raspberry Pi that has no Display server, so it is
-  always clear which kind of screen you are looking at. It is in the panel only — never on the
-  television.
-
 - **Announce an Iqamah change to your congregation.** Any scheduled change can now be turned into a
   portrait **announcement image** — your masjid name and logo, the date it takes effect, and the whole
   timetable for that day with the changing prayers highlighted and the time each one replaces struck
@@ -540,14 +228,6 @@ your box read your prayer times instead of being told them twice.
 
 ### Changed
 
-- **How to move a screen between running on its own and being managed by a server is now
-  written down** — both directions, with what is kept. A standalone screen joins a server by
-  running that server’s install command on it, and comes back by running the standalone one
-  again; its timetables, settings and password are kept either way, and it keeps the same
-  identity so the server sees one screen rather than two. Two things it now warns about: a
-  screen managed by a server stops serving its own control panel, and removing the server
-  address by hand leaves a screen that silently stops updating.
-
 - **Light mode is properly light.** The theme lightened the cards but left the page background dark, so
   panels sat as grey rectangles on a near-black backdrop and the text on them was hard to read. The
   background, its glow and its pattern are all light now, and each of the nine wallpapers has a light
@@ -556,13 +236,6 @@ your box read your prayer times instead of being told them twice.
   is still to come. The change itself stays in effect.
 
 ### Fixed
-
-- **A test that could fail for no reason, and one that could pass for the wrong one.** An
-  internal check of the WhatsApp announcement log waited a fixed moment for a disk write instead
-  of waiting for the write, so it failed once on a busy build machine while the app itself was
-  fine — and the tests in that file were quietly sharing one working directory, so the check
-  could also have been satisfied by a leftover from an earlier test. Both fixed. No change to the
-  app; this is about trusting the checks that guard it.
 
 - **A scheduled Iqamah change could not be added** — the entry vanished while you typed the date.
 - **Security:** OpenMasjidOS replying with something that wasn't valid data was read as "the platform is
