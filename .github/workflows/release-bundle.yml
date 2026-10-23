@@ -37,14 +37,22 @@ jobs:
     name: build and attach the Pi bundle
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # SHA-pinned like every other workflow here; this job holds `contents: write`.
+      # The TAG's tree is checked out even on a manual dispatch from another branch, so the
+      # bundle is always built from the release it is attached to.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
+          # There is no lockfile at the root, and without this setup-node fails before
+          # anything is built — which is how v0.71.0 first went out with no bundle.
+          cache-dependency-path: |
+            server/package-lock.json
+            web/package-lock.json
 
       - name: Build the agent
         working-directory: server
@@ -77,8 +85,11 @@ jobs:
           # has no display server to fill those two placeholders in for it, which is how a real
           # install got as far as `npm ERR! Invalid tag name "@@RESVG@@"`.
           RESVG=$(node -p "require('./server/package.json').dependencies['@resvg/resvg-js']" | tr -d '^~')
+          # The commit actually checked out, not GITHUB_SHA: on a manual dispatch GITHUB_SHA is
+          # the head of the branch the workflow ran from, not the tagged commit built here.
+          COMMIT=$(git rev-parse HEAD)
           printf 'version=%s\ncommit=%s\nresvg=%s\nbuilt=%s\n' \
-            "$TAG" "$GITHUB_SHA" "$RESVG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > bundle/MANIFEST
+            "$TAG" "$COMMIT" "$RESVG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > bundle/MANIFEST
           cat bundle/MANIFEST
           tar czf "openmasjid-screen-$TAG.tar.gz" -C bundle .
           sha256sum "openmasjid-screen-$TAG.tar.gz" > SHA256SUMS

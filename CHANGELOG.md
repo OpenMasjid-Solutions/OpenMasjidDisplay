@@ -12,6 +12,13 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- **The one-command Raspberry Pi install now has something to download.** The job that attaches
+  the screen bundle to each release stopped before building anything, so 0.71.0 went out without
+  one and the standalone install ended with "This release may not carry one yet". The job is fixed
+  and has been run for 0.71.0. The bundle now also records the commit it was really built from, not
+  whichever branch the job was started from.
+
 ## 0.71.0
 
 A security update first: Display now runs on a patched Node.js. The same release lets a Raspberry
