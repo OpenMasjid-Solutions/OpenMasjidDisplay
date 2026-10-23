@@ -10,77 +10,37 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
-## Unreleased
+## 0.72.0
+
+A security and reliability update. There is nothing to do after updating.
 
 ### Security
-- **The video server no longer accepts a picture from other devices on the network.** Anyone on the
-  masjid's network who knew a timetable's address could send their own video to every decoder-box
-  screen showing it. Only Display itself can send video to it now; screens still play as before.
-- **Guessing a password, a volunteer PIN or a screen's setup code can no longer be sped up by sending
-  the guesses all at once.** Each one now counts before the next is checked. A new screen's setup
-  code also has a limit across every address together, so it cannot be guessed by switching addresses.
-- **Another app on the same OpenMasjidOS box can no longer use your sign-in.** On the masjid's
-  network, a page of any other app on the box could change Display's settings or watch its live
-  updates while you were signed in. Display now refuses those.
-- **A new screen's pairing code is no longer shown in the dashboard.** Typing the code from the
-  television is what proves you can see that screen, so it now has to be read off the television.
-- **A volunteer can add up to 20 parking reports at a time**, instead of without limit. Each one
-  redraws every report's card, and enough of them could slow the whole server down.
-- **A screen's private link no longer appears in the error log** when a request from it goes wrong.
-- **A link can no longer set an outside picture as the control panel's wallpaper.**
-- Behind the scenes: the release bundle is built without a GitHub token left lying on disk, a viewer
-  leaving a browser screen's camera no longer leaves a connection open, and the panel's terminal
-  notes now say plainly that it is a full administrator shell.
+- **The video server only accepts video from Display itself.** Before, anyone on the masjid's
+  network who knew a timetable's address could send their own picture to every decoder-box screen
+  showing it.
+- **Passwords, volunteer PINs and a new screen's setup code can no longer be guessed faster** by
+  sending the guesses all at once, and a setup code can no longer be guessed by switching addresses.
+- **Other apps on the same OpenMasjidOS box can no longer use your sign-in** to change Display's
+  settings or watch its live updates.
+- **A new screen's pairing code is read off the television only.** The dashboard no longer shows it,
+  because typing it from the screen is what proves you can see that screen.
 
 ### Fixed
-- **The one-command Raspberry Pi install now has something to download.** The job that attaches
-  the screen bundle to each release stopped before building anything, so 0.71.0 went out without
-  one and the standalone install ended with "This release may not carry one yet". The job is fixed
-  and has been run for 0.71.0. The bundle now also records the commit it was really built from, not
-  whichever branch the job was started from.
-
-- **Saving a timetable no longer puts back an Iqamah time you have just changed in the schedule.**
-  After editing or removing a scheduled change, the next "Save changes" wrote the old fixed time
-  back. The "Iqamah times" list now follows the schedule as you save it.
-- **Clearing a fixed Iqamah time no longer makes it midnight.** It used to save as 12:00 AM on every
-  screen; the panel now says which time is empty, and an empty one keeps the time it had.
-- **The schedule says when it cannot save a change, instead of losing it.** Two changes on the same
-  day, or one with no date, used to vanish with "saved" shown over them. Now the panel says so — and
-  two changes for one day are merged rather than one being dropped.
-- **An open timetable keeps changes made somewhere else.** A scheduled change made in another tab or
-  over WhatsApp while the editor was open was deleted by the next save. The editor now picks it up.
-- **Clicking a setting's name no longer changes the setting.** Clicking the words "Theme colour",
-  "Show" or "Normally shows" picked the first option beside them.
-- **Switching an Iqamah between "minutes after Adhan" and "fixed time" keeps what you had set.** A
-  fixed Fajr used to jump to 1:30 PM.
-- **The downloadable Iqamah CSV template matches the screens on every day of the year.** It was
-  worked out for 2024 and without your Adhan delays, so uploading it unchanged moved Iqamah by an
-  hour around the clock changes and could announce "changes" on WhatsApp that were not real.
-- **A CSV with a date that cannot be read is refused, and nothing in it is imported.** A file written
-  day-first (13/03) used to have its readable rows stored on the wrong dates (03/08 as 8 March).
-- **The printed calendar and the Companion app no longer show some fixed times a minute early** —
-  16:20 printed as 16:19, for example.
-- **The Adhan sound is no longer cut off a second in at Dhuhr** when the red prohibited-time message
-  ends, and the Iqamah sound no longer stops when the Iqamah countdown ends.
-- **Sound changes take effect the same day.** Turning a sound off, moving an Iqamah or uploading a
-  new sound used to leave the old ones playing until the next day.
-- **A screen switched to a camera does switch**, even when the video server refused the first try.
-- **A second Iqamah change no longer waits behind the first for its WhatsApp notice.** With a week's
-  notice and two changes two days apart, the second went out with one day's notice.
-- **A WhatsApp notice that needs re-sending for a change starting today is re-sent in the evening
-  too.** Display was judging "today" by the date in London.
-- **The OpenMasjid logo shows again when the panel is opened from outside the masjid.**
-- **Upload buttons can be reached with the keyboard** — the CSV import, background, logo, sounds,
-  announcement pictures and volunteer photos.
-- **The volunteer page goes back to the PIN screen when its session ends**, instead of answering
-  every tap with "Please sign in."
-- **"Copied" only appears when the link really was copied.**
-- **The Raspberry Pi settings button is only shown where it does something.**
-- **The panel no longer says a browser screen cannot show a camera** — it can.
-
-### Changed
-- The documentation was brought up to date with how Display works today: the CI checks, the Adhan and
-  Iqamah sounds, the WhatsApp queue, browser-screen cameras and the Raspberry Pi set-up.
+- **Iqamah times stay as you set them.** Saving a timetable after editing the schedule no longer puts
+  the old time back, a cleared fixed time is no longer saved as midnight, and the schedule tells you
+  when it cannot save a change instead of quietly losing it.
+- **The Iqamah CSV template matches the screens on every day of the year**, and a file with a date
+  that cannot be read is refused instead of being imported on the wrong dates.
+- **The Adhan sound is no longer cut off at Dhuhr**, and turning a sound off, moving an Iqamah or
+  uploading a new sound now takes effect the same day.
+- **Back-to-back Iqamah changes each get their full WhatsApp notice**, instead of the second waiting
+  behind the first.
+- **The printed calendar and the Companion app show fixed times to the minute.**
+- **The one-command Raspberry Pi install works again** — each release now carries the screen bundle it
+  downloads.
+- In the control panel: clicking a setting's name no longer changes it, upload buttons work from the
+  keyboard, the logo shows when the panel is opened from outside the masjid, and the volunteer page
+  asks for the PIN again when its session ends.
 
 ## 0.71.0
 
