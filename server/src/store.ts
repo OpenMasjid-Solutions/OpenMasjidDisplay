@@ -16,6 +16,7 @@ import type {
   Lang,
   Quality,
   IqamahConfig,
+  TimetableSound,
 } from './types';
 
 const log = makeLog('store');
@@ -88,10 +89,14 @@ function seededTimetable(): Timetable {
     iqamah: defaultIqamah(),
     jumuah: ['13:30'],
     showSunrise: true,
+    sound: { adhan: false, iqamah: false, adhanClip: '', iqamahClip: '' },
+    ishraqMinutes: 0,
+    linkedTo: '',
     showCountdown: true,
     showDates: true,
     showLogo: true,
     showSeconds: false,
+    secondsStyle: 'stacked',
     showFooter: true,
     showCelestial: true,
     showName: true,
@@ -107,6 +112,19 @@ function seededTimetable(): Timetable {
 
 /** Backfill fields added in later versions onto a stored timetable, so an upgrade
  *  never silently hides elements that didn't exist as toggles before. */
+/** One clip used to play at both Adhan and Iqamah. It becomes BOTH slots' clip — the same file,
+ *  which `setSoundClip` knows not to delete while either still names it — so a masjid's own sound
+ *  keeps playing exactly where it did. */
+function migrateSound(s: unknown): TimetableSound {
+  const o = (s ?? {}) as Partial<TimetableSound> & { clip?: string };
+  return {
+    adhan: !!o.adhan,
+    iqamah: !!o.iqamah,
+    adhanClip: o.adhanClip ?? o.clip ?? '',
+    iqamahClip: o.iqamahClip ?? o.clip ?? '',
+  };
+}
+
 function migrateTimetable(t: Timetable): Timetable {
   return {
     ...t,
@@ -119,6 +137,11 @@ function migrateTimetable(t: Timetable): Timetable {
     showDates: t.showDates ?? true,
     showLogo: t.showLogo ?? true,
     showSeconds: t.showSeconds ?? false,
+    sound: migrateSound(t.sound),
+    ishraqMinutes: t.ishraqMinutes ?? 0,
+    linkedTo: t.linkedTo ?? '',
+    // Every timetable stored before this field existed reads back as the original look.
+    secondsStyle: t.secondsStyle === 'inline' ? 'inline' : 'stacked',
     showFooter: t.showFooter ?? true,
     showCelestial: t.showCelestial ?? true,
     showName: t.showName ?? true,
@@ -161,6 +184,58 @@ function freshDB(): DB {
 }
 
 export type ChangeListener = () => void;
+
+/**
+ * The fields a LINKED timetable takes from the one it is linked to.
+ *
+ * Times only. The look — layout, theme, orientation, wallpaper, which elements are on — stays
+ * each screen's own, because the whole point is one masjid's times shown on several different
+ * screens, not several copies of one screen.
+ */
+const SYNCED_FIELDS = [
+  'latitude', 'longitude', 'timezone', 'method', 'fajrAngle', 'ishaAngle', 'asrMadhab',
+  'iqamah', 'iqamahSchedule', 'iqamahYear', 'jumuah', 'adhanOffsets',
+  'hijriOffset', 'gregorianOffset', 'ishraqMinutes',
+] as const;
+
+/**
+ * Make every linked timetable match its main.
+ *
+ * Called from `Store.update`, which is the single funnel every write goes through — so creating,
+ * editing, duplicating and deleting a timetable, and the CSV and schedule endpoints that write
+ * times straight onto a main, all keep the links true without each remembering to. Doing it per
+ * endpoint is how one of them ends up forgotten.
+ *
+ * One level deep, deliberately: a main that is itself linked would chain, and a chain can cycle,
+ * and a cycle here is an infinite copy. A link to a missing, deleted or linked timetable, or to
+ * itself, is dropped rather than honoured — so deleting a main quietly frees its children.
+ */
+function applyLinks(db: DB): void {
+  for (const t of db.timetables) followLink(t, db.timetables);
+}
+
+/**
+ * Give one timetable its main's times, by the rules `applyLinks` describes above — or clear a link
+ * that cannot be honoured.
+ *
+ * Exported for the live PREVIEW, which renders the editor's unsaved form rather than a stored row
+ * and so never passes through `Store.update`. Without it a screen set to follow another was
+ * previewed with its OWN old Iqamah times — the form still carried them — until it had been saved
+ * and the editor closed and reopened, which reads as "following does not include the Iqamah".
+ */
+export function followLink(t: Timetable, all: Timetable[]): void {
+  const main = t.linkedTo ? all.find((o) => o.id === t.linkedTo) : undefined;
+  if (!main || main.id === t.id || main.linkedTo) {
+    t.linkedTo = '';
+    return;
+  }
+  for (const k of SYNCED_FIELDS) {
+    const v = main[k];
+    // Structured clone, not a reference: two timetables sharing one `iqamah` object would
+    // mean editing the child silently rewrote the main.
+    (t as unknown as Record<string, unknown>)[k] = v == null ? v : structuredClone(v);
+  }
+}
 
 export class Store {
   db: DB;
@@ -300,6 +375,7 @@ export class Store {
   /** Mutate the DB, persist (debounced), and notify listeners synchronously. */
   update(fn: (db: DB) => void): void {
     fn(this.db);
+    applyLinks(this.db);
     this.scheduleSave();
     for (const l of this.listeners) {
       try {

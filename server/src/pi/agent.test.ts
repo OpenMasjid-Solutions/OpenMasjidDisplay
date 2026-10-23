@@ -18,7 +18,7 @@ import { parseGeometry, packFrame, Framebuffer } from './framebuffer';
 import { parseFbset } from './fbset';
 import { fitMode, blitCentered } from './raster';
 import { pickLanIp, deviceFacts } from './device';
-import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, type AgentConfig } from './agentConfig';
+import { parseConfig, loadConfig, saveConfig, makeDeviceId, makeDeviceSecret, isUsableConfig, normaliseServerOrigin, isLoopbackHost, type AgentConfig } from './agentConfig';
 import { pairingSvg, messageSvg } from './pairing';
 
 // ── framebuffer geometry ─────────────────────────────────────────────────────
@@ -218,9 +218,57 @@ test('a trailing slash on the server is dropped, so URLs do not double up', () =
 });
 
 test('a server address that is not http(s) is refused', () => {
-  // The one field that decides where this device sends its identity.
-  for (const bad of ['', 'host:7860', 'ftp://host', 'file:///etc/passwd', 'javascript:x']) {
+  // The one field that decides where this device sends its identity. `''` is NOT in this list
+  // any more — it is how a standalone screen is spelled; see the two tests below.
+  for (const bad of ['host:7860', 'ftp://host', 'file:///etc/passwd', 'javascript:x']) {
     assert.equal(parseConfig(JSON.stringify({ server: bad })), null, bad);
+  }
+});
+
+// ── a screen that has no server at all ───────────────────────────────────────
+
+test('no server means standalone, not a broken config', () => {
+  // A Pi installed without a display server runs on its own. Reading that as "unconfigured"
+  // was what stopped it being possible at all: the agent treats a null config as a device it
+  // cannot start.
+  for (const text of ['{}', '{"server":""}', '{"server":"   "}', '{"deviceId":"pi_a","deviceSecret":"s"}']) {
+    const cfg = parseConfig(text);
+    assert.ok(cfg, text);
+    assert.equal(cfg!.server, '', text);
+    assert.equal(cfg!.token, undefined, text);
+  }
+});
+
+test('a truncated config is not mistaken for a brand-new standalone screen', () => {
+  // THE dangerous reading, and the reason standalone needs a test for "written on purpose".
+  // A file truncated by a power cut parses as `{}` — no server, no identity. Acting on it would
+  // take a screen adopted a year ago and present it to the hall as a new one asking to be set
+  // up. Waiting is visible and recoverable; that is what it did before standalone existed.
+  assert.equal(isUsableConfig(parseConfig('{}')), false);
+  assert.equal(isUsableConfig(parseConfig('{"server":""}')), false);
+  assert.equal(isUsableConfig(null), false);
+  // An identity is the evidence the installer wrote it.
+  assert.equal(isUsableConfig(parseConfig('{"deviceId":"pi_a","deviceSecret":"s"}')), true);
+  // Half an identity is not evidence of anything.
+  assert.equal(isUsableConfig(parseConfig('{"deviceId":"pi_a"}')), false);
+  // And a server address is usable with or without one, as it always was.
+  assert.equal(isUsableConfig(parseConfig('{"server":"http://h"}')), true);
+});
+
+test('a token with no server is a corrupted config, not a standalone screen', () => {
+  // The dangerous reading. An adopted Pi whose server address was lost would quietly stop
+  // calling home for ever, and the masjid would find out when a timetable change never
+  // arrived. Refusing it sends somebody to the television instead, which is recoverable.
+  assert.equal(parseConfig('{"server":"","token":"t","deviceId":"pi_a","deviceSecret":"s"}'), null);
+  assert.equal(parseConfig('{"token":"t"}'), null);
+});
+
+test('the setup code survives a reboot, and only if it is digits', () => {
+  // Persisted so that a power cut does not change the code somebody already wrote down — on a
+  // screen switched off at the socket, an unclean restart is the normal one.
+  assert.equal(parseConfig('{"setupCode":"04172580"}')?.setupCode, '04172580');
+  for (const bad of ['', '   ', 'abcd1234', '1234-5678', '<script>']) {
+    assert.equal(parseConfig(JSON.stringify({ setupCode: bad }))?.setupCode, undefined, bad);
   }
 });
 
@@ -527,5 +575,103 @@ test('saving the config flushes it, and still merges and round-trips', () => {
     assert.ok(!fs.existsSync(`${file}.tmp`), 'no temp file may be left behind');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── the address somebody types into a screen's panel ─────────────────────────
+
+test('a query or a fragment is dropped, because concatenation swallows the path behind them', () => {
+  // Every URL the agent builds is `${server}/pi/…` — plain concatenation. So an address carrying
+  // a query or a fragment lands on the server's ROOT with the real path swallowed, the screen
+  // never enrols, and the only thing anybody sees is "Cannot reach the display server" for ever.
+  // The input that produces it is the likeliest there is: a copy out of a browser's address bar.
+  for (const [typed, want] of [
+    ['http://192.168.1.55:7860/?tab=screens', 'http://192.168.1.55:7860'],
+    ['http://192.168.1.55:7860/#/settings', 'http://192.168.1.55:7860'],
+    ['https://masjid.example/display?x=1#y', 'https://masjid.example/display'],
+  ] as const) {
+    assert.deepEqual(normaliseServerOrigin(typed), { origin: want }, typed);
+  }
+});
+
+test('the PATH is kept — it is the part that looks droppable and is not', () => {
+  // The platform mounts this app under a prefix, so `https://masjid.example/display` is a real
+  // address and `https://masjid.example` is a different, wrong one. Dropping the path here would
+  // send every tunnelled screen to the platform's root.
+  assert.deepEqual(normaliseServerOrigin('https://masjid.example/display'), { origin: 'https://masjid.example/display' });
+  assert.deepEqual(normaliseServerOrigin('https://masjid.example/display/'), { origin: 'https://masjid.example/display' });
+});
+
+test('a trailing slash goes, because every caller appends its own', () => {
+  for (const typed of ['http://192.168.1.55:7860/', 'http://192.168.1.55:7860///', '  http://192.168.1.55:7860  ']) {
+    assert.deepEqual(normaliseServerOrigin(typed), { origin: 'http://192.168.1.55:7860' }, typed);
+  }
+});
+
+test('empty is standalone, not a failure', () => {
+  // Clearing the address is how a screen is set free from its own panel, so '' has to survive as
+  // a VALUE. Returning null for it would turn "stay standalone" into "that is not an address".
+  assert.deepEqual(normaliseServerOrigin(''), { origin: '' });
+  assert.deepEqual(normaliseServerOrigin('   '), { origin: '' });
+});
+
+test('anything that is not a web address is refused', () => {
+  for (const bad of ['192.168.1.55:7860', 'ftp://host', 'javascript:alert(1)', 'http://', 'http://a b', 'not an address']) {
+    const r = normaliseServerOrigin(bad);
+    assert.ok('error' in r, bad);
+  }
+});
+
+test('what comes out can always be concatenated into a working URL', () => {
+  // The property this exists for, asserted as the property rather than case by case.
+  for (const typed of [
+    'http://192.168.1.55:7860',
+    'http://192.168.1.55:7860/',
+    'http://192.168.1.55:7860/?tab=screens',
+    'http://192.168.1.55:7860/#/settings',
+    'https://masjid.example/display',
+    'https://masjid.example/display/?a=b#c',
+  ]) {
+    const r = normaliseServerOrigin(typed);
+    assert.ok(!('error' in r), typed);
+    const url = new URL(`${r.origin}/pi/enrol`);
+    assert.ok(url.pathname.endsWith('/pi/enrol'), `${typed} -> ${url.href}`);
+    assert.equal(url.search, '', `${typed} left a query behind`);
+    assert.equal(url.hash, '', `${typed} left a fragment behind`);
+  }
+});
+
+test('a display server is never on this screen own loopback', () => {
+  // From a Raspberry Pi, localhost IS the Pi. An address like that produces a screen that joins
+  // and then cannot reach anything, for ever, with the dashboard showing it offline and nothing
+  // saying why — which reads as a network fault rather than the typo it is.
+  for (const bad of [
+    'http://localhost:7860',
+    'http://LOCALHOST:7860',
+    'http://127.0.0.1:7860',
+    'http://127.1.2.3',
+    'http://[::1]:7860',
+    'http://[::ffff:127.0.0.1]',
+  ]) {
+    const r = normaliseServerOrigin(bad);
+    assert.ok('error' in r, `${bad} must be refused`);
+    // And the sentence has to say what is actually wrong. "That is not a web address" is false
+    // of http://localhost:7860 and sends somebody looking for a typo that is not there.
+    assert.match(r.error, /means this screen itself/, `${bad} got the wrong reason: ${r.error}`);
+  }
+  // And a real address on the network is still fine, including one that merely looks similar.
+  for (const ok of ['http://192.168.1.55:7860', 'http://127-0-0-1.example', 'http://localhost.masjid.example']) {
+    assert.ok(!('error' in normaliseServerOrigin(ok)), `${ok} must be accepted`);
+  }
+});
+
+test('the loopback test knows the name as well as the literals', () => {
+  // The name is the one that matters in practice: `localhost` is what an admin's address bar says
+  // when they are running the server on their own machine.
+  for (const h of ['localhost', 'LocalHost', 'x.localhost', '127.0.0.1', '127.255.255.254', '::1', '::ffff:127.0.0.1', '::ffff:7f00:1']) {
+    assert.equal(isLoopbackHost(h), true, h);
+  }
+  for (const h of ['192.168.1.55', '10.0.0.1', 'localhost.example', '128.0.0.1', '::2', '', 'raspberrypi.local']) {
+    assert.equal(isLoopbackHost(h), false, h);
   }
 });

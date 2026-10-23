@@ -358,6 +358,26 @@ export function redactCreds(s: string): string {
 }
 
 /**
+ * A camera address safe to write to the journal.
+ *
+ * `redactCreds` removes `user:pass@`, which is the only credential an RTSP URL is SUPPOSED to
+ * carry. It is not the only one they do carry: a UniFi camera's stream is addressed as
+ * `rtsps://<nvr>:7441/LhrdC1EoTEY24tnc?enableSrtp`, where that path segment IS the access token
+ * — anyone holding it can pull the masjid's camera, with no password anywhere in the URL for a
+ * userinfo rule to find. Observed on real hardware, written in full to a journal that `adm` can
+ * read.
+ *
+ * So for LOGS the path and query go too, and what is left is what a person diagnosing actually
+ * needs: the scheme, the host and the port. Which stream it was is answered by the source's
+ * name, which the panel shows. ffmpeg is still handed the real URL, as an argument, never
+ * through a shell.
+ */
+export function redactUrlForLog(s: string): string {
+  const base = redactCreds(s);
+  return base.replace(/^(\w+:\/\/[^/\s]+)\/\S*/, '$1/…');
+}
+
+/**
  * Decide whether a failure is worth retrying without hardware decoding.
  *
  * A Pi whose kernel has no V4L2 M2M decoder fails immediately and consistently, so a fast failure
@@ -584,7 +604,7 @@ export class VideoPlayer {
     });
     this.startedAt = Date.now();
     this.log(
-      `camera: opening ${redactCreds(this.url)}${plan.kind === 'software' ? '' : ' (hardware decoding)'}`,
+      `camera: opening ${redactUrlForLog(this.url)}${plan.kind === 'software' ? '' : ' (hardware decoding)'}`,
     );
 
     let proc: ChildProcess;
@@ -610,7 +630,7 @@ export class VideoPlayer {
     let tail = '';
     proc.stderr?.on('data', (b: Buffer) => {
       const before = tail.length + String(b).length;
-      tail = (tail + redactCreds(String(b))).slice(-800);
+      tail = (tail + redactUrlForLog(redactCreds(String(b)))).slice(-800);
       this.lastError = cameraFailureText(tail, before > 800);
     });
 

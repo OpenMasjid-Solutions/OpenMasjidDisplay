@@ -20,16 +20,10 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { wsUrl } from '../base';
 import { Spinner } from '../ui';
 
 type Phase = 'opening' | 'waiting' | 'live' | 'ended';
-
-/** Where the panel's own WebSockets live, built from the page's URL so it works on the LAN and
- *  behind the platform's tunnel (where this app is served under /<appId>/) with nothing set. */
-function wsBase(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}`;
-}
 
 export function PiTerminal({ deviceId, onFallback }: { deviceId: string; onFallback: () => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -92,7 +86,8 @@ export function PiTerminal({ deviceId, onFallback }: { deviceId: string; onFallb
       if (disposed) return;
       setPhase('waiting');
 
-      ws = new WebSocket(`${wsBase()}/api/pi/shell/${encodeURIComponent(session.id)}`);
+      // This page's host, under the prefix the platform's tunnel serves the app at (base.ts).
+      ws = new WebSocket(wsUrl(`/api/pi/shell/${encodeURIComponent(session.id)}`));
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
         // Connected to the SERVER. The screen may not have dialled in yet, so this is not "live".

@@ -13,7 +13,7 @@
  * day to avoid screen burn-in. No sacred/Arabic text appears in decorative chrome.
  */
 import type { Timetable, HadithItem, SalahHadith, TimeFormat, Lang } from '../types';
-import { getPalette, type Palette } from './theme';
+import { getPalette, simplePage, type Palette } from './theme';
 import { DEFAULT_SALAH_HADITH } from './defaultHadith';
 import { resolveSchedule } from '../iqamahSchedule';
 import {
@@ -44,7 +44,16 @@ export function dimsFor(orientation: string, quality: string): Dims {
 // Match the OpenMasjidOS UI, which uses a clean system sans everywhere (no serif).
 // Noto Sans is the bundled equivalent; weight carries the "display" emphasis.
 const FONT_DISPLAY = 'Noto Sans, Noto Sans Arabic, DejaVu Sans, sans-serif';
-const FONT_SANS = 'Noto Sans, Noto Sans Arabic, DejaVu Sans, sans-serif';
+/**
+ * Exported for the browser screen.
+ *
+ * There, the scrolling ticker is a DOM node rather than SVG text — CSS moves it, where ffmpeg
+ * moves it on the video path — so it does not inherit the family the renderer puts on every
+ * other string. It was inheriting the page default, which on a device without the masjid's
+ * fonts meant the ticker was set in something other than the rest of the screen. Shared rather
+ * than copied into the web app, because two copies of a font stack drift.
+ */
+export const FONT_SANS = 'Noto Sans, Noto Sans Arabic, DejaVu Sans, sans-serif';
 // Arabic-first stack: name the Arabic faces FIRST so resvg shapes Arabic with them
 // directly (it doesn't always fall back from a Latin-only face). Naskh is the
 // traditional hand; Sans Arabic is the modern fallback. Used for Arabic hadith text.
@@ -168,6 +177,63 @@ function relLuminance(hex: string): number {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 }
 
+/**
+ * WCAG relative luminance — the sRGB one, with the gamma curve.
+ *
+ * `relLuminance` above is a different thing and both are wanted: that one is a cheap
+ * perceived-brightness number used to answer "is this colour light or dark", this one is the
+ * quantity the contrast ratio is defined in terms of. Using the cheap one for a ratio gives
+ * numbers that look right and are not the standard's.
+ */
+function wcagLum(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return 1;
+  const n = parseInt(m[1], 16);
+  const ch = (v: number) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * ch((n >> 16) & 255) + 0.7152 * ch((n >> 8) & 255) + 0.0722 * ch(n & 255);
+}
+
+/** WCAG contrast ratio between two opaque colours: 1 (identical) to 21 (black on white). */
+export function contrastRatio(a: string, b: string): number {
+  const la = wcagLum(a);
+  const lb = wcagLum(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/**
+ * `fg` nudged toward black or white until it clears AA against `bg`, and left alone if it
+ * already does.
+ *
+ * The Simple design puts the ACCENT on text — the Iqamah times, the Jumu'ah times, the
+ * "next prayer in" line — and the accent is a colour an admin picks. Several of the ready-made
+ * ones are pale by design (Graphite's slate, Sunset's yellow, the golds), and a pale accent on
+ * this design's flat page is the exact pairing that fails: Sunset's #facc15 Jumu'ah time on its
+ * own pale band is 1.8:1, which on a wall read from the back of a hall is not a colour choice,
+ * it is an unreadable time. Modern never had this because its accent text sits on dark glass
+ * over a scene, never on the page.
+ *
+ * So the hue is kept and the lightness gives way. AA (4.5) rather than the large-text 3.0 that
+ * these sizes would technically allow: this is a sign read from across a room, and CLAUDE.md
+ * puts WCAG AA among the things this app holds to.
+ */
+function readableOn(fg: string, bg: string, min = 4.5): string {
+  if (!/^#?[0-9a-f]{6}$/i.test(fg.trim()) || !/^#?[0-9a-f]{6}$/i.test(bg.trim())) return fg;
+  if (contrastRatio(fg, bg) >= min) return fg;
+  // Toward whichever end the background is NOT, so a pale accent darkens on a light page and a
+  // deep one lightens on a dark page. Stepped rather than solved because the ratio is not
+  // monotone in a linear mix for every pair — stepping and stopping at the first pass is.
+  const target = wcagLum(bg) > 0.18 ? '#000000' : '#ffffff';
+  let out = fg;
+  for (let t = 0.1; t <= 1.0001; t += 0.1) {
+    out = mixHex(fg, target, t);
+    if (contrastRatio(out, bg) >= min) return out;
+  }
+  return out;
+}
+
 /** Derive the dim/faint text shades from a chosen main text colour. We blend toward
  *  a neutral grey to make them *solid* (de-emphasised but readable), rather than
  *  semi-transparent — a translucent dim text lets a busy photo show through and
@@ -201,19 +267,31 @@ interface ClockText {
   period: string;
 }
 
+/**
+ * `hours` arrives as `hour + minute/60 + second/3600`, which is a float that has already lost
+ * the exactness of the integers it was built from: multiplying it back up lands a hair BELOW
+ * the whole number about one second in twenty-five, and flooring that shows the previous second.
+ * On a wall clock with the seconds displayed, that is a digit that visibly repeats and then
+ * skips. EPS is smaller than any real sub-second this is ever called with and larger than the
+ * round-trip error.
+ */
+const CLOCK_EPS = 1e-6;
+
 function fmtClock(hours: number, timeFormat: string, withSeconds = false): ClockText {
   let h: number, m: number, s = 0;
   if (withSeconds) {
     // Second precision (floor) — a live wall clock shouldn't round the minute up.
-    let total = Math.floor(hours * 3600);
+    let total = Math.floor(hours * 3600 + CLOCK_EPS);
     total = ((total % 86400) + 86400) % 86400;
     h = Math.floor(total / 3600);
     m = Math.floor((total % 3600) / 60);
     s = total % 60;
   } else {
     // Minute precision — FLOOR, never round: a wall clock must not show the next
-    // minute early (rounding made 10:53:40 read as 10:54, i.e. up to a minute fast).
-    let total = Math.floor(hours * 60);
+    // minute early (rounding made 10:53:40 read as 10:54, i.e. up to a minute fast). The same
+    // round-trip epsilon as above: without it the clock sits on the previous minute for a
+    // fraction of a second at the turn.
+    let total = Math.floor(hours * 60 + CLOCK_EPS);
     total = ((total % 1440) + 1440) % 1440;
     h = Math.floor(total / 60);
     m = total % 60;
@@ -332,7 +410,7 @@ export function activeTicker(tt: Timetable, now: Date): { text: string; prohibit
   if (activeOverlay(tt, m, nowHours)) return { text: '', prohibited: false };
   // Ticker-mode prohibited window → a red message that overrides any normal ticker,
   // for the whole window (it clears itself when prayer is allowed again).
-  if (tt.prohibitedNotice?.ticker && prohibitedWindow(tt, m, nowHours)) {
+  if (prohibitedOnTicker(tt) && prohibitedWindow(tt, m, nowHours)) {
     return { text: prohibitedMessage(tt, m), prohibited: true };
   }
   return { text: activeTickerText(tt, m.parts), prohibited: false };
@@ -448,7 +526,22 @@ interface TextOpts {
   blink?: boolean;
 }
 
+/**
+ * Letter-spacing is dropped for Arabic script, wherever it is asked for.
+ *
+ * Arabic is cursive: the join between letters is part of the writing, not decoration between
+ * glyphs. Spacing it apart is the typographic equivalent of s p e l l i n g a word out, and on a
+ * wall it reads as broken rendering rather than as a style.
+ *
+ * Guarded HERE, in the one helper every string goes through, rather than at each call site. The
+ * call sites ask for letter-spacing because it suits the Latin label they were written for, and
+ * the same label is Arabic in two of the three languages this app ships — so every site would
+ * have to remember, and the Modern table header is the one that did not.
+ */
+const RTL_SCRIPT = /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/;
+
 function text(x: number, baseline: number, content: string, o: TextOpts): string {
+  if (o.letter && RTL_SCRIPT.test(content)) o = { ...o, letter: 0 };
   const attrs = [
     `x="${x.toFixed(1)}"`,
     `y="${baseline.toFixed(1)}"`,
@@ -551,10 +644,75 @@ function ordinalEn(n: number): string {
 }
 
 export const PRAYER_LABELS: Record<string, Record<string, string>> = {
-  en: { fajr: 'Fajr', sunrise: 'Sunrise', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha', jumuah: "Jumu'ah", iqamah: 'Iqāmah', athan: 'Adhan', next: 'Next prayer', prayer: 'Prayer' },
-  ar: { fajr: 'الفجر', sunrise: 'الشروق', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
-  ur: { fajr: 'فجر', sunrise: 'طلوع', dhuhr: 'ظہر', asr: 'عصر', maghrib: 'مغرب', isha: 'عشاء', jumuah: 'جمعہ', iqamah: 'اقامہ', athan: 'اذان', next: 'اگلی نماز', prayer: 'نماز' },
+  en: { fajr: 'Fajr', sunrise: 'Sunrise', sunset: 'Sunset', ishraq: 'Ishrāq', dhuhr: 'Dhuhr', asr: 'Asr', maghrib: 'Maghrib', isha: 'Isha', jumuah: "Jumu'ah", iqamah: 'Iqāmah', athan: 'Adhan', next: 'Next prayer', prayer: 'Prayer' },
+  // `sunset` was missing from all three until the Simple column started setting it at 34px
+  // directly under an Arabic date — the English word had always been there, just too small to
+  // notice.
+  ar: { fajr: 'الفجر', sunrise: 'الشروق', sunset: 'الغروب', ishraq: 'الإشراق', dhuhr: 'الظهر', asr: 'العصر', maghrib: 'المغرب', isha: 'العشاء', jumuah: 'الجمعة', iqamah: 'الإقامة', athan: 'الأذان', next: 'الصلاة القادمة', prayer: 'الصلاة' },
+  ur: { fajr: 'فجر', sunrise: 'طلوع', sunset: 'غروب', ishraq: 'اشراق', dhuhr: 'ظہر', asr: 'عصر', maghrib: 'مغرب', isha: 'عشاء', jumuah: 'جمعہ', iqamah: 'اقامہ', athan: 'اذان', next: 'اگلی نماز', prayer: 'نماز' },
 };
+
+/**
+ * The countdown's own words: the unit beside each number, and the line naming what is counted to.
+ *
+ * Kept apart from PRAYER_LABELS because these are not labels an admin may override — they are
+ * grammar. A masjid can rename "Fajr"; it cannot usefully rename the plural of "minute".
+ *
+ * ## Arabic counts its nouns, and this is the part to be careful with
+ *
+ * Arabic agreement depends on the number: 3–10 take the plural (٣ ساعات), 11 and above take the
+ * singular (١٥ ساعة), and 1 and 2 are normally carried by the noun's own form (ساعة / ساعتان)
+ * rather than by a digit at all.
+ *
+ * This display always shows the digit, because that is the point of a countdown — the number is
+ * the big glyph and the word is the small one beside it. So the DUAL is deliberately not used:
+ * "2 ساعتان" would say "two" twice. The rule here is the one that is correct and uncontroversial
+ * when a digit is present — plural for 3–10, singular otherwise — and a countdown only ever
+ * shows 0–23 hours and 0–59 minutes, so nothing falls outside it.
+ *
+ * Urdu does not inflect منٹ or سیکنڈ for number, and its "until" is a POSTPOSITION: تک follows
+ * the thing, where Arabic's حتى precedes it. Hence `until` is a function rather than a prefix
+ * string — word order is part of the translation, not something a caller can assume.
+ *
+ * **Worth a native speaker's eye before this reaches a wall**, which is why it is written out
+ * here rather than buried: docs/audit/ACTION_REQUIRED.md §9.8.
+ */
+interface CountdownWords {
+  hour: (n: number) => string;
+  minute: (n: number) => string;
+  second: (n: number) => string;
+  /** The whole "until X" line, because the word's position differs by language. */
+  until: (what: string) => string;
+}
+
+/** 3–10 take the plural; 1, 2 and 11+ take the singular. See the note above. */
+const arPlural = (n: number, one: string, few: string): string => (n >= 3 && n <= 10 ? few : one);
+
+const COUNTDOWN_WORDS: Record<string, CountdownWords> = {
+  en: {
+    hour: (n) => (n === 1 ? 'HOUR' : 'HOURS'),
+    minute: (n) => (n === 1 ? 'MINUTE' : 'MINUTES'),
+    second: (n) => (n === 1 ? 'SECOND' : 'SECONDS'),
+    until: (what) => `UNTIL ${what}`,
+  },
+  ar: {
+    hour: (n) => arPlural(n, 'ساعة', 'ساعات'),
+    minute: (n) => arPlural(n, 'دقيقة', 'دقائق'),
+    second: (n) => arPlural(n, 'ثانية', 'ثوانٍ'),
+    until: (what) => `حتى ${what}`,
+  },
+  ur: {
+    hour: (n) => (n === 1 ? 'گھنٹہ' : 'گھنٹے'),
+    minute: () => 'منٹ',
+    second: () => 'سیکنڈ',
+    // تک is a postposition: it follows what it refers to.
+    until: (what) => `${what} تک`,
+  },
+};
+
+function countdownWords(lang: string): CountdownWords {
+  return COUNTDOWN_WORDS[lang] ?? COUNTDOWN_WORDS.en;
+}
 
 export function labels(lang: string, overrides?: Record<string, string>): Record<string, string> {
   const base = PRAYER_LABELS[lang] ?? PRAYER_LABELS.en;
@@ -563,6 +721,27 @@ export function labels(lang: string, overrides?: Record<string, string>): Record
   const merged: Record<string, string> = { ...base };
   for (const [k, v] of Object.entries(overrides)) if (typeof v === 'string' && v.trim()) merged[k] = v;
   return merged;
+}
+
+/**
+ * One jamā'ah of THIS day — the moment a congregation actually lines up.
+ *
+ * Not the same list as `rows`, and the difference is the whole point. `rows` is the daily
+ * TABLE: five prayers, every day, Dhuhr included on a Friday (a masjid still wants to see the
+ * Dhuhr time on the wall). But on Friday there is no Dhuhr *jamā'ah* — Jumu'ah stands in for
+ * it — and there may be several Jumu'ah jamā'āt. Anything that acts on "a congregation is
+ * about to pray / is praying" must key on this, never on `rows`.
+ */
+export interface Jamaah {
+  /** a prayer key, or `'jumuah'` */
+  key: string;
+  /** when the congregation lines up, decimal hours */
+  at: number;
+  /** the call that precedes it — a pre-jamā'ah countdown only opens once this has passed.
+   *  For Jumu'ah this is the Dhuhr adhan, which is what is called on a Friday. */
+  adhan: number | null;
+  /** 1-based, set only when the day holds more than one of this key (several Jumu'ah) */
+  ordinal?: number;
 }
 
 interface Model {
@@ -580,6 +759,9 @@ interface Model {
   /** configured Jumu'ah time(s), decimal hours, sorted — shown as a separate strip
    *  on every day (NOT part of the daily prayer rows). */
   jumuah: number[];
+  /** Today's jamā'āt in order — see `Jamaah`. On Friday, Dhuhr is replaced by the Jumu'ah
+   *  times. This is what the pre-jamā'ah countdown and the during-salah window key on. */
+  jamaah: Jamaah[];
   /** on Friday, the upcoming Jumu'ah the ring counts down to; null on other days or once
    *  every Jumu'ah time has passed. `adhan` marks the FIRST phase — counting to the Dhuhr
    *  adhan (labeled "Jumu'ah", never "Dhuhr") — before the Jumu'ah jamā'ah countdowns
@@ -680,6 +862,12 @@ export function buildModel(tt: Timetable, now: Date): Model {
   const rows: Row[] = [];
   rows.push({ key: 'fajr', label: 'fajr', adhan: adj('fajr'), iqamah: iq('fajr', adj('fajr')) });
   if (tt.showSunrise) rows.push({ key: 'sunrise', label: 'sunrise', adhan: times.sunrise, iqamah: null, minor: true });
+  // Ishrāq is sunrise plus the masjid's own number of minutes. Like Sunrise it has no Adhan and
+  // no jamā'ah, so it is a display row only and stays out of `order` — nothing counts down to it
+  // and it never becomes the "next" prayer.
+  if (tt.ishraqMinutes > 0) {
+    rows.push({ key: 'ishraq', label: 'ishraq', adhan: times.sunrise + tt.ishraqMinutes / 60, iqamah: null, minor: true });
+  }
   rows.push({ key: 'dhuhr', label: 'dhuhr', adhan: adj('dhuhr'), iqamah: iq('dhuhr', adj('dhuhr')) });
   rows.push({ key: 'asr', label: 'asr', adhan: adj('asr'), iqamah: iq('asr', adj('asr')) });
   rows.push({ key: 'maghrib', label: 'maghrib', adhan: adj('maghrib'), iqamah: iq('maghrib', adj('maghrib')) });
@@ -705,6 +893,45 @@ export function buildModel(tt: Timetable, now: Date): Model {
 
   const dhuhrAdhan = adj('dhuhr');
   const asrAdhan = eff['asr'];
+
+  /**
+   * The jamā'āt of this day, which on a Friday are NOT the five rows.
+   *
+   * Derived here, once, because three different things acted on "a congregation is about to
+   * pray" and all of them read `rows` — so on a Friday all three were wrong in the same way:
+   * the full-screen pre-Iqāmah countdown announced DHUHR IQĀMAH while the ring beside it
+   * correctly said Jumu'ah, the salah blackout blacked the wall out for a Dhuhr jamā'ah that
+   * was not happening, and neither of them fired for the actual Jumu'ah — not the first one,
+   * and not the second. Measured on a real Friday before this existed: 12:57–13:07 the screen
+   * counted down to a Dhuhr Iqāmah, 13:08–13:22 it went black for it, and the two Jumu'ah
+   * jamā'āt at 13:15 and 14:00 got nothing at all.
+   *
+   * Dhuhr is dropped only when there is a Jumu'ah to stand in for it: a masjid with no Jumu'ah
+   * configured still prays Dhuhr on a Friday, and must keep its countdown.
+   *
+   * Deliberately NOT bounded to the midday window the way the ring bounds `nextJumuah`. The
+   * ring makes an exclusive claim about the next event, so a mistyped 03:00 Jumu'ah there would
+   * hide Asr, Maghrib and Isha for the rest of the day; this list only opens a window a few
+   * minutes wide, so the same typo shows a brief overlay at the wrong time — visible, and
+   * obviously the configuration rather than the app.
+   */
+  const jamaah: Jamaah[] = [];
+  for (const r of rows) {
+    if (r.adhan == null || r.iqamah == null) continue; // Sunrise has no jamā'ah
+    if (isFriday && r.key === 'dhuhr' && jumuah.length) continue;
+    jamaah.push({ key: r.key, at: r.iqamah, adhan: r.adhan });
+  }
+  if (isFriday && jumuah.length) {
+    for (let i = 0; i < jumuah.length; i++) {
+      jamaah.push({
+        key: 'jumuah',
+        at: jumuah[i],
+        adhan: dhuhrAdhan,
+        ...(jumuah.length > 1 ? { ordinal: i + 1 } : {}),
+      });
+    }
+  }
+  jamaah.sort((a, b) => a.at - b.at);
 
   // On Friday, Jumu'ah stands in for the Dhuhr jamā'ah, so the next-prayer ring counts down —
   // in order — to the Dhuhr ADHAN (labeled "Jumu'ah"), then the 1st Jumu'ah jamā'ah, then the
@@ -757,7 +984,7 @@ export function buildModel(tt: Timetable, now: Date): Model {
     // When the ring is counting to a Jumu'ah, no daily row is the "next" one.
     if (!nextJumuah && r.key === nextKey) r.next = true;
   }
-  return { parts, times, rows, activeKey, nextKey, nextHours, countdownToIqamah, isFriday, jumuah, nextJumuah };
+  return { parts, times, rows, activeKey, nextKey, nextHours, countdownToIqamah, isFriday, jumuah, jamaah, nextJumuah };
 }
 
 /** One prayer line for the public web widget. */
@@ -1111,6 +1338,37 @@ function sunburst(cx: number, cy: number, r: number): string {
   return out.join('');
 }
 
+/**
+ * How much of the sun's or moon's hard body reaches the eye.
+ *
+ * ## Why this is not 1
+ *
+ * The body travels an arc across the scene by time of day, and it is drawn BEHIND the glass
+ * cards. The comment that used to sit here said it rides "in the open sky between the cards" —
+ * it does not, and in the Modern design there is barely any open sky: the arc's midday height
+ * puts it inside the header band, and at roughly t=0.6 its x lands exactly where the clock's
+ * digits begin. At full strength the disc then sits behind the most-read element on the screen
+ * and takes the contrast out of it. Measured on a television: on a 24-hour dark-theme screen at
+ * 13:58 the disc covered the "1" outright.
+ *
+ * Fixing it by moving the arc was the obvious idea and the wrong one. There is nowhere to move
+ * it to — the body crosses SOME card for nearly the whole day, so an arc that avoids the clock
+ * just lands on the table or the ring instead. Haloing the text underneath has the same problem
+ * in reverse: it would mean haloing most of the screen.
+ *
+ * So the body is dimmed instead, which is also what it should have looked like all along. A
+ * bright object behind frosted glass reads as a diffuse glow, not as a hard disc with a crisp
+ * edge. Opacity stands in for that diffusion because a real blur filter is the single most
+ * expensive thing this renderer can do (see docs/RENDER_PERFORMANCE.md — gradients alone are 85%
+ * of rasterisation).
+ *
+ * 0.4 was chosen by rendering 1.0 / 0.4 / 0.25 / none at the worst-case minute and looking: at
+ * 0.4 the sun still reads as the sun and the digits read cleanly through it; by 0.25 it is a
+ * faint smudge and the sky loses its anchor. The corona, the ray shimmer and #cglow are left at
+ * full strength — they are already soft and low-contrast, and they are what carries the warmth.
+ */
+const BODY_THROUGH_GLASS = 0.4;
+
 /** The sun (day) or moon (night). Soft edges come from gradient fades, not a blur
  *  filter. The sun is a gentle warm orb with a faint corona + the lightest ray
  *  shimmer; the glow it casts onto the glass comes from #cglow + #litsheen. */
@@ -1122,16 +1380,19 @@ function celestialBody(cel: Celestial, W: number, H: number): string {
     return (
       `<circle cx="${cx}" cy="${cy}" r="${(r * 3.0).toFixed(1)}" fill="url(#suncorona)"/>` +
       sunburst(cel.x, cel.y, r) +
-      `<circle cx="${cx}" cy="${cy}" r="${(r * 1.0).toFixed(1)}" fill="url(#sun)"/>`
+      `<circle cx="${cx}" cy="${cy}" r="${(r * 1.0).toFixed(1)}" fill="url(#sun)" opacity="${BODY_THROUGH_GLASS}"/>`
     );
   }
+  // The moon's disc and its craters dim together, or the craters would float free of it.
   return (
     `<circle cx="${cx}" cy="${cy}" r="${(r * 2.6).toFixed(1)}" fill="url(#moonglow)"/>` +
+    `<g opacity="${BODY_THROUGH_GLASS}">` +
     `<circle cx="${cx}" cy="${cy}" r="${r.toFixed(1)}" fill="url(#moon)"/>` +
     // a couple of faint craters for a less "fake" moon
     `<circle cx="${(cel.x - r * 0.3).toFixed(1)}" cy="${(cel.y - r * 0.25).toFixed(1)}" r="${(r * 0.16).toFixed(1)}" fill="rgba(120,135,165,0.22)"/>` +
     `<circle cx="${(cel.x + r * 0.28).toFixed(1)}" cy="${(cel.y + r * 0.18).toFixed(1)}" r="${(r * 0.12).toFixed(1)}" fill="rgba(120,135,165,0.18)"/>` +
-    `<circle cx="${(cel.x + r * 0.05).toFixed(1)}" cy="${(cel.y + r * 0.4).toFixed(1)}" r="${(r * 0.09).toFixed(1)}" fill="rgba(120,135,165,0.16)"/>`
+    `<circle cx="${(cel.x + r * 0.05).toFixed(1)}" cy="${(cel.y + r * 0.4).toFixed(1)}" r="${(r * 0.09).toFixed(1)}" fill="rgba(120,135,165,0.16)"/>` +
+    `</g>`
   );
 }
 
@@ -1187,6 +1448,15 @@ interface Ctx {
   clock: ClockText;
   secStr: string;
   showSeconds: boolean;
+  /**
+   * The seconds are IN `clock.time` already, so nothing should draw `secStr` beside it.
+   *
+   * Both halves of this are load-bearing and they are set together in `build`: `clock` is
+   * formatted with seconds only when this is true, and every site that draws the small stacked
+   * seconds checks it. Setting one without the other either loses the seconds or prints them
+   * twice.
+   */
+  secondsInline: boolean;
   greg: string;
   hij: string;
   nextLabel: string;
@@ -1250,7 +1520,10 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
   out.push(glass(b.x, b.y, b.w, b.h, clamp(Math.min(b.w, b.h) * 0.12, 10, 30), { raised: true }));
   const pad = b.w * 0.07;
   const showDates = c.showDates && (!!c.greg || !!c.hij);
-  const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
+  // Stacked seconds are a separate little block beside the clock; inline ones are part of the
+  // clock's own string and must not be drawn again.
+  const stackedSec = c.showSeconds && !c.secondsInline;
+  const markStr = stackedSec ? c.secStr : c.clock.period || '';
 
   // Wide, short panels (the landscape top clock): time on the LEFT, the date block on
   // the RIGHT at a comfortable size — fills the space instead of leaving it empty.
@@ -1265,8 +1538,8 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
     const leftX = b.x + pad;
     out.push(text(leftX, tBase, c.clock.time, { size: ts, fill: 'url(#clockg)', family: FONT_DISPLAY, weight: 700, anchor: 'start', letter: -ts * 0.01, blink: true }));
     const markX = leftX + approxWidth(c.clock.time, ts) + ts * 0.1;
-    if (c.showSeconds) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
-    if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
+    if (stackedSec) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
+    if (c.clock.period) out.push(text(markX, tBase - (stackedSec ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: 'start' }));
     const rightX = b.x + b.w - pad;
     const dateMax = b.w - timeMax - pad * 2.5;
     // Split the long Gregorian line ("Wednesday, January 7, 2026") on its first comma
@@ -1304,8 +1577,8 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
   const timeX = align === 'end' ? edge - mW - gap : edge;
   const markX = align === 'end' ? edge : edge + timeW + gap;
   out.push(text(timeX, tBase, c.clock.time, { size: ts, fill: 'url(#clockg)', family: FONT_DISPLAY, weight: 700, anchor: align, letter: -ts * 0.01, blink: true }));
-  if (c.showSeconds) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
-  if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
+  if (stackedSec) out.push(text(markX, tBase - ts * 0.44, c.secStr, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
+  if (c.clock.period) out.push(text(markX, tBase - (stackedSec ? 0 : ts * 0.02), c.clock.period, { size: ss, fill: c.p.textDim, family: FONT_DISPLAY, weight: 700, anchor: align }));
   if (showDates) {
     let ds = clamp(b.h * 0.11, 12, 26);
     // Shrink to fit, exactly as the clock above already does.
@@ -1326,6 +1599,74 @@ function panelClock(b: Box, c: Ctx, align: 'start' | 'end' = 'end'): string {
     if (c.greg) out.push(text(edge, b.y + b.h * 0.68, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, anchor: align }));
     if (c.hij) out.push(text(edge, b.y + b.h * 0.86, c.hij, { size: ds * 0.98, fill: c.p.goldSoft, family: FONT_DISPLAY, anchor: align }));
   }
+  return out.join('');
+}
+
+/**
+ * How much room the countdown block needs for a given number size — the reserve, so a caller
+ * that has to centre a column can work its total height out before it draws anything.
+ *
+ * It is a function rather than a constant multiple because the unit word's size is CLAMPED, so
+ * a small countdown is proportionally taller than a big one.
+ */
+const countdownUnit = (size: number) => clamp(size * 0.32, 11, 30);
+const countdownH = (size: number) => size * 1.15 + countdownUnit(size) * 2;
+
+/**
+ * The countdown in words: the number(s) big, the unit word(s) small beside them, and a line
+ * under both naming what is being counted to ("12 MINUTES / UNTIL IQAMAH").
+ *
+ * Modern sets this under its ring; Simple sets it on its own, because Simple has no ring — so it
+ * lives here rather than inside `panelRing`, and the two designs cannot drift into saying the
+ * same thing two different ways. `topY` is the top of the block; the number's baseline sits one
+ * `size` below it, which is also where the gap above the block comes from.
+ */
+function countdownText(cx: number, topY: number, maxW: number, size: number, c: Ctx): string {
+  const out: string[] = [];
+  // Under a minute it counts seconds; under an hour, minutes; otherwise "1 HOUR" / "1 HOUR 15
+  // MINUTES" (never "1 HOUR 0 MINUTES"). Proper singular/plural throughout.
+  const sec = Math.max(0, c.remainingSec);
+  const h = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), s = sec % 60;
+  // The unit words come from the language, not from English + "S" — see COUNTDOWN_WORDS. Arabic
+  // and Urdu do not pluralise by suffix, and Urdu's "until" follows what it refers to.
+  const W = countdownWords(c.lang);
+  const seg = (n: number, w: (n: number) => string) => ({ n: String(n), w: w(n) });
+  const segs =
+    sec < 60 ? [seg(s, W.second)] : h === 0 ? [seg(mm, W.minute)] : mm === 0 ? [seg(h, W.hour)] : [seg(h, W.hour), seg(mm, W.minute)];
+  let numSize = size;
+  const usz = () => countdownUnit(numSize);
+  // The unit word is drawn with `letter: 1`; counting its width without that tracking under-
+  // reserves by a pixel per letter, which is what put "44" on top of "HOURS" in the mini ring.
+  const unitW = (w: string) => approxWidth(w, usz()) + Math.max(0, w.length - 1);
+  const width = () => segs.reduce((a, p, i) => a + approxWidth(p.n, numSize) + numSize * 0.12 + unitW(p.w) + (i < segs.length - 1 ? numSize * 0.3 : 0), 0);
+  // Converge rather than divide once: the unit word's size is clamped, so shrinking the number
+  // does not shrink the line in proportion — and the group is CENTRED, so whatever is left over
+  // escapes BOTH edges at once.
+  for (let i = 0; i < 4; i++) {
+    const over = width() / maxW;
+    if (over <= 1) break;
+    numSize /= over * 1.002;
+  }
+  const us = usz();
+  const numBase = topY + numSize;
+  let x = cx - width() / 2;
+  for (let i = 0; i < segs.length; i++) {
+    out.push(text(x, numBase, segs[i].n, { size: numSize, fill: c.p.text, family: FONT_DISPLAY, weight: 800, anchor: 'start' }));
+    x += approxWidth(segs[i].n, numSize) + numSize * 0.12;
+    out.push(text(x, numBase, segs[i].w, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
+    x += approxWidth(segs[i].w, us) + Math.max(0, segs[i].w.length - 1) + (i < segs.length - 1 ? numSize * 0.3 : 0);
+  }
+  // In a prohibited window the countdown runs to the Dhuhr adhan, so name it plainly.
+  //
+  // `toUpperCase` only for English: it is a no-op on Arabic and Urdu, and on a Latin-script label
+  // a masjid typed itself it would shout back something they wrote in sentence case.
+  const target = c.prohibited ? `${c.nextLabel} ${c.eventWord}` : c.eventWord;
+  const untilWord = W.until(c.lang === 'en' ? target.toUpperCase() : target);
+  const track = Math.max(0, untilWord.length - 1) * 3;
+  // Same subtract-the-tracking-first rule as above: it is pixels per gap, not a share of the type.
+  let uSize = us;
+  if (approxWidth(untilWord, uSize) + track > maxW) uSize = Math.max(8, (maxW - track) / Math.max(0.001, approxWidth(untilWord, 1)));
+  out.push(text(cx, numBase + us * 1.6, untilWord, { size: uSize, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'middle', letter: 3 }));
   return out.join('');
 }
 
@@ -1361,41 +1702,31 @@ function panelRing(b: Box, c: Ctx): string {
   const arSize = clamp(R * 0.48, 18, 60);
   if (c.nextArabic) out.push(text(cx, ringCy + R * 0.04, c.nextArabic, { size: arSize, fill: c.p.gold, family: FONT_ARABIC, weight: 700, anchor: 'middle' }));
   const lblSize = clamp(R * 0.22, 12, 32);
+  /**
+   * The gloss under the Arabic name, unless it WOULD BE the Arabic name.
+   *
+   * The ring draws the Arabic name in gold with the English beneath it. In a language whose own
+   * prayer names are the Arabic ones, both lines are the same string, so an Arabic screen showed
+   * “العصر” over “العصر” — and the second one drawn through the LATIN display face with
+   * letter-spacing, which is not how Arabic should be set.
+   *
+   * Compared as strings rather than keyed on `c.lang === 'ar'`, which is the idiom used for the
+   * same problem in the table and the Jumu'ah band. The labels are admin-editable, so equality
+   * also catches a masjid that has typed the Arabic name into the label field by hand, which a
+   * language check cannot see.
+   */
+  const gloss = c.nextArabic && c.nextLabel.trim() === c.nextArabic.trim() ? '' : c.nextLabel;
   if (c.nextOrdinal) {
     // Two lines: drop the ordinal CLEAR of the Arabic gloss's descenders (Amiri's jīm reaches
     // ~0.5em below the baseline), then "JUMU'AH" beneath it.
     const ordY = ringCy + R * 0.04 + arSize * 0.5 + lblSize * 0.82;
     out.push(text(cx, ordY, c.nextOrdinal.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
-    out.push(text(cx, ordY + lblSize * 1.05, c.nextLabel.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
-  } else {
-    out.push(text(cx, ringCy + R * (c.nextArabic ? 0.4 : 0.08), c.nextLabel.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
+    if (gloss) out.push(text(cx, ordY + lblSize * 1.05, gloss.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
+  } else if (gloss) {
+    out.push(text(cx, ringCy + R * (c.nextArabic ? 0.4 : 0.08), gloss.toUpperCase(), { size: lblSize, fill: c.p.textDim, family: FONT_DISPLAY, weight: 600, anchor: 'middle', letter: 3 }));
   }
-  // Below the ring: the countdown as big number(s) + small unit word(s). Under a minute
-  // it counts seconds; under an hour, minutes; otherwise "1 HOUR" / "1 HOUR 15 MINUTES"
-  // (never "1 HOUR 0 MINUTES"). Proper singular/plural throughout.
-  if (c.showCountdown) {
-    const sec = Math.max(0, c.remainingSec);
-    const h = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), s = sec % 60;
-    const seg = (n: number, w: string) => ({ n: String(n), w: n === 1 ? w : w + 'S' });
-    const segs = sec < 60 ? [seg(s, 'SECOND')] : h === 0 ? [seg(mm, 'MINUTE')] : mm === 0 ? [seg(h, 'HOUR')] : [seg(h, 'HOUR'), seg(mm, 'MINUTE')];
-    let numSize = clamp(b.h * 0.14, 22, 84);
-    const usz = () => clamp(numSize * 0.32, 11, 30);
-    const width = () => segs.reduce((a, p, i) => a + approxWidth(p.n, numSize) + numSize * 0.12 + approxWidth(p.w, usz()) + (i < segs.length - 1 ? numSize * 0.3 : 0), 0);
-    if (width() > b.w * 0.9) numSize *= (b.w * 0.9) / width();
-    const us = usz();
-    const ringBottom = ringCy + R + sw;
-    const numBase = ringBottom + numSize; // baseline sits below the ring with a clear gap
-    let x = cx - width() / 2;
-    for (let i = 0; i < segs.length; i++) {
-      out.push(text(x, numBase, segs[i].n, { size: numSize, fill: c.p.text, family: FONT_DISPLAY, weight: 800, anchor: 'start' }));
-      x += approxWidth(segs[i].n, numSize) + numSize * 0.12;
-      out.push(text(x, numBase, segs[i].w, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'start', letter: 1 }));
-      x += approxWidth(segs[i].w, us) + (i < segs.length - 1 ? numSize * 0.3 : 0);
-    }
-    // In a prohibited window the countdown runs to the Dhuhr adhan, so name it plainly.
-    const untilWord = c.prohibited ? `UNTIL ${c.nextLabel} ${c.eventWord}`.toUpperCase() : `UNTIL ${c.eventWord}`;
-    out.push(text(cx, numBase + us * 1.6, untilWord, { size: us, fill: c.p.textDim, family: FONT_SANS, weight: 600, anchor: 'middle', letter: 3 }));
-  }
+  // Below the ring: the countdown in words — the same block the Simple column now draws.
+  if (c.showCountdown) out.push(countdownText(cx, ringCy + R + sw, b.w * 0.9, clamp(b.h * 0.14, 22, 84), c));
   return out.join('');
 }
 
@@ -1411,13 +1742,21 @@ function panelRing(b: Box, c: Ctx): string {
  * ~880px wide — horizontal collision is nowhere near. But the size is a fraction of `rowH`
  * (`nameSize` is `rowH * 0.38`), and the text is centred on a baseline at `rowH * 0.66`, so
  * pushing the ratio far enough sends ascenders into the row above before anything overlaps
- * sideways. 1.1 is a deliberate nudge that leaves both alone: verified against a rendered
- * 1080p frame, not just the arithmetic.
+ * sideways.
  *
- * If this is ever raised much further, check the RENDERED frame at 720p portrait too — that
- * is the tightest `rowH`, so it is where the band runs out first.
+ * It was 1.1 and is now 1.25 — a masjid asked for larger times on both designs, and this is
+ * the "tiny bit" half of that (`simpleTable` solves its own, much larger, size from the room
+ * it has). The arithmetic says the band does not run out until about 2.1, so 1.25 is nowhere
+ * near it; what stops this going further is that the Modern table is a composed panel with a
+ * fixed look, not that it would collide.
+ *
+ * `tableFit.test.ts` now walks the RENDERED frames — every quality, both orientations, both
+ * designs, beside a picture and not, in three languages — and fails on an actual overlap, so
+ * this number no longer rests on having looked at one 1080p frame. Raise it and that test is
+ * what tells you whether it still fits; the tightest `rowH` is a 720p portrait column beside
+ * a slideshow image, which is a shape that did not exist when 1.1 was chosen.
  */
-const TIME_SCALE = 1.1;
+const TIME_SCALE = 1.25;
 
 /** The prayer table: PRAYER · ADHAN · IQAMAH, bilingual names (English + Arabic gloss)
  *  on the leading side, active prayer highlighted with a primary accent bar. */
@@ -1668,30 +2007,118 @@ function layoutReference(a: Box, m: Model, c: Ctx): string {
 }
 
 /**
+ * The Simple design in a TALL, NARROW box — brand block on top, the banded table beneath.
+ *
+ * Simple used to have no such arrangement, and the consequence was not a rough portrait: it was
+ * NO Simple layout at all. `layoutSimple` returned `portraitStack` — the Modern widget stack —
+ * so a masjid that chose Simple and hung the screen portrait got Modern, element for element,
+ * differing only in palette. The setting silently did nothing.
+ *
+ * It is the same shape the announcement composite needs for its timetable column, so it is one
+ * function rather than two: a narrow box is a narrow box, whether it is a portrait screen or the
+ * third of a landscape one left over beside a poster.
+ */
+function simpleStack(a: Box, m: Model, c: Ctx): string {
+  const out: string[] = [];
+  const gap = Math.min(a.w, a.h) * 0.03;
+  // The brand block sizes its own contents off the box WIDTH and centres them vertically, so it
+  // is given a slice proportional to the height rather than a fixed one — on a 1080x1920 screen
+  // that is ~650px for logo, name, clock and date, which is the half of this design that is
+  // meant to be read from the back of a hall.
+  // Bounded below so the SHORT form of this box — the column beside a slideshow image — keeps
+  // the share it had rather than eating its own table. (It was 0.42 while the block carried a
+  // countdown WHEEL; the wheel is gone and the countdown is words now, which is smaller than the
+  // wheel was and taller than nothing — 0.40 is what the words need without scaling the clock
+  // down to make room for them.)
+  const headH = clamp(a.h * 0.4, 240, 860);
+  out.push(brandColumn({ x: a.x, y: a.y, w: a.w, h: headH }, m, c));
+  const tableY = a.y + headH + gap;
+  out.push(simpleTable({ x: a.x, y: tableY, w: a.w, h: a.y + a.h - tableY }, m, c));
+  return out.join('');
+}
+
+/**
  * The "simple" layout, modelled directly on a real installed wall display: a plain
  * flat page (no themed scene, no glass, no sun/moon), a brand column on the left —
- * logo/name, a small sunrise/sunset line, the big clock, one date line, and a plain
- * "next prayer in…" sentence instead of a countdown ring — and one wide banded prayer
+ * logo/name, the big clock, the dates and a small sunrise/sunset row, and no countdown
+ * at all (the highlighted table row does that job) — and one wide banded prayer
  * table on the right, Jumu'ah as its own last row rather than a separate strip.
  * Nothing here is inherited from the classic look; it is its own, simpler thing.
- * Portrait falls back to the reference layout's stack for now.
  */
 function layoutSimple(a: Box, m: Model, c: Ctx): string {
-  if (a.w < a.h) return portraitStack(a, m, c);
+  if (a.w < a.h) return simpleStack(a, m, c);
   const out: string[] = [];
   const gap = Math.min(a.w, a.h) * 0.03;
   const leftFrac = 0.3;
   const leftW = (a.w - gap) * leftFrac;
-  out.push(brandColumn({ x: a.x, y: a.y, w: leftW, h: a.h }, m, c));
   const rightX = a.x + leftW + gap;
-  out.push(simpleTable({ x: rightX, y: a.y, w: a.x + a.w - rightX, h: a.h }, m, c));
+  const table: Box = { x: rightX, y: a.y, w: a.x + a.w - rightX, h: a.h };
+  const { rowH } = simpleGeom(table, simpleLines(m, c).length);
+  out.push(brandColumn({ x: a.x, y: a.y, w: leftW, h: a.h }, m, c, table.y + table.h - rowH / 2));
+  out.push(simpleTable(table, m, c));
   return out.join('');
 }
 
-/** Left column for the "simple" layout: brand, a small sunrise/sunset line, the big
- *  clock, one combined date line, and a plain sentence for the next prayer — sitting
- *  directly on the flat page, no card behind any of it. */
-function brandColumn(b: Box, m: Model, c: Ctx): string {
+/**
+ * A slideshow image BESIDE the timetable, rather than instead of it.
+ *
+ * The history matters, because this is the second time round. v0.10.0 had a sidebar composite;
+ * v0.70.0 (an outside contributor's PR, deliberately, not by accident) replaced it with a
+ * full-bleed image and no timetable at all, on the reasoning that a poster "designed to be read
+ * on its own" was being squeezed next to a shrunk prayer table and neither half did well. That
+ * reasoning is sound about the OLD composite and wrong about the requirement: a prayer screen
+ * whose prayer times vanish for twenty seconds in every forty-five is not showing prayer times,
+ * and the times are the reason the screen is on the wall. So the composite comes back, built to
+ * answer the objection rather than to ignore it:
+ *
+ *  - The image gets the LARGER share and a whole box of its own — about two thirds of a
+ *    landscape screen — not the leftover margin.
+ *  - CONTAIN-fit inside that box, never cover-fit. Cover-fit is right when the image owns the
+ *    whole screen (it was measured: a contain-fitted poster on a 16:9 wall shrank to a fraction
+ *    of it). It is wrong here for the opposite reason: the box is already close to square, so a
+ *    portrait poster fits it nearly whole, and cropping half of somebody's flyer to fill a box
+ *    that did not need filling is the worse trade. A 900x1400 poster keeps all 900x1400 of
+ *    itself.
+ *  - The timetable column is the layout's own narrow form — `portraitStack` for Modern,
+ *    `simpleStack` for Simple — so it is a real timetable, not a squeezed landscape one.
+ *
+ * Portrait puts the image on top and the timetable under it, for the same reason landscape puts
+ * it to the side: it is the axis with room to spare.
+ */
+function announcementView(a: Box, m: Model, c: Ctx, image: string, isSimple: boolean): string {
+  const out: string[] = [];
+  const gap = Math.min(a.w, a.h) * 0.025;
+  const stack = (b: Box) => (isSimple ? simpleStack(b, m, c) : portraitStack(b, m, c));
+  const radius = Math.min(a.w, a.h) * 0.02;
+
+  /** The image, whole, centred in its box, on a backdrop so the letterboxing reads as a frame
+   *  rather than as the page showing through a gap. */
+  const picture = (b: Box) =>
+    rect(b.x, b.y, b.w, b.h, radius, c.p.light ? 'rgba(20,32,28,0.06)' : 'rgba(0,0,0,0.28)') +
+    `<image href="${image}" x="${b.x.toFixed(1)}" y="${b.y.toFixed(1)}" width="${b.w.toFixed(1)}" height="${b.h.toFixed(1)}" preserveAspectRatio="xMidYMid meet"/>`;
+
+  if (a.w >= a.h) {
+    // Landscape: timetable column left, image right. The column is a THIRD, clamped so it is
+    // neither a sliver on an ultrawide nor most of the screen on a small one.
+    const colW = clamp(a.w * 0.33, 280, 620);
+    out.push(stack({ x: a.x, y: a.y, w: colW, h: a.h }));
+    const imgX = a.x + colW + gap;
+    out.push(picture({ x: imgX, y: a.y, w: a.x + a.w - imgX, h: a.h }));
+  } else {
+    // Portrait: image on top, timetable beneath it.
+    const imgH = a.h * 0.44;
+    out.push(picture({ x: a.x, y: a.y, w: a.w, h: imgH }));
+    const stackY = a.y + imgH + gap;
+    out.push(stack({ x: a.x, y: stackY, w: a.w, h: a.y + a.h - stackY }));
+  }
+  return out.join('');
+}
+
+/** Left column for the "simple" layout: brand, the big clock, the two dates, the countdown in
+ *  words and a small sunrise/sunset row — sitting directly on the flat page, no card behind any
+ *  of it. `sunMid` is the y of the table row the sun times should sit level with, when the table
+ *  is beside the column; without it they go under the countdown. */
+function brandColumn(b: Box, m: Model, c: Ctx, sunMid?: number): string {
   const out: string[] = [];
   const avail = b.w * 0.95;
   const cx = b.x + b.w / 2;
@@ -1699,61 +2126,157 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
   // Sizes only depend on the box width, so they can all be worked out up front —
   // which is what lets the whole block be centred vertically: the total height has
   // to be known before the first thing is drawn, not discovered as we go.
-  const ms = c.showLogo || c.showName ? clamp(b.w * 0.3, 46, 110) : 0;
+  let ms = c.showLogo || c.showName ? clamp(b.w * 0.3, 46, 110) : 0;
   let ns = 0;
   if (c.showName) {
     ns = clamp(b.w * 0.1, 18, 38);
     const nw = approxWidth(c.masjidName, ns);
     if (nw > avail) ns = Math.max(12, ns * (avail / nw));
   }
-  const headerH = c.showLogo && c.showName ? ms + ns * 1.5 : c.showLogo ? ms + b.h * 0.03 : c.showName ? ns * 1.5 : 0;
+  let headerH = c.showLogo && c.showName ? ms + ns * 1.5 : c.showLogo ? ms + b.h * 0.03 : c.showName ? ns * 1.5 : 0;
 
-  const ss = c.showSunrise ? clamp(b.w * 0.038, 9, 14) : 0;
-  const sunriseH = c.showSunrise ? ss * 2.1 : 0;
-
-  const markStr = c.showSeconds ? c.secStr : c.clock.period || '';
+  const stackedSec = c.showSeconds && !c.secondsInline;
+  const markStr = stackedSec ? c.secStr : c.clock.period || '';
   let ts = clamp(b.w * 0.4, 46, 160);
   const markSize = () => ts * 0.24; // smaller than before — AM/PM read as loud beside a thin clock face
   const clockW = () => approxWidth(c.clock.time, ts) + (markStr ? ts * 0.1 + approxWidth(markStr, markSize()) : 0);
   if (clockW() > avail) ts *= avail / clockW();
-  const clockH = ts * 1.12;
+  let clockH = ts * 1.12;
 
   const showDateLine = c.showDates && (!!c.hij || !!c.greg);
-  const showBar = showDateLine && !!c.hij && !!c.greg;
-  let ds = clamp(b.w * 0.09, 20, 34); // a bit larger than a quiet caption — it sits right under the clock
+  const twoDates = showDateLine && !!c.hij && !!c.greg;
+  /**
+   * The two dates are STACKED — Hijri above, Gregorian below — not set on one line with a bar
+   * between them.
+   *
+   * On one line they shared the column's width, and the fit was against their SUM: "Rabi' I 29,
+   * 1448 AH" and "Friday, September 11, 2026" together are about 770px of type at full size in a
+   * column with 480 to give, so the line was shrunk by 38% and the date came out at 21px under a
+   * 160px clock. It read as a caption for the clock rather than as the date. In Arabic and Urdu,
+   * where both forms are longer, it was smaller still.
+   *
+   * A line each means each is fitted against the WIDER of the two instead of their sum, and
+   * neither needs shrinking at all on a 1080p column. The cap goes up with it, because the reason
+   * it was 34 was that two dates at 34 did not fit — one does.
+   */
+  let ds = clamp(b.w * 0.105, 20, 46);
   if (showDateLine) {
-    // Its own, nearly-full-width budget — it is the only thing on this line, unlike `avail`
+    // Its own, nearly-full-width budget — it is the only thing on its line, unlike `avail`
     // (95% of the box) which is sized to leave the clock and sunrise/sunset row a margin too.
-    // The separator is a drawn bar (below), not a character; ds*0.7 stands in for its width
-    // (bar + the gap either side) at this ds, close enough for the fit check.
-    const dateAvail = b.w * 0.99;
-    const dw = approxWidth(c.hij, ds) + approxWidth(c.greg, ds) + (showBar ? ds * 0.7 : 0); // bar + both gaps, roughly
+    // Both lines take the SAME size, fitted to the wider: two dates at different sizes under one
+    // clock read as a mistake rather than as a hierarchy.
+    const dateAvail = b.w * 0.94;
+    const dw = Math.max(approxWidth(c.hij, ds), approxWidth(c.greg, ds));
     if (dw > dateAvail) ds *= dateAvail / dw;
   }
-  const dateH = showDateLine ? ds * 2 : 0;
+  let dateH = showDateLine ? ds * (twoDates ? 3.5 : 2) : 0;
 
-  const sec = Math.max(0, c.remainingSec);
-  const h = Math.floor(sec / 3600);
-  const mm = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  const amount = sec < 60 ? `${s} sec` : h > 0 ? `${h}hr ${mm}min` : `${mm}min`;
-  const word = c.eventWord.charAt(0) + c.eventWord.slice(1).toLowerCase();
-  const nextLine = c.prohibited ? `Prohibited time — ${word.toLowerCase()} in ${amount}` : `Next ${word} in ${amount}`;
-  // The one sentence on the page that changes every minute, so it earns the accent — red while
-  // prayer is prohibited, which is the same signal the other layout's ring gives.
-  const nextFill = c.prohibited ? TICKER_RED : c.p.primary;
-  let ls = clamp(b.w * 0.058, 15, 26);
-  if (c.showCountdown) {
-    const lw = approxWidth(nextLine, ls);
-    if (lw > avail) ls *= avail / lw;
+  /**
+   * Sunrise and sunset, SIDE BY SIDE at the foot of the column — small, and out of the way.
+   *
+   * They have been above the clock twice now, stacked and large the second time, and both times
+   * the head of this column read as cluttered: logo, name, two lines of sun times and then the
+   * clock, all fighting for the top. They are reference information, not what the hall reads
+   * from the back, so they go to the bottom of the block on one row, each centred in its own half
+   * of the column. Each half is fitted against the WIDER of the two strings, so they share a size
+   * — two sizes on one row would read as a mistake.
+   */
+  const sunriseStr = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}`;
+  const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
+  const SUN_TRACK = 0.6;
+  let ss = c.showSunrise ? clamp(b.w * 0.05, 11, 24) : 0;
+  if (c.showSunrise) {
+    // The tracking is a constant per gap and does not shrink with the type, so it comes out of
+    // the room BEFORE the division — scaling by `half / widest` would leave it behind.
+    const half = (avail / 2) * 0.92;
+    const track = Math.max(sunriseStr.length, sunsetStr.length) * SUN_TRACK;
+    const widest = Math.max(approxWidth(sunriseStr, ss), approxWidth(sunsetStr, ss));
+    if (widest + track > half) ss *= Math.max(0.2, (half - track) / widest);
   }
-  const nextH = c.showCountdown ? ls * 1.9 : 0;
+  let sunriseH = c.showSunrise ? ss * 2.2 : 0;
 
-  const totalH = headerH + sunriseH + clockH + dateH + nextH;
-  let y = b.y + Math.max(0, (b.h - totalH) / 2);
+  /**
+   * The countdown, in words, under the dates — the SAME block Modern sets under its ring, minus
+   * the ring. The wheel that was here briefly is what made this column read as cluttered; the
+   * words are the half of it that was doing the work, and which prayer they are counting to is
+   * already said by the highlighted row in the table beside them.
+   *
+   * Sized off the box width like everything else in this column, so it holds its proportion to
+   * the clock above it on every screen size.
+   */
+  let cdSize = c.showCountdown ? clamp(b.w * 0.2, 16, 96) : 0;
+  let cdH = c.showCountdown ? countdownH(cdSize) : 0;
+
+  /**
+   * Clear space around each GROUP, not the same tight spacing between every line.
+   *
+   * Packed edge to edge and centred as one block — name, clock, two dates, countdown, sun times —
+   * a masjid read this column as cluttered: nothing looked like it belonged with anything else.
+   * So the clock and both dates are one group (what time and what day it is), the countdown is
+   * another, and `gap` is the room each keeps around it. It is the minimum; a landscape column
+   * with room to spare spreads the groups further, up to twice it.
+   */
+  let gap = clamp(b.h * 0.045, 8, 56);
+  const stackH = (hs: number[]) => hs.filter((h) => h > 0).reduce((s, h, i) => s + h + (i ? gap : 0), 0);
+
+  /**
+   * Everything above is sized from the box WIDTH, which is right while this column is the full
+   * height of a landscape screen — the shape it was written for. It is not the only shape any
+   * more: the same block now heads a portrait screen and the timetable column beside a slideshow
+   * image, and in a box that is wide but short the block simply ran off the bottom of it —
+   * straight through the "PRAYER TIMES" band under it, with the date and the next-prayer line
+   * drawn over the table.
+   *
+   * `y` starting at `Math.max(0, ...)` was the tell: it clamps the CENTRING when the content is
+   * too tall, which quietly accepts the overflow instead of preventing it. So the block is
+   * scaled to fit first, and then centred — one factor across every size, so the proportions the
+   * design depends on are unchanged and it simply gets smaller.
+   */
+  let totalH = stackH([headerH, clockH + dateH, cdH, sunriseH]);
+  const room = b.h * 0.98;
+  if (totalH > room && totalH > 0) {
+    const k = room / totalH;
+    ms *= k; ns *= k; ss *= k; ts *= k; ds *= k; cdSize *= k; gap *= k;
+    headerH *= k; sunriseH *= k; clockH *= k; dateH *= k;
+    // Re-measured, not scaled: `countdownH` is not proportional (the unit word's size is clamped),
+    // so a scaled reserve would be short of what gets drawn at small sizes.
+    cdH = c.showCountdown ? countdownH(cdSize) : 0;
+    totalH = stackH([headerH, clockH + dateH, cdH, sunriseH]);
+  }
+
+  /**
+   * Beside the table, sunrise and sunset sit level with its LAST row — the Jumu'ah row on most
+   * screens — rather than under the countdown. That puts the reference line at the foot of the
+   * column, where it lines up with something, and leaves the head for what the room reads.
+   *
+   * Only when the rest still fits above it with a gap to spare; otherwise (a short box, a huge
+   * logo) the column falls back to one centred stack, which always fits because it was scaled to.
+   */
+  const above = [headerH, clockH + dateH, cdH].filter((h) => h > 0);
+  const aboveH = above.reduce((s, h) => s + h, 0);
+  const pinY = sunMid != null && c.showSunrise ? sunMid + ss * 0.35 : null;
+  const pinRoom = pinY == null ? 0 : pinY - ss * 1.3 - b.y;
+  const pinned = pinY != null && aboveH + gap * (above.length + 1) <= pinRoom;
+  let between = gap;
+  let y: number;
+  if (pinned) {
+    // Spread evenly, top margin and the space over the sun row included — then centred, so a
+    // capped gap leaves the slack shared above and below rather than piled at one end.
+    between = Math.min(gap * 2, (pinRoom - aboveH) / (above.length + 1));
+    y = b.y + (pinRoom - aboveH - between * Math.max(0, above.length - 1)) / 2;
+  } else {
+    y = b.y + Math.max(0, (b.h - totalH) / 2);
+  }
+  let drawnAny = false;
+  /** The space before a group — none before the first one drawn. */
+  const beforeGroup = () => {
+    if (drawnAny) y += between;
+    drawnAny = true;
+  };
 
   // Logo above the name, both centred as one unit directly over the clock — not
   // left-aligned the way the rest of the app's cards are.
+  if (headerH > 0) beforeGroup();
   if (c.showLogo && c.showName) {
     out.push(mark(cx - ms / 2, y, ms, c.p.primary, c.logo));
     out.push(text(cx, y + ms + ns * 0.9, c.masjidName, { size: ns, fill: c.p.text, family: FONT_DISPLAY, weight: 500, anchor: 'middle', editId: 'masjidName' }));
@@ -1766,61 +2289,51 @@ function brandColumn(b: Box, m: Model, c: Ctx): string {
     y += headerH;
   }
 
-  // Sunrise and sunset as one centred line — plain text, no icons.
-  if (c.showSunrise) {
-    const sunriseStr = `${(c.L.sunrise ?? 'Sunrise').toUpperCase()} ${fmtShort(m.times.sunrise, c.timeFormat)}`;
-    const sunsetStr = `${(c.L.sunset ?? 'Sunset').toUpperCase()} ${fmtShort(m.times.sunset, c.timeFormat)}`;
-    const gapW = ss * 2.4;
-    const rowY = y + ss;
-    const totalW = approxWidth(sunriseStr, ss) + gapW + approxWidth(sunsetStr, ss);
-    let x = cx - totalW / 2;
-    out.push(text(x, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'start', letter: 0.6 }));
-    x += approxWidth(sunriseStr, ss) + gapW;
-    out.push(text(x, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 300, anchor: 'start', letter: 0.6 }));
-    y += sunriseH;
-  }
-
   // The big clock, centred as one unit — replacing the ring's job of "what time is
   // it right now". A lighter weight than a typical display clock reads calmer at
   // this size, not shoutier.
+  beforeGroup();
   const tBase = y + ts * 0.82;
   const clockX = cx - clockW() / 2;
   out.push(text(clockX, tBase, c.clock.time, { size: ts, fill: c.p.text, family: FONT_DISPLAY, weight: 400, anchor: 'start', letter: -ts * 0.01, blink: true }));
   const markX = clockX + approxWidth(c.clock.time, ts) + ts * 0.1;
   const ss2 = markSize();
-  if (c.showSeconds) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
-  if (c.clock.period) out.push(text(markX, tBase - (c.showSeconds ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
+  if (stackedSec) out.push(text(markX, tBase - ts * 0.42, c.secStr, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
+  if (c.clock.period) out.push(text(markX, tBase - (stackedSec ? 0 : ts * 0.02), c.clock.period, { size: ss2, fill: c.p.textDim, family: FONT_DISPLAY, weight: 400, anchor: 'start' }));
   y = tBase + ts * 0.3;
 
-  // One combined, centred date line (Hijri | Gregorian) rather than two stacked ones. The
-  // separator between them is a drawn bar, not a "|" glyph — a character at this weight (300,
-  // deliberately thin for the dates themselves) is too faint to read as a divider, so it's
-  // bolded by being a shape instead of relying on font weight.
+  // The two dates, stacked under the clock and part of its group — see `ds` above for why they
+  // are on two lines rather than one.
   if (showDateLine) {
+    // Both centred on the column, so there is nothing to anchor against and nothing to get
+    // wrong: the divider bar this replaces had to be POSITIONED from a width estimate, and
+    // putting it on the column's centre line centred the divider rather than the line — which
+    // is how a date ran out past the edge of its column into the prayer table.
     y += ds * 1.2;
-    if (showBar) {
-      // Anchored against the bar itself (`end` on the left, `start` on the right) rather than
-      // positioned from `approxWidth` estimates on both sides — that measured the Hijri and
-      // Gregorian strings independently and any estimate error showed up as an uneven-looking
-      // gap around the bar, which is exactly the thing the eye catches on a divider. Anchoring
-      // to a fixed point either side of the bar makes that gap exact regardless of estimate
-      // error; only the whole line's centering (not the gap) can be off by a little now, which
-      // is far less noticeable.
-      const barW = ds * 0.18;
-      const barGap = ds * 0.26;
-      out.push(text(cx - barW / 2 - barGap, y, c.hij, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'end' }));
-      out.push(rect(cx - barW / 2, y - ds * 0.8, barW, ds * 0.9, barW * 0.3, c.p.text));
-      out.push(text(cx + barW / 2 + barGap, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'start' }));
-    } else {
-      out.push(text(cx, y, c.hij || c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
-    }
+    if (c.hij) out.push(text(cx, y, c.hij, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
+    if (twoDates) y += ds * 1.5;
+    if (c.greg) out.push(text(cx, y, c.greg, { size: ds, fill: c.p.textDim, family: FONT_DISPLAY, weight: 300, anchor: 'middle' }));
     y += ds * 0.8;
   }
 
-  // A plain, centred sentence instead of the ring: "Next Iqamah in 6hr 24min."
-  if (c.showCountdown) {
-    y += ls * 1.9;
-    out.push(text(cx, y, nextLine, { size: ls, fill: nextFill, family: FONT_SANS, weight: 500, anchor: 'middle' }));
+  if (cdH > 0) {
+    beforeGroup();
+    out.push(countdownText(cx, y, avail, cdSize, c));
+    y += cdH;
+  }
+
+  // Sunrise and sunset on one row, each centred in its half — plain text, no icons.
+  if (c.showSunrise) {
+    if (!pinned) beforeGroup();
+    const rowY = pinY != null && pinned ? pinY : y + ss * 1.3;
+    // At the quarter points of a narrow column, but no further apart than a short gap between
+    // them: on a wide one (a portrait screen) the quarter points left them reading as two
+    // unrelated labels at opposite edges.
+    const halfW = Math.max(approxWidth(sunriseStr, ss), approxWidth(sunsetStr, ss)) / 2 + Math.max(sunriseStr.length, sunsetStr.length) * SUN_TRACK / 2;
+    const off = Math.min(avail / 4, halfW + ss * 1.5);
+    out.push(text(cx - off, rowY, sunriseStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: SUN_TRACK }));
+    out.push(text(cx + off, rowY, sunsetStr, { size: ss, fill: c.p.textDim, family: FONT_SANS, weight: 400, anchor: 'middle', letter: SUN_TRACK }));
+    y += sunriseH;
   }
   return out.join('');
 }
@@ -1843,6 +2356,22 @@ export function prayerIcon(key: string, cx: number, cy: number, r: number): stri
       return `<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${color}" stroke-width="${f(Math.max(1.2, r * 0.16))}" stroke-linecap="round"/>`;
     }).join('');
   switch (key) {
+    case 'ishraq': {
+      // The sun just CLEAR of the horizon: a whole disc lifted off the line, short rays all round
+      // its upper half. It used to borrow Fajr's half-sun, so the two rows read as the same thing
+      // twice; a full disc over the line is "risen", where Fajr's half disc on it is "rising".
+      const sr = r * 0.52;
+      const sy = cy - r * 0.18;
+      const ray = (deg: number) => {
+        const a = (deg * Math.PI) / 180;
+        return `<line x1="${f(cx + Math.cos(a) * sr * 1.45)}" y1="${f(sy + Math.sin(a) * sr * 1.45)}" x2="${f(cx + Math.cos(a) * sr * 2)}" y2="${f(sy + Math.sin(a) * sr * 2)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}" stroke-linecap="round"/>`;
+      };
+      return (
+        `<line x1="${f(cx - r * 1.4)}" y1="${f(cy + r * 0.62)}" x2="${f(cx + r * 1.4)}" y2="${f(cy + r * 0.62)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}"/>` +
+        `<circle cx="${f(cx)}" cy="${f(sy)}" r="${f(sr)}" fill="${SUN}"/>` +
+        [-180, -135, -90, -45, 0].map(ray).join('')
+      );
+    }
     case 'fajr': // sunrise: half sun sitting on a horizon line, rays fanning up
       return (
         `<line x1="${f(cx - r * 1.4)}" y1="${f(cy)}" x2="${f(cx + r * 1.4)}" y2="${f(cy)}" stroke="${SUN}" stroke-width="${f(Math.max(1.2, r * 0.14))}"/>` +
@@ -1920,29 +2449,21 @@ export function prayerIcon(key: string, cx: number, cy: number, r: number): stri
  *  inline Arabic gloss, no glass, no per-row highlight beyond a slightly deeper band
  *  for the CURRENT prayer — just the alternating bands the reference photo used to
  *  separate rows for the eye. */
-function simpleTable(b: Box, m: Model, c: Ctx): string {
-  const out: string[] = [];
-  const pad = b.w * 0.03;
-  const titleSize = clamp(b.h * 0.038, 14, 24);
-  // A filled band rather than dim text on the page. The flat look is the point of this layout,
-  // but "PRAYER TIMES" floating in grey was the one element carrying no colour at all, and a
-  // headed table is what the wall displays this is modelled on actually do.
-  const titleH = titleSize * 2.1;
-  out.push(rect(b.x, b.y, b.w, titleH, titleH * 0.22, c.p.primary));
-  out.push(
-    text(b.x + b.w / 2, b.y + titleH * 0.66, (c.L.prayer ?? 'Prayer').toUpperCase() + ' TIMES', {
-      size: titleSize,
-      // Same rule, same numbers as the page-colour flip above: the primary is a colour input an
-      // admin can set to anything, so the text on it has to be chosen rather than assumed.
-      fill: relLuminance(c.p.primary) > 0.6 ? '#1c2620' : '#f2f6f3',
-      weight: 700,
-      anchor: 'middle',
-      letter: 4,
-    }),
-  );
+type SimpleLine = {
+  key: string;
+  name: string;
+  t1: number | null;
+  t2: number | null;
+  /** Jumu'ah only: which jamā'ah each time is (1st, 2nd, …), or 0 for no ordinal. */
+  o1?: number;
+  o2?: number;
+  highlight?: boolean;
+};
 
-  type Line = { key: string; name: string; t1: number | null; t2: number | null; highlight?: boolean };
-  const lines: Line[] = m.rows
+/** The Simple table's rows, in order. Its own function because the column beside the table lines
+ *  its sun times up with the LAST of these, so both have to count the same rows. */
+function simpleLines(m: Model, c: Ctx): SimpleLine[] {
+  const lines: SimpleLine[] = m.rows
     .filter((r) => r.key !== 'sunrise')
     // `r.active` means "the last prayer whose Adhan has passed" — a broad daytime window that
     // stays true for Dhuhr all the way until Asr's Adhan, long after Dhuhr's own Iqamah has
@@ -1950,23 +2471,55 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
     // because Dhuhr was still "active" while Asr had already become "next". Only `next` — the
     // one row the countdown sentence above is actually counting down to — should highlight.
     .map((r) => ({ key: r.key, name: rowName(r, c.L).toUpperCase(), t1: r.adhan, t2: r.iqamah, highlight: !!r.next }));
-  if (m.jumuah.length) {
-    // The name is just "JUMU'AH". It used to carry a "1/2" suffix to explain that the two times in
-    // the row were the first and second jamā'ah rather than an Adhan and an Iqāmah — but "1/2"
-    // reads as a fraction, and the other layout had already solved this properly: it labels each
-    // TIME with its ordinal. So does this one now (see `ordinal` in the row draw).
-    const multi = m.jumuah.length > 1;
+  /**
+   * Jumu'ah, two jamā'āt to a row, each time labelled with its ordinal.
+   *
+   * The name is just "JUMU'AH". It used to carry a "1/2" suffix to explain that the two times in
+   * the row were the first and second jamā'ah rather than an Adhan and an Iqāmah — but "1/2"
+   * reads as a fraction, and the other layout had already solved this properly: it labels each
+   * TIME with its ordinal. So does this one (see `timeAt` in the row draw).
+   *
+   * Two to a row because the row has two time columns. It used to be ONE row, full stop, so a
+   * masjid with a third Jumu'ah had it silently left off this design while Modern showed all
+   * three. A third (and fourth) now takes a second row, its first time under Iqāmah, the way a
+   * single Jumu'ah's time is the row's only one.
+   */
+  const jum = m.jumuah;
+  const multi = jum.length > 1;
+  for (let j = 0; j < jum.length; j += 2) {
+    const pair = jum.slice(j, j + 2);
+    const two = pair.length === 2;
     lines.push({
       key: 'jumuah',
       name: (c.L.jumuah ?? "Jumu'ah").toUpperCase(),
-      t1: multi ? m.jumuah[0] : null,
-      t2: m.jumuah[multi ? 1 : 0],
+      t1: two ? pair[0] : null,
+      t2: pair[pair.length - 1],
+      o1: multi && two ? j + 1 : 0,
+      o2: multi ? j + pair.length : 0,
+      // On a Friday the countdown is counting to Jumu'ah, so `buildModel` leaves every DAILY row
+      // un-`next` — which left this table with no highlighted row at all from Fajr until the last
+      // jamā'ah, on the day the hall is fullest. The row the sentence above is counting down to is
+      // the row that should be lit, and on a Friday that is the one holding that jamā'ah (the
+      // Adhan phase counts as ordinal 1, so it lights the first row).
+      highlight: !!m.nextJumuah && m.nextJumuah.ordinal > j && m.nextJumuah.ordinal <= j + 2,
     });
   }
+  return lines;
+}
 
+/** Where the Simple table's rows go in box `b`: the header band's type size, the top of the first
+ *  row, and the height of each of `n` rows. */
+function simpleGeom(b: Box, n: number): { titleSize: number; listTop: number; rowH: number } {
+  const titleSize = clamp(b.h * 0.038, 14, 24);
   const listTop = b.y + titleSize * 2.6;
-  const listH = b.y + b.h - listTop;
-  const rowH = listH / Math.max(1, lines.length);
+  return { titleSize, listTop, rowH: (b.y + b.h - listTop) / Math.max(1, n) };
+}
+
+function simpleTable(b: Box, m: Model, c: Ctx): string {
+  const out: string[] = [];
+  const pad = b.w * 0.03;
+  const lines = simpleLines(m, c);
+  const { titleSize, listTop, rowH } = simpleGeom(b, lines.length);
   const colIq = b.x + b.w - pad;
   const colAd = b.x + b.w * 0.62;
   const iconR = rowH * 0.22 * 0.75; // 25% smaller than the first pass
@@ -1991,20 +2544,278 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
   // A light gap between rows: the band is inset top/bottom rather than drawn edge-to-edge,
   // so a sliver of the page shows between rows instead of one solid block of colour.
   const rowGap = clamp(rowH * 0.08, 2, 10);
+
+  /**
+   * The filled band at the top is the table's HEADER, not just its title.
+   *
+   * It used to be a centred "PRAYER TIMES" and nothing else, which left the two time columns
+   * unlabelled: a masjid's own screen showed two times per row with no way to tell which was the
+   * Adhan and which the jamā'ah. The other design has named them from the start.
+   *
+   * They go INSIDE the band rather than on a dim line beneath it — the arrangement the other
+   * design uses — because that line would cost the rows the height it took, and the rows are
+   * where the times live. A filled header bar reading PRAYER TIMES · ADHAN · IQĀMAH is also
+   * exactly what the wall displays this layout is modelled on actually do. The title moves from
+   * the middle of the band to `nameX`, which is where the prayer names start, so it heads its own
+   * column instead of floating above all three.
+   *
+   * Drawn here, after the column geometry, because it needs `colAd`/`colIq`/`nameX` — the labels
+   * are anchored to the very same edges the times are, or a header that named the wrong column
+   * would be worse than no header at all.
+   */
+  // Whichever of the two reads better ON the accent, not whichever the accent is nearer to.
+  // A mid-tone accent is near neither: Emerald's #1fa37a took light text at 2.93:1, because the
+  // old test was a perceived-brightness threshold and a threshold cannot tell you that BOTH
+  // candidates are poor. Measured both ways and then held to AA, it takes dark text at 5.15:1.
+  const onPrimary = readableOn(
+    contrastRatio('#1c2620', c.p.primary) >= contrastRatio('#f2f6f3', c.p.primary) ? '#1c2620' : '#f2f6f3',
+    c.p.primary,
+  );
+  const titleH = titleSize * 2.1;
+  const headY = b.y + titleH * 0.66;
+  const adhanLbl = (c.L.athan ?? 'Adhan').toUpperCase();
+  const iqamahLbl = (c.L.iqamah ?? 'Iqamah').toUpperCase();
+  /**
+   * "PRAYER TIMES" in English, and the localised word alone in every other language.
+   *
+   * This used to append the English ' TIMES' to the localised word unconditionally, which put
+   * “الصلاة TIMES” — half a heading — across the top of an Arabic screen. Seen on the
+   * television through a capture card, which is the only way this kind of thing gets noticed:
+   * every string here is individually plausible.
+   *
+   * The Modern header already does the right thing with the localised word on its own, so this
+   * is the Simple table catching up rather than a new convention.
+   */
+  const titleStr = c.lang === 'en' ? `${(c.L.prayer ?? 'Prayer').toUpperCase()} TIMES` : (c.L.prayer ?? 'Prayer');
+  /**
+   * The column labels are fitted to the columns they name, and they are fitted FIRST.
+   *
+   * Sizing them from the box height alone was enough for "ADHAN" and "IQĀMAH" and for the Arabic
+   * and Urdu forms this app ships — and not enough for anything else. Every one of these three
+   * strings is an admin-editable label (`normLabels` takes up to 40 characters, and the row names
+   * carry `editId`s so they can be retyped straight on the live preview), so "Congregation Time"
+   * in the Iqamah slot simply ran left out of its column and across ADHAN.
+   *
+   * The tracking is a FIXED number of pixels per gap, not a fraction of the size, so it comes out
+   * of the room before the division rather than scaling with the answer.
+   */
+  const headGap = titleSize * 0.5;
+  const labelFit = (str: string, room: number, size: number) => {
+    const track = Math.max(0, str.length - 1) * 1.2;
+    const u = Math.max(0.01, approxWidth(str, 100) / 100);
+    return Math.min(size, Math.max(7, (room - track) / u));
+  };
+  const colLabelSize = Math.min(
+    labelFit(iqamahLbl, colIq - colAd - headGap, clamp(titleSize * 0.8, 9, 20)),
+    labelFit(adhanLbl, colAd - nameX - headGap, clamp(titleSize * 0.8, 9, 20)),
+  );
+  const colLabel = (s: string) => approxWidth(s, colLabelSize) + Math.max(0, s.length - 1) * 1.2;
+  // The title is the one thing here that can be shrunk without misnaming anything, so it is what
+  // gives way when a narrow column cannot hold all three at full size — the column labels are the
+  // point of the change and must stay legible.
+  //
+  // Its letter-spacing shrinks WITH the type rather than staying at 4px. That is not a nicety:
+  // the tracking is nearly a third of this title's width at full size, so a fixed 4px both breaks
+  // the solve — a shrunk title still carrying full tracking can overflow the room it was just
+  // fitted into — and reads as separate letters rather than a word once the type is small.
+  //
+  // And if what is left will not hold it even at the 9px floor, it is DROPPED rather than drawn
+  // through the labels. A shrinking floor plus a fixed minimum is how a "this one gives way"
+  // rule turns into an overlap: something has to be allowed to disappear, and of the three
+  // strings here the title is the one that names nothing.
+  const titleRoom = colAd - colLabel(adhanLbl) - headGap - nameX;
+  const titleFull = approxWidth(titleStr, titleSize) + Math.max(0, titleStr.length - 1) * 4;
+  // Everything in `titleFull` is proportional to the size, so this is exact rather than iterated.
+  const titleFit = titleFull > titleRoom ? Math.max(9, (titleSize * Math.max(0, titleRoom)) / titleFull) : titleSize;
+  const titleFits = titleRoom > 0 && (titleFull * titleFit) / titleSize <= titleRoom + 0.5;
+  out.push(rect(b.x, b.y, b.w, titleH, titleH * 0.22, c.p.primary));
+  if (titleFits) {
+    out.push(
+      text(nameX, headY, titleStr, {
+        size: titleFit,
+        fill: onPrimary,
+        weight: 700,
+        anchor: 'start',
+        letter: (4 * titleFit) / titleSize,
+      }),
+    );
+  }
+  for (const [x, label] of [
+    [colAd, ellipsize(adhanLbl, colLabelSize, colAd - nameX - headGap, 1.2)],
+    [colIq, ellipsize(iqamahLbl, colLabelSize, colIq - colAd - headGap, 1.2)],
+  ] as const) {
+    if (!label) continue;
+    out.push(
+      text(x, headY, label, {
+        size: colLabelSize,
+        // The same solid colour as the title rather than a translucent version of it: at 82%
+        // over the accent these dropped below AA, and the smaller size and wider tracking
+        // already say "secondary" without spending any contrast on saying it.
+        fill: onPrimary,
+        weight: 700,
+        anchor: 'end',
+        letter: 1.2,
+      }),
+    );
+  }
+
+  /**
+   * Two sizes for the whole table: one for the names, a LARGER one for the times.
+   *
+   * They used to be one number with a fixed ratio (`timeSize = nameSize * TIME_SCALE`), which
+   * meant the times inherited every limit the NAMES ran into — and the names hit their 44px cap
+   * on any large screen while the rows around them were 150px tall. A masjid asked for bigger
+   * times and they were right: the times are what the room is reading, the names are a label. On
+   * a 1080p landscape screen they now come out half as large again (48px to 76px) with the names
+   * untouched, because that space was there all along and the ratio was hiding it.
+   *
+   * So the names keep the budget they had and the times take what is actually left over. Two
+   * things make that safe rather than a guess:
+   *
+   *  - The name's budget still RESERVES room for a time at `MIN_TIME_RATIO`. That reserve is what
+   *    guarantees the times can never come out smaller than the names however tight the box gets
+   *    — the one outcome that would read as a bug rather than as a fit.
+   *  - The time's budget is worked out per ROW, not worst-name against worst-time. "MAGHRIB" is
+   *    the longest name and "JUMU'AH" is the only row carrying an ordinal ("1st 1:30 PM"), so
+   *    pairing the two shrinks the whole table to fit a row that does not exist.
+   */
+  /**
+   * The smallest the times may be relative to the names — and so how much of the Adhan column the
+   * name budget holds back for them.
+   *
+   * Deliberately this table's own number rather than `TIME_SCALE`: that one is the MODERN table's
+   * fixed name-to-time ratio, and tuning the look of that design must not quietly resize the
+   * NAMES on this one. They happen to be equal today; that is a coincidence, not a link.
+   */
+  const MIN_TIME_RATIO = 1.25;
+  const unit = (str: string) => approxWidth(str, 100) / 100; // width per 1px of size
+  /**
+   * The width of one time slot at size `t`. It mirrors `timeAt` below — the only thing that
+   * draws them — so the budget and the drawing cannot drift apart.
+   *
+   * Note it is NOT proportional to `t`: the ordinal's own size is clamped at both ends, so the
+   * group carries a constant in a very small box and again in a very large one. That is why the
+   * size is contracted onto this measurement below rather than solved from a ratio once.
+   */
+  const slotW = (str: string, t: number, ordinal: boolean) =>
+    ordinal ? clamp(t * 0.46, 9, 22) * 2.6 + approxWidth(str, t) * 1.12 : approxWidth(str, t);
+
+  const shape = lines.map((l) => {
+    const ord = !!(l.o1 || l.o2);
+    const adStr = l.t1 == null ? null : fmtShort(l.t1, c.timeFormat);
+    const iqStr = fmtShort(l.t2, c.timeFormat);
+    return {
+      nameU: unit(l.name),
+      // The name is drawn with `letter: 1` — a FIXED pixel per gap, which does not scale with the
+      // size and so cannot live in `nameU`. Leaving it out of the budget is what let a renamed
+      // prayer ("Maghrib / Sunset", typed straight onto the live preview) run into its own Adhan
+      // time: the solve spends the row's room down to `pad`, and the tracking then eats `pad`.
+      nameTrack: Math.max(0, l.name.length - 1) * 1,
+      ord,
+      adStr,
+      iqStr,
+      adU: adStr ? slotW(adStr, 100, ord) / 100 : 0, // per 1px of time size
+      iqU: slotW(iqStr, 100, ord) / 100,
+    };
+  });
+  // The name and the Adhan time share the room from `nameX` to `colAd`; the Iqamah slot has the
+  // room from `colAd` to `colIq` to itself.
+  const nameRoom = Math.max(1, colAd - nameX - pad);
+  const iqRoom = Math.max(1, colIq - colAd - pad);
+  const longestName = shape.reduce((w, r) => Math.max(w, r.nameU), 0.01);
+  const longestTrack = shape.reduce((w, r) => Math.max(w, r.nameTrack), 0);
+  const widestAd = shape.reduce((w, r) => Math.max(w, r.adU), 0.01);
+  const widestIq = shape.reduce((w, r) => Math.max(w, r.iqU), 0.01);
+  const nameSize = clamp(
+    Math.min(
+      rowH * 0.4,
+      // The tracking comes out of the room, not out of the ratio — see `nameTrack`.
+      Math.max(1, nameRoom - longestTrack) / (longestName + MIN_TIME_RATIO * widestAd),
+      iqRoom / (MIN_TIME_RATIO * widestIq),
+    ),
+    11,
+    44,
+  );
+
+  // Half the row height is the ceiling: the baseline sits at 0.64 of the row, so type taller than
+  // this starts pushing ascenders into the band above. Measured on rendered frames, not derived.
+  // 80 is only a backstop against an absurdly tall box — on every real shape it is one of the
+  // three budgets below that binds, which is the point.
+  let timeSize = clamp(
+    Math.min(
+      rowH * 0.5,
+      iqRoom / widestIq,
+      ...shape.filter((r) => r.adU > 0).map((r) => (nameRoom - r.nameU * nameSize - r.nameTrack) / (r.adU * 0.92)),
+    ),
+    11,
+    80,
+  );
+  // `slotW` is affine rather than proportional (see above), so the estimate can be a little
+  // optimistic in a small box. Contract onto the real measurement: slot widths only grow with
+  // `t`, so dividing by the overshoot always moves toward fitting, and it settles in two passes.
+  for (let i = 0; i < 3; i++) {
+    let over = 1;
+    for (const r of shape) {
+      if (r.adStr) over = Math.max(over, slotW(r.adStr, timeSize * 0.92, r.ord) / Math.max(1, nameRoom - r.nameU * nameSize - r.nameTrack));
+      over = Math.max(over, slotW(r.iqStr, timeSize, r.ord) / iqRoom);
+    }
+    if (over <= 1) break;
+    // Contracted slightly PAST the overshoot rather than exactly onto it. Stopping at "within a
+    // tenth of a percent" left the widest row a fifth of a pixel over its budget, which is
+    // invisible in itself and was not invisible at all once `ellipsize` acted on it.
+    timeSize /= over * 1.002;
+  }
+  // A floor, and the one line here that can fight the fit above: it is reachable only when the
+  // name has been pushed UP by its own 11px clamp, i.e. in a box where the budget said the names
+  // should be smaller than 11px and legibility was already lost. Every real shape clears the
+  // floor by a wide margin — `tableFit.test.ts` walks 288 of them and asserts both that the
+  // times are the larger of the two and that nothing overlaps.
+  timeSize = Math.max(nameSize, timeSize);
+
   lines.forEach((line, i) => {
     const ry = listTop + i * rowH;
     const midY = ry + rowH * 0.64;
     const band = line.highlight ? bandHighlight : line.key === 'jumuah' ? bandJumuah : i % 2 === 0 ? bandBase : bandAlt;
     out.push(rect(b.x, ry + rowGap / 2, b.w, rowH - rowGap, rowGap * 0.6, band));
     out.push(prayerIcon(line.key, b.x + pad + iconR, ry + rowH / 2, iconR));
-    const nameSize = clamp(rowH * 0.4, 16, 44);
-    const timeSize = nameSize * TIME_SCALE;
-    const mainColor = line.highlight ? c.p.primary : c.p.text;
+    const mainColor = readableOn(line.highlight ? c.p.primary : c.p.text, band);
     // The Iqāmah is the number people are actually reading — it is when the jamā'ah starts — so
     // it takes the accent on every row, not only the highlighted one. Jumu'ah takes the gold, to
     // match its band. Adhan stays quiet: two coloured columns would compete.
-    const iqColor = line.highlight ? c.p.primary : line.key === 'jumuah' ? c.p.gold : mixHex(c.p.text, c.p.primary, 0.72);
-    out.push(text(nameX, midY, line.name, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 600 : 400, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
+    //
+    // Each is measured against its OWN row band rather than against the page: the bands are mixes
+    // of the page toward the accent, so the Jumu'ah row's gold text sits on a gold-tinted band and
+    // is the tightest pairing on the table.
+    const iqColor = readableOn(
+      line.highlight ? c.p.primary : line.key === 'jumuah' ? c.p.gold : mixHex(c.p.text, c.p.primary, 0.72),
+      band,
+    );
+    // Cut to what this row actually leaves once its Adhan slot is taken out — the size solve
+    // above fits every name a masjid is likely to type, and this is the backstop for one it is
+    // not: a forty-character label cannot be made to fit a 399px column by shrinking without
+    // becoming unreadable, so it is shortened instead of run over the time beside it.
+    /**
+     * A single Jumu'ah has no Adhan/Iqāmah pair — one time is the whole row — so it is centred
+     * BETWEEN the two columns rather than sitting under Iqāmah with an empty Adhan slot beside
+     * it. Between their visual centres, not their right edges: both columns are right-anchored, so
+     * the midpoint of the edges would sit the time noticeably right of centre.
+     */
+    // A lone time WITHOUT an ordinal: a third Jumu'ah alone on its row keeps its "3rd" and stays
+    // under Iqāmah, in line with the jamā'āt above it, rather than drifting to the middle.
+    const single = shape[i].adU === 0 && !shape[i].ord;
+    const iqW = approxWidth(shape[i].iqStr, timeSize);
+    const singleX = ((colAd - iqW * 0.92 / 2) + (colIq - iqW / 2)) / 2;
+    const nameRoomHere =
+      (single
+        ? // The name runs until the centred time's LEFT edge.
+          singleX - iqW / 2
+        : shape[i].adStr
+          ? colAd - slotW(shape[i].adStr, timeSize * 0.92, shape[i].ord)
+          : colIq - slotW(shape[i].iqStr, timeSize, shape[i].ord)) -
+      nameX -
+      pad;
+    const nameStr = ellipsize(line.name, nameSize, nameRoomHere, 1);
+    if (nameStr) out.push(text(nameX, midY, nameStr, { size: nameSize, fill: mainColor, family: FONT_SANS, weight: line.highlight ? 600 : 400, anchor: 'start', letter: 1, editId: line.key === 'jumuah' ? undefined : `label.${line.key}` }));
     // A one-Jumu'ah masjid has nothing to put in the Adhan slot (Jumu'ah has no separate
     // Adhan/Iqamah — `t1`/`t2` are just its 1st/2nd time, if there are two), so that slot
     // is skipped entirely rather than drawn as an empty "—" beside a single time.
@@ -2031,9 +2842,17 @@ function simpleTable(b: Box, m: Model, c: Ctx): string {
       out.push(text(gx + ordBox, midY, ordinal, { size: os, fill: hexToRgba(fill, 0.75), family: FONT_SANS, weight: 700, anchor: 'end' }));
       out.push(text(gx + ordBox + ordGap, midY, str, { size, fill, family: FONT_DISPLAY, weight, anchor: 'start' }));
     };
-    const jum = line.key === 'jumuah' && m.jumuah.length > 1;
-    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, c.p.textDim, 300, jum ? ordinalEn(1) : '');
-    timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, jum ? ordinalEn(2) : '');
+    // Against the BAND, for the same reason `iqColor` is: the quiet Adhan ink is the one colour
+    // on this table that was still being chosen by a light-or-dark guess about the page.
+    // The highlighted row is bold ACROSS — name, Adhan and Iqāmah. The Adhan keeps its quieter
+    // colour so the two time columns do not compete, but a row lit up in two places of three
+    // read as a mistake rather than as "this one".
+    if (line.t1 != null) timeAt(colAd, line.t1, timeSize * 0.92, readableOn(c.p.textDim, band), line.highlight ? 600 : 300, line.o1 ? ordinalEn(line.o1) : '');
+    if (single) {
+      out.push(text(singleX, midY, fmtShort(line.t2, c.timeFormat), { size: timeSize, fill: iqColor, family: FONT_DISPLAY, weight: line.highlight ? 600 : 500, anchor: 'middle' }));
+    } else {
+      timeAt(colIq, line.t2, timeSize, iqColor, line.highlight ? 600 : 500, line.o2 ? ordinalEn(line.o2) : '');
+    }
   });
   return out.join('');
 }
@@ -2061,6 +2880,35 @@ function sanitizeText(s: string): string {
     .trim();
 }
 
+/**
+ * `str` at `size`, cut short with an ellipsis if it will not fit `maxW`, and '' if not even one
+ * character will.
+ *
+ * Every string in the prayer table is an admin-editable label — `normLabels` takes up to forty
+ * characters for any of them and the live preview lets them be retyped in place — so "MAGHRIB"
+ * and "ADHAN" are the defaults, not the range. Fitting by SIZE alone cannot cover that: a size
+ * has to have a floor or the text becomes unreadable, and a floor is exactly where the fit turns
+ * back into an overflow. Something has to be allowed to not fit, and for a label the honest
+ * answer is to show as much of it as there is room for.
+ *
+ * "..." rather than "…": the bundled Arabic face has no glyph for the single-character ellipsis
+ * (the same reason `sanitizeText` folds it), and a label is exactly the kind of text that gets
+ * truncated in Arabic and Urdu.
+ */
+function ellipsize(str: string, size: number, maxW: number, letter = 0, tol = 1): string {
+  const w = (t: string) => approxWidth(t, size) + Math.max(0, t.length - 1) * letter;
+  // `tol` is why this is not `> maxW`. Shortening is a CLIFF — the ellipsis itself costs about
+  // three characters, so the first cut to "JUMU'AH" loses "AH" — and the budgets feeding `maxW`
+  // are iterative solves that settle to a fraction of a pixel rather than to zero. Without a
+  // tolerance, a 0.2px shortfall took two letters off the word Jumu'ah on a portrait screen.
+  // One pixel is far inside the padding already held back from `maxW`, so nothing can collide
+  // in that pixel.
+  if (w(str) <= maxW + tol) return str;
+  let cut = str;
+  while (cut.length > 0 && w(`${cut}...`) > maxW) cut = cut.slice(0, -1);
+  return cut.length ? `${cut.trimEnd()}...` : '';
+}
+
 /** Greedy word-wrap: break `s` into lines that each fit within `maxW` at `size`. */
 function wrapLines(s: string, size: number, maxW: number, maxLines = 6): string[] {
   const words = s.split(/\s+/).filter(Boolean);
@@ -2086,7 +2934,7 @@ function wrapLines(s: string, size: number, maxW: number, maxLines = 6): string[
 
 /** A full-screen takeover that suppresses the normal layout (and the ffmpeg ticker). */
 type Overlay =
-  | { kind: 'iqamah'; secs: number; key: string }
+  | { kind: 'iqamah'; secs: number; key: string; ordinal?: number }
   | { kind: 'hadith'; item: HadithItem }
   | { kind: 'blackout' };
 
@@ -2106,6 +2954,17 @@ function prohibitedWindow(tt: Timetable, m: Model, nowHours: number): { secsLeft
   const win = Math.max(1, pn.minutes) / 60;
   if (nowHours >= dhuhr - win && nowHours < dhuhr) return { secsLeft: Math.max(0, (dhuhr - nowHours) * 3600) };
   return null;
+}
+
+/**
+ * Whether the prohibited-time notice goes to the bottom ticker rather than the countdown ring.
+ *
+ * Simple has no ring — its countdown is words — so on Simple it is the ticker whatever the
+ * setting says. The ring mode used to fall back to one small red line in the left column there,
+ * which was easy to miss from the back of a hall and was the only place the window was named.
+ */
+function prohibitedOnTicker(tt: Timetable): boolean {
+  return !!tt.prohibitedNotice?.ticker || tt.layout === 'simple';
 }
 
 /** The red scrolling message shown along the bottom during a ticker-mode prohibited window.
@@ -2366,7 +3225,18 @@ function hashStr(s: string): number {
  *  stateless per-frame render keeps showing the same one — yet varies day to day. */
 export function pickSalahHadith(sh: SalahHadith, prayerKey: string, parts: { year: number; month: number; day: number }): HadithItem | null {
   const pool = hadithPool(sh);
-  const specific = pool.filter((h) => h.prayers?.length && h.prayers.includes(prayerKey));
+  /**
+   * On a Friday the jamā'ah is Jumu'ah, so that is the key this is asked about — but the panel's
+   * prayer picker only offers the five daily ones, so NOTHING a masjid has configured can carry
+   * 'jumuah'. Without a second key to try, a masjid that had assigned every hadith to a prayer
+   * would fall through to the "no prayers set" pool, find it empty, and show no hadith at all
+   * through the jamā'ah with the largest attendance of the week.
+   *
+   * Jumu'ah stands in Dhuhr's place in the day, and Dhuhr is what these were targeted at before
+   * the screen learned the difference, so Dhuhr is what it falls back to.
+   */
+  const keys = prayerKey === 'jumuah' ? ['jumuah', 'dhuhr'] : [prayerKey];
+  const specific = pool.filter((h) => h.prayers?.length && keys.some((k) => h.prayers!.includes(k)));
   const eligible = specific.length ? specific : pool.filter((h) => !h.prayers?.length);
   if (!eligible.length) return null;
   return eligible[hashStr(`${parts.year}-${parts.month}-${parts.day}-${prayerKey}`) % eligible.length];
@@ -2377,21 +3247,24 @@ export function pickSalahHadith(sh: SalahHadith, prayerKey: string, parts: { yea
 function activeOverlay(tt: Timetable, m: Model, nowHours: number): Overlay | null {
   // (The zawāl prohibited notice is no longer a full-screen takeover — it lives in the
   //  next-prayer ring as a "Prohibited time" countdown; see panelRing / prohibitedRing.)
-  // 2) Full-screen countdown for the last minutes before any Iqāmah.
+  // 2) Full-screen countdown for the last minutes before any jamā'ah.
+  //
+  // `m.jamaah`, never `m.rows`: on a Friday the jamā'ah is Jumu'ah, so the rows would announce
+  // a Dhuhr Iqāmah nobody is praying and stay silent for the Jumu'ah that everybody is.
   const ic = tt.iqamahCountdown;
   if (ic?.enabled) {
     const win = Math.max(1, ic.minutes) / 60;
-    const row = m.rows.find(
-      (r) =>
-        r.adhan != null && r.iqamah != null &&
-        r.adhan <= nowHours && nowHours >= r.iqamah - win && nowHours < r.iqamah,
+    const j = m.jamaah.find(
+      (x) => x.adhan != null && x.adhan <= nowHours && nowHours >= x.at - win && nowHours < x.at,
     );
-    if (row) return { kind: 'iqamah', secs: Math.max(0, (row.iqamah! - nowHours) * 3600), key: row.key };
+    if (j) return { kind: 'iqamah', secs: Math.max(0, (j.at - nowHours) * 3600), key: j.key, ordinal: j.ordinal };
   }
   // 3) During salah (the minutes after each Iqāmah): either black the screen out or show a
   //    rotating hadith. Which prayer's post-Iqāmah window we're in is `inSalah(win)`.
-  const inSalah = (win: number): Row | undefined =>
-    m.rows.find((r) => r.iqamah != null && r.iqamah <= nowHours && nowHours < r.iqamah + win);
+  // Same list as the countdown above, for the same reason: on Friday this window belongs to
+  // Jumu'ah, and there is one per jamā'ah.
+  const inSalah = (win: number): Jamaah | undefined =>
+    m.jamaah.find((x) => x.at <= nowHours && nowHours < x.at + win);
   // Blackout wins over the hadith when both are enabled — a distraction-free black screen.
   const bo = tt.salahBlackout;
   if (bo?.enabled && inSalah(Math.max(1, bo.minutes) / 60)) return { kind: 'blackout' };
@@ -2486,15 +3359,19 @@ function blackoutView(W: number, H: number): string {
 }
 
 /** Full-screen countdown to a prayer's Iqāmah ("line up for prayer"). */
-function iqamahCountdownView(secsLeft: number, prayerKey: string, p: Palette, L: Record<string, string>, W: number, H: number): string {
+function iqamahCountdownView(secsLeft: number, prayerKey: string, p: Palette, L: Record<string, string>, W: number, H: number, ordinal?: number): string {
   const out: string[] = [];
   out.push(rect(0, 0, W, H, 0, 'rgba(0,0,0,0.72)'));
   const cx = W / 2;
   const mm = Math.floor(secsLeft / 60);
   const ss = Math.floor(secsLeft % 60);
   const counter = `${pad2(mm)}:${pad2(ss)}`;
-  const pname = (L[prayerKey] ?? prayerKey).toUpperCase();
-  out.push(text(cx, H * 0.34, `${pname} ${(L.iqamah ?? 'Iqamah').toUpperCase()} IN`, { size: clamp(W * 0.02, 18, 44), fill: p.primarySoft, weight: 700, anchor: 'middle', letter: 4 }));
+  // "JUMU'AH 2 IN 04:12", not "JUMU'AH 2 IQĀMAH IN": a Jumu'ah time IS the jamā'ah, and nobody
+  // in a masjid says "the Jumu'ah Iqamah". Every daily prayer keeps its "<PRAYER> IQĀMAH IN",
+  // because there the Iqāmah is a separate moment from the Adhan that already sounded.
+  const pname = (L[prayerKey] ?? prayerKey).toUpperCase() + (ordinal ? ` ${ordinal}` : '');
+  const heading = prayerKey === 'jumuah' ? `${pname} IN` : `${pname} ${(L.iqamah ?? 'Iqamah').toUpperCase()} IN`;
+  out.push(text(cx, H * 0.34, heading, { size: clamp(W * 0.02, 18, 44), fill: p.primarySoft, weight: 700, anchor: 'middle', letter: 4 }));
   out.push(text(cx, H * 0.6, counter, { size: clamp(W * 0.16, 90, 360), fill: p.light ? p.text : 'url(#clockg)', family: FONT_DISPLAY, weight: 700, anchor: 'middle', blink: true }));
   out.push(text(cx, H * 0.74, 'Please line up for prayer', { size: clamp(W * 0.016, 14, 30), fill: p.textDim, anchor: 'middle' }));
   return out.join('');
@@ -2536,7 +3413,8 @@ export interface RenderOpts {
    * blurs once and sets this. The pixels are identical; only the timing changes.
    */
   bgPreblurred?: boolean;
-  /** data: URI of an announcement image → timetable becomes a left sidebar, image fills the right */
+  /** data: URI of a slideshow image. The timetable keeps a column and the picture takes the
+   *  rest — landscape side by side, portrait stacked. See `announcementView`. */
   announcement?: string | null;
   /** data: URI of an uploaded masjid logo, or null for the built-in mark */
   logo?: string | null;
@@ -2615,11 +3493,41 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   // everything else about `p` is replaced.
   const isSimple = tt.layout === 'simple';
   if (isSimple) {
+    // Resolved HERE, after the accent has been settled — including a custom one and the
+    // wallpaper-matched one above — so a themed page tracks the colour it is meant to match.
     const raw = (tt.simpleBg || '').trim();
-    const simpleBgHex = /^#?[0-9a-f]{6}$/i.test(raw) ? (raw.startsWith('#') ? raw : `#${raw}`) : '#ffffff';
+    const simpleBgHex =
+      raw === 'theme-light' || raw === 'theme-dark'
+        ? simplePage(p.primary, raw === 'theme-dark' ? 'dark' : 'light')
+        : /^#?[0-9a-f]{6}$/i.test(raw)
+          ? (raw.startsWith('#') ? raw : `#${raw}`)
+          : '#ffffff';
     const bgIsLight = relLuminance(simpleBgHex) > 0.6;
     const dtxt = derivedText(bgIsLight ? '#1c2620' : '#f2f6f3');
-    p = { ...p, bg: simpleBgHex, bg2: simpleBgHex, surface: simpleBgHex, surface2: simpleBgHex, ...dtxt, light: bgIsLight };
+    /**
+     * `derivedText` answers "is this background light or dark" and picks one ink accordingly.
+     * That is the right question for white and for near-black — the two the Simple design shipped
+     * with — and the wrong one for everything between them, which is now reachable: the page is a
+     * colour picker, and an admin who lands on a mid grey gets a page where NEITHER answer works.
+     * Measured on #808080: the clock and the masjid name came out at 3.62:1 and the footer note at
+     * 2.46:1, while the accent-coloured text beside them was fine, because only that had been
+     * routed through `readableOn`.
+     *
+     * So the three page inks go through it too. They are the LAST thing to be decided, after the
+     * page colour is known, and every one of them is drawn straight onto that page — the row
+     * bands are the exception and are corrected where they are drawn.
+     */
+    p = {
+      ...p,
+      bg: simpleBgHex,
+      bg2: simpleBgHex,
+      surface: simpleBgHex,
+      surface2: simpleBgHex,
+      text: readableOn(dtxt.text, simpleBgHex),
+      textDim: readableOn(dtxt.textDim, simpleBgHex),
+      textFaint: readableOn(dtxt.textFaint, simpleBgHex),
+      light: bgIsLight,
+    };
   }
   const L = labels(tt.language, tt.labels);
   LIGHTUI = !!p.light;
@@ -2669,17 +3577,21 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   let end2 = m.nextHours;
   if (end2 < prevH) end2 += 24;
   const ringProgress = clamp((now2 - prevH) / Math.max(0.001, end2 - prevH), 0, 1);
-  const clockDisp = fmtClock(nowHours, tt.timeFormat, false);
+  // The clock carries its own seconds only in the inline style; in the stacked style they are a
+  // separate little block drawn beside it, and formatting them into the string too would print
+  // them twice.
+  const secondsInline = tt.showSeconds && tt.secondsStyle === 'inline';
+  const clockDisp = fmtClock(nowHours, tt.timeFormat, secondsInline);
   const secStr = pad2(m.parts.second);
 
   const greg = gregorian(m.parts, tt.language, tt.gregorianOffset ?? 0);
   const hij = hijri(m.parts, tt.language, tt.hijriOffset ?? 0);
   // Ticker-mode prohibited window shows a red message that overrides the normal ticker.
-  const prohibitedTickerOn = !!tt.prohibitedNotice?.ticker && !!prohibitedWindow(tt, m, nowHours);
+  const prohibitedTickerOn = prohibitedOnTicker(tt) && !!prohibitedWindow(tt, m, nowHours);
   const tickerText = prohibitedTickerOn ? prohibitedMessage(tt, m) : activeTickerText(tt, m.parts);
   // Non-ticker prohibited window → the next-prayer ring reframes as a "Prohibited time"
   // notice (no more full-screen takeover), counting down to the Dhuhr adhan.
-  const prohibitedRing = !!tt.prohibitedNotice?.enabled && !tt.prohibitedNotice.ticker && !!prohibitedWindow(tt, m, nowHours);
+  const prohibitedRing = !prohibitedOnTicker(tt) && !!prohibitedWindow(tt, m, nowHours);
 
   const P = Math.round(Math.min(W, H) * 0.05);
   const cel = celestialPos(m.times, nowHours, W, H, P);
@@ -2724,7 +3636,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     // Full-screen overlays always dim to a dark scrim, so use light text even on a light
     // theme (dark-on-dark would be unreadable).
     const pS = p.light ? { ...p, text: '#f2f6f3', textDim: '#c8d3cc', textFaint: '#96a69d' } : p;
-    if (overlay.kind === 'iqamah') out.push(iqamahCountdownView(overlay.secs, overlay.key, pS, L, W, H));
+    if (overlay.kind === 'iqamah') out.push(iqamahCountdownView(overlay.secs, overlay.key, pS, L, W, H, overlay.ordinal));
     else if (overlay.kind === 'blackout') out.push(blackoutView(W, H));
     else out.push(salahHadithView(overlay.item, clock, pS, W, H));
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${out.join('')}</svg>`;
@@ -2747,10 +3659,10 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   const tkSep = iqNotice ? split.sep : null;
   const tkScroll = iqNotice ? split.scroll : null;
   const bandShown = !!tickerText || !!iqNotice;
-  // An announcement fills the screen with the masjid's OWN artwork — which has its own footer, its
+  // An announcement puts the masjid's OWN artwork on the screen — which has its own footer, its
   // own type and its own idea of where the bottom edge is. Our calculation-method footnote drawn
   // across it is a watermark on somebody else's poster, so it is suppressed, and the strip it would
-  // have reserved goes back to the image instead of becoming an empty band under it.
+  // have reserved goes back to the picture instead of becoming an empty band under it.
   const announcing = !!opts.announcement;
   const bottomCore = bandShown ? split.bandH : tt.showFooter && !announcing ? clamp(H * 0.05, 24, 60) : P;
   const area: Box = { x: P, y: P, w: W - 2 * P, h: H - P - bottomCore };
@@ -2765,6 +3677,7 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
     clock: clockDisp,
     secStr,
     showSeconds: tt.showSeconds,
+    secondsInline,
     greg,
     hij,
     nextLabel,
@@ -2783,26 +3696,17 @@ function build(tt: Timetable, now: Date, opts: RenderOpts): string {
   };
 
   if (opts.announcement) {
-    // Full screen — one layout for the normal timetable, a completely different one the
-    // moment a slideshow image is active — not the old sidebar composite, which squeezed an
-    // announcement image designed to be read on its own next to a shrunk timetable neither
-    // half did well.
+    // The timetable STAYS, beside the picture — see announcementView for why this replaced the
+    // full-bleed image, and why it is contain-fit where the full-bleed one was cover-fit.
     //
-    // Cover-fit (slice): `announcements.images` is an admin's own upload — a flyer, a photo,
-    // whatever they picked — with no size or shape this app controls or can adapt to it, so
-    // there is no "fix the source" option the way there would be for something this app
-    // generates itself. A contain-fit pass was tried here, on the theory that showing the
-    // whole image beats cropping any of it; on a masjid's actual screen it did the opposite of
-    // what a wall display needs — an upload that isn't 16:9 (most aren't) shrank to a fraction
-    // of the screen, and its text went with it. Cover-fit crops whatever overflows, evenly
-    // from the centre outward, but keeps every slide filling the wall at full size — the
-    // trade-off a signage screen actually wants over a small, fully-intact image nobody at the
-    // back of the room can read.
-    //
-    // This also covers incorrect-parking alert cards from the volunteer page — they render
-    // as full-bleed 1920×1080 frames (see reportCard.ts) precisely so they fill the wall the
-    // same way, with no separate sidebar composite or glass panel needed.
-    out.push(`<image href="${opts.announcement}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`);
+    // Drawn into `area`, which is the same box every other layout gets: that is what keeps the
+    // picture out from under the bottom band. The band used to be painted straight over the
+    // image — a scrolling ticker across somebody's poster — and the fix is not to silence the
+    // ticker (on a decoder screen the moving text is an ffmpeg filter, so changing it every time
+    // the slideshow phase flips would respawn ffmpeg and drop the RTSP stream twice a minute).
+    // The fix is to stop putting the picture underneath it. The red Iqāmah-change reminder
+    // still draws over everything, deliberately: that one is this app speaking about today.
+    out.push(announcementView(area, m, ctx, opts.announcement, isSimple));
   } else {
     out.push(isSimple ? layoutSimple(area, m, ctx) : layoutReference(area, m, ctx));
   }

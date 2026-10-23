@@ -19,7 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { normTimetable, normSettings } from './validate';
 import { normalizeIqamahSchedule } from './iqamahSchedule';
-import type { Settings, Timetable } from './types';
+import type { DB, Settings, Timetable } from './types';
 import type { WhatsAppAvailability, WhatsAppMedia } from './fabric';
 
 const NOW = new Date('2026-08-15T15:00:00Z').getTime();
@@ -66,6 +66,26 @@ function settings(): Settings {
  * A real store matters: the dedupe reads the persisted log back, so an in-memory fake would
  * pass the "not posted twice" test while proving nothing about a restart.
  */
+/**
+ * Wait until the Store's debounced write has actually landed on disk.
+ *
+ * Polls the file rather than sleeping for a plausible duration: a sleep asserts nothing about
+ * what it waited for, so on a slow runner the test fails for a reason unrelated to the code.
+ */
+async function persisted(dir: string, until: (db: Partial<DB>) => boolean, timeoutMs = 10_000): Promise<void> {
+  const file = path.join(dir, 'db.json');
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      if (until(JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DB>)) return;
+    } catch {
+      /* absent, or caught mid-write: both mean keep waiting */
+    }
+    if (Date.now() > deadline) throw new Error(`${file} never reached the expected state in ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 function harness(opts: {
   cap?: WhatsAppAvailability;
   render?: () => Promise<Buffer>;
@@ -75,8 +95,28 @@ function harness(opts: {
   const prevDataDir = process.env.DATA_DIR;
   process.env.DATA_DIR = dir;
   // config + store read DATA_DIR at import time, so both are loaded after it is set.
+  // Forget the cached modules so `config` re-reads DATA_DIR and this harness gets ITS OWN
+  // directory.
+  //
+  // Without this the tests in this file are not isolated, and it is invisible: `config` reads
+  // DATA_DIR once, at its first require, so only the FIRST harness got the directory it had just
+  // made. Every later one made a fresh temp dir, set DATA_DIR to it, and then got a Store still
+  // pointed at the first — which the first harness's cleanup had already deleted and Store's
+  // constructor silently recreated.
+  //
+  // The cost was a test passing for the wrong reason. 'a queued post is not repeated' reopens the
+  // store to prove the dedupe survives a restart; with a shared directory, the log entry it found
+  // could be one an EARLIER test had written for the same change. Both the real write and a
+  // leftover satisfy `already been sent`, so the assertion could not tell them apart.
+  for (const m of ['./config', './store', './whatsappAnnounce']) {
+    delete require.cache[require.resolve(m)];
+  }
   const { Store } = require('./store') as typeof import('./store');
   const { WhatsAppAnnouncer, decideAnnounce } = require('./whatsappAnnounce') as typeof import('./whatsappAnnounce');
+  const { config } = require('./config') as typeof import('./config');
+  // Now that each harness really does get its own, this is `dir` — asserted rather than assumed,
+  // because the whole point is that it used not to be.
+  const storeDir = config.dataDir;
 
   const store = new Store();
   store.update((db) => {
@@ -104,6 +144,7 @@ function harness(opts: {
     a,
     store,
     sent,
+    storeDir,
     decideAnnounce,
     cleanup: () => {
       if (prevDataDir === undefined) delete process.env.DATA_DIR;
@@ -251,10 +292,15 @@ test('a queued post is not repeated — on the next tick, or after a restart', a
     assert.equal(h.sent.length, 1, 'exactly one post per change');
 
     // The dedupe lives in the PERSISTED log, so a store reopened over the same dir knows too.
-    // Wait past the store's 150 ms debounced write first — without that the reopened store
-    // reads a db with no settings either, and the assertion would pass on "no group chosen"
-    // while proving nothing about the dedupe. Hence checking the REASON, not just the verdict.
-    await new Promise((r) => setTimeout(r, 400));
+    // The debounced write has to land before the reopen — without that the reopened store reads
+    // a db with no settings either, and the assertion would pass on "no group chosen" while
+    // proving nothing about the dedupe. Hence checking the REASON below, not just the verdict.
+    //
+    // Waits FOR THE FILE, not for a duration. This was `setTimeout(r, 400)` — a bet that a 150 ms
+    // debounce completes within 400 ms, which on a loaded CI runner it does not. It failed
+    // exactly once, on a docs-only commit, and passed everywhere else; a sleep that is usually
+    // long enough is a test that fails for reasons unrelated to the code.
+    await persisted(h.storeDir, (db) => (db.whatsappLog?.length ?? 0) > 0);
     const { Store } = require('./store') as typeof import('./store');
     const after = h.decideAnnounce(new Store().db, NOW);
     assert.equal(after.act, 'skip');

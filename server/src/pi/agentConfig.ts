@@ -36,8 +36,93 @@ export const CONFIG_PATH = process.env.OMD_SCREEN_CONFIG || `${CONFIG_DIR}/confi
  */
 export const SERVER_ORIGIN_RE = /^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/;
 
+/**
+ * Is this host the machine asking the question?
+ *
+ * Used for one rule, stated from two sides: a display server's address must never be a loopback
+ * one. From a Raspberry Pi, `localhost` is the Pi — it is not a display server and never will be
+ * — so an address like that produces a screen that joins and then cannot reach anything, for ever,
+ * with the dashboard showing it offline and nothing saying why.
+ *
+ * The name matters as much as the literals. An admin opening their own server at
+ * `http://localhost:7860` and adopting a screen from there is the likeliest way to hit this, and
+ * `localhost` is what their address bar says.
+ */
+export function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '::1' || h === '::ffff:127.0.0.1') return true;
+  if (/^127\./.test(h)) return true;
+  // The hex spelling of an IPv4-mapped loopback, which is what `new URL` normalises one into.
+  if (/^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(h)) return true;
+  return false;
+}
+
+/**
+ * What somebody typed into the panel, turned into an address this agent can build URLs on.
+ *
+ * `SERVER_ORIGIN_RE` decides whether a string is plausible. It is deliberately not the whole
+ * answer, because every URL the agent builds is `${server}/pi/…` — plain concatenation — and two
+ * shapes that pass the pattern break that silently:
+ *
+ *     http://host:7860/?tab=screens   ->  http://host:7860/?tab=screens/pi/enrol
+ *     http://host:7860/#/settings     ->  http://host:7860/#/settings/pi/enrol
+ *
+ * Both land on the server's ROOT with the real path swallowed by the query or the fragment, so
+ * the screen never enrols and the only thing anybody sees is "Cannot reach the display server"
+ * for ever. And the input that produces them is the likeliest one there is: an address copied out
+ * of a browser's address bar while looking at the dashboard.
+ *
+ * So a query and a fragment are DROPPED rather than refused — neither can be part of a server's
+ * address, so there is nothing to lose and a confusing failure to avoid. The PATH is kept, which
+ * is the part that looks droppable and is not: the platform mounts this app under a prefix, so
+ * `https://masjid.example/display` is a real address and `https://masjid.example` is a different,
+ * wrong one.
+ *
+ * Each way of being wrong gets its OWN sentence, which is why this returns a result rather than
+ * a null. `http://localhost:7860` is a perfectly good web address — telling somebody it is not
+ * one, when the real problem is that it points at the screen they are typing into, sends them
+ * looking for a typo that is not there. An empty string means standalone and is a valid answer
+ * rather than a failure.
+ */
+export function normaliseServerOrigin(raw: string): { origin: string } | { error: string } {
+  const text = raw.trim();
+  if (!text) return { origin: '' };
+
+  const shapeError = { error: 'That is not a web address. It should look like http://192.168.1.18:7860.' };
+  // Checked before parsing: `new URL` is lenient about things that cannot be a server address,
+  // and the pattern is the agreed shape for what may end up in the config file.
+  if (!SERVER_ORIGIN_RE.test(text.replace(/\/+$/, ''))) return shapeError;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return shapeError;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { error: 'Use a web address — http:// or https://.' };
+  }
+  if (isLoopbackHost(url.hostname)) {
+    return {
+      error:
+        `${url.host} means this screen itself, so it would never reach a display server. ` +
+        `Use the address you open the server on from here — something like http://192.168.1.18:7860.`,
+    };
+  }
+  // Rebuilt from the parts that are an address, which is also what drops the query and fragment.
+  // The trailing slash goes because every caller appends its own.
+  return { origin: `${url.origin}${url.pathname}`.replace(/\/+$/, '') };
+}
+
 export interface AgentConfig {
-  /** the display server's origin, baked in by the installer from the URL it was fetched from */
+  /**
+   * The display server's origin, baked in by the installer from the URL it was fetched from —
+   * or **empty, meaning this screen runs standalone** and has no server at all.
+   *
+   * Empty used to be refused along with every other malformed address, which is right for a
+   * screen that is supposed to have a server and wrong for one that never will. See parseConfig
+   * for the rule that keeps the two apart.
+   */
   server: string;
   /** stable across reboots so a power cut does not create a second pending device */
   deviceId: string;
@@ -45,6 +130,14 @@ export interface AgentConfig {
   deviceSecret: string;
   /** issued on adoption; absent until then */
   token?: string;
+  /**
+   * The one-time code on the television, for a standalone screen nobody has claimed yet.
+   *
+   * Persisted rather than generated per boot so that a power cut does not change the code
+   * somebody has already walked away with — on a screen switched off at the socket, an unclean
+   * restart is the normal one. Removed the moment the account is created; it is spent once.
+   */
+  setupCode?: string;
 }
 
 /**
@@ -61,17 +154,47 @@ export function parseConfig(text: string): AgentConfig | null {
   } catch {
     return null;
   }
-  if (!raw || typeof raw !== 'object') return null;
+  // Arrays are `typeof 'object'` too. That mattered the moment an absent server stopped being
+  // refused: `[]` has no `server` key, so it would have read as a perfectly good standalone
+  // config instead of the corrupt file it is.
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
 
   const server = typeof o.server === 'string' ? o.server.trim().replace(/\/+$/, '') : '';
-  if (!SERVER_ORIGIN_RE.test(server)) return null;
+  // Absent or empty is STANDALONE — a screen that runs on its own. Anything present but
+  // malformed is still refused: it is the one field that decides where this device sends its
+  // identity, and a typo there should stop the agent with a message on the television rather
+  // than have it try.
+  if (server && !SERVER_ORIGIN_RE.test(server)) return null;
 
   const deviceId = typeof o.deviceId === 'string' ? o.deviceId.trim() : '';
   const deviceSecret = typeof o.deviceSecret === 'string' ? o.deviceSecret.trim() : '';
   const token = typeof o.token === 'string' && o.token.trim() ? o.token.trim() : undefined;
+  // A token with no server is a CORRUPTED config, not a standalone screen. Reading it as
+  // standalone would quietly retire an adopted Pi — it would stop calling home for good, and the
+  // masjid would find out when a timetable change never arrived. Refuse it loudly instead.
+  if (token && !server) return null;
 
-  return { server, deviceId, deviceSecret, ...(token ? { token } : {}) };
+  const setupCode = typeof o.setupCode === 'string' && /^\d+$/.test(o.setupCode.trim()) ? o.setupCode.trim() : undefined;
+
+  return { server, deviceId, deviceSecret, ...(token ? { token } : {}), ...(setupCode ? { setupCode } : {}) };
+}
+
+/**
+ * Is this config one the agent should act on, or should it keep waiting?
+ *
+ * A server address is obviously usable. A STANDALONE config has no server, so the test for it
+ * is the identity: the installer writes one, which makes its presence the evidence that this
+ * file was written on purpose.
+ *
+ * That distinction is the whole point. A file truncated by a power cut parses as `{}` — no
+ * server and no identity — and treating that as standalone would take a screen that has been
+ * adopted for a year and present it to the hall as a brand-new one asking to be set up. Waiting
+ * is the better failure: it is visible, it is recoverable, and it is what this did before
+ * standalone screens existed.
+ */
+export function isUsableConfig(cfg: AgentConfig | null): boolean {
+  return !!cfg && (!!cfg.server || (!!cfg.deviceId && !!cfg.deviceSecret));
 }
 
 export function loadConfig(file = CONFIG_PATH): AgentConfig | null {
@@ -115,6 +238,9 @@ export function saveConfig(cfg: AgentConfig, file = CONFIG_PATH): void {
   // An absent token means "forgotten", which has to be able to REMOVE the key rather than leave
   // the old one behind — the one field where merging would be wrong.
   if (cfg.token === undefined) delete merged.token;
+  // And the same for the setup code, which is SPENT on claiming the screen. Merging it back
+  // would leave a used code on disk and on the television for ever.
+  if (cfg.setupCode === undefined) delete merged.setupCode;
 
   // Write, FLUSH, rename, flush the directory. All four steps, and the flushes are the point.
   //

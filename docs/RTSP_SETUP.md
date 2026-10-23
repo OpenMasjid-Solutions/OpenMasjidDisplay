@@ -3,6 +3,16 @@
 
 # Connecting screens & sources (RTSP)
 
+**Which half of this page you need depends on your screens.**
+
+- **A decoder box per television**, fed by a Display server — both halves apply. Start at the top.
+- **A Raspberry Pi screen**, [on its own](PI_STANDALONE.md) or [managed by a server](PI_SCREENS.md) —
+  only *Add a camera or HDMI source* applies. A Pi draws the timetable itself and opens the camera's
+  own address directly, so it has no RTSP link to paste anywhere and nothing to point at the server.
+  The camera addresses, the UniFi notes and the troubleshooting below are the same either way.
+
+---
+
 ## Point a TV's decoder at a screen
 
 1. On the **Screens** page, add a screen and press **Copy link**. There is nothing to configure first —
@@ -79,3 +89,7 @@ Credentials in the URL are stored but never displayed in the panel.
 - Sources are pulled **on demand** — a camera is only contacted while a screen is actually showing it.
 - Audio is stripped only on the **Most compatible (re-encode)** path. A **Direct** source is relayed
   untouched, so whatever audio the camera publishes reaches the decoder as-is.
+- A **timetable** stream carries no audio at all unless you turn on *Play at Adhan* or *Play at Iqamah*
+  under **Sound** on that timetable. With either on, the stream carries silence and that moment's sound — the
+  one uploaded for it, or the built-in beep — plays at the moment, so the television must be able to play the stream's sound and have its volume up. A Pi
+  screen and a browser screen stay silent.

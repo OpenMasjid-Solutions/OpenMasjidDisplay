@@ -14,7 +14,15 @@ import path from 'node:path';
 import { config } from './config';
 import { makeLog } from './logger';
 import type { Store } from './store';
-import type { Orchestrator } from './orchestrator';
+/**
+ * Only the screen statuses, not a whole orchestrator.
+ *
+ * This asked for an `Orchestrator` and used exactly one method of it. Narrowing the ask is what
+ * lets a standalone Raspberry Pi — which has one screen and no orchestrator at all — mount this
+ * same handler instead of growing a second volunteer page. `Orchestrator` still satisfies it
+ * structurally, so the server's call site is unchanged.
+ */
+import type { ScreenStatuses } from './statePayload';
 import {
   verifyPassword,
   makeVolunteerToken,
@@ -24,7 +32,7 @@ import {
   isSecureRequest,
 } from './auth';
 import { normContent } from './validate';
-import { SECURITY_HEADERS, sendJson, readJsonBody } from './httpio';
+import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, pageUnderBase } from './httpio';
 import { LoginLimiter } from './rateLimit';
 import { rid } from './store';
 import { saveReportImages, removeReportImage, reportImageFile } from './render/background';
@@ -58,13 +66,6 @@ const MIME: Record<string, string> = {
 const readBody = (req: IncomingMessage, maxBytes = 100_000): Promise<Record<string, unknown>> =>
   readJsonBody(req, maxBytes);
 
-/** Inline boot script: flips the shared SPA bundle into the volunteer view and tells it the
- *  base path it's served under (so its /api/volunteer/… calls resolve under the tunnel prefix).
- *  It's a classic (non-module) script, so it runs before the deferred module bundle. */
-function volunteerBootScript(basePrefix: string): string {
-  return `<script>window.__OMD_VOLUNTEER__=true;window.__OMD_BASE__=${JSON.stringify(basePrefix)};</script>`;
-}
-
 /** Serve the SPA. index.html gets the boot script injected (and, under a tunnel base path, its
  *  asset URLs repointed under that prefix) so the same build boots the volunteer UI. */
 function serveSpa(res: ServerResponse, pathname: string, basePrefix: string): void {
@@ -88,10 +89,9 @@ function serveSpa(res: ServerResponse, pathname: string, basePrefix: string): vo
   // inject the boot script.
   const idx = path.join(config.publicDir, 'index.html');
   if (fs.existsSync(idx)) {
-    let html = fs.readFileSync(idx, 'utf8');
-    if (basePrefix) html = html.replace(/="\/assets\//g, `="${basePrefix}/assets/`);
-    const boot = volunteerBootScript(basePrefix);
-    html = html.includes('</head>') ? html.replace('</head>', `${boot}</head>`) : boot + html;
+    // The control panel's own page and helper, flipped into the volunteer view by a flag in the
+    // same classic script that carries the base path — so it runs before the deferred bundle.
+    const html = pageUnderBase(fs.readFileSync(idx, 'utf8'), basePrefix, 'window.__OMD_VOLUNTEER__=true;');
     res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
     res.end(html);
   } else {
@@ -106,7 +106,7 @@ function labelFor(store: Store, c: ContentRef): string {
   return 'Nothing';
 }
 
-export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestrator }) {
+export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenStatuses }) {
   const { store, orchestrator } = deps;
   const loginLimiter = new LoginLimiter();
   const enabled = () => store.db.settings.volunteerEnabled && !!store.db.volunteerAuth;
@@ -148,14 +148,14 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
         const pin = String(body.pin ?? '');
         if (store.db.volunteerAuth && verifyPassword(pin, store.db.volunteerAuth)) {
           loginLimiter.succeed(req);
-          res.setHeader('set-cookie', setVolunteerCookieHeader(makeVolunteerToken(store.secret), isSecureRequest(req)));
+          res.setHeader('set-cookie', setVolunteerCookieHeader(makeVolunteerToken(store.secret), isSecureRequest(req), basePrefix));
           return sendJson(res, 200, { ok: true });
         }
         loginLimiter.fail(req);
         return sendJson(res, 401, { error: 'Wrong PIN.' });
       }
       if (pathname === '/api/volunteer/logout' && method === 'POST') {
-        res.setHeader('set-cookie', clearVolunteerCookieHeader(isSecureRequest(req)));
+        res.setHeader('set-cookie', clearVolunteerCookieHeader(isSecureRequest(req), basePrefix));
         return sendJson(res, 200, { ok: true });
       }
 
@@ -265,11 +265,12 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: Orchestra
         // uploader declared, not from the bytes. So the same defence the announcement-thumbnail
         // route already carries applies here and was missing: `nosniff` so a browser cannot
         // decide the "image/png" is really HTML, and a CSP that makes it inert if it ever does.
+        // UPLOAD_HEADERS rather than a copy. This was the third hand-written copy of the same
+        // policy and it had already drifted — it omitted `media-src`, which the other two had.
         res.writeHead(200, {
+          ...UPLOAD_HEADERS,
           'content-type': f.mime,
           'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-          'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
         });
         return void fs.createReadStream(f.path).pipe(res);
       }

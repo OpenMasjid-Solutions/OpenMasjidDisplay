@@ -9,6 +9,7 @@ import { config } from './config';
 import { makeLog } from './logger';
 import { openShellSession, closeShellSession, closeShellSessionsFor, SHELL_CLAIM_MS } from './piShell';
 import type { Store } from './store';
+import { followLink } from './store';
 import type { Orchestrator } from './orchestrator';
 import {
   hashPassword,
@@ -50,12 +51,20 @@ import {
   markDeviceSeen,
   markPreviewWanted,
   makeDeviceToken,
+  createAdoptedDevice,
+  removeAdoptedDevice,
+  forgetPendingDevice,
   piState,
   prunePending,
   PI_POLL_MS,
   deviceOnline,
 } from './piAgent';
 import { saveScreenshot, readScreenshot, removeScreenshot, SCREENSHOT_MAX_BYTES } from './piScreenshot';
+import { capabilitiesFor } from './capabilities';
+import { parseLinkAddress, resolveLinkTarget, piPanelSignIn, piPanelHandOver, LINK_TIMEOUT_MS } from './piLink';
+import { isLoopbackHost } from './pi/agentConfig';
+import { statePayload } from './statePayload';
+import { saveSoundClip, setSoundClip, soundWav, removeSoundClipsFor, copySoundClip, SOUND_MAX_UPLOAD_BYTES } from './render/sound';
 
 /**
  * How long one "somebody is watching" beat keeps a screen sending pictures.
@@ -74,13 +83,12 @@ import {
 } from './webScreen';
 import { clockSuspect } from './render/renderer';
 import { fontOptions } from './render/fonts';
-import { SECURITY_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE } from './httpio';
+import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE, pageUnderBase } from './httpio';
+import { rawPath } from './fabricInbound';
 import { widgetPayload } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
 import { parseChangelog, readChangelog } from './changelog';
-import { THEMES } from './render/theme';
-import { DEFAULT_SALAH_HADITH } from './render/defaultHadith';
 import {
   saveBackground,
   removeBackground,
@@ -269,8 +277,7 @@ function serveScreenPage(res: ServerResponse, basePrefix: string): void {
     res.end('OpenMasjid Display is running, but the screen page was not built.');
     return;
   }
-  let html = fs.readFileSync(file, 'utf8');
-  if (basePrefix) html = html.replace(/="\/assets\//g, `="${basePrefix}/assets/`);
+  const html = pageUnderBase(fs.readFileSync(file, 'utf8'), basePrefix);
   res.writeHead(200, {
     ...SECURITY_HEADERS,
     'content-type': MIME['.html'],
@@ -298,50 +305,37 @@ async function backgroundTone(tt: Timetable): Promise<{ bgLight: boolean; autoAc
   }
 }
 
-function serveIndex(res: ServerResponse): void {
+/** First segments that are this app's own routes at the root, and so never a tunnel prefix. */
+const ROOT_SEGMENTS = new Set(['api', 'assets', 's', 'w', 'pi', 'volunteer', 'fabric', 'healthz', 'ws']);
+
+/**
+ * The `/<basePath>` the CONTROL PANEL was reached under, or '' at the root.
+ *
+ * Behind the OpenMasjidOS tunnel the panel is `https://<apps' hostname>/<basePath>/`, the
+ * platform does not strip the prefix, and everything else on that hostname is the dashboard's.
+ * So the page, its API and its assets all arrive under `/<basePath>`. A first segment that is
+ * not one of this app's own root routes is that prefix — derived from the request, as the
+ * screen and volunteer routes do, so it is right whatever the admin named the path. Every
+ * root path the LAN uses starts with one of ROOT_SEGMENTS, or is `/` or a file name with a dot,
+ * so on the LAN this answers ''.
+ */
+export function panelPrefix(pathname: string): string {
+  const m = /^(\/[a-z0-9-]{1,80})(?:\/.*)?$/.exec(pathname);
+  return m && !ROOT_SEGMENTS.has(m[1].slice(1)) ? m[1] : '';
+}
+
+/** The control panel's page, pointed at the prefix it was reached under (see pageUnderBase). */
+function serveIndex(res: ServerResponse, basePrefix: string): void {
   const idx = path.join(config.publicDir, 'index.html');
   if (fs.existsSync(idx)) {
     res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
-    fs.createReadStream(idx).pipe(res);
+    res.end(pageUnderBase(fs.readFileSync(idx, 'utf8'), basePrefix));
   } else {
     res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
     res.end('OpenMasjid Display is running. The control panel build was not found.');
   }
 }
 
-function statePayload(store: Store, orchestrator: Orchestrator) {
-  const db = store.db;
-  const s = db.settings;
-  return {
-    authRequired: true,
-    settings: s,
-    timetables: db.timetables,
-    sources: db.sources,
-    tvs: db.tvs,
-    schedules: db.schedules,
-    themes: THEMES,
-    // The built-in library of ahadith on Salāh (id + English + citation + shipped salah
-    // targeting) so the panel can render the enable/disable checklist and prayer pickers.
-    // Arabic isn't sent — the panel only toggles/targets them.
-    hadithDefaults: DEFAULT_SALAH_HADITH.map((h) => ({ id: h.id, en: h.en, cite: h.cite, prayers: h.prayers })),
-    statuses: orchestrator.getStatuses(),
-    // The screens connect to rtsp://<this server>:<port>/<screen>. The host is
-    // whatever address the panel was opened with (filled in by the browser), so
-    // there is no server IP to configure here.
-    rtsp: {
-      port: config.rtspPort,
-      transport: 'tcp',
-    },
-    omosBase: config.omosBaseUrl,
-    // Volunteer mode (the simple mobile page on its own port). We never send the
-    // PIN itself — only whether one is set, and the host port to show in the URL.
-    volunteer: {
-      pinSet: !!store.db.volunteerAuth,
-      port: config.volunteerPublicPort,
-    },
-    serverNow: Date.now(),
-  };
-}
 
 // SSO-minted admin sessions are short-lived (re-validated against the platform on
 // expiry) so a platform logout/deprovision isn't shadowed by a 30-day local cookie.
@@ -360,6 +354,27 @@ const atCap = (res: ServerResponse, arr: unknown[]): boolean => {
 export function createApi(deps: Deps) {
   const { store, orchestrator, volunteer, whatsapp, commands } = deps;
   const loginLimiter = new LoginLimiter();
+  /**
+   * Screens currently being adopted by address, so two attempts at one screen cannot overlap.
+   *
+   * Adopting mints a FRESH identity, so two requests running together each create a device and a
+   * screen. Left alone, the loser's row stays behind ADOPTED, for a device that will never come
+   * online — and `forgetPendingDevice` deliberately will not touch an adopted row, so nothing
+   * tidies it up but an admin noticing a permanently offline screen.
+   *
+   * **This is not the guard that makes that safe**, and the distinction matters because this one
+   * lives in a single process: a restart mid-adoption, or a second replica, has its own empty
+   * set. What holds regardless is on the PI — its link route refuses a second handover while it
+   * already holds a token, with no await between reading its config and writing it, so the check
+   * and the write cannot interleave. The second server is refused and rolls its own row back.
+   * `panel.test.ts` fires two handovers at one screen and pins that exactly one wins.
+   *
+   * What this set adds is the better answer: refused here in milliseconds with a sentence about
+   * waiting, rather than after a twelve-second round trip that creates a screen and deletes it
+   * again. It is keyed by origin rather than globally, because adopting two different screens at
+   * once is a perfectly reasonable thing to do.
+   */
+  const linking = new Set<string>();
   // Public widget: 120 requests per minute per CLIENT. The embedded page polls every 30s,
   // so a real viewer uses ~2 (a few more with several tabs); this only bites on abuse.
   // Keyed via clientKey(), which prefers X-Forwarded-For's first hop — keying on the socket
@@ -426,7 +441,8 @@ export function createApi(deps: Deps) {
 
   return async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    const pathname = url.pathname;
+    // Reassigned once, below, where the control panel's own routes begin — see panelPrefix.
+    let pathname = url.pathname;
     const method = req.method ?? 'GET';
 
     try {
@@ -749,7 +765,9 @@ export function createApi(deps: Deps) {
             res.end('Not found.');
             return;
           }
-          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': found.mime, 'cache-control': 'public, max-age=86400' });
+          // UPLOAD_HEADERS, not SECURITY_HEADERS: this is a file somebody uploaded, and it may
+          // be an SVG. See the constant.
+          res.writeHead(200, { ...UPLOAD_HEADERS, 'content-type': found.mime, 'cache-control': 'public, max-age=86400' });
           fs.createReadStream(found.path).pipe(res);
           return;
         }
@@ -824,7 +842,8 @@ export function createApi(deps: Deps) {
             return;
           }
           res.writeHead(200, {
-            ...SECURITY_HEADERS,
+            // An uploaded file, so the sandboxing set rather than the ordinary one.
+            ...UPLOAD_HEADERS,
             'content-type': found.mime,
             // Uploads are content-addressed by filename and replaced under a new name, so a
             // long cache is safe and keeps a Pi off the network.
@@ -976,6 +995,32 @@ export function createApi(deps: Deps) {
         return;
       }
 
+      // ---- The control panel, here or behind the OpenMasjidOS tunnel --------
+      //
+      // Behind the tunnel it is all under /<basePath>/ (see panelPrefix). Strip that once, here,
+      // so every route below matches exactly as it does at the root on the LAN. Everything
+      // above handles its own optional prefix and never sees this.
+      const panelBase = panelPrefix(pathname);
+      const requestPath = pathname;
+      if (panelBase) pathname = pathname.slice(panelBase.length) || '/';
+      /**
+       * Was this request for a root path, spelled exactly that way on the wire?
+       *
+       * Password sign-in and first-run setup are for the masjid's own network: from outside the
+       * admin signs in through OpenMasjidOS (the SSO in /api/session) and nothing else. Every
+       * request the tunnel delivers carries the prefix, so it is never at the root — and the
+       * RAW target is compared, not `pathname`, because `new URL()` has already folded
+       * `/display/../api/login` and `%2e%2e` onto the bare path (fabricInbound.ts `rawPath`).
+       */
+      const atRoot = rawPath(req) === pathname;
+      const passwordSignInHere = (): boolean => {
+        if (atRoot) return true;
+        sendJson(res, 403, {
+          error: 'Password sign-in only works on the masjid’s own network. From outside, open Display from your OpenMasjidOS dashboard.',
+        });
+        return false;
+      };
+
       if (pathname === '/api/session' && method === 'GET') {
         let isAuthed = authed(req);
         let username: string | undefined;
@@ -990,7 +1035,10 @@ export function createApi(deps: Deps) {
           const probe = await probePlatform(req);
           reachable = probe.reachable;
           if (probe.username) {
-            res.setHeader('set-cookie', setCookieHeader(makeToken(store.secret, SSO_SESSION_MS), SSO_SESSION_MS, isSecureRequest(req)));
+            res.setHeader(
+              'set-cookie',
+              setCookieHeader(makeToken(store.secret, SSO_SESSION_MS), SSO_SESSION_MS, isSecureRequest(req), panelBase),
+            );
             isAuthed = true;
             username = probe.username;
           }
@@ -1001,10 +1049,16 @@ export function createApi(deps: Deps) {
           needsSetup: !store.db.admin && !ssoConfigured(),
           authed: isAuthed,
           hasPassword: !!store.db.admin,
+          // False from outside, so the panel offers no password form the server would refuse.
+          passwordSignIn: atRoot,
           sso: { enabled: ssoConfigured(), reachable, username },
+          // What this host supports. The Raspberry Pi serves the same panel from the same
+          // bundle and answers 'pi' here, which is the only thing that makes the two differ.
+          capabilities: capabilitiesFor('server'),
         });
       }
       if (pathname === '/api/setup' && method === 'POST') {
+        if (!passwordSignInHere()) return;
         const body = await readBody(req);
         if (store.db.admin) return sendJson(res, 409, { error: 'The control panel is already set up.' });
         // The local password is a recovery path — but under OpenMasjidOS SSO the
@@ -1035,6 +1089,7 @@ export function createApi(deps: Deps) {
         return sendJson(res, 200, { ok: true });
       }
       if (pathname === '/api/login' && method === 'POST') {
+        if (!passwordSignInHere()) return;
         const wait = loginLimiter.retryAfterMs(req);
         if (wait > 0) return sendJson(res, 429, { error: `Too many attempts. Try again in ${Math.ceil(wait / 1000)}s.` });
         const body = await readBody(req);
@@ -1048,14 +1103,22 @@ export function createApi(deps: Deps) {
         return sendJson(res, 401, { error: 'Incorrect password.' });
       }
       if (pathname === '/api/logout' && method === 'POST') {
-        res.setHeader('set-cookie', clearCookieHeader(isSecureRequest(req)));
+        // Under the prefix, clear `/` as well: a cookie at the root of that hostname would be
+        // sent here too, and signing out must not leave one behind. At the root, `/` is all.
+        const secure = isSecureRequest(req);
+        res.setHeader(
+          'set-cookie',
+          panelBase ? [...clearCookieHeader(secure, panelBase), ...clearCookieHeader(secure)] : clearCookieHeader(secure),
+        );
         return sendJson(res, 200, { ok: true });
       }
 
       // ---- Static + SPA (GET) ---------------------------------------------
       if (!pathname.startsWith('/api/') && method === 'GET') {
-        if (serveStatic(res, pathname)) return;
-        return serveIndex(res);
+        // The page itself always goes through serveIndex: served raw it names /assets/ at the root.
+        const isPage = pathname === '/' || pathname === '/index.html';
+        if (!isPage && serveStatic(res, pathname)) return;
+        return serveIndex(res, panelBase);
       }
 
       // ---- Everything else requires auth ----------------------------------
@@ -1144,6 +1207,10 @@ export function createApi(deps: Deps) {
         if (src.iqamahSchedule) copy.iqamahSchedule = JSON.parse(JSON.stringify(src.iqamahSchedule));
         copy.backgroundImage = src.backgroundImage ? copyAsset(src.backgroundImage, copy.id, 'bg') : '';
         copy.logoImage = src.logoImage ? copyAsset(src.logoImage, copy.id, 'logo') : '';
+        // One copy when both slots play the same file, so the duplicate shares it the same way.
+        const { adhanClip = '', iqamahClip = '' } = src.sound ?? {};
+        copy.sound.adhanClip = adhanClip ? copySoundClip(adhanClip, copy.id) : '';
+        copy.sound.iqamahClip = !iqamahClip ? '' : iqamahClip === adhanClip ? copy.sound.adhanClip : copySoundClip(iqamahClip, copy.id);
         if (copy.announcements?.images?.length) {
           copy.announcements.images = (src.announcements?.images ?? [])
             .map((f) => copyAsset(f, copy.id, 'ann'))
@@ -1167,6 +1234,7 @@ export function createApi(deps: Deps) {
           removeBackground(id);
           removeLogo(id);
           removeAllAnnouncements(id);
+          removeSoundClipsFor(id);
           store.update((db) => void (db.timetables = db.timetables.filter((t) => t.id !== id)));
           return sendJson(res, 200, { ok: true });
         }
@@ -1247,6 +1315,52 @@ export function createApi(deps: Deps) {
           store.update((db) => {
             const t = byId(db.timetables, id);
             if (t) t.logoImage = '';
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
+        }
+      }
+
+      // ---- Timetable Adhan/Iqamah sound --------------------------------------
+      // One sound per slot. The uploaded file is DECODED here, once, to the raw audio the stream
+      // is written in — so what is stored is already in the form the renderer needs and nothing
+      // has to decode an mp3 at the moment the Adhan lands.
+      const soundMatch = /^\/api\/timetables\/([\w-]+)\/sound\/(adhan|iqamah)$/.exec(pathname);
+      if (soundMatch) {
+        const id = soundMatch[1];
+        const slot = soundMatch[2] as 'adhan' | 'iqamah';
+        const idx = store.db.timetables.findIndex((t) => t.id === id);
+        if (idx < 0) return sendJson(res, 404, { error: 'Timetable not found.' });
+        if (method === 'GET') {
+          // The panel's preview: exactly what the stream plays, the built-in beep included.
+          // UPLOAD_HEADERS because the bytes came from somebody's upload.
+          res.writeHead(200, { ...UPLOAD_HEADERS, 'content-type': 'audio/wav', 'cache-control': 'no-store' });
+          return void res.end(soundWav(store.db.timetables[idx], slot));
+        }
+        if (method === 'POST') {
+          const body = await readBody(req, Math.round(SOUND_MAX_UPLOAD_BYTES * 1.4) + 1_000);
+          const m = /^data:[^;,]*;base64,(.+)$/s.exec(String(body.data ?? ''));
+          if (!m) return sendJson(res, 400, { error: 'Please choose an audio file (MP3, M4A, WAV or OGG).' });
+          let buf: Buffer;
+          try {
+            buf = Buffer.from(m[1], 'base64');
+          } catch {
+            return sendJson(res, 400, { error: 'That file could not be read.' });
+          }
+          if (buf.length > SOUND_MAX_UPLOAD_BYTES) {
+            return sendJson(res, 400, { error: 'That file is too large — please keep it under about 5 MB.' });
+          }
+          const saved = await saveSoundClip(id, slot, buf);
+          if ('error' in saved) return sendJson(res, 400, { error: saved.error });
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) setSoundClip(t.sound, slot, saved.file);
+          });
+          return sendJson(res, 200, byId(store.db.timetables, id));
+        }
+        if (method === 'DELETE') {
+          store.update((db) => {
+            const t = byId(db.timetables, id);
+            if (t) setSoundClip(t.sound, slot, '');
           });
           return sendJson(res, 200, byId(store.db.timetables, id));
         }
@@ -1378,14 +1492,13 @@ export function createApi(deps: Deps) {
           // Serve the image so the editor can show a thumbnail (must belong to this id).
           const f = file.startsWith(`${id}.ann.`) ? uploadFilePath(file) : null;
           if (!f) return sendJson(res, 404, { error: 'Image not found.' });
-          // Defense-in-depth: this serves user-uploaded files raw with their real type.
-          // An uploaded SVG is active content, so stop the browser sniffing the type and
-          // sandbox it (no scripts, same-origin only) so it can't run JS in our origin.
+          // This serves user-uploaded files raw with their real type, and an uploaded SVG is
+          // active content. The headers were written out here first; they are now UPLOAD_HEADERS,
+          // because the three other routes serving these same bytes did not have them.
           res.writeHead(200, {
+            ...UPLOAD_HEADERS,
             'content-type': f.mime,
             'cache-control': 'private, max-age=300',
-            'x-content-type-options': 'nosniff',
-            'content-security-policy': "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox",
           });
           fs.createReadStream(f.path).pipe(res);
           return;
@@ -1515,6 +1628,8 @@ export function createApi(deps: Deps) {
         // appear in the live preview of unsaved edits.
         const pvBase = typeof body.id === 'string' && body.id ? store.db.timetables.find((t) => t.id === body.id) : undefined;
         const tt = normTimetable(body, pvBase);
+        // A follower is previewed with the times it will actually show, not the form's own.
+        followLink(tt, store.db.timetables);
         // Background + logo are stripped by the validator, so take them from the raw
         // body — an unsaved upload should still appear in the live preview.
         const bgFile = typeof body.backgroundImage === 'string' ? body.backgroundImage : '';
@@ -1535,6 +1650,7 @@ export function createApi(deps: Deps) {
         const body = await readBody(req);
         const pvBase = typeof body.id === 'string' && body.id ? store.db.timetables.find((t) => t.id === body.id) : undefined;
         const tt = normTimetable(body, pvBase);
+        followLink(tt, store.db.timetables);
         const hotspots = await renderPreviewMeta(tt, Date.now());
         return sendJson(res, 200, { hotspots });
       }
@@ -1704,6 +1820,9 @@ export function createApi(deps: Deps) {
             // nothing — the agent ships from the same commit as the server, so one string
             // describes both.
             upToDate: !!d.agentVersion && d.agentVersion === appVersion(),
+            // Whether Update and Terminal can work on this screen at all — see PiDevice.rootLinked.
+            // Undefined means the device has never said, which the panel must not read as "no".
+            rootLinked: d.rootLinked,
             // The collected journal, ANSI-stripped here rather than in the browser so every
             // consumer gets it readable. Absent until somebody asks for it.
             journal: d.journal ? stripAnsi(d.journal) : undefined,
@@ -1760,6 +1879,135 @@ export function createApi(deps: Deps) {
           created = tv;
         });
         return sendJson(res, 200, { tv: created });
+      }
+
+      /**
+       * Adopt the Raspberry Pi at an address, by signing in to its own panel.
+       *
+       * The other way round — the Pi shows a code and somebody types it here — needs the Pi to
+       * have been installed from this server in the first place, which is a command run with a
+       * keyboard on the Pi. This is for the screens already on the network: give the address and
+       * the screen's own password, and it joins.
+       *
+       * ## The order of the three steps is the security of the thing
+       *
+       *   1. **Check the address is on this network.** Not a courtesy — this route makes the
+       *      server open a connection to wherever it is told and post a credential there, and
+       *      `piLink.ts` explains why the check is on RESOLVED addresses rather than on the name.
+       *   2. **Sign in to the Pi with the password the admin gave.** This proves two separate
+       *      things at once, and both are needed: that whoever is asking administers that screen,
+       *      and that the thing at that address is one of our panels at all. Nothing is created
+       *      and nothing is sent until it has succeeded.
+       *   3. **Create the screen, then hand it over.** If the handover fails, the row created a
+       *      moment earlier is deleted again — otherwise a mistyped address would leave a screen
+       *      in this masjid's dashboard that no device will ever claim, holding a live token.
+       *
+       * The Pi is told THIS server's address as the panel is currently being reached, exactly as
+       * the installer bakes in whatever address it was fetched from. Open the panel on the LAN and
+       * the screen talks to the LAN; open it through the platform's tunnel and it talks through
+       * the tunnel.
+       */
+      if (pathname === '/api/pi/link' && method === 'POST') {
+        const body = await readBody(req, 4_000).catch(() => null);
+        if (!body) return sendJson(res, 400, { error: 'That request was too large.' });
+
+        const target = parseLinkAddress(body.address);
+        if ('error' in target) return sendJson(res, 400, { error: target.error });
+        const password = typeof body.password === 'string' ? body.password : '';
+        if (!password) return sendJson(res, 400, { error: 'Enter the password for that screen’s own panel.' });
+        const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
+
+        /**
+         * Resolved ONCE, and the address it resolved to is what gets connected to.
+         *
+         * Checking the name and then handing the name to `fetch` resolves it twice, and nothing
+         * makes the two answers agree — which is a rebinding window, and the thing on the other
+         * side of it is a device token. See resolveLinkTarget.
+         */
+        const resolved = await resolveLinkTarget(target);
+        if ('error' in resolved) return sendJson(res, resolved.status, { error: resolved.error });
+
+        // The address to give the Pi, worked out from how this panel is being reached. Refused
+        // rather than guessed: a screen told a mangled address joins and then never connects.
+        // The path as it ARRIVED, prefix and all: originFor keeps the prefix in the address.
+        const origin = originFor(req, requestPath, '/api/pi/link');
+        if (!origin) {
+          return sendJson(res, 400, {
+            error: 'Could not work out this server’s address from your request. Open the panel on an address the screen can reach.',
+          });
+        }
+
+        /**
+         * The address the screen will be told to call back on must mean something FROM the screen.
+         *
+         * `originFor` derives it from the Host header — the address this panel is being viewed on
+         * — which is right for every case but one: an admin who runs the server on their own
+         * machine and opens it at `http://localhost:7860`. The screen is then handed an address
+         * that, from the screen, is the screen. It adopts, polls its own loopback for ever, and
+         * the dashboard shows it offline with nothing saying why.
+         *
+         * Refused only when the SCREEN is somewhere else. A loopback origin adopting a loopback
+         * target is a development setup where both halves genuinely are one machine, and that
+         * works exactly as it reads.
+         */
+        if (isLoopbackHost(new URL(origin).hostname) && !isLoopbackHost(new URL(resolved.origin).hostname)) {
+          return sendJson(res, 400, {
+            error:
+              `This panel is open at ${origin}, which from that screen means the screen itself — so it ` +
+              `would never reach this server. Open the panel on the address the screen can reach you at, ` +
+              `then adopt it again.`,
+          });
+        }
+
+        if (atCap(res, store.db.tvs)) return;
+
+        // Keyed on the RESOLVED address, not the typed one: `192.168.1.30` and
+        // `raspberrypi.local` are two spellings of one screen, and keying on what was typed would
+        // let them run side by side — which is the very overlap this exists to stop.
+        if (linking.has(resolved.origin)) {
+          return sendJson(res, 409, {
+            error: 'That screen is already being set up. Give it a moment — it takes a few seconds.',
+          });
+        }
+        linking.add(resolved.origin);
+
+        // Both calls share one deadline. A screen that accepts the connection and then says
+        // nothing would otherwise hold this request open for as long as it liked, and an admin is
+        // watching a spinner while it does.
+        const ctrl = new AbortController();
+        const deadline = setTimeout(() => ctrl.abort(), LINK_TIMEOUT_MS);
+        try {
+          const session = await piPanelSignIn(resolved.origin, resolved.display, password, ctrl.signal);
+          if ('error' in session) return sendJson(res, session.status, { error: session.error });
+
+          // Everything is proved. Create the screen and its device, then hand the credentials
+          // over — and undo it if that last step does not land.
+          let created!: Tv;
+          let credentials!: { deviceId: string; deviceSecret: string; token: string };
+          store.update((db) => {
+            const made = createAdoptedDevice(db, { hostname: name || target.hostname, ip: target.hostname }, Date.now());
+            const tv = normTv({ name: name || made.device.hostname || 'Screen', kind: 'pi', defaultContent: { kind: 'off' } });
+            tv.piDeviceId = made.device.id;
+            made.device.tvId = tv.id;
+            db.tvs.push(tv);
+            created = tv;
+            credentials = { deviceId: made.device.id, deviceSecret: made.deviceSecret, token: made.device.token! };
+          });
+
+          const handed = await piPanelHandOver(resolved.origin, session.cookie, { server: origin, ...credentials }, ctrl.signal);
+          if ('error' in handed) {
+            store.update((db) => removeAdoptedDevice(db, credentials.deviceId));
+            return sendJson(res, handed.status, { error: handed.error });
+          }
+
+          // The row this screen used to be, if it had one here. Only ever a pending one.
+          if (handed.previousDeviceId) store.update((db) => forgetPendingDevice(db, handed.previousDeviceId));
+          log.info(`Pi screen "${created.name}" adopted at ${resolved.display}`);
+          return sendJson(res, 200, { tv: created });
+        } finally {
+          clearTimeout(deadline);
+          linking.delete(resolved.origin);
+        }
       }
 
       // Forget a device: drop its token so it falls back to pending and shows a fresh code.

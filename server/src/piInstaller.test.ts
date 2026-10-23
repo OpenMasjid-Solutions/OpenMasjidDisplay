@@ -129,8 +129,17 @@ test('the real installer template renders with nothing left unfilled', () => {
   const tpl = installerTemplate();
   assert.ok(tpl, 'the installer template should be findable from a source checkout');
   const out = renderInstaller(tpl as string, 'http://192.168.1.18:7860', '2.6.2', '0.70.0-dev.8');
-  assert.ok(!out.includes('@@'), `unfilled placeholder: ${/@@[A-Z_]+@@/.exec(out)?.[0] ?? ''}`);
+  // The PATTERN, not the two characters. The script deliberately contains `'@@'SERVER'@@'` —
+  // the placeholder's own name, split so that the substitution (a plain global replace)
+  // cannot rewrite the comparison that detects a STANDALONE install and make every install
+  // look like one. A bare `includes('@@')` cannot tell that apart from a real leftover.
+  const leftover = /@@[A-Z_]+@@/.exec(out);
+  assert.equal(leftover, null, `unfilled placeholder: ${leftover?.[0] ?? ''}`);
   assert.ok(out.includes("SERVER='http://192.168.1.18:7860'"));
+  // And the split guard must SURVIVE rendering, or a server-served installer would decide it
+  // had no server and install a standalone screen pointed at nothing.
+  assert.ok(out.includes("'@@'SERVER'@@'"), 'the standalone guard was substituted away');
+  assert.match(out, /^STANDALONE=0$/m, 'a served installer starts out not-standalone');
 });
 
 test('the installer is POSIX sh, refuses to half-run, and never resets an adopted screen', () => {
@@ -207,6 +216,47 @@ test('a masjid with a screen in every hall does not stampede the server', () => 
   const tpl = installerTemplate() as string;
   assert.ok(/RandomizedDelaySec=/.test(tpl), 'every Pi asking at the same second is a thundering herd');
   assert.ok(/OnUnitActiveSec=/.test(tpl));
+});
+
+// ── a standalone screen has no server to be updated by ───────────────────────
+//
+// What the updater DOES with these is covered by assets/pi/update.test.sh, which runs the thing
+// against a fake release rather than reading it. These two assert the other half: that the
+// installer hands it what it needs, and that it is written somewhere the agent cannot erase.
+
+test('a standalone screen records the channel it follows and the version it is on', () => {
+  const tpl = installerTemplate() as string;
+  const env = tpl.slice(tpl.indexOf('TRUSTENV="$PREFIX/trust.env"'));
+  const block = env.slice(0, env.indexOf('} > "$TRUSTENV"'));
+  assert.ok(/printf "CHANNEL='%s'/.test(block), 'it has no server, so it follows a release channel');
+  assert.ok(/printf "VERSION='%s'/.test(block), 'and must know what it is on to tell a release is newer');
+  // Guarded, because an ADOPTED screen must keep following its server and nothing else: a device
+  // that did both would fight itself every six hours.
+  assert.ok(/if \[ "\$STANDALONE" = 1 \]; then/.test(block), 'only when standalone');
+});
+
+test('the version a standalone screen is on survives the agent rewriting its config', () => {
+  const tpl = installerTemplate() as string;
+  // The same reason trust.env exists at all: the agent rewrites config.json whenever it is
+  // adopted or forgotten and keeps only the keys it knows about. A version recorded there would
+  // be gone within minutes, and the updater would then re-download the same release for ever.
+  assert.ok(tpl.includes('TRUSTENV="$PREFIX/trust.env"'));
+  const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'));
+  assert.ok(/record_version\(\)/.test(upd), 'and it is written back after a successful update');
+  assert.ok(
+    /grep -q '\^VERSION=' "\$PREFIX\/trust\.env"/.test(upd),
+    "appended when absent: a sed that matches nothing succeeds silently, and the cost of that" +
+      ' silence is the whole bundle downloaded every six hours for ever',
+  );
+});
+
+test('a release is verified against its published checksum before anything is installed', () => {
+  const tpl = installerTemplate() as string;
+  const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'));
+  // A display server is on the masjid's own network and was reached over a pinned certificate.
+  // This is a download from the public internet, so the bytes have to prove themselves.
+  assert.ok(/sha256sum --ignore-missing --status -c SHA256SUMS/.test(upd));
+  assert.ok(/refusing to install unverified bytes/.test(upd), 'and missing checksums are a refusal');
 });
 
 // ── trusting a masjid's own display server ───────────────────────────────────
@@ -721,36 +771,68 @@ test('a join is only reported as working once the SERVER has been reached over W
   assert.match(branch, /connection delete/, 'a failed join must remove the profile it created');
 });
 
-test('the board gate refuses a Pi 3 and lets a Pi 4 or newer through — run, not just read', () => {
-  // Asserting that the text is present would not catch the thing most likely to be wrong here: the
-  // sed expression. `[0-9]\+` is a GNU extension that works on Raspberry Pi OS and would never have
-  // failed visibly, and this script is deliberately POSIX sh for dash. So the expression is lifted
-  // out of the installer and actually executed.
-  const tpl = installerTemplate() as string;
-  const gate = /PI_GEN=\$\(printf '%s' "\$MODEL" \| sed -n '[^']+'\)/.exec(tpl);
-  assert.ok(gate, 'could not find the board gate — has it been renamed?');
-  assert.ok(!gate[0].includes('\+'), 'the sed expression must not use the GNU-only \+');
+/** Every copy of the board gate in the installer, lifted verbatim between its markers. */
+function boardGates(tpl: string): string[] {
+  return tpl.match(/# >>> board-gate[\s\S]*?# <<< board-gate/g) ?? [];
+}
 
-  const script = [
-    'MODEL="$1"',
-    gate[0],
-    'if [ -n "$PI_GEN" ] && [ "$PI_GEN" -lt 4 ]; then echo REFUSED; else echo ALLOWED; fi',
-  ].join('\n');
+test('the board gate allows the Pi 4 family and refuses everything else — run, not just read', () => {
+  // Lifted and EXECUTED rather than read, because the thing most likely to be wrong here is the
+  // matching itself, and a `case` pattern that does not match reads exactly like one that does.
+  // The previous version of this gate parsed a generation NUMBER out of the model string, and it
+  // got two of the three supported boards wrong in opposite directions: "Raspberry Pi 400"
+  // parses as four hundred, and "Raspberry Pi Compute Module 4" has no leading number at all.
+  const gates = boardGates(installerTemplate() as string);
+  assert.equal(gates.length, 2, 'the installer and the updater each need one');
+  assert.equal(gates[0], gates[1], 'the two copies must stay identical, or a board can install and then stop updating');
 
+  const script = ['MODEL="$1"', gates[0], 'if [ "$PI_OK" = yes ]; then echo ALLOWED; else echo REFUSED; fi'].join('\n');
   const run = (model: string): string =>
     execFileSync('sh', ['-c', script, 'sh', model], { encoding: 'utf8' }).trim();
 
-  for (const m of ['Raspberry Pi 3 Model B Plus Rev 1.3', 'Raspberry Pi 2 Model B Rev 1.1']) {
-    assert.equal(run(m), 'REFUSED', m);
-  }
-  for (const m of ['Raspberry Pi 4 Model B Rev 1.4', 'Raspberry Pi 5 Model B Rev 1.0', 'Raspberry Pi 10 Model B']) {
+  // The supported family, in the strings these boards actually report.
+  for (const m of [
+    'Raspberry Pi 4 Model B Rev 1.4',
+    'Raspberry Pi 4 Model B Rev 1.1',
+    'Raspberry Pi 400 Rev 1.0',
+    'Raspberry Pi Compute Module 4 Rev 1.0',
+    'Raspberry Pi Compute Module 4S Rev 1.0',
+  ]) {
     assert.equal(run(m), 'ALLOWED', m);
   }
-  // An unrecognised board must NOT be refused: bricking a screen over a string comparison is worse
-  // than running on something slow, and a Zero or a Compute Module is a deliberate choice.
-  for (const m of ['', 'Raspberry Pi Zero 2 W', 'Raspberry Pi Compute Module 4', 'BananaPi M5']) {
-    assert.equal(run(m), 'ALLOWED', m || '(empty)');
+
+  // Everything else. The Pi 5 and the unknown board are the two that CHANGED side: they used to
+  // be allowed through, and are now refused, because a screen left on a wall for years should
+  // run on the board this was tested on rather than on one nobody has tried.
+  for (const m of [
+    'Raspberry Pi 3 Model B Plus Rev 1.3',
+    'Raspberry Pi 2 Model B Rev 1.1',
+    'Raspberry Pi 5 Model B Rev 1.0',
+    'Raspberry Pi Zero 2 W Rev 1.0',
+    'Raspberry Pi Compute Module 3 Plus Rev 1.0',
+    'BananaPi M5',
+    '',
+  ]) {
+    assert.equal(run(m), 'REFUSED', m || '(empty)');
   }
+});
+
+test('the board gate needs no sed, and nothing GNU-only', () => {
+  // This script is deliberately POSIX sh for dash. The gate it replaced used a sed expression,
+  // and the near-miss there was `[0-9]\+` — a GNU extension that happens to work on Raspberry Pi
+  // OS and would therefore never have failed visibly.
+  const gate = boardGates(installerTemplate() as string)[0] ?? '';
+  assert.ok(gate, 'could not find the board gate — have the markers been removed?');
+  // The CODE, not the prose around it: the comment in there says the word "sed" to explain why
+  // there is none, and a check that cannot tell those apart is a check that fails on its own
+  // explanation.
+  const code = gate
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .join('\n');
+  assert.ok(code.includes('case "$MODEL" in'), 'the gate is a case on the model string');
+  assert.ok(!code.includes('sed'), 'a `case` needs no sed');
+  assert.ok(!code.includes('\\+'), 'no GNU-only regex');
 });
 
 test('the updater refuses an unsupported board instead of bricking a working screen', () => {
@@ -759,9 +841,9 @@ test('the updater refuses an unsupported board instead of bricking a working scr
   // touched nothing. The updater must bail BEFORE it fetches anything.
   const tpl = installerTemplate() as string;
   const upd = tpl.slice(tpl.indexOf('cat > "$PREFIX/update.sh"'), tpl.indexOf('chmod 700 "$PREFIX/update.sh"'));
-  assert.ok(upd.includes('PI_GEN='), 'the updater needs its own board gate');
+  assert.ok(upd.includes('# >>> board-gate'), 'the updater needs its own board gate');
 
-  const gateAt = upd.indexOf('PI_GEN=');
+  const gateAt = upd.indexOf('# >>> board-gate');
   const fetchAt = upd.indexOf('curl -fsSL');
   assert.ok(fetchAt > 0, 'could not find the download in update.sh');
   assert.ok(gateAt < fetchAt, 'the board gate must come BEFORE the download, or it has already happened');
@@ -769,6 +851,36 @@ test('the updater refuses an unsupported board instead of bricking a working scr
   const branch = upd.slice(gateAt, fetchAt);
   assert.match(branch, /exit 0/, 'refusing is a normal outcome, not an error');
   assert.match(branch, /keeping the version already installed/, 'it must say the screen is being left alone');
+  // A Pi 5 or an unknown board that somebody installed under the OLD rule keeps running and
+  // simply stops updating. It must not be told it is broken, and it must not be switched off.
+  assert.ok(!/exit 1/.test(branch), 'an unsupported board is left alone, never failed');
+});
+
+test('the panel binds port 80 by capability, not by running as root', () => {
+  // A standalone screen serves its panel on the address shown on its television, which has to
+  // be one somebody can type — so port 80, which is privileged. The whole of the privilege that
+  // needs is CAP_NET_BIND_SERVICE. Running the agent as root for one bind would hand the whole
+  // machine to a bug in an HTTP handler, and this is the line that keeps that from being the
+  // easy fix later.
+  const tpl = installerTemplate() as string;
+  const unit = tpl.slice(tpl.indexOf('openmasjid-screen.service'), tpl.indexOf('keeping itself current'));
+  assert.match(unit, /AmbientCapabilities=CAP_NET_BIND_SERVICE/, 'the capability is granted');
+  assert.match(unit, /CapabilityBoundingSet=CAP_NET_BIND_SERVICE/, 'and nothing wider is even possible');
+  assert.match(unit, /User=\$SERVICE_USER/, 'still its own unprivileged account');
+  assert.ok(!/User=root/.test(unit), 'and never root');
+  assert.match(unit, /NoNewPrivileges=yes/, 'ambient capabilities and this work together');
+});
+
+test('the agent is told where to keep its data and find its panel', () => {
+  // DATA_DIR is not a preference. The default is relative to the working directory, which for a
+  // systemd unit is `/` — so without this the standalone store has nowhere writable to go, and
+  // every timetable somebody enters is lost at the next restart.
+  const tpl = installerTemplate() as string;
+  const unit = tpl.slice(tpl.indexOf('openmasjid-screen.service'), tpl.indexOf('keeping itself current'));
+  assert.match(unit, /Environment=DATA_DIR=\$STATEDIR/, 'the store needs a writable directory');
+  assert.match(unit, /Environment=PUBLIC_DIR=\$PREFIX\/web/, 'and the panel needs its bundle');
+  // And that directory must actually be writable, or the line above is decoration.
+  assert.match(unit, /ReadWritePaths=[^\n]*\$STATEDIR/, 'STATEDIR has to be in ReadWritePaths');
 });
 
 test('the H.265 decoder is switched on, and reachable once it is', () => {
@@ -1058,4 +1170,30 @@ test('root never writes to, or chowns, a path the agent could have replaced with
   for (const stage of ['$PREFIX/.journal.stage', '$PREFIX/.wifi.stage']) {
     assert.ok(code.includes(stage), `${stage} must be staged under the root-owned prefix`);
   }
+});
+
+test('the adopt-by-address route gets the same origin the installer would bake in', () => {
+  // Two routes now need this answer and they are not the same path. The prefix is whatever the
+  // platform mounts this app under, so it has to be stripped off whichever route is asking —
+  // hard-coding /pi.sh and letting the other fall through to "no prefix" would hand a tunnelled
+  // screen the platform's ROOT as its server address. It would install cleanly and never connect.
+  assert.equal(originFor(req({ host: 'h' }), '/api/pi/link', '/api/pi/link'), 'http://h');
+  assert.equal(originFor(req({ host: 'h' }), '/display/api/pi/link', '/api/pi/link'), 'http://h/display');
+  assert.equal(
+    originFor(
+      req({ host: 'internal:7860', 'x-forwarded-host': 'masjid.example', 'x-forwarded-proto': 'https' }),
+      '/display/api/pi/link',
+      '/api/pi/link',
+    ),
+    'https://masjid.example/display',
+  );
+});
+
+test('a path that is not the route asking is refused rather than guessed at', () => {
+  // The route argument is also the validation: a pathname that does not end in it is not a
+  // request this function can answer about, and a best-effort guess would be an address.
+  assert.equal(originFor(req({ host: 'h' }), '/api/pi/link'), null, 'the default route still means /pi.sh');
+  assert.equal(originFor(req({ host: 'h' }), '/evil/pi.sh/x'), null);
+  assert.equal(originFor(req({ host: 'h' }), '/a/b/pi.sh'), null, 'only ONE prefix segment is a prefix');
+  assert.equal(originFor(req({ host: 'h' }), '/UPPER/pi.sh'), null);
 });

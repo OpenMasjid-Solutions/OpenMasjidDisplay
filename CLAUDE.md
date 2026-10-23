@@ -166,8 +166,50 @@ Only when Hasan has said it. In order:
    git tag -a v<version> <digest-pin SHA> -m "…"     # not `git tag v<version>` on a stale HEAD
    git rev-list -n1 v<version>                        # must print the digest-pin SHA
    ```
-5. Propose the catalog change in **OpenMasjidAPPS** — §0c below, which is a PR against its `dev`,
+5. **Publish the GitHub release.** A tag is *not* a release.
+
+   ```sh
+   gh release create v<version> --verify-tag \
+     --title "OpenMasjid Display <version> — <the headline>" \
+     --notes-file <notes>.md
+   gh release view v<version>            # must print your notes, draft:false
+   ```
+
+   **Why this is a step and not a nicety: OpenMasjidOS shows the admin these notes as "What's
+   new" after it has updated the app in the background.** So a tag with no release means a
+   masjid's screens get new software and the person responsible for them gets no explanation —
+   which is worse than a silent update, because they can see *that* something changed. This was
+   missed for `v0.70.0` and had to be published afterwards; at the same moment four of the five
+   OpenMasjid apps had no release for their newest tag, and two had never published one at all.
+   It keeps happening because the chain used to stop at the tag.
+
+   **There are TWO "What's new" surfaces and they must agree.** The in-app one is
+   `CHANGELOG.md`, which ships inside the image and is parsed by `/api/changelog` (§0b). The
+   platform's is *this* release body, fetched from GitHub. Write the release as the fuller,
+   friendlier telling of the same `## X.Y.Z` section — never a contradiction of it, and never
+   a paste of `git log`.
+
+   Write it **for a masjid volunteer**: what they can now do that they could not, what got
+   fixed, and — say this explicitly — that updating is all they need to do. `##` sections, plain
+   language, point at where a thing lives in the UI ("Screens → Add screen"). `gh release view
+   v0.69.0` is the house style. `--verify-tag` is there so you cannot publish notes against a
+   tag that does not exist, which silently creates one on the default branch instead.
+6. Propose the catalog change in **OpenMasjidAPPS** — §0c below, which is a PR against its `dev`,
    never a push to its `main`.
+7. **Verify it actually shipped.** Both checks, every time — they fail in different ways:
+
+   ```sh
+   gh release view v<version>                                   # notes are live, not a draft
+   curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidAPPS/main/catalog.json \
+     | grep '"display"' -A 30 | grep '"version"'                # what STABLE actually serves
+   ```
+
+   **A merged PR against the catalog's `dev` is not shipped.** `main` moves only when a catalog
+   maintainer cuts a release (§0c), so if that second command still reports the old version, your
+   half is complete and you are waiting on them — **report exactly that** rather than calling the
+   release done or assuming it failed. When it does report the new version, check the `commit:` on
+   the catalog's `main` is the digest-pin SHA from step 3; anything else means a masjid is being
+   offered a different tree than the one you tagged.
 
 > ### ⚠ Tag the digest-pin commit, not the commit before it
 >
@@ -277,6 +319,12 @@ us, and they are the ones in §0's dev rules:
 and the panel's account menu renders it as *"What's new"*). So it is not a developer artefact:
 a masjid admin whose app was updated in the background by OpenMasjidOS reads this file to find
 out what changed. That is the whole reason it exists offline.
+
+**It is one of two places that admin is told, and the other is the GitHub release** — OpenMasjidOS
+surfaces the release body as its own "What's new". Same audience, same release, two renderings:
+the `## X.Y.Z` section here is the condensed record that travels with the image, and the release
+body is the fuller telling for someone deciding what changed. Neither may contradict the other,
+and publishing the release is step 5 of the chain in §0 — not an afterthought.
 
 Two sections, two jobs, and **they are not written to the same standard**:
 
@@ -409,6 +457,25 @@ this file.
   whether to warn that the secret is crossing a public network in cleartext.)
 - Behind the OS proxy you may trust `X-Forwarded-*` **only because the platform's ingress now
   sanitises them** — never trust them when the app is reached directly.
+- **The control panel from outside: everything under `/<basePath>`, and OpenMasjidOS is the only
+  way in.** Through the tunnel the app is `https://<apps' hostname>/<basePath>/…`, the prefix is
+  not stripped, and the hostname's root is the dashboard. `api.ts` `panelPrefix` strips it once,
+  AFTER the routes that take their own optional prefix (fabric, volunteer, pi, `/s/`, `/w/`) —
+  moving it above them would route `/<basePath>/fabric/commands/run` to the command handler. The
+  page gets the prefix from `httpio.ts` `pageUnderBase` (`window.__OMD_BASE__`), the bundle from
+  `web/src/base.ts`, and asset URLs built inside the JS from `renderBuiltUrl` in
+  `web/vite.config.ts`; an absolute URL that skips them reaches the dashboard. Three rules hold
+  it safe, each pinned in `remoteAccess.test.ts`:
+  - **`/api/login` and `/api/setup` answer only a RAW request target equal to the root path**
+    (`rawPath`, as the Fabric routes do), so nothing the tunnel delivers — prefixed, `..`,
+    `%2e%2e` — reaches a password. Before this, `/display/%2e%2e/api/login` reaching us unnormalised
+    signed in with the local password. `/api/session` reports `passwordSignIn: false` there, and the
+    page shows "open it from your OpenMasjidOS dashboard" instead of a password box.
+  - **A session cookie set under the prefix has `Path=/<basePath>`**, never `/`: every app on the
+    tunnel hostname shares it and the platform forwards our cookies to the others, so a `Path=/`
+    cookie could be replayed at our API by any of them. Sign-out under the prefix clears both.
+  - **The prefix is a plain `/[a-z0-9-]{1,80}` segment** wherever it reaches a page, a cookie or a
+    URL — checked again at each, so no request text is ever written into HTML.
 - **There are exactly TWO inbound Fabric routes, and they are different trust boundaries** sharing
   the `/fabric/` prefix. That prefix is not a permission. Both are authenticated the same single
   way — by the caller presenting **our own** `OPENMASJID_APP_SECRET` back to us, constant-time

@@ -27,6 +27,7 @@
  * touches the dashboard, and the picture changes every second because a clock is on it.
  */
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import WebSocket from 'ws';
@@ -42,10 +43,22 @@ import {
 } from './framebuffer';
 import { VideoPlayer } from './video';
 import { describeFbset } from './fbset';
-import { pairingSvg, messageSvg } from './pairing';
+import { pairingSvg, messageSvg, withConnectionLost } from './pairing';
+import { createPiPanel, PANEL_PORT, WEB_DIR } from './panel';
+import { createManagedPanel, type ManagedStatus } from './managedPanel';
+import { newSetupCode, formatSetupCode } from './claim';
+import { Store, rid } from '../store';
+import { backgroundDataUri, logoDataUri, announcementDataUri } from '../render/background';
+import { clockSuspect } from '../clockFloor';
+import { fontOptions } from '../render/fonts';
 import { fitMode, blitCentered } from './raster';
 import { deviceFacts, type DeviceFacts } from './device';
-import { netFacts, scanNetworks } from './network';
+import { netFacts, scanNetworks, type NetFacts, type AccessPoint } from './network';
+import { makeControl, readWifiResult, isWifiAction, rootHasTrustedServer } from './control';
+
+// Bound once to this module's logger, so no call site has to pass one. The panel on a
+// standalone screen builds its own with its own logger and writes the same files.
+const { requestPrivileged, requestWifi } = makeControl((...a) => log(...(a as [string, ...unknown[]])));
 import { piStats } from './stats';
 import { AssetCache } from './assetCache';
 import { RenderCadence, cadenceAdvice } from './cadence';
@@ -56,6 +69,7 @@ import {
   saveConfig,
   makeDeviceId,
   makeDeviceSecret,
+  isUsableConfig,
   CONFIG_PATH,
   SERVER_ORIGIN_RE,
   type AgentConfig,
@@ -235,7 +249,20 @@ class Screen {
               serifFamily: families?.serif ?? families?.default ?? 'DejaVu Sans',
               sansSerifFamily: families?.sansSerif ?? families?.default ?? 'DejaVu Sans',
             }
-          : { loadSystemFonts: true, defaultFontFamily: 'DejaVu Sans' },
+          : // No files named — the pairing screen, "Starting…", every message card. This used to
+            // ask resvg to load SYSTEM fonts, and on Raspberry Pi OS LITE that finds nothing:
+            // fontconfig is not installed on a Lite image, and resvg enumerates system fonts
+            // through it. Measured on a Pi 4 with the fonts sitting on disk the whole time:
+            //
+            //   loadSystemFonts: true        612 bytes   no text at all
+            //   explicit DejaVuSans.ttf     4682 bytes   text
+            //   fontDirs /usr/share/fonts   4682 bytes   text
+            //
+            // So the first screen a masjid ever sees — the one carrying the setup code — drew
+            // its boxes and its status dot and not one character. `fontOptions()` names the
+            // files instead, which is what the adopted path already does once the server has
+            // sent them; this makes the screens BEFORE that point work the same way.
+            fontOptions(),
       }).render();
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
@@ -391,40 +418,10 @@ async function runCommand(
     return;
   }
 
-  if (cmd.action === 'wifi-on' || cmd.action === 'wifi-off' || cmd.action === 'wifi-forget' || cmd.action === 'wifi-rescan') {
-    requestPrivileged(cmd.id, cmd.action, `asked the system to ${cmd.action.replace('-', ' ')}`);
-    return;
-  }
-
-  if (cmd.action === 'wifi-join') {
-    // The details CANNOT travel in the spool file. The dispatcher reads a verb as
-    // `head -c 32 | tr -dc 'a-z-'`, which deletes digits, spaces, punctuation and capitals — a
-    // network called "Masjid 5G" would arrive as "masjidg". That filter's narrowness is what keeps
-    // the verb set closed, so it stays exactly as it is and the payload goes beside it.
-    //
-    // Both fields are base64 so no network name or password can introduce a newline, a quote or a
-    // leading dash into the file's shape. Root decodes and validates them itself — this side is a
-    // courier, not the check.
-    if (!cmd.wifi?.ssid) {
-      log('a Wi-Fi join arrived with no network name; ignoring it');
-      return;
-    }
-    try {
-      const dir = '/var/lib/openmasjid-screen';
-      const b64 = (v: string): string => Buffer.from(v, 'utf8').toString('base64');
-      const NL = String.fromCharCode(10);
-      const body = b64(cmd.wifi.ssid) + NL + b64(cmd.wifi.psk ?? '') + NL;
-      // Written and renamed BEFORE the verb, so the dispatcher can never wake on a join whose
-      // details have not landed yet. Mode 0600: it holds the masjid's Wi-Fi password.
-      const tmp = `${dir}/.wifi-request`;
-      fs.writeFileSync(tmp, body, { mode: 0o600 });
-      fs.renameSync(tmp, `${dir}/wifi-request`);
-    } catch (e) {
-      log('could not leave the Wi-Fi details for the system:', (e as Error).message);
-      return;
-    }
-    // The name is fine to log — it is on the air for anyone to see. The password never is.
-    requestPrivileged(cmd.id, 'wifi-join', `asked the system to join "${cmd.wifi.ssid}"`);
+  // The same request a standalone screen's own panel makes, through the same writer — see
+  // control.ts. All that differs is who asked.
+  if (isWifiAction(cmd.action)) {
+    requestWifi(cmd.id, cmd.action, cmd.wifi);
     return;
   }
 
@@ -972,51 +969,7 @@ function runShell(cmd: string): Promise<{ out: string; code: number | null; ms: 
   });
 }
 
-/**
- * Leave a request for the root side to carry out.
- *
- * The agent cannot do either of these itself, deliberately: it cannot write /opt, so it cannot
- * rewrite its own code, and it holds no capability that would let it reboot the machine. What it
- * CAN do is write one file into a spool directory that a root-owned systemd path unit is watching.
- *
- * Written under a dot-prefixed temporary name and renamed into place, so the watcher never wakes on
- * a half-written file — and the verb is one of a fixed set the dispatcher matches against, never
- * anything derived from the network.
- */
-type PrivilegedVerb =
-  // A ROOT terminal. The only verb that hands over the whole machine, and the reason it is a verb
-  // at all is that this process cannot start anything privileged — see the shell-session branch of
-  // runCommand. It carries a session id and a one-time secret, never a command.
-  | 'shell-session'
-  // 'screenshot' is deliberately absent: the agent reads the framebuffer itself, because it is
-  // already in the video group. Nothing that can be done unprivileged belongs in this list.
-  | 'display-off'
-  | 'display-on'
-  | 'set-timezone'
-  | 'set-video-mode'
-  | 'keep-video-mode'
-  | 'update'
-  | 'reboot'
-  | 'reinstall'
-  | 'logs'
-  | 'wifi-on'
-  | 'wifi-off'
-  | 'wifi-join'
-  | 'wifi-forget'
-  | 'wifi-rescan';
 
-function requestPrivileged(id: string, verb: PrivilegedVerb, said: string): void {
-  try {
-    const dir = '/var/lib/openmasjid-screen/control';
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${dir}/.${id}`;
-    fs.writeFileSync(tmp, `${verb}\n`);
-    fs.renameSync(tmp, `${dir}/${id}`);
-    log(said);
-  } catch (e) {
-    log(`could not ask for "${verb}":`, (e as Error).message);
-  }
-}
 
 /** Where root leaves the journal it collected for us. */
 const JOURNAL_PATH = '/var/lib/openmasjid-screen/journal.txt';
@@ -1087,31 +1040,6 @@ async function sendJournal(cfg: AgentConfig): Promise<void> {
   log(`log upload failed (HTTP ${status}); retrying in ${Math.round((journalRetryAt - Date.now()) / 1000)}s`);
 }
 
-/**
- * What root said about the last Wi-Fi join, if it has said anything since we last looked.
- *
- * Read-and-delete: the result is a one-off answer to one request, and leaving it would have the
- * panel reporting an old failure next to a working connection. Root writes it; we only ever read
- * it, so a corrupt or half-written file is treated as no answer rather than as a problem.
- */
-function readWifiResult(): { ok: boolean | null; detail: string; kind?: string } | undefined {
-  const p = '/var/lib/openmasjid-screen/wifi-result';
-  try {
-    if (!fs.existsSync(p)) return undefined;
-    // Three lines now: verdict, detail, and optionally WHICH action this is the answer to. A join
-    // writes the first two, as it always has, so a file with no third line is a join — which is
-    // what makes this readable by an older agent and vice versa.
-    const [verdict = '', detail = '', kind = ''] = fs.readFileSync(p, 'utf8').split(String.fromCharCode(10));
-    fs.unlinkSync(p);
-    // 'unverified' is its own answer and must not read as success: it means the join worked but
-    // nothing proved the display server could still be reached afterwards.
-    const ok = verdict.trim() === 'yes' ? true : verdict.trim() === 'no' ? false : null;
-    const which = kind.trim();
-    return { ok, detail: detail.trim().slice(0, 200), ...(which ? { kind: which.slice(0, 16) } : {}) };
-  } catch {
-    return undefined;
-  }
-}
 
 /** Tell the server what this device is, how it is attached, and what it has been saying. */
 async function checkIn(
@@ -1137,6 +1065,10 @@ async function checkIn(
     networks,
     // Cheap enough to send every time: three world-readable files, no privilege, no subprocess.
     stats: piStats(),
+    // Whether root here has a server address it trusts. Sent on every check-in rather than only
+    // at enrolment because re-running the installer is how a screen GAINS one, and the dashboard
+    // should stop warning about it without waiting for a restart. See rootLinked().
+    rootLinked: rootHasTrustedServer(),
     displayOff: displayIsOff(),
     videoMode: readVideoMode(),
     // A provisional mode: root left this marker and will put the old one back in a few minutes
@@ -1154,60 +1086,92 @@ async function checkIn(
 // ── waiting to be adopted ─────────────────────────────────────────────────────
 
 /**
- * Not yet adopted: show a code, and keep asking whether somebody has typed it.
+ * What one enrolment attempt came back with, in the words the television and the panel use.
  *
- * Enrolment is re-sent on every pass rather than once, for two reasons. It is how the device
- * finds out it has been adopted — the token comes back in the reply — and it is how the panel's
- * list stays current, since the facts sent along with it are what that list shows.
+ * Shared because there are now two callers and they want the same answer on different schedules.
+ * A screen the INSTALLER pointed at a server waits here until it is adopted and has nothing else
+ * to do; a screen pointed at one from its OWN panel re-reads its config between attempts, because
+ * the address can be corrected or withdrawn in that panel while this is running. One loop could
+ * not serve both — the first blocks for ever by design, and the second must not — so what is
+ * shared is the attempt rather than the loop around it.
  */
-async function waitForAdoption(screen: Screen | null, cfg: AgentConfig, facts: DeviceFacts): Promise<string> {
-  let code = '';
-  let connected = false;
-  let status = 'Contacting the display server…';
+interface EnrolPass {
+  /** the code to show; carried over from the last attempt when this one could not reach anybody */
+  code: string;
+  connected: boolean;
+  /** one plain sentence about what is going on, for the screen and for the panel */
+  status: string;
+  /** present only once somebody has approved this screen in the server's dashboard */
+  token?: string;
+}
 
-  for (;;) {
-    const reply = await postJson<EnrolReply>(`${cfg.server}/pi/enrol`, {
-      deviceId: cfg.deviceId,
-      deviceSecret: cfg.deviceSecret,
-      hostname: facts.hostname,
-      ip: facts.ip,
-      model: facts.model,
-      agentVersion: AGENT_VERSION,
-    }).catch((e: Error) => {
-      // A name that will not resolve, a refused connection, a timeout: all the same to the
-      // person looking at the screen, and all fixed by looking at the network.
-      log('enrol failed:', e.message);
-      return { httpStatus: 0 };
-    });
+/** One attempt, with `lastCode` kept so a failed pass does not blank a code already on screen. */
+async function enrolOnce(cfg: AgentConfig, facts: DeviceFacts, lastCode: string): Promise<EnrolPass> {
+  const reply = await postJson<EnrolReply>(`${cfg.server}/pi/enrol`, {
+    deviceId: cfg.deviceId,
+    deviceSecret: cfg.deviceSecret,
+    hostname: facts.hostname,
+    ip: facts.ip,
+    model: facts.model,
+    agentVersion: AGENT_VERSION,
+    rootLinked: rootHasTrustedServer(),
+  }).catch((e: Error) => {
+    // A name that will not resolve, a refused connection, a timeout: all the same to the person
+    // looking at the screen, and all fixed by looking at the network.
+    log('enrol failed:', e.message);
+    return { httpStatus: 0 };
+  });
 
-    if (failed(reply)) {
-      connected = false;
-      status =
+  if (failed(reply)) {
+    return {
+      code: lastCode,
+      connected: false,
+      status:
         reply.httpStatus === 429
           ? 'The display server is busy. Retrying…'
-          : `Cannot reach the display server at ${cfg.server}`;
-    } else {
-      connected = true;
-      code = reply.code || code;
-      status = 'Waiting for this code to be entered in the dashboard';
-      if (reply.token) {
-        log('adopted; saving credentials');
-        return reply.token;
-      }
-    }
+          : `Cannot reach the display server at ${cfg.server}`,
+    };
+  }
+  return {
+    code: reply.code || lastCode,
+    connected: true,
+    status: 'Waiting for this code to be entered in the dashboard',
+    ...(reply.token ? { token: reply.token } : {}),
+  };
+}
 
+/**
+ * Not yet adopted: show a code, and keep asking whether somebody has typed it.
+ *
+ * The path a screen the INSTALLER set up takes. It has no local account and no panel of its own —
+ * it was built to belong to a display server — so there is nothing to do here but wait, and the
+ * television is the only thing it can say it with.
+ *
+ * Enrolment is re-sent on every pass rather than once, for two reasons. It is how the device finds
+ * out it has been adopted — the token comes back in the reply — and it is how the panel's list
+ * stays current, since the facts sent along with it are what that list shows.
+ */
+async function waitForAdoption(screen: Screen | null, cfg: AgentConfig, facts: DeviceFacts): Promise<string> {
+  let pass: EnrolPass = { code: '', connected: false, status: 'Contacting the display server…' };
+
+  for (;;) {
+    pass = await enrolOnce(cfg, facts, pass.code);
+    if (pass.token) {
+      log('adopted; saving credentials');
+      return pass.token;
+    }
     screen?.show(
       pairingSvg({
-        code,
+        code: pass.code,
         ip: facts.ip,
         hostname: facts.hostname,
         server: cfg.server,
-        status,
-        connected,
+        status: pass.status,
+        connected: pass.connected,
         agentVersion: AGENT_VERSION,
       }),
     );
-    await sleep(connected ? POLL_MS : Math.min(POLL_MS * 3, 15_000));
+    await sleep(pass.connected ? POLL_MS : Math.min(POLL_MS * 3, 15_000));
   }
 }
 
@@ -1363,6 +1327,9 @@ function frostOnce(live: Live, bgUri: string, width: number, height: number): vo
  *  that shows nothing until it does is not. */
 function imageFor(live: Live, pathOrNull: string | null): string | null {
   if (!pathOrNull) return null;
+  // Already resolved. A standalone screen reads its own uploads off its own disk, so there is no
+  // server URL to look up and nothing to fetch — the value IS the picture.
+  if (pathOrNull.startsWith('data:')) return pathOrNull;
   const url = absolute(pathOrNull, live.server);
   return (url && live.images.get(url)) || null;
 }
@@ -1379,9 +1346,12 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
     // switched off ON PURPOSE, and one that is misconfigured should say so — a masjid staring at
     // a black television has no way to tell those apart.
     return screen.show(
-      messageSvg(
-        st.content.kind === 'off' ? 'Screen is off' : 'Nothing to show yet',
-        st.screenName || '',
+      lostBadge(
+        live,
+        messageSvg(
+          st.content.kind === 'off' ? 'Screen is off' : 'Nothing to show yet',
+          st.screenName || '',
+        ),
       ),
     );
   }
@@ -1415,7 +1385,18 @@ function drawFrame(screen: Screen | null, live: Live): number | null {
     // still preview does.
   });
 
-  return screen.show(svg, live.fontFiles, live.state?.fontFamilies);
+  return screen.show(lostBadge(live, svg), live.fontFiles, live.state?.fontFamilies);
+}
+
+/**
+ * The frame, with the "server connection lost" badge on it once the server has been silent past
+ * `STALE_AFTER_MS`. The timetable keeps drawing underneath it: its times are computed here. A
+ * playing camera gets no badge — ffmpeg writes it straight to the framebuffer, so there is nothing
+ * of ours to draw on — but a camera RELAYED by the server stops with it, and the card that takes
+ * its place does carry one.
+ */
+function lostBadge(live: Live, svg: string): string {
+  return live.stale() ? withConnectionLost(svg) : svg;
 }
 
 /**
@@ -1435,6 +1416,44 @@ async function runAdopted(
   const cadence = new RenderCadence();
   const player = new VideoPlayer(FB_DEVICE, log);
   let advised = '';
+
+  /**
+   * An adopted screen serves a panel too — one read-only status page.
+   *
+   * It used to serve nothing: createPiPanel was built inside runStandalone, so adoption took the
+   * panel away. Measured on hardware — port 80 went 200, unreachable, 200 across a round trip —
+   * and the cost lands on the day a masjid's display server dies for good, when every screen keeps
+   * drawing and none of them can be reached except over SSH.
+   *
+   * A SEPARATE, much smaller handler rather than the standalone panel with its writes disabled:
+   * see managedPanel.ts. Nothing that writes is registered, so there is no guard to get wrong.
+   */
+  const status = (): ManagedStatus => ({
+    screenName: live.state?.screenName ?? '',
+    hostname: facts.hostname,
+    ip: facts.ip,
+    model: facts.model,
+    agentVersion: AGENT_VERSION,
+    server: cfg.server,
+    // `stale()` is the agent's own judgement of whether the server has gone quiet long enough that
+    // the picture may be out of date — the same one that dims the screen. Reused rather than
+    // re-derived, so the page and the television cannot disagree.
+    serverReachable: live.lastPollOk > 0 && !live.stale(),
+    lastContactAt: live.lastPollOk > 0 ? new Date(live.lastPollOk).toISOString() : null,
+    content: !live.state
+      ? 'nothing'
+      : live.state.content.kind === 'source'
+        ? 'camera'
+        : live.state.content.kind === 'off'
+          ? 'off'
+          : 'timetable',
+    clockSuspect: clockSuspect(),
+    displayOff: displayIsOff(),
+  });
+  const panel = createManagedPanel({ webDir: WEB_DIR, status });
+  const panelServer = http.createServer((req, res) => panel(req, res));
+  panelServer.on('error', (e) => log('panel listener:', e.message));
+  panelServer.listen(PANEL_PORT, () => log(`managed panel listening on port ${PANEL_PORT}`));
 
   // ── the polling loop ──
   const poll = async (): Promise<void> => {
@@ -1560,16 +1579,6 @@ async function runAdopted(
         await sleep(2000);
         continue;
       }
-      if (live.stale() && !player.status().playing) {
-        // Times on screen stay correct — they are computed here — but a change made in the
-        // dashboard may not have reached us, and saying so beats looking healthy.
-        screen?.show(
-          messageSvg('Lost contact with the display server', 'This screen will recover on its own when it comes back.'),
-        );
-        await sleep(5000);
-        continue;
-      }
-
       // A camera and the timetable are the same pixels, so exactly one of them may be running.
       // ffmpeg draws straight to the framebuffer; anything we painted would be a flicker over it.
       const stream = live.state.stream;
@@ -1602,9 +1611,12 @@ async function runAdopted(
         // Between attempts. Saying which camera and what went wrong turns "the screen is black"
         // into something whoever is standing there can act on.
         screen.show(
-          messageSvg(
-            'Camera unavailable',
-            st.lastError ? st.lastError.slice(0, 120) : `Trying to reach the camera for "${live.state.screenName}"`,
+          lostBadge(
+            live,
+            messageSvg(
+              'Camera unavailable',
+              st.lastError ? st.lastError.slice(0, 120) : `Trying to reach the camera for "${live.state.screenName}"`,
+            ),
           ),
         );
         await sleep(3000);
@@ -1636,6 +1648,11 @@ async function runAdopted(
   await Promise.race([poll(), draw()]);
   live.forgotten = true;
   player.stop();
+  // Hand port 80 back before returning. This function returns when the screen is FORGOTTEN, and
+  // the caller's next pass either waits for adoption again or runs standalone — both of which
+  // bind this port. A listener left open makes that fail with EADDRINUSE, which would look like
+  // a screen that forgot how to serve its own panel.
+  await new Promise<void>((r) => panelServer.close(() => r()));
   return 'forgotten';
 }
 
@@ -1651,12 +1668,408 @@ async function runAdopted(
 async function waitForConfig(screen: Screen | null): Promise<AgentConfig> {
   for (let attempt = 0; ; attempt++) {
     const cfg = loadConfig();
-    if (cfg?.server) return cfg;
+    /**
+     * A server address, OR a deliberate standalone config — which the installer writes with an
+     * identity already in it.
+     *
+     * The identity is the test for "written on purpose". A file truncated by a power cut parses
+     * as `{}`: no server and no identity. Accepting that as standalone would take a screen that
+     * has been adopted for a year and present it to the hall as a brand-new one asking to be set
+     * up, which is a far worse failure than waiting. So a config with neither keeps waiting,
+     * exactly as it did before standalone existed.
+     */
+    if (isUsableConfig(cfg)) return cfg!;
     if (attempt === 0) log(`no usable config at ${CONFIG_PATH}; waiting`);
     screen?.show(
-      messageSvg('Not set up yet', 'This screen has no display server configured. Re-run the installer on this device.'),
+      messageSvg('Not set up yet', 'This screen has no configuration. Re-run the installer on this device.'),
     );
     await sleep(10_000);
+  }
+}
+
+/**
+ * The state a standalone screen would have been sent, built from what is on this device.
+ *
+ * Same shape as the wire state the server sends, so `drawFrame` is the one that draws it and
+ * there is no second rendering path to keep in step. The assets are `data:` URIs read straight
+ * off this disk — `render/background` caches them by modification time, so this costs one read
+ * per change rather than one per frame.
+ */
+/**
+ * The faces this device draws with, resolved once.
+ *
+ * The same scan the server runs, so a standalone screen picks what the server would have picked
+ * — including the Arabic face, which is the whole point. Naming the files matters: resvg is
+ * given `loadSystemFonts: false` when there are files, and with system fonts and a Latin default
+ * family it takes the Latin face and draws every Arabic glyph on the timetable as an empty box.
+ * See Screen.show, where that measurement is recorded.
+ */
+const FONTS = fontOptions();
+
+function localState(store: Store, live: Live): void {
+  const db = store.db;
+  // One screen, so one assignment: whatever this device was told to show, or the only timetable
+  // there is. A screen with nothing configured says so rather than going black.
+  const tv = db.tvs[0];
+  // A volunteer's manual override outranks the default, until it expires — the same precedence
+  // the server applies, and the reason the volunteer page works with no server behind it.
+  const override = tv?.override && (tv.override.until === null || tv.override.until > Date.now()) ? tv.override.content : null;
+  const ref = override ?? tv?.defaultContent ?? { kind: 'timetable' as const, id: db.timetables[0]?.id ?? '' };
+  const tt = ref.kind === 'timetable' ? (db.timetables.find((t) => t.id === ref.id) ?? null) : null;
+  const ann = tt?.announcements?.images ?? [];
+
+  live.state = {
+    content: ref,
+    timetable: tt,
+    assets: {
+      background: tt?.backgroundImage ? backgroundDataUri(tt.backgroundImage) : null,
+      logo: tt?.logoImage ? logoDataUri(tt.logoImage) : null,
+      announcements: ann.map((f) => announcementDataUri(f)).filter((u): u is string => !!u),
+    },
+    // Only for an ENABLED source — a disabled one is "off", not "try anyway". The same rule
+    // the server applies when it builds this for an adopted screen.
+    stream: ref.kind === 'source' ? (() => {
+      const src = db.sources.find((x) => x.id === ref.id);
+      return src && src.enabled ? { url: src.url, mode: src.mode } : null;
+    })() : null,
+    fonts: [],
+    fontFamilies: {
+      default: FONTS.defaultFontFamily,
+      serif: FONTS.serifFamily ?? FONTS.defaultFontFamily,
+      sansSerif: FONTS.sansSerifFamily ?? FONTS.defaultFontFamily,
+    },
+    // Both are the render worker's job on the server, and there is no worker here. Leaving them
+    // alone means the timetable's own colour choice decides, which is what it does when a masjid
+    // has not set a wallpaper — the common case on a screen configured from its own panel.
+    bgLight: false,
+    autoAccent: null,
+    serverNow: Date.now(),
+    clockSuspect: clockSuspect(),
+    pollMs: POLL_MS,
+    screenName: tv?.name ?? '',
+    // shortcut: no weekly schedule and no overnight display schedule yet — those live on the
+    // screen record the server keeps, and a standalone screen has no panel for them until the
+    // Screens page learns its one-screen form. Upgrade with that page.
+  } as PiStateWire;
+}
+
+/**
+ * A screen that runs on its own.
+ *
+ * It never calls anybody. The whole of its inbound surface is the panel below, on the masjid's
+ * network, and the whole of its outbound traffic is whatever the admin points a camera at. Until
+ * somebody claims it, the television carries the code that lets them.
+ */
+async function runStandalone(screen: Screen | null, cfg: AgentConfig, facts: DeviceFacts): Promise<never> {
+  // `conf` not `live`: in this file `live` is the screen's live STATE, and runAdopted uses it
+  // that way. Two meanings for one name in one function is how the wrong one gets passed.
+  let conf = cfg;
+  const store = new Store();
+
+  /**
+   * A code only while there is somebody to use it.
+   *
+   * Minted once and kept — a code that changed on every boot is one nobody can write down, on a
+   * device whose normal shutdown is somebody switching the socket off. But ONLY while this
+   * screen is unclaimed: it used to mint on every restart regardless, so a screen set up months
+   * ago carried a fresh, live setup code on disk that nothing would ever show or spend. Nothing
+   * could be done with it today — the claim route refuses outright once an account exists — and
+   * that is exactly the kind of secret that becomes a way in the day somebody reorders those two
+   * checks.
+   */
+  if (!conf.setupCode && !store.db.admin) {
+    conf = { ...conf, setupCode: newSetupCode() };
+    saveConfig(conf);
+    log('minted a setup code for this screen');
+  }
+  /**
+   * One screen, and it is this device.
+   *
+   * Seeded so the panel's Screens page has the same card the server would show, rather than an
+   * empty state offering to add a screen on a machine that plainly has one attached. It is also
+   * what `localState` reads to decide what to draw, so the admin's choice in the panel and the
+   * picture on the television are the same record rather than two guesses at it.
+   */
+  if (store.db.tvs.length === 0) {
+    store.update((db) => {
+      db.tvs = [
+        {
+          id: rid('tv'),
+          name: 'This screen',
+          kind: 'pi',
+          defaultContent: { kind: 'timetable', id: db.timetables[0]?.id ?? '' },
+          createdAt: new Date().toISOString(),
+        },
+      ];
+    });
+    log('seeded this screen');
+  }
+  /**
+   * How this screen is attached, for the panel's Wi-Fi section.
+   *
+   * Cached and refreshed off the request, never during one. `netFacts()` and `scanNetworks()` are
+   * `nmcli` subprocesses and the panel polls state every couple of seconds; doing this inline
+   * would put two process spawns in front of every poll, in the same process that draws the
+   * television at 1 fps. So a read returns the last good answer immediately and starts a refresh
+   * only if the answer is stale and one is not already running.
+   *
+   * The Wi-Fi verdict is different and is read on EVERY call: root's answer is written once and
+   * deleted when read, so a cache would either lose it or show it for ever.
+   */
+  let netAt = 0;
+  let netBusy = false;
+  let netCache: { net?: NetFacts; networks?: AccessPoint[] } = {};
+  const NET_MAX_AGE_MS = 15_000;
+  const refreshNet = (): void => {
+    if (netBusy || Date.now() - netAt < NET_MAX_AGE_MS) return;
+    netBusy = true;
+    void (async () => {
+      try {
+        const net = await netFacts();
+        netCache = { net, networks: net.hasWifi ? await scanNetworks() : [] };
+        netAt = Date.now();
+      } catch (e) {
+        // Keep the last good answer. A failed scan is not news worth replacing facts with.
+        log('could not read the network state:', (e as Error).message);
+      } finally {
+        netBusy = false;
+      }
+    })();
+  };
+
+  // Warmed before anything asks, so the first poll after a sign-in has a real answer rather
+  // than the empty cache — which the panel would otherwise have to draw as something.
+  refreshNet();
+
+  /**
+   * How enrolment is going, once somebody has pointed this screen at a display server.
+   *
+   * Read by the panel and written by the loop below. A plain object for the same reason `Live` is
+   * one: two readers, neither of which yields in the middle of touching it.
+   */
+  const linkStatus = { code: '', connected: false, status: '' };
+
+  const panel = createPiPanel({
+    store,
+    device: {
+      id: store.db.tvs[0]?.id ?? 'this-screen',
+      read: () => {
+        refreshNet();
+        return { ...netCache, wifiResult: readWifiResult() };
+      },
+      // The same writer the agent uses for a command a display server queued. Only the asker
+      // differs; what lands in the spool is identical.
+      wifi: (action, w) => requestWifi(rid('wifi'), action, w),
+    },
+    // Read fresh each time rather than closing over `live`: the panel SPENDS the code, and a
+    // stale copy here would keep accepting one that has already been used.
+    readConfig: () => loadConfig(),
+    writeConfig: (next) => saveConfig(next),
+    linkState: () => linkStatus,
+    webDir: WEB_DIR,
+    /**
+     * This screen's own status.
+     *
+     * On the server this comes from MediaMTX reporting a reader on the path. Here the question
+     * answers itself: the process computing it is the process drawing the picture, so if
+     * anything is asking, the screen is on. Reporting an empty list made the panel badge the
+     * very screen the admin was looking at as OFFLINE.
+     *
+     * `contentStale` carries the clock warning through to the panel, so the badge agrees with
+     * what the television is saying rather than contradicting it.
+     */
+    screens: {
+      getStatuses: () => {
+        const tv = store.db.tvs[0];
+        if (!tv) return [];
+        const override = tv.override && (tv.override.until === null || tv.override.until > Date.now()) ? tv.override : null;
+        return [
+          {
+            tvId: tv.id,
+            effective: override ? override.content : tv.defaultContent,
+            source: override ? ('override' as const) : ('default' as const),
+            streamReady: true,
+            ...(clockSuspect() ? { contentStale: true, staleReason: 'clock' as const } : {}),
+          },
+        ];
+      },
+    },
+  });
+
+  const server = http.createServer((req, res) => void panel(req, res));
+  server.on('error', (e) => log('panel listener:', e.message));
+  server.listen(PANEL_PORT, () => log(`panel listening on port ${PANEL_PORT}`));
+
+  const live = new Live('');
+  const player = new VideoPlayer(FB_DEVICE, log);
+  let cameraDownSince = 0;
+  // Named explicitly rather than left to resvg's system-font search — see FONTS.
+  live.fontFiles = FONTS.fontFiles ?? [];
+  const arabic = (FONTS.fontFiles ?? []).some((f) => /arabic|amiri/i.test(f));
+  log(`fonts: ${live.fontFiles.length} file(s)${arabic ? '' : ' — NO ARABIC FACE; Arabic and Urdu text will draw as empty boxes'}`);
+
+  const cadence = new RenderCadence();
+
+  for (;;) {
+    /**
+     * Has somebody pointed this screen at a display server?
+     *
+     * Read off DISK every pass rather than from the config this function was started with, because
+     * the panel this same process is serving can change it at any moment — and that is the whole
+     * mechanism: the panel writes the file, this notices. Nothing restarts anything, so a mistyped
+     * address can be corrected in the same panel a second later, which is the one thing the
+     * alternative (restart straight into the enrolment loop) could not offer. The admin would have
+     * been left looking at a read-only page reporting a server that does not exist, with no way
+     * back short of a keyboard and a monitor.
+     */
+    const disk = loadConfig();
+    if (disk?.server) {
+      // Handed a token as well — by a display server that signed in here and created the screen
+      // itself. There is nothing left to wait for, and nothing in this function can draw an
+      // adopted screen, so end the process and let systemd start it in the adopted mode five
+      // seconds later. The panel is replaced by the read-only one at that point, which is correct:
+      // the server owns this screen now.
+      if (disk.token) {
+        log(`adopted by ${disk.server}; restarting as a managed screen`);
+        screen?.show(messageSvg('Joining a display server', 'This screen is being set up — it will be ready in a moment.'));
+        await sleep(1_000);
+        process.exit(0);
+      }
+
+      // Only an address so far: enrol, and put the code on the television AND in the panel. The
+      // server's own admin has to approve it there, which is the point — holding this screen's
+      // password should not be enough to insert a screen into somebody else's masjid.
+      //
+      // One attempt per pass, not a loop: the config is re-read at the top of this one, so a
+      // mistyped address can be corrected — or withdrawn — in the panel this process is still
+      // serving. `waitForAdoption` blocks on the same attempt for ever, which is right for a
+      // screen the installer built and has no panel of its own to be rescued from.
+      const pass = await enrolOnce(disk, facts, linkStatus.code);
+      Object.assign(linkStatus, { code: pass.code, connected: pass.connected, status: pass.status });
+      if (pass.token) {
+        log('adopted; saving credentials');
+        saveConfig({ ...disk, token: pass.token });
+        continue; // picked up by the branch above on the next pass
+      }
+
+      screen?.show(
+        pairingSvg({
+          code: linkStatus.code,
+          ip: facts.ip,
+          hostname: facts.hostname,
+          server: disk.server,
+          status: linkStatus.status,
+          connected: linkStatus.connected,
+          agentVersion: AGENT_VERSION,
+        }),
+      );
+      await sleep(linkStatus.connected ? POLL_MS : Math.min(POLL_MS * 3, 15_000));
+      continue;
+    }
+    // Pointed at nothing — or pointed back at nothing after a mistyped address was cleared. Drop
+    // whatever the last enrolment attempt said so the panel does not keep reporting it.
+    if (linkStatus.code || linkStatus.status) {
+      linkStatus.code = '';
+      linkStatus.connected = false;
+      linkStatus.status = '';
+    }
+
+    const code = disk?.setupCode ?? '';
+    if (!store.db.admin && code) {
+      screen?.show(
+        pairingSvg({
+          code: formatSetupCode(code),
+          ip: facts.ip,
+          hostname: facts.hostname,
+          server: '',
+          status: `Waiting to be set up — open http://${facts.ip || 'this screen'} on this network`,
+          connected: !!facts.ip,
+          agentVersion: AGENT_VERSION,
+          standalone: true,
+        }),
+      );
+      await sleep(2_000);
+      continue;
+    }
+
+    // A clock that cannot be right must never be presented as the time. A Pi has no
+    // battery-backed clock, so after a power cut it believes whatever was last written to the
+    // card until NTP corrects it — and prayer times computed against that are wrong in the one
+    // way nobody checks.
+    if (clockSuspect()) {
+      screen?.show(messageSvg('Clock is wrong', 'This screen is waiting for the correct time before showing prayer times.'));
+      await sleep(5_000);
+      continue;
+    }
+
+    localState(store, live);
+    applyDisplaySchedule(live);
+    /**
+     * The camera is decided BEFORE "is there a timetable", and the order is the bug this comment
+     * exists for: a screen showing a camera HAS no timetable, so checking for one first sent
+     * every camera to the "Nothing to show yet" card and the player was never reached. From the
+     * hall that is indistinguishable from a camera that will not connect. The adopted loop has
+     * always been in this order.
+     */
+
+    /**
+     * A camera and the timetable are the same pixels, so exactly one of them may be running:
+     * ffmpeg draws straight to the framebuffer, and anything drawn here would flicker over it.
+     *
+     * The same handling the adopted path uses, including the gap. Some cameras tear the session
+     * down on their own schedule — a UniFi one measured on real hardware ends it cleanly about
+     * every seventy seconds — and painting "Camera unavailable" into that gap put a warning on
+     * the wall every minute on a camera that was working. The framebuffer still holds the last
+     * frame ffmpeg wrote, so drawing nothing leaves the picture up and the reconnect is invisible.
+     */
+    const stream = live.state?.stream;
+    if (stream && screen) {
+      player.play(stream.url, screen.geo);
+      const st = player.status();
+      if (st.playing) {
+        cameraDownSince = 0;
+        await sleep(2_000);
+        continue;
+      }
+      if (!cameraDownSince) cameraDownSince = Date.now();
+      if (Date.now() - cameraDownSince < CAMERA_GRACE_MS) {
+        await sleep(400);
+        continue;
+      }
+      // Past the grace period it is not a hiccup. Saying which camera and what went wrong turns
+      // "the screen is black" into something whoever is standing there can act on.
+      screen.show(
+        messageSvg('Camera unavailable', st.lastError ? st.lastError.slice(0, 120) : 'Trying to reach the camera'),
+        live.fontFiles,
+        live.state?.fontFamilies,
+      );
+      await sleep(3_000);
+      continue;
+    }
+    player.stop();
+
+    if (!live.state?.timetable) {
+      // Not black. A screen with nothing configured and a screen that is broken look identical
+      // in the dark, and only one of them is somebody's job to fix.
+      screen?.show(
+        messageSvg('Nothing to show yet', `Add a timetable at http://${facts.ip || 'this screen'}`),
+        live.fontFiles,
+        live.state?.fontFamilies,
+      );
+      await sleep(2_000);
+      continue;
+    }
+
+    // Blur the wallpaper once per wallpaper, not once per frame. Measured on a Pi 4: the frost
+    // costs about 3.8 seconds of every frame, which turns a clock that ticks into one that
+    // lurches. See RenderOpts.bgPreblurred.
+    const bg = live.state.assets.background;
+    const { width: fw, height: fh } = dimsFor(live.state.timetable.orientation, live.state.timetable.quality);
+    if (bg && (live.frostedSrc !== bg || live.frostedDims !== `${fw}x${fh}`)) frostOnce(live, bg, fw, fh);
+
+    const ms = drawFrame(screen, live);
+    if (ms !== null) cadence.record(ms);
+    await sleep(cadence.intervalMs());
   }
 }
 
@@ -1702,15 +2115,49 @@ async function main(): Promise<void> {
   const cache = new AssetCache(undefined, undefined, (m) => log('asset:', m));
 
   for (;;) {
+    // No server means this screen is its own: it serves a panel, is configured on the LAN, and
+    // none of the adopted machinery applies to it. It never returns — a screen pointed at a server
+    // from its own panel ends the process once it has a token, and systemd starts it again here.
+    if (!live.server) {
+      log('no display server configured; running standalone');
+      await runStandalone(screen, live, facts);
+    }
+
     if (!live.token) {
       const token = await waitForAdoption(screen, live, facts);
       live = { ...live, token };
       saveConfig(live);
     }
     await runAdopted(screen, live, cache, facts);
-    // Forgotten. Drop the token and go back to showing a code; keep the identity, so the panel
-    // recognises the same device rather than growing a second row for it.
-    live = { server: live.server, deviceId: live.deviceId, deviceSecret: live.deviceSecret };
+
+    /**
+     * Forgotten by the server. Drop the token and keep the identity, so re-adopting this screen
+     * does not grow a second row for it — and decide where it goes back TO.
+     *
+     * Those are two different places, and TWO facts decide between them — one is not enough.
+     *
+     * The INSTALLER writes the address into root's own trust.env, so a screen built that way
+     * belongs to that server and goes back to showing a pairing code for it, exactly as it always
+     * has. A screen pointed at a server from its OWN panel has nothing in trust.env, and has a
+     * password, timetables and a panel sitting untouched underneath — so forgetting it should
+     * return it to those rather than leave it asking to rejoin a dashboard it was just removed
+     * from. That second case would otherwise loop in `waitForAdoption`, which serves no panel at
+     * all, and the only way back would be a keyboard plugged into the Pi.
+     *
+     * The LOCAL ACCOUNT is the second fact, and it is what stops this being wrong for a real
+     * screen in the field: a Pi installed before trust.env existed has none either, and it can
+     * still reach this version of the agent because the old updater replaces agent.js without
+     * rewriting anything beside it. Such a screen has no password and no standalone life, so
+     * sending it there would strand it on a setup code nobody asked for. Only a screen that can
+     * actually be signed in to goes back to being its own.
+     */
+    const ownPanel = !rootHasTrustedServer() && !!new Store().db.admin;
+    if (ownPanel) log('forgotten, and this screen has a panel of its own to go back to; going standalone');
+    live = {
+      server: ownPanel ? '' : live.server,
+      deviceId: live.deviceId,
+      deviceSecret: live.deviceSecret,
+    };
     saveConfig(live);
   }
 }

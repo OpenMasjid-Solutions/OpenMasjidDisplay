@@ -16,10 +16,12 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { BASE } from '../base';
 import type { PiDeviceInfo } from '../types';
 import { Modal, Spinner, IconDownload, IconPower, IconCheck, IconSparkle, IconCopy, IconTerminal, copyText, useToast } from '../ui';
 import { WifiSection } from './WifiPanel';
 import { PiTerminal } from './PiTerminal';
+import { installCommand } from '../../../server/src/pi/lanHost';
 import { PiDisplaySection } from './PiDisplayPanel';
 import { PiSystemSection } from './PiSystemPanel';
 
@@ -114,6 +116,26 @@ function useLiveDevice(initial: PiDeviceInfo, everyMs: number): PiDeviceInfo {
   return fresh ?? initial;
 }
 
+/**
+ * The one thing an admin can do about a screen whose root has no trusted server address.
+ *
+ * Shown rather than hidden, and it names the command. The alternative — a greyed-out button with
+ * no explanation — is how somebody concludes the feature is broken and opens a support request
+ * about it. Running the installer is also genuinely all it takes: it writes the address into the
+ * root-owned file, and both buttons start working on the next check-in.
+ */
+function InstallerNeeded({ what }: { what: string }) {
+  const { command } = installCommand(window.location.origin + BASE);
+  return (
+    <p className="hint muted pi-note">
+      <strong>{what} needs this server&rsquo;s installer.</strong> This screen was adopted by its
+      address, which tells its app where to listen but cannot give this server the root access these
+      need. Run this once on the screen and it will work:{' '}
+      <code style={{ whiteSpace: 'nowrap' }}>{command}</code>
+    </p>
+  );
+}
+
 export function PiSettings({
   device: initial,
   screenName,
@@ -166,6 +188,16 @@ export function PiSettings({
   const device = useLiveDevice(initial, live || running ? 2000 : 8000);
 
   const updating = !!device.updateAskedAt && Date.now() - device.updateAskedAt < UPDATE_WINDOW_MS && !device.upToDate;
+  /**
+   * Update and Terminal are the two things root does on a screen, and both need an address root
+   * trusts — which only this server's installer writes. A screen adopted by address has a server
+   * in its own config and nothing in root's, so both would be asked for and silently ignored.
+   *
+   * `=== false` rather than `!`: undefined means a screen whose agent predates this field, and
+   * those are overwhelmingly installer-built. Warning about every screen in a masjid on the day
+   * this shipped would be worse than the problem.
+   */
+  const needsInstaller = device.rootLinked === false;
 
   /** Queue an instruction. Nothing connects TO the Pi — it collects this on its own poll. */
   const ask = async (action: 'reboot' | 'reinstall' | 'logs') => {
@@ -398,6 +430,8 @@ export function PiSettings({
         <div className="pi-row">
           <button
             className="btn btn--ghost btn--sm"
+            disabled={needsInstaller}
+            title={needsInstaller ? 'This screen has no installer-set address for root to dial back to.' : undefined}
             onClick={() => {
               setSessionKind('terminal');
               setConsoleOpen(true);
@@ -406,6 +440,7 @@ export function PiSettings({
             <IconTerminal size={14} /> Open terminal
           </button>
         </div>
+        {needsInstaller && <InstallerNeeded what="A terminal" />}
         <p className="hint muted pi-note">
           A real root shell on the screen, in its own window you can drag aside and keep open while
           you work here. Nothing connects to the screen: it is offered a session on its next check-in
@@ -429,13 +464,15 @@ export function PiSettings({
               needs the newest thing" were correct. */}
           <button
             className="btn btn--ghost btn--sm"
-            disabled={sending !== '' || updating}
+            disabled={sending !== '' || updating || needsInstaller}
             title={
-              updating
-                ? 'This screen is installing now. It takes a few minutes and restarts itself when it is done.'
-                : device.upToDate
-                  ? `Already running ${device.agentVersion}. Running this again installs system updates and re-applies its setup.`
-                  : "Install system updates and the current version of this app, and re-apply the screen's setup"
+              needsInstaller
+                ? 'This screen has no installer-set address to fetch an update from.'
+                : updating
+                  ? 'This screen is installing now. It takes a few minutes and restarts itself when it is done.'
+                  : device.upToDate
+                    ? `Already running ${device.agentVersion}. Running this again installs system updates and re-applies its setup.`
+                    : "Install system updates and the current version of this app, and re-apply the screen's setup"
             }
             onClick={() => void ask('reinstall')}
           >
@@ -460,6 +497,7 @@ export function PiSettings({
             </span>
           )}
         </div>
+        {needsInstaller && <InstallerNeeded what="Updating from here" />}
         <p className="hint muted pi-note">
           <strong>Update</strong> does both halves at once: the operating system&rsquo;s own security
           updates, and then this app. In that order, and as one job — the installer fetches packages

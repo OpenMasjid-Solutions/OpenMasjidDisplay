@@ -89,8 +89,9 @@ async function main(): Promise<void> {
     req: IncomingMessage,
     upgrade: (onOpen: (ws: import('ws').WebSocket) => void) => void,
   ): boolean => {
-    // The panel's viewer. Same session check as every other admin surface.
-    const admin = /^\/api\/pi\/shell\/([A-Za-z0-9_-]{16,64})$/.exec(path);
+    // The panel's viewer. Same session check as every other admin surface — and, like every
+    // other panel route, also reached under the tunnel's /<basePath> prefix.
+    const admin = /^(?:\/[a-z0-9-]{1,80})?\/api\/pi\/shell\/([A-Za-z0-9_-]{16,64})$/.exec(path);
     if (admin) {
       if (!hasValidSession(req, store.secret)) return false;
       upgrade((ws) => {

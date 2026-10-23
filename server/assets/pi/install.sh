@@ -24,6 +24,50 @@ SERVER='@@SERVER@@'
 RESVG_VERSION='@@RESVG@@'
 AGENT_VERSION='@@AGENT_VERSION@@'
 
+# ── served by a display server, or installed on its own? ─────────────────────
+#
+# The placeholder above is replaced by the display server when IT serves this script. Fetched
+# from GitHub by pi.sh, nothing replaces it — and that surviving placeholder is the signal that
+# this screen has no server and is being installed STANDALONE.
+#
+# Written as two halves joined by the shell so that the substitution, which is a plain global
+# string replace, cannot rewrite this comparison as well and make every install look standalone.
+#
+# OMD_BUNDLE is where pi.sh unpacked the verified release: the agent and the control panel come
+# from there instead of being downloaded from a server that does not exist.
+STANDALONE=0
+case "$SERVER" in
+  '@@'SERVER'@@'|'') STANDALONE=1; SERVER='' ;;
+esac
+BUNDLE="${OMD_BUNDLE:-}"
+[ "$STANDALONE" = 1 ] && [ -z "$BUNDLE" ] && STANDALONE=2
+
+# ── the OTHER two placeholders ───────────────────────────────────────────────
+#
+# `@@SERVER@@` is not the only one. The renderer version and the agent version are filled in by
+# the display server too, and a bundle has no server to fill them in — so standalone reads them
+# from the MANIFEST that ships beside the agent.
+#
+# This was found by running the installer on a real Pi, which got as far as:
+#
+#   npm ERR! Invalid tag name "@@RESVG@@" of package "@resvg/resvg-js@@@RESVG@@"
+#
+# — eight minutes of apt, and then a failure at the one step that needed a value nobody had set.
+# Hence the check below as well: an unsubstituted placeholder now stops this at the top with a
+# sentence that says which one, rather than at whichever command happens to be handed it first.
+if [ "$STANDALONE" = 1 ] && [ -r "$BUNDLE/MANIFEST" ]; then
+  _m=$(sed -n 's/^resvg=//p' "$BUNDLE/MANIFEST" | head -1)
+  [ -n "$_m" ] && RESVG_VERSION="$_m"
+  _m=$(sed -n 's/^version=//p' "$BUNDLE/MANIFEST" | head -1)
+  [ -n "$_m" ] && AGENT_VERSION="$_m"
+fi
+for _pair in "renderer:$RESVG_VERSION" "agent:$AGENT_VERSION"; do
+  case "${_pair#*:}" in
+    *@@*|'') printf '\n\033[31mError:\033[0m the %s version was never filled in (got "%s").\n  This bundle is broken — it should carry a MANIFEST naming it.\n' \
+               "${_pair%%:*}" "${_pair#*:}" >&2; exit 1 ;;
+  esac
+done
+
 PREFIX=/opt/openmasjid-screen
 # Where the server's own certificate is pinned, when it turns out to be self-signed. Kept beside
 # the config because it is part of how this device trusts its server, not disposable state.
@@ -127,40 +171,67 @@ wait_for_apt() {
 # which is the hardest thing to debug from a phone call.
 
 step 'Checking this device'
-[ "$(id -u)" = 0 ] || die "run this with sudo:  curl -fsSL $SERVER/pi.sh | sudo sh"
+if [ "$STANDALONE" = 2 ]; then
+  die 'this installer was fetched without its release bundle.
+  Install a standalone screen with:
+    curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidDisplay/main/pi.sh | sudo sh'
+fi
+if [ "$STANDALONE" = 1 ]; then
+  [ "$(id -u)" = 0 ] || die 'run this with sudo'
+else
+  [ "$(id -u)" = 0 ] || die "run this with sudo:  curl -fsSL $SERVER/pi.sh | sudo sh"
+fi
 command -v apt-get >/dev/null 2>&1 || die 'this installer expects Raspberry Pi OS or another Debian-based system'
 MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || uname -m)
 say "model:  $MODEL"
 say "os:     $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -sr)"
-say "server: $SERVER"
+if [ "$STANDALONE" = 1 ]; then
+  say 'mode:   standalone (this screen runs on its own)'
+else
+  say "server: $SERVER"
+fi
 
 # ── the board this needs ─────────────────────────────────────────────────────
 #
-# A Pi 4 or newer, and the Pi 3 is refused rather than merely discouraged.
+# The Raspberry Pi 4 family, and nothing else: the Pi 4, the Pi 400 and the Compute Module 4.
 #
-# It is refused because it could not do the job and no amount of software changed that. A Pi 3
-# decodes a modern camera in software at roughly half real time, and falling behind a live stream is
-# what makes a camera hang up — so the picture stuttered AND the connection dropped every half
-# minute, from one cause. Its H.264 hardware decoder will not open anything much above 1080p and it
-# has no HEVC decoder at all, which is the whole reason for moving.
+# This USED to be "a Pi 4 or newer, and let anything unrecognised through". Both halves changed,
+# and in opposite directions, so it is worth saying why each way round:
 #
-# The generation is compared as a NUMBER, so a Pi 5 or a Pi 6 is accepted by a check written today.
-# Anything that does not identify itself as a numbered Raspberry Pi is allowed through: refusing an
-# unrecognised board on the strength of a string comparison would strand a screen for no reason, and
-# a Compute Module or a Zero is somebody's deliberate choice rather than a mistake to block.
-# `[0-9][0-9]*` rather than `[0-9]\+`: this script is deliberately POSIX sh for dash, and `\+` is a
-# GNU sed extension. It happens to work on Raspberry Pi OS, and it would have gone unnoticed there
-# forever — which is exactly why it is not worth relying on.
-PI_GEN=$(printf '%s' "$MODEL" | sed -n 's/^Raspberry Pi \([0-9][0-9]*\).*/\1/p')
-if [ -n "$PI_GEN" ] && [ "$PI_GEN" -lt 4 ]; then
+#   * A Pi 3 is refused because it could not do the job and no software fixed that. It decodes a
+#     modern camera in software at roughly half real time, and falling behind a live stream is
+#     what makes a camera hang up — so the picture stuttered AND the connection dropped every
+#     half minute, from one cause. It has no HEVC decoder at all.
+#   * A Pi 5, a Zero and an unknown board are now refused too, where before they were allowed.
+#     This is a screen a masjid leaves on a wall for years: "it installed, and we will find out
+#     whether it works" is not a trade to make on somebody else's behalf. The supported board is
+#     the one that has been tested on real hardware.
+#
+# A screen that is ALREADY running is never touched by this — the gate is on installing, not on
+# the service — so no working screen anywhere goes dark because this rule changed.
+# >>> board-gate (lifted verbatim by piInstaller.test.ts — keep the markers and keep the two
+# copies of this block identical)
+# Matched by NAME, not by a parsed generation number. A number cannot express this family: the
+# Pi 400 reports "Raspberry Pi 400" (which parses as four hundred) and the Compute Module 4
+# reports no leading number at all, so a `-eq 4` test refuses two of the three boards that are
+# supported. Written as a `case`, which is POSIX and needs no sed.
+case "$MODEL" in
+  "Raspberry Pi 4 "*|"Raspberry Pi 4"|"Raspberry Pi 400"*|"Raspberry Pi Compute Module 4"*) PI_OK=yes ;;
+  *) PI_OK=no ;;
+esac
+# <<< board-gate
+if [ "$PI_OK" != yes ]; then
   printf '\n\033[31mThis board is not supported.\033[0m\n\n' >&2
-  printf '  %s\n\n' "$MODEL" >&2
-  printf '  OpenMasjidDisplay screens need a Raspberry Pi 4 or newer. Support for the Pi 3 has\n' >&2
-  printf '  ended: it cannot decode a modern camera fast enough to keep up with it, which made\n' >&2
-  printf '  the picture stutter and the camera drop the connection every half minute.\n\n' >&2
-  printf '  A Raspberry Pi 4 with 2GB is enough, and it decodes H.265 cameras in hardware.\n\n' >&2
-  printf '  A Pi 3 screen that is ALREADY set up keeps working and is left alone — it simply\n' >&2
-  printf '  stops receiving new versions. Nothing you do here will switch it off.\n\n' >&2
+  printf '  %s\n\n' "${MODEL:-could not read /proc/device-tree/model}" >&2
+  printf '  OpenMasjidDisplay screens run on the Raspberry Pi 4 family:\n' >&2
+  printf '    - Raspberry Pi 4 Model B (2GB or more)\n' >&2
+  printf '    - Raspberry Pi 400\n' >&2
+  printf '    - Raspberry Pi Compute Module 4\n\n' >&2
+  printf '  The Pi 3 and the Pi Zero cannot decode a modern camera fast enough to keep up with\n' >&2
+  printf '  it, which makes the picture stutter and the camera drop the connection. The Pi 5 is\n' >&2
+  printf '  not supported yet simply because this software has not been tested on one.\n\n' >&2
+  printf '  A screen that is ALREADY set up keeps working and is left alone — it simply stops\n' >&2
+  printf '  receiving new versions. Nothing you do here will switch it off.\n\n' >&2
   exit 1
 fi
 
@@ -188,9 +259,16 @@ fi
 # The one thing that must not happen quietly is falling back to no verification at all. If pinning
 # does not work either (usually a certificate with no name matching the address you used), that is
 # said loudly, here and in the log, rather than being smoothed over.
-step 'Working out how to trust the display server'
 CURL_OPTS=''
 NODE_TLS_ENV=''
+
+# A standalone screen never calls a display server, so there is no certificate to decide about.
+# What it DOES trust is the release bundle, and pi.sh has already checked that by sha256 before
+# this script was run at all.
+if [ "$STANDALONE" = 1 ]; then
+  say 'standalone: no display server to trust'
+else
+step 'Working out how to trust the display server'
 
 case "$SERVER" in
   https://*)
@@ -296,6 +374,7 @@ case "$SERVER" in
     say 'plain HTTP — no certificate to check'
     ;;
 esac
+fi
 
 mkdir -p "$PREFIX"
 # Single-quoted values, and the only things that can appear in them are curl flags and a path we
@@ -305,6 +384,15 @@ mkdir -p "$PREFIX"
   printf '# Written by the OpenMasjidDisplay installer. Read by update.sh. Do not edit by hand.\n'
   printf "SERVER='%s'\n" "$SERVER"
   printf "CURL_OPTS='%s'\n" "$CURL_OPTS"
+  # A standalone screen has no server to follow, so it follows a release CHANNEL instead, and
+  # needs to know which version it is on to tell whether a release is newer. Both are recorded
+  # here rather than in config.json for the reason the updater explains: the agent rewrites its
+  # config and keeps only the keys it knows about.
+  if [ "$STANDALONE" = 1 ]; then
+    printf "CHANNEL='%s'\n" "${OMD_CHANNEL:-stable}"
+    printf "VERSION='%s'\n" "$AGENT_VERSION"
+    printf "REPO='%s'\n" "OpenMasjid-Solutions/OpenMasjidDisplay"
+  fi
 } > "$TRUSTENV"
 chmod 644 "$TRUSTENV"
 
@@ -330,6 +418,30 @@ say 'installing node and the tools the agent needs'
 apt-get $APT_OPTS install -y --no-install-recommends \
   nodejs npm ca-certificates curl openssl fonts-dejavu-core fbset \
   || die 'could not install the base packages'
+
+# The Arabic faces.
+#
+# A timetable is bilingual even in English: every prayer name carries an Arabic gloss, and a
+# masjid can set the whole screen to Arabic or Urdu. DejaVu has no Arabic coverage, so without a
+# face that does, those strings draw as empty boxes — on the wall, in front of the congregation.
+#
+# An ADOPTED screen is sent its faces by the display server. A STANDALONE one has nobody to ask,
+# so they have to come from the distribution.
+#
+# Best-effort, each on its own: a package name that changed between Raspberry Pi OS releases must
+# not be the reason a screen cannot be installed. The agent says at startup whether it found one.
+say 'installing fonts for the Arabic prayer-name gloss'
+ARABIC_FONT=0
+for pkg in fonts-hosny-amiri fonts-noto-core; do
+  # shellcheck disable=SC2086
+  if apt-get $APT_OPTS install -y --no-install-recommends "$pkg" >/dev/null 2>&1; then
+    say "  installed $pkg"
+    ARABIC_FONT=1
+  else
+    warn "  $pkg is not available here"
+  fi
+done
+[ "$ARABIC_FONT" = 1 ] || warn 'no Arabic font installed — Arabic and Urdu text will draw as empty boxes'
 
 command -v node >/dev/null 2>&1 || die 'node did not install; check `apt-get install nodejs`'
 say "node $(node -v), npm $(npm -v 2>/dev/null || echo '?')"
@@ -407,13 +519,30 @@ fi
 
 # Downloaded to a temporary name and moved into place, so an interrupted download cannot leave a
 # truncated agent that systemd then restarts forever.
+if [ "$STANDALONE" = 1 ]; then
+  say 'installing the agent from the release bundle'
+  [ -s "$BUNDLE/agent.js" ] || die 'the release bundle has no agent.js in it'
+  cp "$BUNDLE/agent.js" "$PREFIX/agent.new.js"
+else
 say "downloading $SERVER/pi/agent.js"
 # shellcheck disable=SC2086
 curl -fsSL $CURL_OPTS "$SERVER/pi/agent.js" -o "$PREFIX/agent.new.js" || die "could not download the agent from $SERVER"
+fi
 [ -s "$PREFIX/agent.new.js" ] || die 'the downloaded agent was empty'
 node --check "$PREFIX/agent.new.js" || die 'the downloaded agent is not valid JavaScript'
 mv "$PREFIX/agent.new.js" "$PREFIX/agent.js"
 say "agent $AGENT_VERSION installed ($(wc -c < "$PREFIX/agent.js") bytes)"
+
+# The control panel a standalone screen serves for itself. Replaced wholesale rather than merged:
+# it is build output, and a half-old bundle is a panel whose JavaScript does not match its HTML.
+if [ "$STANDALONE" = 1 ] && [ -d "$BUNDLE/web" ]; then
+  rm -rf "$PREFIX/web.new"
+  cp -r "$BUNDLE/web" "$PREFIX/web.new"
+  [ -s "$PREFIX/web.new/index.html" ] || die 'the release bundle has no control panel in it'
+  rm -rf "$PREFIX/web"
+  mv "$PREFIX/web.new" "$PREFIX/web"
+  say "control panel installed ($(find "$PREFIX/web" -type f | wc -l) files)"
+fi
 
 # ── the service account ──────────────────────────────────────────────────────
 #
@@ -562,6 +691,50 @@ if [ -f "$BOOTCMD" ] && ! grep -q 'consoleblank=0' "$BOOTCMD" 2>/dev/null; then
   NEEDS_REBOOT=1
 fi
 
+# ── default the output to 1080p ──────────────────────────────────────────────
+#
+# A 4K television negotiates 4K, and on a Pi 4 that is the wrong trade for this product.
+# Measured on a Pi 4 Model B with a 720p H.264 camera, cpu-seconds per 10 seconds of wall clock
+# (4.0 is one whole core):
+#
+#   decode only, no scale        3.1    the decode is nearly free
+#   scale to 3840x2160          17.7    the UPSCALE is the cost, 4.7x the decode
+#   scale to 1920x1080          10.5
+#
+# And the framebuffer write is four times the bytes at 4K: 16.6 MB a frame at 16bpp, against
+# 4.1 MB. Nothing is gained for it — the timetable is rendered at 1920x1080 and upscaled either
+# way, and a camera is almost never above 1080p — so a 4K mode spends most of a core to make the
+# same picture softer.
+#
+# This is a DEFAULT, not a lock: the per-screen resolution override rewrites this same `video=`
+# line (and removes it entirely for "auto"), so a masjid that wants 4K can still have it.
+#
+# ── DO NOT "TIDY" THE MODE STRING BELOW ──────────────────────────────────────
+#
+# `1920x1080M@60D`, and every character of it earns its place. Measured on a Pi 4 with an HDMI
+# capture card attached:
+#
+#   video=HDMI-A-1:1920x1080M@60D   works — /dev/fb0 exists, connector reads "connected"
+#   video=HDMI-A-1:1920x1080@60     NO FRAMEBUFFER AT ALL, connector reads "disconnected"
+#
+# The trailing `D` forces the digital output ON regardless of hotplug detect. Some displays —
+# capture cards and a good number of commercial panels — do not assert HPD reliably, and without
+# `D` the connector stays off, no framebuffer is created, and the screen is black with nothing in
+# the agent's log to explain it, because the agent never gets a framebuffer to complain about.
+#
+# The kernel ALSO logs `User-defined mode not supported: "1920x1080"` for this string, and that
+# message is a red herring: `M` asks for a CVT-computed timing, the driver declines it and falls
+# back to the display's own EDID 1080p mode, which is exactly what is wanted. Removing `M` to
+# silence the warning takes `D` with it if you are not careful, and that is a black screen.
+#
+# Only HDMI-A-1 is named. Forcing a mode on HDMI-A-2 while nothing is plugged into it was part of
+# the same failed experiment; a second output is handled by phase 3, not here.
+if [ -f "$BOOTCMD" ] && ! grep -q 'video=HDMI-A-1:' "$BOOTCMD" 2>/dev/null; then
+  say 'setting the display output to 1080p (a Pi 4 upscaling to 4K costs most of a core)'
+  sed -i 's/$/ video=HDMI-A-1:1920x1080M@60D/' "$BOOTCMD"
+  NEEDS_REBOOT=1
+fi
+
 # ── systemd ──────────────────────────────────────────────────────────────────
 
 step 'Installing the service'
@@ -669,6 +842,29 @@ DeviceAllow=char-video4linux rw
 # guaranteed and renderD128 in particular is numbered by probe order.
 DeviceAllow=char-drm rw
 Environment=NODE_ENV=production
+# Where the agent keeps its own data when it runs standalone: the timetables, sources and
+# schedules somebody enters in its panel. The default is relative to the working directory,
+# which for a systemd unit is / — so this is not a preference, it is the difference between a
+# store that writes and one that cannot. Already in ReadWritePaths above.
+Environment=DATA_DIR=$STATEDIR
+# The built control panel, installed beside the agent. One variable, because the volunteer page
+# is the server's own handler and reads this same setting — two pointing at one directory is two
+# chances to point at different ones.
+Environment=PUBLIC_DIR=$PREFIX/web
+# Port 80 WITHOUT running as root.
+#
+# A standalone screen serves its panel on the address shown on the television, and that address
+# has to be one somebody can type — so port 80, which is privileged. The whole of the privilege
+# needed to bind it is CAP_NET_BIND_SERVICE, granted here as an ambient capability so the agent
+# keeps running as its own unprivileged account. Root for one bind would have handed the whole
+# machine to a bug in an HTTP handler.
+#
+# The bounding set is narrowed to the same single capability: it is the only one this process has
+# any business holding, and naming it means a future edit cannot quietly widen it. Ambient
+# capabilities and NoNewPrivileges=yes work together — systemd raises them before exec, which is
+# before the agent can do anything at all.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 # How this device trusts its display server, decided at install time. Either a pinned certificate
 # (verification ON, against that one certificate) or — said loudly at the time — no verification,
 # when the certificate could not be made to match the address. Empty for plain HTTP.
@@ -695,7 +891,6 @@ cat > "$PREFIX/update.sh" <<'UPD'
 # Fetch the screen agent this display server is shipping, and switch to it if it differs.
 set -eu
 PREFIX=/opt/openmasjid-screen
-CONF=/etc/openmasjid-screen/config.json
 
 # The server address and the trust decision, exactly as the installer worked them out.
 #
@@ -705,15 +900,42 @@ CONF=/etc/openmasjid-screen/config.json
 # back to a handshake already known to fail on this device and stop updating forever, silently.
 CURL_OPTS=""
 SERVER=""
+CHANNEL=""
+VERSION=""
+REPO="OpenMasjid-Solutions/OpenMasjidDisplay"
 if [ -f "$PREFIX/trust.env" ]; then
   . "$PREFIX/trust.env"
 fi
-if [ -z "$SERVER" ]; then
-  # Only for a device installed before trust.env existed. Re-running the installer writes one.
-  SERVER=$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).server||""))}catch{}' "$CONF" 2>/dev/null || true)
-fi
 
-[ -n "$SERVER" ] || { echo "no server configured; nothing to update from"; exit 0; }
+# There is NO fallback to config.json, and its absence is the point.
+#
+# There used to be one, for devices installed before trust.env existed. It could not fire on any
+# device running THIS updater — this file and trust.env are written by the same run of the same
+# installer, trust.env first — so it cost nothing to delete. What it bought is an invariant worth
+# stating: root fetches code only from an address ROOT recorded.
+#
+# config.json is writable by the agent, by design: the agent rewrites it when it is adopted or
+# forgotten, and since 0.71.0 a panel can point a screen at a display server by writing it. That is
+# safe precisely because nothing privileged reads it. A compromised agent setting `server` there
+# gets to choose where its own app talks; with this fallback it would also have chosen where root
+# downloads and runs a shell script from, which is the whole machine.
+
+[ -n "$SERVER" ] || [ -n "$CHANNEL" ] || { echo "nothing to update from"; exit 0; }
+
+# Record what is actually installed, so the next check compares against it.
+#
+# Appended when the line is absent, because `sed -i s/^VERSION=//` matching nothing SUCCEEDS —
+# it changes nothing and says nothing. The cost of that silence is the whole bundle downloaded
+# and the screen restarted every six hours, for ever, on a device nobody is watching.
+record_version() {
+  [ -n "${1:-}" ] || return 0
+  if grep -q '^VERSION=' "$PREFIX/trust.env" 2>/dev/null; then
+    sed -i "s/^VERSION=.*/VERSION='$1'/" "$PREFIX/trust.env"
+  else
+    printf "VERSION='%s'
+" "$1" >> "$PREFIX/trust.env"
+  fi
+}
 
 # A Pi 3 stops here, and stopping here is the whole point.
 #
@@ -725,23 +947,92 @@ fi
 # So the updater refuses instead: the screen keeps the version it has and keeps working, and simply
 # receives nothing new. That is exactly what "no longer supported" should cost somebody.
 MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)
-# `[0-9][0-9]*` rather than `[0-9]\+`: this script is deliberately POSIX sh for dash, and `\+` is a
-# GNU sed extension. It happens to work on Raspberry Pi OS, and it would have gone unnoticed there
-# forever — which is exactly why it is not worth relying on.
-PI_GEN=$(printf '%s' "$MODEL" | sed -n 's/^Raspberry Pi \([0-9][0-9]*\).*/\1/p')
-if [ -n "$PI_GEN" ] && [ "$PI_GEN" -lt 4 ]; then
-  echo "this board ($MODEL) is no longer supported; keeping the version already installed"
+# >>> board-gate (lifted verbatim by piInstaller.test.ts — keep the markers and keep the two
+# copies of this block identical)
+# Matched by NAME, not by a parsed generation number. A number cannot express this family: the
+# Pi 400 reports "Raspberry Pi 400" (which parses as four hundred) and the Compute Module 4
+# reports no leading number at all, so a `-eq 4` test refuses two of the three boards that are
+# supported. Written as a `case`, which is POSIX and needs no sed.
+case "$MODEL" in
+  "Raspberry Pi 4 "*|"Raspberry Pi 4"|"Raspberry Pi 400"*|"Raspberry Pi Compute Module 4"*) PI_OK=yes ;;
+  *) PI_OK=no ;;
+esac
+# <<< board-gate
+if [ "$PI_OK" != yes ]; then
+  echo "this board ($MODEL) is not supported; keeping the version already installed"
   exit 0
 fi
 
 TMP="$PREFIX/agent.new.js"
-# shellcheck disable=SC2086
-curl -fsSL --max-time 120 $CURL_OPTS "$SERVER/pi/agent.js" -o "$TMP" || { echo "could not download the agent"; exit 0; }
+WEBTMP=""
+
+if [ -n "$SERVER" ]; then
+  # shellcheck disable=SC2086
+  curl -fsSL --max-time 120 $CURL_OPTS "$SERVER/pi/agent.js" -o "$TMP" || { echo "could not download the agent"; exit 0; }
+else
+  # ── a standalone screen follows a release ──────────────────────────────────
+  #
+  # Same resolution pi.sh uses, and the same refusal: bytes from the public internet are checked
+  # against the checksum published beside them, and nothing is installed if they do not match.
+  # Every failure here EXITS 0 and leaves the screen exactly as it was — a masjid's prayer times
+  # must not go dark because GitHub was unreachable at four in the morning.
+  API="https://api.github.com/repos/$REPO/releases"
+  [ "$CHANNEL" = stable ] && API="$API/latest"
+  JSON=$(curl -fsSL --max-time 60 -H 'Accept: application/vnd.github+json' "$API" 2>/dev/null) ||
+    { echo "could not reach GitHub; keeping the version installed"; exit 0; }
+  [ "$CHANNEL" = stable ] || JSON=$(printf '%s' "$JSON" | sed -n '1,/^  },$/p')
+  TAG=$(printf '%s' "$JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  [ -n "$TAG" ] || { echo "no $CHANNEL release found; keeping the version installed"; exit 0; }
+  # ── the tag came off the network, so it is checked before it is USED as anything ──
+  #
+  # A git tag may contain almost any byte, including a slash, a quote and a newline. This one
+  # is about to become a URL, a filename, and — through record_version — the replacement half
+  # of a sed expression writing a line into trust.env, which THIS SCRIPT SOURCES AS ROOT on its
+  # next run. A tag carrying a quote would leave that file unbalanced; one carrying `;` would
+  # leave a command in it.
+  #
+  # That needs no attacker to go wrong: `release/1.0` is a tag git accepts and would corrupt the
+  # file on the first update. So the test is an allowlist of the characters our tags actually
+  # use, plus a refusal of a leading dash (which every tool here would read as an option) and of
+  # `..` (which would climb out of the work directory). Anything else is not a tag of ours.
+  case "$TAG" in
+    ""|*[!A-Za-z0-9._-]*|-*|*..*)
+      echo "refusing a release tag that is not shaped like one of ours"; exit 0 ;;
+  esac
+  [ "${#TAG}" -le 64 ] || { echo "refusing an implausibly long release tag"; exit 0; }
+
+  # Nothing to do is the common case, and it must cost one API call and no download.
+  if [ "$TAG" = "$VERSION" ] || [ "$TAG" = "v$VERSION" ]; then
+    exit 0
+  fi
+  echo "a newer release is available: $TAG (this screen has ${VERSION:-unknown})"
+
+  WORK=$(mktemp -d /tmp/omd-update.XXXXXX) || exit 0
+  trap 'rm -rf "$WORK"' EXIT INT TERM
+  BASE="https://github.com/$REPO/releases/download/$TAG"
+  curl -fsSL --max-time 600 -o "$WORK/b.tar.gz" "$BASE/openmasjid-screen-$TAG.tar.gz" 2>/dev/null ||
+    { echo "that release carries no screen bundle; keeping the version installed"; exit 0; }
+  curl -fsSL --max-time 60 -o "$WORK/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null ||
+    { echo "no checksums published for $TAG; refusing to install unverified bytes"; exit 0; }
+  ( cd "$WORK" && mv "b.tar.gz" "openmasjid-screen-$TAG.tar.gz" &&
+    sha256sum --ignore-missing --status -c SHA256SUMS ) ||
+    { echo "$TAG does not match its published checksum; nothing was changed"; exit 0; }
+  mkdir -p "$WORK/x" && tar xzf "$WORK/openmasjid-screen-$TAG.tar.gz" -C "$WORK/x" 2>/dev/null ||
+    { echo "the bundle could not be unpacked; keeping the version installed"; exit 0; }
+  [ -s "$WORK/x/agent.js" ] || { echo "the bundle has no agent in it"; exit 0; }
+  cp "$WORK/x/agent.js" "$TMP"
+  [ -d "$WORK/x/web" ] && WEBTMP="$WORK/x/web"
+  NEWVERSION="$TAG"
+fi
 [ -s "$TMP" ] || { rm -f "$TMP"; echo "downloaded agent was empty"; exit 0; }
 # A truncated or half-written download must never become the thing systemd restarts forever.
 node --check "$TMP" || { rm -f "$TMP"; echo "downloaded agent is not valid JavaScript"; exit 0; }
 
-if cmp -s "$TMP" "$PREFIX/agent.js"; then
+# The server path stops here when the bytes match: there is no version to speak of, only the
+# agent the server is serving. A release has a NAME, and a release whose agent happens to be
+# byte-identical (a panel-only change, a re-tag) still has to be installed and written down —
+# otherwise the check below sees the old version again in six hours and downloads it again.
+if [ -z "${NEWVERSION:-}" ] && cmp -s "$TMP" "$PREFIX/agent.js"; then
   rm -f "$TMP"
   exit 0
 fi
@@ -749,6 +1040,14 @@ fi
 echo "updating the screen agent"
 cp -f "$PREFIX/agent.js" "$PREFIX/agent.prev.js" 2>/dev/null || true
 mv "$TMP" "$PREFIX/agent.js"
+# The control panel ships WITH the agent and is versioned with it. Replacing one without the
+# other is a panel whose JavaScript expects an API the agent does not serve, so they move
+# together — and roll back together.
+if [ -n "$WEBTMP" ] && [ -s "$WEBTMP/index.html" ]; then
+  rm -rf "$PREFIX/web.prev"
+  [ -d "$PREFIX/web" ] && mv "$PREFIX/web" "$PREFIX/web.prev"
+  cp -r "$WEBTMP" "$PREFIX/web"
+fi
 systemctl restart openmasjid-screen.service
 
 # Roll back if the new one will not stay up. Without this, a bad build takes every screen in the
@@ -758,8 +1057,16 @@ if ! systemctl is-active --quiet openmasjid-screen.service; then
   echo "the new agent did not stay running; rolling back"
   if [ -f "$PREFIX/agent.prev.js" ]; then
     mv "$PREFIX/agent.prev.js" "$PREFIX/agent.js"
+    if [ -d "$PREFIX/web.prev" ]; then
+      rm -rf "$PREFIX/web"
+      mv "$PREFIX/web.prev" "$PREFIX/web"
+    fi
     systemctl restart openmasjid-screen.service
   fi
+else
+  # It stayed up, so this IS the version now.
+  record_version "${NEWVERSION:-}"
+  rm -rf "$PREFIX/web.prev"
 fi
 UPD
 chmod 700 "$PREFIX/update.sh"
@@ -1678,6 +1985,15 @@ fi
 if [ "${NEEDS_REBOOT:-0}" = 1 ]; then
   say 'Display settings changed — reboot to apply them:  sudo reboot'
 fi
-say 'This screen should now show a setup code. Enter it in the dashboard under Screens.'
-say 'This screen will keep itself up to date with the display server from now on.'
+if [ "$STANDALONE" = 1 ]; then
+  # There is no dashboard to type the code into — the code is typed into THIS screen's own
+  # panel, on the masjid's network, which is the whole difference. Saying otherwise sends
+  # somebody looking for a server that does not exist.
+  _ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  say "This screen should now show a setup code. Open http://${_ip:-its address} on this"
+  say 'network and enter it there to finish setting it up.'
+else
+  say 'This screen should now show a setup code. Enter it in the dashboard under Screens.'
+  say 'This screen will keep itself up to date with the display server from now on.'
+fi
 say 'If it does not:  sudo journalctl -u openmasjid-screen -n 50 --no-pager'

@@ -29,10 +29,56 @@ export const SECURITY_HEADERS: Record<string, string> = {
   'content-security-policy': "frame-ancestors 'self'",
 };
 
+/**
+ * Headers for serving a file somebody UPLOADED, as opposed to one we shipped.
+ *
+ * An uploaded image may be an SVG, and an SVG is a script container: served with its real
+ * type and opened directly, it runs in this app's origin. The uploader is an admin, so this
+ * is admin-to-admin rather than a way in — but the project already treats stored SVG as
+ * active content (the Fabric logo route refuses it outright for the same reason), and the
+ * cost of being consistent is one header.
+ *
+ * It is a CONSTANT because the alternative was four copies and three of them were missing.
+ * The announcement-thumbnail route had the sandbox and the comment explaining why; the Pi
+ * agent's asset route, the browser screen's asset route and a standalone Pi's own preview all
+ * served the same bytes without it. A fifth caller should not have to notice.
+ *
+ * `default-src 'none'` costs a raster nothing — these responses ARE the image, they load no
+ * subresources. `sandbox` is what stops script in an SVG; `img-src`/`media-src`/`style-src`
+ * keep an SVG that legitimately references `data:` pixels or inline CSS rendering.
+ * Deliberately no `frame-ancestors`: the panel shows these in an <img>, not a frame.
+ */
+export const UPLOAD_HEADERS: Record<string, string> = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'content-security-policy':
+    "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox",
+};
+
 export function sendJson(res: ServerResponse, status: number, obj: unknown): void {
   const body = JSON.stringify(obj);
   res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8' });
   res.end(body);
+}
+
+/**
+ * A built page (`index.html`, `screen.html`), pointed at the path it is being served under.
+ *
+ * Behind the OpenMasjidOS tunnel this app lives at `/<basePath>/…` on a hostname whose root
+ * belongs to the dashboard, so an absolute `/assets/…` fetched from there reaches the dashboard,
+ * not us. The page's own asset URLs are repointed under the prefix, and `window.__OMD_BASE__`
+ * hands the bundle the same prefix for its API calls, its sockets and the asset URLs Vite builds
+ * at runtime (`renderBuiltUrl` in web/vite.config.ts). The script runs before the bundle, which
+ * is a deferred module. At the root `base` is '' and nothing moves.
+ *
+ * `base` is checked again here so nothing but a plain path segment can ever reach the page.
+ * `boot` is extra script the caller owns (the volunteer page's flag), never request data.
+ */
+export function pageUnderBase(html: string, base: string, boot = ''): string {
+  const b = /^\/[a-z0-9-]{1,80}$/.test(base) ? base : '';
+  const page = b ? html.replace(/="\/assets\//g, `="${b}/assets/`) : html;
+  const script = `<script>${boot}window.__OMD_BASE__=${JSON.stringify(b)};</script>`;
+  return page.includes('</head>') ? page.replace('</head>', `${script}</head>`) : script + page;
 }
 
 /**

@@ -10,6 +10,40 @@ export type CalcMethod = 'MWL' | 'ISNA' | 'Egypt' | 'Makkah' | 'Karachi' | 'Cust
 export type AsrMadhab = 'Standard' | 'Hanafi';
 export type TimeFormat = '12h' | '24h';
 
+/** What the host serving this panel supports — see server/src/capabilities.ts. A capability
+ *  that is off is ABSENT from the UI, never shown disabled. */
+export interface Capabilities {
+  host: 'server' | 'pi';
+  whatsapp: boolean;
+  companion: boolean;
+  sso: boolean;
+  notifications: boolean;
+  widget: boolean;
+  terminal: boolean;
+  remoteAccess: boolean;
+  screens: 'fleet' | 'self';
+  /** This panel can change things. False only on a Pi a Display server has adopted. */
+  editable: boolean;
+}
+
+/** What to assume before the host has answered, and on a host too old to say. Everything on:
+ *  this panel only ever ran on the server until the Pi learned to serve it, so assuming
+ *  otherwise would hide features from the machine that actually has them. */
+export const ALL_CAPABILITIES: Capabilities = {
+  host: 'server',
+  whatsapp: true,
+  companion: true,
+  sso: true,
+  notifications: true,
+  widget: true,
+  terminal: true,
+  remoteAccess: true,
+  screens: 'fleet',
+  // Editable, and this is the safe default rather than an arbitrary one: assuming a panel is
+  // read-only before the host has answered would blank a server's whole app for a moment.
+  editable: true,
+};
+
 export interface IqamahRule {
   mode: 'offset' | 'fixed' | 'none';
   offset?: number;
@@ -88,10 +122,19 @@ export interface Timetable {
   iqamahSchedule?: IqamahScheduleEntry[];
   jumuah: string[];
   showSunrise: boolean;
+  /** minutes after sunrise to show Ishrāq, or 0 to hide it */
+  ishraqMinutes: number;
+  /** id of the timetable this one copies its TIMES from, or '' for its own */
+  linkedTo: string;
+  /** a sound on this screen's stream at Adhan / Iqāmah; each `…Clip` is set by its upload endpoint,
+   *  '' meaning the built-in beep */
+  sound: { adhan: boolean; iqamah: boolean; adhanClip: string; iqamahClip: string };
   showCountdown: boolean;
   showDates: boolean;
   showLogo: boolean;
   showSeconds: boolean;
+  /** where the seconds sit when they are shown: small beside the clock, or in its face */
+  secondsStyle: 'stacked' | 'inline';
   showFooter: boolean;
   showCelestial: boolean;
   showName: boolean;
@@ -192,6 +235,17 @@ export interface PiDeviceInfo {
   lastSeenAt: string;
   /** true when this device already runs what the server would give it, so Update is a no-op */
   upToDate?: boolean;
+  /**
+   * Whether ROOT on that screen has a server address it trusts.
+   *
+   * False on a screen adopted from this panel by address rather than by running the installer on
+   * it: the installer is the only thing that writes the root-owned file naming the server, and
+   * that file is what root fetches an installer from and dials a terminal out to. So on such a
+   * screen Update and Terminal cannot work, and the panel says so instead of pretending.
+   *
+   * Undefined means an older agent that has never reported it, which is NOT the same as false.
+   */
+  rootLinked?: boolean;
   /** the last lines the agent logged, as it saw them. Display text only. */
   recentLog?: string[];
   logAt?: string;
@@ -373,6 +427,14 @@ export interface AppState {
   omosBase: string;
   /** volunteer mode: whether a PIN is set, and the host port the page is shown on */
   volunteer: { pinSet: boolean; port: number };
+  /**
+   * On a standalone Raspberry Pi: this screen's own device facts.
+   *
+   * A server sends a LIST of devices, fetched separately, because it manages many. A standalone
+   * screen is the device, so the facts ride on the state the panel already polls — and the Wi-Fi
+   * section renders against this instead of against a row picked out of a fleet.
+   */
+  pi?: Pick<PiDeviceInfo, 'id' | 'net' | 'networks' | 'wifiResult'>;
   serverNow: number;
 }
 

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useAppState } from './state';
 import { api } from './api';
+import { withBase } from './base';
 import { usePrefs, prefsStore, resolveTheme, useOmosAppearanceSync, useReadableTheme } from './prefs';
 import {
   ToastProvider,
@@ -23,6 +24,8 @@ import { WhatsNewModal } from './whatsnew';
 
 declare const __APP_VERSION__: string;
 import type { AppState } from './types';
+import { CapabilitiesProvider, useCaps } from './capabilities';
+import { ManagedScreen } from './routes/ManagedScreen';
 import { Screens } from './routes/Screens';
 import { Timetables, TimetableEditor } from './routes/Timetables';
 import { Sources } from './routes/Sources';
@@ -38,6 +41,30 @@ const TABS: { id: Tab; label: string; Icon: (p: { size?: number }) => JSX.Elemen
   { id: 'schedules', label: 'Schedule', Icon: IconCalendar },
   { id: 'settings', label: 'Settings', Icon: IconCog },
 ];
+
+/**
+ * Which kind of screen is this panel being served by?
+ *
+ * Only ever shown on a Raspberry Pi serving its own panel. A Display server's panel has no pill,
+ * because a server is not a screen and there is nothing to disambiguate — adding one there would
+ * be a difference nobody asked for.
+ *
+ * In the HEADER and never on the television. The picture on the wall is congregation-facing and
+ * has no business carrying a word about how the masjid runs its screens.
+ */
+function HostPill() {
+  const caps = useCaps();
+  if (caps.host !== 'pi') return null;
+  return !caps.editable ? (
+    <span className="pill" title="A Display server manages this screen: its timetable and settings live there, not here.">
+      Managed
+    </span>
+  ) : (
+    <span className="pill" title="This screen runs on its own: its timetable and settings live here, not on a Display server.">
+      Standalone
+    </span>
+  );
+}
 
 export function App() {
   return (
@@ -73,7 +100,7 @@ function EditorPage({ id, state, refetch }: { id: string; state: AppState; refet
 }
 
 function Root() {
-  const { state, authed, hasPassword, ssoEnabled, ssoReachable, loading, refetch, onAuthed } = useAppState();
+  const { state, authed, hasPassword, ssoEnabled, ssoReachable, caps, setupCodeRequired, passwordSignIn, loading, refetch, onAuthed } = useAppState();
   const [tab, setTab] = useState<Tab>('screens');
   const [setupInstead, setSetupInstead] = useState(false);
   const editId = new URLSearchParams(window.location.search).get('edit');
@@ -97,21 +124,49 @@ function Root() {
     else html.removeAttribute('data-scene');
   }, [sceneTone, wallpaperImage]);
 
+  /**
+   * A screen a Display server manages: one read-only status page, and no sign-in.
+   *
+   * Checked before `authed` because there is nothing here to sign in to — a Pi installed from a
+   * server never had a local password. The host answers /api/session with authed: true for the
+   * same reason: sending the app to a login screen with no password behind it would lock an admin
+   * out of the one page that exists for the day the server stops answering.
+   *
+   * It renders inside the provider and inside Shell's header, so the Managed pill shows.
+   */
+  if (!caps.editable) {
+    return (
+      <CapabilitiesProvider value={caps}>
+        <ManagedShell />
+      </CapabilitiesProvider>
+    );
+  }
+
   if (authed) {
     if (!state) return <Splash />;
-    if (editId) return <EditorPage id={editId} state={state} refetch={refetch} />;
-    return <Shell state={state} refetch={refetch} tab={tab} setTab={setTab} />;
+    // Everything behind the sign-in reads the host's capabilities from here. The sign-in and
+    // first-run screens do not need them yet; a Pi's first run will, in phase 2.
+    const inner = editId ? (
+      <EditorPage id={editId} state={state} refetch={refetch} />
+    ) : (
+      <Shell state={state} refetch={refetch} tab={tab} setTab={setTab} />
+    );
+    return <CapabilitiesProvider value={caps}>{inner}</CapabilitiesProvider>;
   }
   if (loading) return <Splash />;
-  // Not signed in. Standalone first run (or a chosen fallback) → create a password.
-  if (!hasPassword && (setupInstead || !ssoEnabled)) return <Setup onDone={onAuthed} />;
+  // Not signed in. Standalone first run (or a chosen fallback) → create a password — never from
+  // outside the masjid, where the server refuses one and OpenMasjidOS is the only way in.
+  if (passwordSignIn && !hasPassword && (setupInstead || !ssoEnabled)) {
+    return <Setup onDone={onAuthed} needsCode={setupCodeRequired} />;
+  }
   return (
     <Login
       onDone={onAuthed}
       ssoEnabled={ssoEnabled}
       ssoReachable={ssoReachable}
       hasPassword={hasPassword}
-      onSetupInstead={!hasPassword ? () => setSetupInstead(true) : undefined}
+      passwordSignIn={passwordSignIn}
+      onSetupInstead={!hasPassword && passwordSignIn ? () => setSetupInstead(true) : undefined}
     />
   );
 }
@@ -270,6 +325,34 @@ function ProfileMenu({
   );
 }
 
+/**
+ * The frame around a managed screen's status page.
+ *
+ * Shell's chrome without Shell: the same brand, the same Managed pill, the same clock — and no
+ * Dock, because there is nothing to navigate to, and no profile menu, because there is nothing
+ * to sign out of and no settings on this machine to open. A disabled tab bar would be four
+ * promises this host cannot keep.
+ */
+function ManagedShell() {
+  return (
+    <div className="shell">
+      <Scene />
+      <header className="topbar">
+        <a className="brand" href={withBase('/')} aria-label="OpenMasjid Display — home">
+          <MasjidMark size={22} />
+          <b>OpenMasjid&nbsp;Display</b>
+        </a>
+        <HostPill />
+        <div className="spacer" />
+        <Clock />
+      </header>
+      <main className="main">
+        <ManagedScreen />
+      </main>
+    </div>
+  );
+}
+
 function Shell({
   state,
   refetch,
@@ -302,10 +385,11 @@ function Shell({
     <div className="shell">
       <Scene />
       <header className="topbar">
-        <a className="brand" href="/" aria-label="OpenMasjid Display — home">
+        <a className="brand" href={withBase('/')} aria-label="OpenMasjid Display — home">
           <MasjidMark size={22} />
           <b>OpenMasjid&nbsp;Display</b>
         </a>
+        <HostPill />
         <div className="spacer" />
         <Clock />
         <ProfileMenu
@@ -332,17 +416,20 @@ function Shell({
   );
 }
 
-function Login({
+/** Exported for its test (login.test.ts); the app reaches it only through Root. */
+export function Login({
   onDone,
   ssoEnabled,
   ssoReachable,
   hasPassword,
+  passwordSignIn,
   onSetupInstead,
 }: {
   onDone: () => void;
   ssoEnabled: boolean;
   ssoReachable: boolean;
   hasPassword: boolean;
+  passwordSignIn: boolean;
   onSetupInstead?: () => void;
 }) {
   const [password, setPassword] = useState('');
@@ -354,7 +441,9 @@ function Login({
   // platform is unreachable (a restore onto a new box, OS briefly down), SSO can't
   // complete — so guide the admin to the always-available local-password recovery
   // instead of letting "continue" loop silently.
-  if (ssoEnabled && !hasPassword) {
+  // From outside the masjid, whatever else is true: the server refuses a password there, so
+  // OpenMasjidOS is the only way in and a password box would be a dead end.
+  if (!passwordSignIn || (ssoEnabled && !hasPassword)) {
     const unreachable = !ssoReachable;
     return (
       <div className="auth-wrap">
@@ -365,7 +454,7 @@ function Login({
           {unreachable ? (
             <p className="page-sub" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
               Can’t reach OpenMasjidOS right now, so automatic sign-in isn’t available.
-              Try again in a moment, or set a password to get in.
+              {onSetupInstead ? ' Try again in a moment, or set a password to get in.' : ' Try again in a moment.'}
             </p>
           ) : (
             <p className="page-sub" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
@@ -455,26 +544,41 @@ function Login({
   );
 }
 
-function Setup({ onDone }: { onDone: () => void }) {
+/**
+ * First run.
+ *
+ * `needsCode` is the one thing that differs between the two hosts, and it is the brief's own
+ * flow: a Raspberry Pi running on its own shows a code on its television, and whoever can read
+ * it is standing in the masjid. A server has no such code and never asks for one, so the field
+ * is absent there rather than shown empty.
+ */
+function Setup({ onDone, needsCode = false }: { onDone: () => void; needsCode?: boolean }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (password.length < 4) {
-      setError('Please use at least 4 characters.');
+    // Eight, matching what the server will accept. It said four, so a seven-character password
+    // passed here and came back as a server error instead of being caught in the form.
+    if (password.length < 8) {
+      setError('Please use at least 8 characters.');
       return;
     }
     if (password !== confirm) {
       setError('The two passwords don’t match.');
       return;
     }
+    if (needsCode && code.replace(/\D+/g, '').length !== 8) {
+      setError('Enter the 8-digit code shown on the screen.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      await api.setup(password);
+      await api.setup(password, needsCode ? code : undefined);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not finish setup.');
@@ -489,12 +593,26 @@ function Setup({ onDone }: { onDone: () => void }) {
         <div className="auth-logo"><MasjidMark size={44} /></div>
         <h1 className="page-title" style={{ textAlign: 'center' }}>Welcome</h1>
         <p className="page-sub" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
-          Create a password for your control panel. You'll set everything else up inside.
+          {needsCode
+            ? 'Enter the code shown on this screen\u2019s television, then choose a password.'
+            : "Create a password for your control panel. You'll set everything else up inside."}
         </p>
+        {needsCode && (
+          <input
+            className="input"
+            inputMode="numeric"
+            autoFocus
+            autoComplete="one-time-code"
+            placeholder="Code from the television"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            style={{ marginBlockEnd: '0.6rem' }}
+          />
+        )}
         <input
           className="input"
           type="password"
-          autoFocus
+          autoFocus={!needsCode}
           placeholder="Choose a password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

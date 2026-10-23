@@ -17,6 +17,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { intervalForRenderMs, RenderCadence, cadenceAdvice, MAX_DUTY, TARGET_INTERVAL_MS } from './cadence';
 import { AssetCache, MAX_ASSET_BYTES, retryDelayMs } from './assetCache';
+import { withConnectionLost, CONNECTION_LOST, messageSvg } from './pairing';
+import { renderDisplaySvg, dimsFor } from '../render/svg';
+import { normTimetable } from '../validate';
 
 // ── how often to draw ────────────────────────────────────────────────────────
 
@@ -255,4 +258,51 @@ test('assets the timetable no longer refers to are cleaned up', async () => {
   }) as unknown as typeof fetch);
   assert.ok(await offline.dataUri('http://s/new.png'));
   assert.equal(await offline.dataUri('http://s/old.png'), null);
+});
+
+// ── a managed screen that has lost its server ────────────────────────────────
+
+test('a screen that has lost its server says so in the corner, and keeps its timetable', () => {
+  const t = normTimetable({ masjidName: 'Test Masjid', latitude: 40.24, longitude: -75.28, timezone: 'America/New_York' });
+  const now = new Date('2026-09-10T15:22:05-04:00');
+  for (const orientation of ['landscape', 'portrait'] as const) {
+    for (const quality of ['720p', '1080p'] as const) {
+      for (const layout of ['modern', 'simple'] as const) {
+        const where = `${orientation} ${quality} ${layout}`;
+        const frame = renderDisplaySvg({ ...t, orientation, quality, layout }, now, {});
+        const out = withConnectionLost(frame);
+        const end = frame.lastIndexOf('</svg>');
+        assert.ok(out.startsWith(frame.slice(0, end)), `${where}: the timetable underneath is untouched`);
+        assert.ok(out.endsWith('</svg>'), where);
+        assert.ok(out.includes(`>${CONNECTION_LOST}</text>`), `${where}: it says what is wrong`);
+
+        // Inside the margin every layout leaves, so it covers none of the content.
+        const { width: W, height: H } = dimsFor(orientation, quality);
+        const margin = Math.round(Math.min(W, H) * 0.05);
+        const r = /<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"[^>]*fill-opacity/.exec(out.slice(end))!;
+        const [x, y, w, h] = r.slice(1).map(Number);
+        assert.ok(y >= 0 && y + h <= margin, `${where}: in the top margin (${y.toFixed(1)}..${(y + h).toFixed(1)} of ${margin})`);
+        assert.ok(x >= margin && x + w <= W - margin + 0.5, `${where}: in the right-hand corner, inside the frame`);
+      }
+    }
+  }
+});
+
+test('the badge goes on the cards too, and on nothing that is not a frame', () => {
+  const card = withConnectionLost(messageSvg('Camera unavailable', 'x'));
+  assert.ok(card.includes(CONNECTION_LOST));
+  assert.equal(withConnectionLost('not an svg'), 'not an svg');
+});
+
+test('the agent badges every frame while the server is silent, and no longer blanks the timetable', () => {
+  // index.ts starts the agent when it is imported, so its wiring is read rather than run.
+  // Comments are stripped first: this file's own prose names the card that was removed.
+  const code = fs
+    .readFileSync(path.join(__dirname, 'index.ts'), 'utf8')
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l))
+    .join('\n');
+  assert.ok(!code.includes('Lost contact with the display server'), 'the full-screen card is gone');
+  assert.match(code, /screen\.show\(lostBadge\(live, svg\)/, 'the timetable frame carries the badge');
+  assert.match(code, /return live\.stale\(\) \? withConnectionLost\(svg\) : svg;/, 'and only while stale');
 });

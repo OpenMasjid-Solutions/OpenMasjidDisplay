@@ -20,6 +20,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { withBase } from '../base';
 import type { PiDeviceInfo } from '../types';
 import { Modal, Spinner, useToast } from '../ui';
 
@@ -104,7 +105,7 @@ function PreviewWindow({
   const live = shotAt > startedAt.current - 2000;
   // Keyed on the frame's own timestamp, so the browser fetches each picture exactly once and never
   // re-fetches one it already has while waiting for the next.
-  const url = shotIso ? `/api/pi/${device.id}/screenshot?t=${encodeURIComponent(shotIso)}` : '';
+  const url = shotIso ? withBase(`/api/pi/${device.id}/screenshot?t=${encodeURIComponent(shotIso)}`) : '';
 
   return (
     <Modal open floating wide title={`${screenName} — live`} onClose={onClose}>

@@ -6,6 +6,7 @@
 import { rid, screenToken, defaultIqamah } from './store';
 import { THEMES } from './render/theme';
 import { parseHHMM } from './prayer/engine';
+import { keepRuleUnderSchedule } from './iqamahSchedule';
 import type {
   Timetable,
   Source,
@@ -32,6 +33,7 @@ import type {
   AdhanOffsets,
   AdhanPopup,
   TimetableWidget,
+  TimetableSound,
   WhatsAppSettings,
   TimetableLayout,
 } from './types';
@@ -257,6 +259,21 @@ function normAdhanPopup(v: unknown, base?: AdhanPopup): AdhanPopup | undefined {
     seconds: intIn(o.seconds, base?.seconds ?? 15, 3, 120),
   };
 }
+/**
+ * The clip filename is NOT taken from the browser. It is written by the upload endpoint, which
+ * is the only thing that knows a decoded file exists under that name; a panel save carries back
+ * whatever it was last given, so an edit cannot name somebody else's file or a file at all.
+ */
+function normSound(v: unknown, base?: TimetableSound): TimetableSound {
+  const o = asObj(v);
+  return {
+    adhan: bool(o.adhan, base?.adhan ?? false),
+    iqamah: bool(o.iqamah, base?.iqamah ?? false),
+    // Set only by the upload endpoints, never from a form body.
+    adhanClip: base?.adhanClip ?? '',
+    iqamahClip: base?.iqamahClip ?? '',
+  };
+}
 function normWidget(v: unknown, base?: TimetableWidget): TimetableWidget | undefined {
   if (v === undefined) return base;
   const o = asObj(v);
@@ -297,14 +314,24 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
   const textColor = /^#?[0-9a-fA-F]{6}$/.test(tcRaw)
     ? (tcRaw.startsWith('#') ? tcRaw : `#${tcRaw}`).toLowerCase()
     : '';
-  // "simple" layout's flat page background: '' = white. Falls back to base like the others.
-  const sbgRaw = (o.simpleBg === undefined ? base?.simpleBg ?? '' : str(o.simpleBg, '', 7)).trim();
+  // "simple" layout's flat page background. Three kinds of value, and '' (= white) is still the
+  // default, which is what keeps every Simple screen already out there looking exactly as it did:
+  //   ''             white
+  //   'theme-light'  a page tinted with whatever accent is in play — resolved at RENDER time, so
+  //   'theme-dark'   it follows a preset, a custom accent and a wallpaper-matched one alike
+  //   '#rrggbb'      the admin's own colour
+  // The tokens are stored rather than the colour they resolve to precisely so that changing the
+  // accent later moves the page with it; storing the hex would freeze the pairing at the moment
+  // the admin happened to click.
+  const sbgRaw = (o.simpleBg === undefined ? base?.simpleBg ?? '' : str(o.simpleBg, '', 12)).trim();
   const simpleBg = /^#?[0-9a-fA-F]{6}$/.test(sbgRaw)
     ? (sbgRaw.startsWith('#') ? sbgRaw : `#${sbgRaw}`).toLowerCase()
-    : '';
+    : sbgRaw === 'theme-light' || sbgRaw === 'theme-dark'
+      ? sbgRaw
+      : '';
   const jumuahIn = Array.isArray(o.jumuah) ? o.jumuah : base?.jumuah ?? ['13:30'];
   const jumuah = jumuahIn.slice(0, 8).map((x) => hhmmOrNull(x)).filter((x): x is string => x != null);
-  return {
+  const tt: Timetable = {
     id: base?.id ?? rid('tt'),
     name: str(o.name, base?.name ?? 'Timetable', 80) || 'Timetable',
     themeId: oneOf(o.themeId, THEME_IDS, base?.themeId ?? 'emerald'),
@@ -337,10 +364,21 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     iqamahSchedule: base?.iqamahSchedule,
     jumuah: jumuah.length ? jumuah : ['13:30'],
     showSunrise: o.showSunrise === undefined ? base?.showSunrise ?? true : bool(o.showSunrise, true),
+    // 0 = not shown. Capped at two hours: past that it is not Ishrāq any more, it is a typo.
+    ishraqMinutes: o.ishraqMinutes === undefined ? base?.ishraqMinutes ?? 0 : intIn(o.ishraqMinutes, 0, 0, 120),
+    // The id is only shape-checked here; whether it points at a real, unlinked timetable is a
+    // question about the whole store, so api.ts answers it where it can see the other rows.
+    linkedTo: typeof o.linkedTo === 'string' ? str(o.linkedTo, '', 40).trim() : base?.linkedTo ?? '',
     showCountdown: o.showCountdown === undefined ? base?.showCountdown ?? true : bool(o.showCountdown, true),
     showDates: o.showDates === undefined ? base?.showDates ?? true : bool(o.showDates, true),
     showLogo: o.showLogo === undefined ? base?.showLogo ?? true : bool(o.showLogo, true),
     showSeconds: o.showSeconds === undefined ? base?.showSeconds ?? false : bool(o.showSeconds, false),
+    // Defaults to 'stacked', which is what every screen already does — so turning the seconds on
+    // after this change looks exactly as it did before it.
+    // The fallback is the STORED value, not the default — the same shape every other enum here
+    // uses. Falling back to 'stacked' would silently undo a masjid's choice the first time a
+    // save carried a malformed value for this one field.
+    secondsStyle: oneOf(o.secondsStyle === undefined ? base?.secondsStyle : o.secondsStyle, ['stacked', 'inline'] as const, base?.secondsStyle === 'inline' ? 'inline' : 'stacked'),
     showFooter: o.showFooter === undefined ? base?.showFooter ?? true : bool(o.showFooter, true),
     showCelestial: o.showCelestial === undefined ? base?.showCelestial ?? true : bool(o.showCelestial, true),
     bitrate720: o.bitrate720 === undefined ? base?.bitrate720 : intIn(o.bitrate720, base?.bitrate720 ?? 4000, 500, 20000),
@@ -361,9 +399,14 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     adhanOffsets: normAdhanOffsets(o.adhanOffsets, base?.adhanOffsets),
     adhanPopup: normAdhanPopup(o.adhanPopup, base?.adhanPopup),
     widget: normWidget(o.widget, base?.widget),
+    sound: normSound(o.sound, base?.sound),
     footerNote: str(o.footerNote, base?.footerNote ?? '', 160),
     createdAt: base?.createdAt ?? new Date().toISOString(),
   };
+  // The panel shows a fixed Iqamah time as it stands TODAY, scheduled changes included — so what
+  // comes back has to be read against that, not against the stored rule. See the function.
+  if (base) keepRuleUnderSchedule(tt, base, new Date());
+  return tt;
 }
 
 /** Only stream protocols are allowed for a source URL — blocks ffmpeg/MediaMTX

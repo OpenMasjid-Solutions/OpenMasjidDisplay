@@ -12,8 +12,9 @@
  * prayers on whatever the previous entry (or the base rule) gave. Maghrib is never
  * scheduled (it always follows the calculated sunset + its offset).
  */
-import type { IqamahScheduleEntry } from './types';
+import type { IqamahScheduleEntry, Timetable } from './types';
 import { parseClock } from './iqamahCsv';
+import { localParts } from './prayer/engine';
 
 const DAILY = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
 type DailyKey = (typeof DAILY)[number];
@@ -55,6 +56,60 @@ export function resolveSchedule(
     if (e.jumuah && e.jumuah.length) out.jumuah = e.jumuah;
   }
   return out;
+}
+
+/**
+ * A FIXED Iqamah time in the panel's "Iqamah times" table means the time in force TODAY.
+ *
+ * It used to mean the time typed before any scheduled change, and so it never moved: Fajr was
+ * scheduled from 6:00 to 6:30 on the 1st, the screens went to 6:30, and the table kept saying
+ * 6:00 for good. The panel now shows the scheduled time once it has taken effect (`toForm` in
+ * Timetables.tsx). This is the other half: reading the form back.
+ *
+ * The stored rule itself is NOT moved to the new time. It is what every date before the first
+ * change resolves to, so overwriting it would rewrite that history — the printed calendar for
+ * the days before the change, and the comparison that recognises a change as a change (the
+ * on-screen reminder, the WhatsApp post, the poster and the calendar's highlight all ask "does
+ * this differ from the day before?", and the day before would quietly become the new time too).
+ *
+ * So, for each fixed prayer a change is setting today:
+ *   - the same time as the change → not an edit; the rule keeps its stored value;
+ *   - the same time as the stored RULE → not an edit either. That is what a panel opened before
+ *     this existed sends back, and what a body with no `iqamah` falls back to; read as an edit it
+ *     would write the old time over the scheduled change and undo it on every screen. The cost is
+ *     one ambiguous case — someone deliberately typing the pre-change time back in — which does
+ *     nothing rather than something wrong; removing the scheduled change is the way to do that;
+ *   - any other time → an edit. It goes onto THAT change, so it shows from now on, and the rule
+ *     again keeps its value. (Onto the rule it would do nothing at all: the change outranks it.)
+ *
+ * Only fixed-to-fixed. A prayer just switched to "fixed" was not showing a scheduled time, so its
+ * value is a fresh choice and is left as typed. `next.iqamahSchedule` is replaced with a copy
+ * when an edit lands, never mutated: it is `base`'s own array, and the preview reads through here.
+ */
+export function keepRuleUnderSchedule(next: Timetable, base: Timetable, now: Date): void {
+  const schedule = base.iqamahSchedule;
+  if (!schedule?.length || next.iqamahSchedule !== schedule) return;
+  const p = localParts(now, next.timezone || undefined);
+  const today = p.year * 10000 + p.month * 100 + p.day;
+  let edited: IqamahScheduleEntry[] | null = null;
+  for (const k of DAILY) {
+    const rule = next.iqamah[k];
+    const was = base.iqamah[k];
+    if (rule?.mode !== 'fixed' || was?.mode !== 'fixed') continue;
+    // The latest change on or before today that sets this prayer.
+    let at = -1;
+    schedule.forEach((e, i) => {
+      if (e[k] && fromNum(e.from) <= today && (at < 0 || fromNum(e.from) >= fromNum(schedule[at].from))) at = i;
+    });
+    if (at < 0) continue;
+    const typed = rule.fixed ? parseClock(rule.fixed) : null;
+    if (typed && typed !== schedule[at][k] && typed !== (was.fixed && parseClock(was.fixed))) {
+      edited ??= schedule.map((e) => ({ ...e }));
+      edited[at][k] = typed;
+    }
+    next.iqamah = { ...next.iqamah, [k]: { ...rule, fixed: was.fixed } };
+  }
+  if (edited) next.iqamahSchedule = edited;
 }
 
 /** Validate `from` to a canonical "YYYY-MM-DD", or null. */

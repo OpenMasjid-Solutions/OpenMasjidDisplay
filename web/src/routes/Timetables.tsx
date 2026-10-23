@@ -2,10 +2,12 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api';
+import { BASE, withBase } from '../base';
 import type { AppState, Timetable, IqamahRule, IqamahConfig, IqamahYear, IqamahScheduleEntry, Hotspot, Announcements, Ticker, TickerMessage, SalahHadith, SalahBlackout, HadithItem, ProhibitedNotice, IqamahCountdown, IqamahChangeNotice, AdhanOffsets, AdhanPopup, TimetableWidget } from '../types';
 import { Modal, Field, Toggle, Spinner, IconPlus, IconEdit, IconTrash, IconCopy, IconClock, IconExpand, IconCalendar, IconCheck, IconDownload, copyText, useToast } from '../ui';
 import { timezoneOptions } from '../timezones';
 import { readImageForUpload } from '../image';
+import { useCaps } from '../capabilities';
 
 interface Props {
   state: AppState;
@@ -82,7 +84,7 @@ export function Timetables({ state, refetch }: Props) {
         {state.timetables.map((tt) => (
           <div key={tt.id} className="screen-card glass">
             <PreviewImg
-              src={`/api/preview/${tt.id}?v=${tick}`}
+              src={withBase(`/api/preview/${tt.id}?v=${tick}`)}
               portrait={tt.orientation === 'portrait'}
               alt={`Preview of ${tt.name}`}
             />
@@ -122,9 +124,19 @@ export function Timetables({ state, refetch }: Props) {
 
 type Form = Omit<Timetable, 'latitude' | 'longitude'> & { latitude: string; longitude: string };
 
-function toForm(tt: Timetable | null, state: AppState): Form {
+export function toForm(tt: Timetable | null, state: AppState): Form {
   if (tt) {
-    return { ...tt, latitude: tt.latitude == null ? '' : String(tt.latitude), longitude: tt.longitude == null ? '' : String(tt.longitude) };
+    // A FIXED Iqamah time is shown as it stands today: once a scheduled change has taken effect,
+    // the "Iqamah times" table shows the changed time, not the one typed before it. The server
+    // reads the form back the same way (`keepRuleUnderSchedule`), so saving this unchanged is
+    // not an edit, and changing it changes the time from now on.
+    const now = scheduledToday(tt);
+    const iqamah = { ...tt.iqamah };
+    for (const k of SCHEDULED_PRAYERS) {
+      const t = now[k];
+      if (t && iqamah[k].mode === 'fixed') iqamah[k] = { ...iqamah[k], fixed: t };
+    }
+    return { ...tt, iqamah, latitude: tt.latitude == null ? '' : String(tt.latitude), longitude: tt.longitude == null ? '' : String(tt.longitude) };
   }
   return {
     id: '', name: 'New timetable', themeId: 'emerald', accent: undefined, textColor: '',
@@ -135,9 +147,24 @@ function toForm(tt: Timetable | null, state: AppState): Form {
     method: 'MWL', fajrAngle: 18, ishaAngle: 17, asrMadhab: 'Hanafi', timezone: state.settings.scheduleTimezone ?? '',
     timeFormat: '12h', language: 'en', hijriOffset: 0, gregorianOffset: 0,
     iqamah: { fajr: { mode: 'offset', offset: 20 }, dhuhr: { mode: 'offset', offset: 10 }, asr: { mode: 'offset', offset: 10 }, maghrib: { mode: 'offset', offset: 5 }, isha: { mode: 'offset', offset: 10 } },
-    jumuah: ['13:30'], showSunrise: true, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, showFooter: true, showCelestial: true, showName: true,
+    jumuah: ['13:30'], showSunrise: true, ishraqMinutes: 0, linkedTo: '', sound: { adhan: false, iqamah: false, adhanClip: '', iqamahClip: '' }, showCountdown: true, showDates: true, showLogo: true, showSeconds: false, secondsStyle: 'stacked', showFooter: true, showCelestial: true, showName: true,
     backgroundImage: '', logoImage: '', footerNote: '', tickerSpeed: 5, createdAt: '',
   };
+}
+
+const SCHEDULED_PRAYERS = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
+
+/** The time each daily prayer's latest scheduled change gives it today — `resolveSchedule` on the
+ *  server, for the one date the panel needs. */
+function scheduledToday(tt: Timetable): Partial<Record<(typeof SCHEDULED_PRAYERS)[number], string>> {
+  const today = todayIn(tt.timezone);
+  const out: Partial<Record<(typeof SCHEDULED_PRAYERS)[number], string>> = {};
+  const byDate = [...(tt.iqamahSchedule ?? [])].sort((a, b) => a.from.localeCompare(b.from));
+  for (const e of byDate) {
+    if (e.from > today) break;
+    for (const k of SCHEDULED_PRAYERS) if (e[k]) out[k] = e[k];
+  }
+  return out;
 }
 
 /** Form (with string lat/long) → a timetable body for save/preview. */
@@ -153,6 +180,7 @@ type EditorTab = 'general' | 'salah' | 'appearance' | 'during' | 'announce' | 's
 
 // `fullPage` is accepted (App passes it) but the editor is now always a full-page layout.
 export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppState; tt: Timetable | null; onClose: () => void; onSaved: () => void; fullPage?: boolean }) {
+  const caps = useCaps();
   const toast = useToast();
   const [f, setF] = useState<Form>(() => toForm(tt, state));
   const [busy, setBusy] = useState(false);
@@ -180,6 +208,13 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const previewBody = formBody(f);
 
   const themePrimary = state.themes.find((t) => t.id === f.themeId)?.palette.primary ?? '#22D3EE';
+  // What the Simple page's two theme options are tinted with — the same accent the screen uses,
+  // so the swatches here show the page the renderer will actually draw. The mixes match
+  // `simplePage()` in server/src/render/theme.ts, which is what resolves 'theme-light' /
+  // 'theme-dark' at render time; these are only the preview dots, and the stored value is the
+  // token, never the colour, so changing the accent moves the real page with it.
+  const simpleAccent = f.accent ?? themePrimary;
+  const simpleBgIsHex = /^#[0-9a-f]{6}$/i.test(f.simpleBg || '');
   const themeGold = state.themes.find((t) => t.id === f.themeId)?.palette.gold ?? '#D4AF37';
 
   const save = async () => {
@@ -230,6 +265,69 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       })
       .catch((e) => toast(e instanceof Error ? e.message : 'Could not upload the logo.', 'error'));
   };
+  /** Read the chosen file as a data URL and hand it straight to the server, which decodes it.
+   *  No client-side conversion: the browser has no reliable audio decoder to resample with. */
+  const SLOT_NAME = { adhan: 'Adhan', iqamah: 'Iqamah' } as const;
+  // Only the two file names are taken from the reply. The switches on the form may be unsaved, and
+  // the stored ones would quietly turn them back.
+  const takeClips = (s: Timetable['sound']) =>
+    setF((p) => ({ ...p, sound: { ...p.sound, adhanClip: s.adhanClip, iqamahClip: s.iqamahClip } }));
+  const pickSound = (slot: 'adhan' | 'iqamah', file: File) => {
+    if (!tt) return;
+    if (file.size > 5_000_000) return toast('That file is too large — please keep it under about 5 MB.', 'error');
+    const r = new FileReader();
+    r.onerror = () => toast('That file could not be read.', 'error');
+    r.onload = async () => {
+      try {
+        const updated = await api.uploadSound(tt.id, slot, String(r.result ?? ''));
+        stopPreview();
+        takeClips(updated.sound);
+        toast(`${SLOT_NAME[slot]} sound uploaded.`);
+      } catch (e) {
+        toast(e instanceof Error ? e.message : 'Could not upload the sound.', 'error');
+      }
+    };
+    r.readAsDataURL(file);
+  };
+  const clearSound = async (slot: 'adhan' | 'iqamah') => {
+    if (!tt) return;
+    try {
+      const updated = await api.removeSound(tt.id, slot);
+      stopPreview();
+      takeClips(updated.sound);
+      toast(`${SLOT_NAME[slot]} is back to the built-in beep.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not remove the sound.', 'error');
+    }
+  };
+
+  // Listening to a sound here, in the browser. One at a time: Play on the other slot stops this one.
+  const [playing, setPlaying] = useState<'adhan' | 'iqamah' | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const stopPreview = () => {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPlaying(null);
+  };
+  useEffect(() => () => audioRef.current?.pause(), []); // leaving the editor stops it
+  const preview = (slot: 'adhan' | 'iqamah') => {
+    if (!tt) return;
+    const was = playing;
+    stopPreview();
+    if (was === slot) return;
+    const a = new Audio(api.soundUrl(tt.id, slot, f.sound[slot === 'adhan' ? 'adhanClip' : 'iqamahClip']));
+    const failed = () => {
+      if (audioRef.current !== a) return;
+      stopPreview();
+      toast('That sound could not be played here.', 'error');
+    };
+    a.onended = () => audioRef.current === a && stopPreview();
+    a.onerror = failed;
+    audioRef.current = a;
+    setPlaying(slot);
+    a.play().catch(failed);
+  };
+
   const clearLogo = async () => {
     if (!tt) return;
     try {
@@ -406,6 +504,8 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const setAo = (k: keyof AdhanOffsets, v: number) => set('adhanOffsets', { ...ao, [k]: v });
   const apop: AdhanPopup = f.adhanPopup ?? { enabled: false, seconds: 15 };
   const setApop = (patch: Partial<AdhanPopup>) => set('adhanPopup', { ...apop, ...patch });
+  const snd = f.sound ?? { adhan: false, iqamah: false, adhanClip: '', iqamahClip: '' };
+  const setSnd = (patch: Partial<typeof snd>) => set('sound', { ...snd, ...patch });
   const wg: TimetableWidget = f.widget ?? { enabled: false };
   const setWg = (patch: Partial<TimetableWidget>) => set('widget', { ...wg, ...patch });
 
@@ -423,6 +523,24 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       <div className="card section">
         <h3 className="section-title">Location & time zone</h3>
         <p className="hint" style={{ marginBlockStart: 0 }}>Prayer times are calculated on the device from your coordinates — no internet needed.</p>
+        <Field
+          label="Prayer times"
+          hint="Keep one timetable's times and have the others follow it, so you only edit them once. A followed timetable's own location, calculation, Iqamah, Jumu'ah and Adhan-delay settings are replaced by the one it follows — everything about how it LOOKS stays its own. A timetable that already follows another cannot itself be followed."
+        >
+          <select
+            className="select"
+            value={f.linkedTo}
+            onChange={(e) => set('linkedTo', e.target.value)}
+          >
+            <option value="">Its own (this timetable sets its own times)</option>
+            {state.timetables
+              .filter((o) => o.id !== tt?.id && !o.linkedTo)
+              .map((o) => (
+                <option key={o.id} value={o.id}>{`Follow "${o.name}"`}</option>
+              ))}
+          </select>
+          {f.linkedTo && <p className="hint" style={{ marginBlockStart: '0.4rem' }}>Saving will replace this timetable's times with that one's.</p>}
+        </Field>
         <div className="grid2">
           <Field label="Latitude" hint="Your masjid's latitude, e.g. 40.748222. Use the lookup link below if you're not sure."><input className="input" inputMode="decimal" value={f.latitude} onChange={(e) => set('latitude', e.target.value)} /></Field>
           <Field label="Longitude" hint="Your masjid's longitude, e.g. -73.891075."><input className="input" inputMode="decimal" value={f.longitude} onChange={(e) => set('longitude', e.target.value)} /></Field>
@@ -501,7 +619,22 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
     </>
   );
 
-  const salah = (
+  // A timetable that follows another takes ALL of this tab from it (store.ts `SYNCED_FIELDS`), and
+  // the server overwrites anything typed here on save. So the tab says so instead of offering
+  // controls that would silently do nothing — and the preview above already shows the times it
+  // will actually use.
+  const followed = f.linkedTo ? state.timetables.find((o) => o.id === f.linkedTo) : undefined;
+  const salah = followed ? (
+    <div className="card section">
+      <h3 className="section-title">These times follow “{followed.name}”</h3>
+      <p className="hint" style={{ marginBlockStart: 0 }}>
+        This timetable takes its calculation, Iqamah times, Adhan delays, Jumu'ah times and scheduled
+        Iqamah changes from “{followed.name}”. Change them there and this screen follows, including on
+        the day a scheduled change takes effect. To set times for this timetable on its own, choose
+        “Its own” under <b>Prayer times</b> on the General tab.
+      </p>
+    </div>
+  ) : (
     <>
       <div className="card section">
         <h3 className="section-title">Calculation</h3>
@@ -591,7 +724,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
               shift). Leave a prayer blank to keep it on your normal rule (or the previous change). Maghrib
               always follows the calculated sunset time plus its offset, so it isn't set here.
             </p>
-            <IqamahScheduleEditor schedule={iqSchedule} onSave={saveIqSchedule} timezone={f.timezone} />
+            <IqamahScheduleEditor schedule={iqSchedule} onSave={saveIqSchedule} timezone={f.timezone} baseJumuah={f.jumuah} />
             <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.9rem', flexWrap: 'wrap', paddingBlockStart: '0.9rem', borderBlockStart: '1px solid var(--color-border)' }}>
               <button type="button" className="btn btn--ghost btn--sm" onClick={downloadChangeImage} disabled={posterBusy}>
                 <IconDownload size={14} /> {posterBusy ? 'Preparing…' : 'Download announcement image'}
@@ -668,11 +801,29 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             </select>
           </Field>
           {f.layout === 'simple' && (
-            <Field label="Background colour" hint="The Simple layout's flat page colour. Text switches automatically between light and dark to stay readable on whatever you pick.">
-              <div className="row" style={{ gap: '0.6rem', alignItems: 'center' }}>
-                <input type="color" className="color-input" value={f.simpleBg || '#ffffff'} onChange={(e) => set('simpleBg', e.target.value)} />
-                <span className="hint">{f.simpleBg ? f.simpleBg : 'White (default)'}</span>
-                {f.simpleBg && <button type="button" className="btn btn--ghost btn--sm" onClick={() => set('simpleBg', '')}>Reset to white</button>}
+            <Field
+              label="Page colour"
+              hint="Simple is a flat page and an accent colour, so this is most of how it looks. The two theme options tint the page with whatever accent colour is set below — pick a different theme and the page follows it. Text, the table's bands and the times all adjust themselves to stay readable on whatever you choose."
+            >
+              <div className="chips">
+                <button type="button" className={`chip${!f.simpleBg ? ' is-active' : ''}`} onClick={() => set('simpleBg', '')} title="White (default)">
+                  <span className="chip-dot" style={{ background: '#ffffff', opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
+                  White
+                </button>
+                <button type="button" className={`chip${f.simpleBg === 'theme-light' ? ' is-active' : ''}`} onClick={() => set('simpleBg', 'theme-light')} title="A light page tinted with the theme colour">
+                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #ffffff 94%, ${simpleAccent})`, opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3)' }} />
+                  Theme — light
+                </button>
+                <button type="button" className={`chip${f.simpleBg === 'theme-dark' ? ' is-active' : ''}`} onClick={() => set('simpleBg', 'theme-dark')} title="A dark page tinted with the theme colour">
+                  <span className="chip-dot" style={{ background: `color-mix(in srgb, #0b0f10 84%, ${simpleAccent})`, opacity: 1, boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.25)' }} />
+                  Theme — dark
+                </button>
+              </div>
+              <div className="row" style={{ gap: '0.6rem', alignItems: 'center', marginBlockStart: '0.55rem' }}>
+                <label className="row" style={{ gap: '0.45rem' }}>
+                  <input type="color" className="color-input" value={simpleBgIsHex ? f.simpleBg : '#ffffff'} onChange={(e) => set('simpleBg', e.target.value)} />
+                  <span className="hint">{simpleBgIsHex ? f.simpleBg : 'Custom colour'}</span>
+                </label>
               </div>
             </Field>
           )}
@@ -681,7 +832,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
       <div className="card section">
         <h3 className="section-title">Theme & colours</h3>
-        <Field label="Theme colour" hint="Drives the accent colour throughout — the highlighted next-prayer row, the countdown ring (Classic), icons and the Jumu'ah bar. A ready-made palette (dark is default), or pick a custom accent colour below.">
+        <Field label="Theme colour" hint="Drives the accent colour throughout — the highlighted next-prayer row, the countdown ring (Modern), icons, the Jumu'ah times and, on Simple, the prayer-table header and the page itself when its colour is set to one of the theme options. A ready-made palette (dark is default), or pick a custom accent colour below.">
           <div className="chips">
             {state.themes.map((th) => (
               <button
@@ -790,9 +941,38 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           <ToggleRow label="Countdown to next prayer" checked={f.showCountdown} onChange={(v) => set('showCountdown', v)} />
           <ToggleRow label="Seconds on the clock" checked={f.showSeconds} onChange={(v) => set('showSeconds', v)} />
           <ToggleRow label="Sunrise" checked={f.showSunrise} onChange={(v) => set('showSunrise', v)} />
-          <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />
+          <div className="toggle-row row-between">
+            <span className="label" style={{ margin: 0 }}>Ishrāq (minutes after sunrise)</span>
+            <input
+              className="input"
+              style={{ width: '5.5rem' }}
+              inputMode="numeric"
+              value={f.ishraqMinutes || ''}
+              placeholder="off"
+              onChange={(e) => set('ishraqMinutes', Math.max(0, Math.min(120, Number(e.target.value.replace(/\D/g, '')) || 0)))}
+            />
+          </div>
+          {/* Simple is a flat page with no scene behind it, so the sun and moon have nowhere to be drawn. */}
+          {f.layout !== 'simple' && <ToggleRow label="Sun & moon in the background" checked={f.showCelestial} onChange={(v) => set('showCelestial', v)} />}
           <ToggleRow label="Calculation-method footnote" checked={f.showFooter} onChange={(v) => set('showFooter', v)} />
         </div>
+        {f.showSeconds && (
+          <div style={{ marginBlockStart: '0.9rem' }}>
+            <Field
+              label="Where the seconds go"
+              hint="Beside the clock keeps the seconds small, above the AM/PM — the way they have always been shown. In the clock puts them in the time itself (6:22:05), same size as the hours and minutes, which reads from further away. The clock shrinks a little to make room for the extra digits."
+            >
+              <div className="chips">
+                <button type="button" className={`chip${f.secondsStyle !== 'inline' ? ' is-active' : ''}`} onClick={() => set('secondsStyle', 'stacked')}>
+                  Beside the clock
+                </button>
+                <button type="button" className={`chip${f.secondsStyle === 'inline' ? ' is-active' : ''}`} onClick={() => set('secondsStyle', 'inline')}>
+                  In the clock (6:22:05)
+                </button>
+              </div>
+            </Field>
+          </div>
+        )}
         <div style={{ marginBlockStart: '0.9rem' }}>
           <Field label="Footer note (optional)" hint="A small custom line along the bottom. Leave blank to show the calculation-method note instead."><input className="input" value={f.footerNote} onChange={(e) => set('footerNote', e.target.value)} placeholder="e.g. Jumu'ah khutbah at 1:15pm" /></Field>
         </div>
@@ -829,6 +1009,47 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
       </div>
 
       <div className="card section">
+        <h3 className="section-title">Sound</h3>
+        <p className="hint" style={{ marginBlockStart: 0 }}>
+          Plays through the screen itself, carried on this timetable's video stream — so the television has to
+          be able to play the stream's sound and have its volume up. Raspberry&nbsp;Pi screens and screens shown
+          in a browser stay silent: the Pi sends picture only, and a browser refuses to start a video that has
+          sound. With both switches off the stream carries no sound at all, exactly as before.
+        </p>
+        <div className="toggle-list">
+          <ToggleRow label="Play at Adhan" checked={snd.adhan} onChange={(v) => setSnd({ adhan: v })} />
+          <ToggleRow label="Play at Iqamah" checked={snd.iqamah} onChange={(v) => setSnd({ iqamah: v })} />
+        </div>
+        {(snd.adhan || snd.iqamah) && (
+          <Field label="What to play" hint="Adhan and Iqamah each have their own sound. The built-in one is a long beep; or upload your own — an MP3, M4A, WAV or OGG up to 5 MB and three minutes; longer files are cut to three minutes. Play lets you hear it here, on this computer.">
+            {tt ? (
+              <div className="list">
+                {(['adhan', 'iqamah'] as const).filter((k) => snd[k]).map((k) => {
+                  const clip = snd[k === 'adhan' ? 'adhanClip' : 'iqamahClip'];
+                  return (
+                    <div key={k} className="row" style={{ gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.3rem 0' }}>
+                      <span className="label" style={{ margin: 0, minWidth: '4.5rem' }}>{SLOT_NAME[k]}</span>
+                      <span className="muted" style={{ fontSize: '0.88rem' }}>{clip ? 'Your own sound' : 'Built-in beep'}</span>
+                      <button type="button" className="btn btn--ghost btn--sm" aria-pressed={playing === k} aria-label={`${playing === k ? 'Stop' : 'Play'} the ${SLOT_NAME[k]} sound`} onClick={() => preview(k)}>
+                        {playing === k ? 'Stop' : 'Play'}
+                      </button>
+                      <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
+                        <input type="file" accept="audio/*" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickSound(k, file); e.target.value = ''; }} />
+                        {clip ? 'Replace sound' : 'Upload a sound'}
+                      </label>
+                      {clip && <button type="button" className="btn btn--ghost btn--sm" onClick={() => clearSound(k)}>Use the beep</button>}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <span className="hint">Create the timetable first, then you can upload a sound.</span>
+            )}
+          </Field>
+        )}
+      </div>
+
+      <div className="card section">
         <h3 className="section-title">Prohibited time notice</h3>
         <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
           <span className="label" style={{ margin: 0 }}>Show a prohibited-time notice before Dhuhr (zawāl / sun at its zenith)</span>
@@ -836,15 +1057,25 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
         </div>
         {pn.enabled && (
           <>
-            <Field label="Show for (minutes before the Dhuhr Adhan)" hint="During this window the next-prayer ring becomes a “Prohibited time” notice counting down to the Dhuhr Adhan, when prayer is allowed again.">
+            <Field
+              label="Show for (minutes before the Dhuhr Adhan)"
+              hint={
+                f.layout === 'simple'
+                  ? 'During this window a red message scrolls along the bottom of the screen until the Dhuhr Adhan, when prayer is allowed again. It replaces any scrolling announcements for the whole window.'
+                  : 'During this window the next-prayer ring becomes a “Prohibited time” notice counting down to the Dhuhr Adhan, when prayer is allowed again.'
+              }
+            >
               <input className="input" type="number" min={1} max={45} value={pn.minutes} onChange={(e) => setPn({ minutes: Number(e.target.value) })} />
             </Field>
-            <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
-              <span className="label" style={{ margin: 0 }}>
-                Show as a red scroll message at the bottom <span className="hint">— instead of the ring notice; overrides any ticker for the whole window</span>
-              </span>
-              <Toggle checked={!!pn.ticker} onChange={(v) => setPn({ ticker: v })} label="Show as a bottom scroll message" />
-            </div>
+            {/* Simple has no ring, so on Simple the notice is always the bottom message — there is no choice to offer. */}
+            {f.layout !== 'simple' && (
+              <div className="toggle-row row-between" style={{ marginBlockStart: '0.7rem' }}>
+                <span className="label" style={{ margin: 0 }}>
+                  Show as a red scroll message at the bottom <span className="hint">— instead of the ring notice; overrides any ticker for the whole window</span>
+                </span>
+                <Toggle checked={!!pn.ticker} onChange={(v) => setPn({ ticker: v })} label="Show as a bottom scroll message" />
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1006,6 +1237,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
 
   const sharing = (
     <>
+      {caps.widget && (
       <div className="card section">
         <h3 className="section-title">Website widget</h3>
         <div className="toggle-row row-between" style={{ marginBlockEnd: '0.7rem' }}>
@@ -1016,6 +1248,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
           <p className="hint">Save this timetable, then reopen to get the embed code.</p>
         ))}
       </div>
+      )}
 
       <div className="card section">
         <h3 className="section-title">Print</h3>
@@ -1111,7 +1344,7 @@ function WidgetEmbed({ id }: { id: string }) {
   if (!info) return <p className="hint"><Spinner /> Preparing embed code…</p>;
   // Build the LAN link from the page's OWN origin so it uses the exact scheme + port
   // the admin is using right now (e.g. the HTTPS proxy port) — never a guessed http://.
-  const localUrl = `${window.location.origin}/w/${id}`;
+  const localUrl = `${window.location.origin}${BASE}/w/${id}`;
   const url = info.publicUrl || localUrl;
   const snippet = `<iframe src="${url}" title="Prayer times" loading="lazy" style="border:0;width:100%;max-width:420px;height:480px"></iframe>`;
   const copy = async (text: string, what: string) => {
@@ -1306,16 +1539,26 @@ function IqamahRow({ name, rule, onChange, disabled }: { name: string; rule: Iqa
   );
 }
 
-function JumuahEditor({ times, onChange }: { times: string[]; onChange: (t: string[]) => void }) {
+/** `ordinals` labels each time 1st, 2nd and so on — for a scheduled change, where the point is to
+ *  say WHICH Jumu'ah is moving. */
+function JumuahEditor({ times, onChange, ordinals }: { times: string[]; onChange: (t: string[]) => void; ordinals?: boolean }) {
+  const nth = (n: number) => `${n}${['th', 'st', 'nd', 'rd'][n] ?? 'th'}`; // shortcut: wrong from 21st on; fine while Jumu'ah is capped at 8
+  // A new one starts an hour after the last rather than on top of it: two equal times are one
+  // Jumu'ah to the server, which drops the duplicate on save.
+  const after = (t?: string) => {
+    const m = t ? /^(\d{1,2}):(\d{2})$/.exec(t) : null;
+    return m ? `${String((Number(m[1]) + 1) % 24).padStart(2, '0')}:${m[2]}` : '13:30';
+  };
   return (
     <div className="row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
       {times.map((t, i) => (
         <span key={i} className="row" style={{ gap: '0.3rem' }}>
-          <input className="input" style={{ width: '8rem' }} type="time" value={t} onChange={(e) => onChange(times.map((x, j) => (j === i ? e.target.value : x)))} />
-          <button className="icon-btn" aria-label="Remove time" onClick={() => onChange(times.filter((_, j) => j !== i))}><IconTrash size={15} /></button>
+          {ordinals && <span className="hint" style={{ margin: 0 }}>{nth(i + 1)}</span>}
+          <input className="input" style={{ width: '8rem' }} type="time" value={t} aria-label={ordinals ? `${nth(i + 1)} Jumu'ah` : undefined} onChange={(e) => onChange(times.map((x, j) => (j === i ? e.target.value : x)))} />
+          <button type="button" className="icon-btn" aria-label={ordinals ? `Remove the ${nth(i + 1)} Jumu'ah` : 'Remove time'} onClick={() => onChange(times.filter((_, j) => j !== i))}><IconTrash size={15} /></button>
         </span>
       ))}
-      <button className="btn btn--ghost btn--sm" onClick={() => onChange([...times, '13:30'])}><IconPlus size={14} /> Add time</button>
+      <button type="button" className="btn btn--ghost btn--sm" onClick={() => onChange([...times, after(times[times.length - 1])])}><IconPlus size={14} /> {ordinals ? "Add a Jumu'ah" : 'Add time'}</button>
     </div>
   );
 }
@@ -1341,7 +1584,7 @@ function todayIn(tz?: string): string {
  *  schedule rather than a growing archive. */
 const KEEP_PAST_DAYS = 3;
 
-function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: IqamahScheduleEntry[]; onSave: (next: IqamahScheduleEntry[]) => Promise<IqamahScheduleEntry[]>; timezone?: string }) {
+function IqamahScheduleEditor({ schedule, onSave, timezone, baseJumuah }: { schedule: IqamahScheduleEntry[]; onSave: (next: IqamahScheduleEntry[]) => Promise<IqamahScheduleEntry[]>; timezone?: string; baseJumuah: string[] }) {
   const toast = useToast();
   const PR = ['fajr', 'dhuhr', 'asr', 'isha'] as const;
   const [rows, setRows] = useState<IqamahScheduleEntry[]>(() => JSON.parse(JSON.stringify(schedule)));
@@ -1400,6 +1643,18 @@ function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: Iqamah
     setRows((rs) => rs.filter((_, j) => j !== i));
     setHidden((h) => h.filter((_, j) => j !== i));
   };
+  /**
+   * The Jumu'ah times in force just BEFORE `from` — what a change on that date starts from.
+   *
+   * A change's Jumu'ah list replaces the whole list, so it used to start empty, with one "Add
+   * time": a masjid with two Jumu'ahs that only wanted to move the second had to know to re-enter
+   * the first as well, and it read as "a change can only set one Jumu'ah". Starting from the
+   * current times turns it into editing them: change the 1st or the 2nd, add a 3rd, remove one.
+   */
+  const jumuahBefore = (from: string): string[] => {
+    const earlier = rows.filter((o) => o.from && o.from < from && o.jumuah?.length).sort((a, b) => a.from.localeCompare(b.from));
+    return earlier.length ? earlier[earlier.length - 1].jumuah! : baseJumuah;
+  };
 
   const save = async () => {
     setBusy(true);
@@ -1451,8 +1706,22 @@ function IqamahScheduleEditor({ schedule, onSave, timezone }: { schedule: Iqamah
             ))}
           </div>
           <div style={{ marginBlockStart: '0.7rem' }}>
-            <span className="label">Jumu'ah from this date (optional)</span>
-            <JumuahEditor times={r.jumuah ?? []} onChange={(j) => update(i, { jumuah: j.length ? j : undefined })} />
+            <span className="label">Jumu'ah from this date</span>
+            {r.jumuah?.length ? (
+              <>
+                <JumuahEditor ordinals times={r.jumuah} onChange={(j) => update(i, { jumuah: j.length ? j : undefined })} />
+                <button type="button" className="btn btn--ghost btn--sm" style={{ marginBlockStart: '0.4rem' }} onClick={() => update(i, { jumuah: undefined })}>
+                  Keep Jumu'ah as it is
+                </button>
+              </>
+            ) : (
+              <div className="row" style={{ gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span className="hint" style={{ margin: 0 }}>Stays {jumuahBefore(r.from).join(' & ') || 'as it is'}.</span>
+                <button type="button" className="btn btn--ghost btn--sm" onClick={() => update(i, { jumuah: [...jumuahBefore(r.from)] })}>
+                  Change Jumu'ah
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )))}

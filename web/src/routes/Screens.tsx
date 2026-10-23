@@ -2,10 +2,12 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useState, useEffect } from 'react';
 import { api } from '../api';
+import { BASE } from '../base';
 import type { AppState, Tv, TvKind, ContentRef, TvStatus, PiDeviceInfo, PiDeviceNet } from '../types';
 // The same helper the server tests, rather than a second copy of the rule living in the panel.
 import { installCommand } from '../../../server/src/pi/lanHost';
 import { contentOptions, ContentPicker, contentLabel } from '../content';
+import { useCaps } from '../capabilities';
 import { PiSettings } from './PiSettings';
 import {
   Modal,
@@ -35,6 +37,15 @@ interface Props {
 
 export function Screens({ state, refetch }: Props) {
   const toast = useToast();
+  /**
+   * A fleet, or this one screen.
+   *
+   * A Raspberry Pi running on its own IS the screen — there is no second one to add, nothing to
+   * pair, and nothing to remove, because removing it would leave the device showing a timetable
+   * it no longer claims to have. So the page keeps its card and loses the machinery around it.
+   * Same component, same card, same status dot; what differs is what the host says it is.
+   */
+  const fleet = useCaps().screens === 'fleet';
   const [edit, setEdit] = useState<Tv | 'new' | null>(null);
   const [confirm, setConfirm] = useState<Tv | null>(null);
   const [piById, setPiById] = useState<Map<string, PiDeviceInfo>>(new Map());
@@ -71,27 +82,41 @@ export function Screens({ state, refetch }: Props) {
   return (
     <div>
       {/* Pi screens are devices as well as screens, and the card is where somebody looks to see
-          whether the thing on the shelf is alive. Fetched once here rather than per card. */}
-      <PiDeviceFacts tvs={state.tvs} onLoaded={setPiById} />
+          whether the thing on the shelf is alive. Fetched once here rather than per card.
+          Only a server has other devices to ask about; a Pi asking itself would be asking an
+          endpoint it does not serve. */}
+      {fleet && <PiDeviceFacts tvs={state.tvs} onLoaded={setPiById} />}
 
       <div className="page-head row-between">
         <div>
           <h1 className="page-title">Screens</h1>
-          <p className="page-sub">Choose what each screen shows. Changes happen within a few seconds.</p>
+          <p className="page-sub">
+            {fleet
+              ? 'Choose what each screen shows. Changes happen within a few seconds.'
+              : 'Choose what this screen shows. Changes happen within a few seconds.'}
+          </p>
         </div>
-        <button className="btn btn--primary" onClick={() => setEdit('new')}>
-          <IconPlus size={16} /> Add screen
-        </button>
+        {fleet && (
+          <button className="btn btn--primary" onClick={() => setEdit('new')}>
+            <IconPlus size={16} /> Add screen
+          </button>
+        )}
       </div>
 
       {state.tvs.length === 0 ? (
         <div className="empty-state glass" style={{ borderRadius: 'var(--radius-card)' }}>
           <div className="empty-art"><MasjidMark size={64} /></div>
-          <h3>No screens yet</h3>
-          <p>Add a screen for each TV. You'll get a link to put into its RTSP decoder.</p>
-          <button className="btn btn--primary" style={{ marginTop: '1rem' }} onClick={() => setEdit('new')}>
-            <IconPlus size={16} /> Add your first screen
-          </button>
+          <h3>{fleet ? 'No screens yet' : 'Starting up'}</h3>
+          <p>
+            {fleet
+              ? 'Add a screen for each TV — a Raspberry Pi behind it, a browser, or a decoder box.'
+              : 'This screen is getting itself ready. It will appear here in a moment.'}
+          </p>
+          {fleet && (
+            <button className="btn btn--primary" style={{ marginTop: '1rem' }} onClick={() => setEdit('new')}>
+              <IconPlus size={16} /> Add your first screen
+            </button>
+          )}
         </div>
       ) : (
         <div className="screens-grid">
@@ -106,7 +131,7 @@ export function Screens({ state, refetch }: Props) {
               onSet={(c) => setContent(tv, c)}
               onResume={() => resume(tv)}
               onEdit={() => setEdit(tv)}
-              onDelete={() => setConfirm(tv)}
+              onDelete={fleet ? () => setConfirm(tv) : undefined}
               onCopy={(url) => copyText(url).then(() => toast('Link copied.'))}
             />
           ))}
@@ -165,7 +190,8 @@ function ScreenCard({
   onSet: (c: ContentRef) => void;
   onResume: () => void;
   onEdit: () => void;
-  onDelete: () => void;
+  /** absent where there is nothing to remove — a standalone Pi IS its one screen */
+  onDelete?: () => void;
   onCopy: (url: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -221,7 +247,7 @@ function ScreenCard({
   // working if the line drops. A screen elsewhere (or a display hosted in the cloud) needs the
   // public one. Showing only whichever exists made the local address vanish the moment remote
   // access was turned on, which is exactly backwards for the screens that are on this network.
-  const localUrl = `${location.origin}/s/${tv.webToken ?? ''}`;
+  const localUrl = `${location.origin}${BASE}/s/${tv.webToken ?? ''}`;
   const url = isWeb ? localUrl : `rtsp://${location.hostname}:${state.rtsp.port}/${tv.id}`;
   const localHost = /^(localhost|127\.|0\.0\.0\.0|::1|\[)/.test(location.hostname);
   const sourceTag =
@@ -271,7 +297,7 @@ function ScreenCard({
           </button>
         )}
         <button className="icon-btn" aria-label="Edit screen" onClick={onEdit}><IconEdit size={16} /></button>
-        <button className="icon-btn" aria-label="Remove screen" onClick={onDelete}><IconTrash size={16} /></button>
+        {onDelete && <button className="icon-btn" aria-label="Remove screen" onClick={onDelete}><IconTrash size={16} /></button>}
       </div>
 
       <div className="screen-now glass-inset">
@@ -308,6 +334,11 @@ function ScreenCard({
         // to fall through to the RTSP branch and print an rtsp:// URL that nothing served — worse
         // than useless, because it invites somebody to test it, fail, and conclude the screen is
         // broken when it is working perfectly.
+        //
+        // Facts about a device somebody has to go and find. On a STANDALONE screen the panel is
+        // that device, so "address unknown · agent ?" is the screen failing to recognise itself,
+        // which is worse than saying nothing. Shown only when the facts were actually fetched.
+        device ? (
         <div className="rtsp-box" style={{ justifyContent: 'flex-start', gap: '0.6rem', flexWrap: 'wrap' }}>
           <span
             className={`status-dot${device?.online ? '' : ' status-dot--idle'}`}
@@ -336,6 +367,7 @@ function ScreenCard({
             )
           ) : null}
         </div>
+        ) : null
       ) : (
         <div className="rtsp-box">
           <span className="rtsp-url" title={url}>{url}</span>
@@ -488,6 +520,14 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [copiedCmd, setCopiedCmd] = useState(false);
+  // Adopting a screen that is already running on its own. Its own state rather than reusing the
+  // fields above: the two forms are visible at the same time, and a half-typed address appearing
+  // in the code box would be nonsense.
+  const [address, setAddress] = useState('');
+  const [piPassword, setPiPassword] = useState('');
+  const [linkName, setLinkName] = useState('');
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
 
   // Built from the address this panel is open on, which is the address that just worked from a
   // browser on this network — so it is the one most likely to work from the Pi too. It is also
@@ -499,7 +539,7 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
   // will issue for 192.168.x.x — so `curl` refuses it and the command needs -k for that first
   // fetch. That is called out below rather than slipped in, because pasting an unverified script
   // into `sudo sh` is not something anybody should do without being told.
-  const { command: installCmd, insecureFirstHop } = installCommand(window.location.origin);
+  const { command: installCmd, insecureFirstHop } = installCommand(window.location.origin + BASE);
 
   // A failed poll must NOT clear the list. It used to, and the consequence was maddening rather
   // than subtle: the code and name inputs below were rendered only while a device was pending, so
@@ -531,6 +571,24 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
       toast(e instanceof Error ? e.message : 'Could not set that screen up.', 'error');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const link = async () => {
+    setLinkBusy(true);
+    try {
+      await api.piLink(address.trim(), piPassword, linkName.trim());
+      setAddress('');
+      setPiPassword('');
+      setLinkName('');
+      await load();
+      await refetch();
+      toast('Screen adopted. It will join in a few seconds.');
+      onAdopted();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not adopt that screen.', 'error');
+    } finally {
+      setLinkBusy(false);
     }
   };
 
@@ -631,6 +689,64 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
         {busy ? <><Spinner /> Setting up…</> : 'Set up this screen'}
       </button>
 
+      {/* The other way in: a screen that is already running on its own.
+          Folded rather than shown beside the code, because it is the second-most likely thing
+          somebody wants and two forms side by side read as a choice you have to make before you
+          understand either. The house fold (`pi-fold`), not a bare <details> — that would be the
+          one control on this page with no design system behind it. */}
+      <div className={`pi-fold${linkOpen ? ' is-open' : ''}`} style={{ marginBlockStart: '1.1rem' }}>
+        <button type="button" className="pi-fold__head" aria-expanded={linkOpen} onClick={() => setLinkOpen((v) => !v)}>
+          <span className="pi-fold__chev" aria-hidden="true" />
+          <span className="pi-fold__title">The screen is already running on its own</span>
+        </button>
+        {linkOpen && (
+        <div className="pi-fold__body">
+        <p className="hint" style={{ margin: '0.6rem 0' }}>
+          A Raspberry Pi set up on its own has a panel of its own and a password you chose. Give
+          its address and that password and it joins this server — no keyboard, and nothing to read
+          off the television. It has to be on this network: a screen somewhere else cannot be
+          reached from here, and you point it at this server from its own panel instead.
+        </p>
+        <div className="grid2">
+          <Field label="The screen's address" hint="As you'd open it in a browser — e.g. 192.168.1.30.">
+            <input
+              className="input"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="192.168.1.30"
+              style={{ fontFamily: 'monospace' }}
+            />
+          </Field>
+          <Field label="That screen's password" hint="The one set when it was first switched on.">
+            <input
+              className="input"
+              type="password"
+              value={piPassword}
+              onChange={(e) => setPiPassword(e.target.value)}
+              autoComplete="off"
+            />
+          </Field>
+        </div>
+        <Field label="Name this screen" hint="What you'll call it here — e.g. Main hall.">
+          <input className="input" value={linkName} onChange={(e) => setLinkName(e.target.value)} placeholder="Main hall" />
+        </Field>
+        <button
+          className="btn btn--primary btn--sm"
+          onClick={link}
+          disabled={linkBusy || !address.trim() || !piPassword}
+          style={{ marginBlockStart: '0.8rem' }}
+        >
+          {linkBusy ? <><Spinner /> Adopting…</> : 'Adopt this screen'}
+        </button>
+        <p className="hint" style={{ marginBlockStart: '0.6rem' }}>
+          Its own timetables and password stay on it, untouched, in case you ever set it free
+          again. Update and Terminal for it will say they need the installer — adopting this way
+          cannot give this server the kind of access those two need.
+        </p>
+        </div>
+        )}
+      </div>
+
       {adopted.length > 0 && (
         <div style={{ marginBlockStart: pending.length ? '1.2rem' : '0.8rem' }}>
           <div className="label" style={{ marginBlockEnd: '0.4rem' }}>Set up</div>
@@ -720,10 +836,15 @@ function TvModal({
           label="How this screen receives the picture"
           hint="Pick this first — it changes what the rest of this asks for."
         >
+          {/* Ordered best-first, with the decoder box marked as the older route.
+              The DEFAULT is deliberately left alone. A masjid adding a fourth decoder to a wall
+              of three would otherwise get a Raspberry Pi screen for not reading a dropdown that
+              used to have one answer — and relabelling a route is not a reason to change what
+              somebody gets when they do not choose. */}
           <select className="select" value={kind} onChange={(e) => setKind(e.target.value as TvKind)}>
-            <option value="rtsp">Video stream — a decoder box pulls RTSP from this server</option>
-            <option value="web">Web page — a browser draws the timetable itself (beta)</option>
             <option value="pi">Raspberry Pi — draws the timetable AND plays cameras itself (beta)</option>
+            <option value="web">Web page — a browser draws the timetable itself (beta)</option>
+            <option value="rtsp">Video stream — an RTSP decoder box pulls from this server (legacy)</option>
           </select>
         </Field>
       )}

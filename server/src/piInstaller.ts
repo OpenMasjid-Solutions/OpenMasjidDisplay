@@ -44,7 +44,7 @@ const PREFIX_RE = /^(?:\/[a-z0-9-]{1,40})?$/;
  * directly they are simply absent (CLAUDE.md §4). The failure direction is safe — a spoofed value
  * can only change the address written into the script that the spoofer is themselves fetching.
  */
-export function originFor(req: IncomingMessage, pathname: string): string | null {
+export function originFor(req: IncomingMessage, pathname: string, route = '/pi.sh'): string | null {
   const fwdHost = String(req.headers['x-forwarded-host'] ?? '').split(',')[0].trim();
   const host = (fwdHost || String(req.headers.host ?? '')).trim();
   if (!HOST_RE.test(host)) return null;
@@ -55,8 +55,14 @@ export function originFor(req: IncomingMessage, pathname: string): string | null
 
   // Keep whatever prefix this app is mounted under, so a Pi set up through the platform's tunnel
   // reaches /display/pi/enrol rather than /pi/enrol at the platform root.
-  const m = /^(\/[a-z0-9-]+)\/pi\.sh$/.exec(pathname);
-  const prefix = m ? m[1] : '';
+  //
+  // `route` is the path the CALLER is serving, stripped off to leave the prefix. It is a parameter
+  // because two routes now need this answer and they are not the same path: the installer serves
+  // `/pi.sh`, and the panel's adopt-by-address route is `/api/pi/link`. Hard-coding one of them
+  // and letting the other fall through to "no prefix" would hand a tunnelled Pi the platform's
+  // root as its server address — a screen that installs cleanly and then never connects.
+  if (!pathname.endsWith(route)) return null;
+  const prefix = pathname.slice(0, -route.length);
   if (!PREFIX_RE.test(prefix)) return null;
 
   return `${scheme}://${host}${prefix}`;

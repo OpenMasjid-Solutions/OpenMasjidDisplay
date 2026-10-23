@@ -27,6 +27,9 @@ import {
   PENDING_TTL_MS,
   PI_SEEN_TIMEOUT_MS,
   __resetDevicesForTests,
+  createAdoptedDevice,
+  removeAdoptedDevice,
+  forgetPendingDevice,
  queueCommand, pendingCommand, ackCommand, isPiCommand, PI_COMMAND_TTL_MS, normDeviceNet, PI_COMMANDS } from './piAgent';
 import type { DB, Settings, Tv } from './types';
 
@@ -486,4 +489,142 @@ test('an expired join stops offering the passphrase', () => {
   dev.token = makeDeviceToken();
   queueCommand(db, dev.id, 'wifi-join', 1000, { ssid: 'N', psk: 'hunter2pass' });
   assert.equal(pendingCommand(dev, 1000 + PI_COMMAND_TTL_MS + 1), null, 'a stale join is not offered');
+});
+
+// ── a device created already adopted, for a screen we go and configure ───────
+
+test('a panel-adopted device is complete before anybody is told it exists', () => {
+  // The ordinary order is the other one: a Pi enrols, mints its own secret and shows a code. Here
+  // this server speaks first, so the identity is minted here and carried to the device. That is
+  // what closes the race in the obvious alternative — "pre-approve this id, adopt it when it
+  // enrols" would hand the adoption to whichever device enrolled with that id first, and a device
+  // id is a lookup key anything on the network may claim.
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const { device, deviceSecret } = createAdoptedDevice(d, { hostname: 'main-hall', ip: '192.168.1.30' }, Date.parse('2026-10-16T09:00:00Z'));
+
+  assert.ok(device.token, 'it is adopted on creation — there is nothing left to approve');
+  assert.ok(device.secretHash, 'and it can prove itself at the next enrolment');
+  assert.ok(deviceSecret.length >= 16, 'the secret is high entropy');
+  assert.equal(d.piDevices?.length, 1);
+  assert.equal(d.piDevices?.[0], device, 'and it is in the database, not just returned');
+});
+
+test('the secret is returned, never stored in the clear', () => {
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const { device, deviceSecret } = createAdoptedDevice(d, {}, Date.now());
+  assert.notEqual(device.secretHash, deviceSecret, 'the stored value must not be the secret');
+  assert.ok(!JSON.stringify(d).includes(deviceSecret), 'and it must appear nowhere in the data');
+});
+
+test('two screens adopted this way never collide', () => {
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const made = Array.from({ length: 40 }, () => createAdoptedDevice(d, {}, Date.now()));
+  assert.equal(new Set(made.map((m) => m.device.id)).size, 40, 'ids are distinct');
+  assert.equal(new Set(made.map((m) => m.device.token)).size, 40, 'tokens are distinct');
+  assert.equal(new Set(made.map((m) => m.deviceSecret)).size, 40, 'secrets are distinct');
+});
+
+test('a device created this way can prove itself when it does enrol', () => {
+  // The round trip that matters: the agent is handed the secret over the panel, keeps it, and
+  // presents it at its first enrolment. If the hash did not match, the device would be treated as
+  // an impostor and quietly given a fresh pending row instead — a screen that joined and then sat
+  // there asking to be set up.
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const { device, deviceSecret } = createAdoptedDevice(d, { hostname: 'main-hall' }, Date.now());
+  const { result } = enrolDevice(d, { deviceId: device.id, deviceSecret, hostname: 'main-hall' }, Date.now());
+  assert.equal(result.deviceId, device.id, 'the same row, not a new one');
+  assert.equal(result.adopted, true);
+  assert.equal(result.token, device.token, 'and it is given the token it was created with');
+});
+
+test('the wrong secret gets a fresh pending row, and leaves the real one alone', () => {
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const { device } = createAdoptedDevice(d, {}, Date.now());
+  const { result } = enrolDevice(d, { deviceId: device.id, deviceSecret: 'not-it' }, Date.now());
+  assert.notEqual(result.deviceId, device.id);
+  assert.equal(result.token, undefined, 'an impostor is never handed the token');
+  assert.equal(d.piDevices?.find((x) => x.id === device.id)?.token, device.token, 'the real row is untouched');
+});
+
+test('a handover that fails takes the screen and the live token back out', () => {
+  // The row is created before the device is told about it, because the device has to be handed a
+  // token that already exists. So a failed handover must undo it: what it leaves otherwise is a
+  // live credential in the masjid's data for a screen that will never appear.
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const { device } = createAdoptedDevice(d, { hostname: 'main-hall' }, Date.now());
+  const tv = normTv({ name: 'Main hall', kind: 'pi', defaultContent: { kind: 'off' } });
+  tv.piDeviceId = device.id;
+  device.tvId = tv.id;
+  d.tvs.push(tv);
+
+  removeAdoptedDevice(d, device.id);
+  assert.deepEqual(d.piDevices, [], 'the device is gone');
+  assert.deepEqual(d.tvs, [], 'and so is the screen it would have driven');
+});
+
+test('undoing one adoption leaves every other screen alone', () => {
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const keep = normTv({ name: 'Decoder', kind: 'rtsp', defaultContent: { kind: 'off' } });
+  d.tvs.push(keep);
+  const a = createAdoptedDevice(d, { hostname: 'a' }, Date.now()).device;
+  const b = createAdoptedDevice(d, { hostname: 'b' }, Date.now()).device;
+  for (const dev of [a, b]) {
+    const tv = normTv({ name: dev.hostname, kind: 'pi', defaultContent: { kind: 'off' } });
+    tv.piDeviceId = dev.id;
+    dev.tvId = tv.id;
+    d.tvs.push(tv);
+  }
+
+  removeAdoptedDevice(d, a.id);
+  assert.deepEqual(d.piDevices?.map((x) => x.id), [b.id]);
+  assert.deepEqual(d.tvs.map((t) => t.id).sort(), [keep.id, b.tvId].sort());
+});
+
+test('undoing something that is not there changes nothing', () => {
+  // Reached whenever two requests race, or one is retried. It must not take a screen with it.
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const { device } = createAdoptedDevice(d, {}, Date.now());
+  const tv = normTv({ name: 'Main hall', kind: 'pi', defaultContent: { kind: 'off' } });
+  device.tvId = tv.id;
+  d.tvs.push(tv);
+
+  removeAdoptedDevice(d, 'pi_nothing');
+  assert.equal(d.piDevices?.length, 1);
+  assert.equal(d.tvs.length, 1);
+});
+
+test('a device with no screen yet is removable without taking one', () => {
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const keep = normTv({ name: 'Decoder', kind: 'rtsp', defaultContent: { kind: 'off' } });
+  d.tvs.push(keep);
+  const { device } = createAdoptedDevice(d, {}, Date.now()); // tvId never set
+  removeAdoptedDevice(d, device.id);
+  assert.deepEqual(d.piDevices, []);
+  assert.deepEqual(d.tvs, [keep], 'an unrelated screen must survive a device with no tvId');
+});
+
+test('the row a screen gives up on adoption goes with it', () => {
+  // Adopting by address mints a FRESH identity, so the screen's old pending row is left behind
+  // with a pairing code that still looks live. An admin who typed it would get a second screen
+  // nothing will ever drive.
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  enrolDevice(d, { deviceId: 'pi_old', deviceSecret: 'sec', hostname: 'main-hall' }, Date.now());
+  assert.equal(d.piDevices?.length, 1);
+  const { device } = createAdoptedDevice(d, { hostname: 'main-hall' }, Date.now());
+
+  forgetPendingDevice(d, 'pi_old');
+  assert.deepEqual(d.piDevices?.map((x) => x.id), [device.id], 'only the new, adopted row is left');
+});
+
+test('an ADOPTED row is never dropped, whatever a device claims it used to be called', () => {
+  // The id arrives from the device. It is a hint, not authority — the worst a lying one may cost
+  // is a pairing code somebody re-reads off a television, never a screen anybody is using.
+  const d = { piDevices: [], tvs: [] } as unknown as DB;
+  const live = createAdoptedDevice(d, { hostname: 'other-hall' }, Date.now()).device;
+
+  forgetPendingDevice(d, live.id);
+  assert.deepEqual(d.piDevices?.map((x) => x.id), [live.id], 'an adopted screen must survive');
+  forgetPendingDevice(d, '');
+  forgetPendingDevice(d, 'pi_nothing');
+  assert.equal(d.piDevices?.length, 1, 'and an empty or unknown id changes nothing');
 });

@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 OpenMasjid-Solutions
+#
+# Attach the Raspberry Pi screen bundle to a release.
+#
+# A standalone Pi is installed with `curl … pi.sh | sudo sh`, and pi.sh needs something to
+# download: the agent, the control panel and the installer, as one file whose checksum is
+# published beside it. That is what this builds.
+#
+# ── WHY THIS IS ITS OWN WORKFLOW ─────────────────────────────────────────────
+#
+# It would have been easy to add a step to `build-image.yml`, and it would have been wrong.
+# That workflow publishes the container image, and its triggers are load-bearing in a way the
+# comment at the top of it explains at length: it deliberately does NOT run on `v*` tags,
+# because the release chain is publish → pin the digest → tag, and a tag build would republish
+# the image over the digest that had just been pinned. Nothing here should be able to disturb
+# that, so this runs on the RELEASE event instead — which fires after the tag, after the pin,
+# and publishes no image at all.
+name: Release bundle
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to attach a bundle to
+        required: true
+
+# The only write it needs is uploading an asset to the release that already exists. It creates
+# no release, moves no tag and pushes no image.
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    name: build and attach the Pi bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build the agent
+        working-directory: server
+        run: |
+          npm ci
+          npm run build:agent
+
+      - name: Build the control panel
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble the bundle
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -eu
+          mkdir -p bundle/web
+          # The installer goes in with its @@SERVER@@ placeholder INTACT. That surviving
+          # placeholder is how it knows nobody served it from a display server, which is what
+          # makes it install a standalone screen. Substituting it here would silently turn every
+          # standalone install into a broken adopted one.
+          cp server/assets/pi/install.sh bundle/install.sh
+          cp server/assets/pi/agent.js bundle/agent.js
+          cp -r web/dist/. bundle/web/
+          # The renderer version comes from the server's own package.json, so a Pi installs the
+          # exact build the server renders with — a Pi drawing with a different resvg is a Pi
+          # drawing different pixels. `version` and `resvg` are read BACK by the installer: it
+          # has no display server to fill those two placeholders in for it, which is how a real
+          # install got as far as `npm ERR! Invalid tag name "@@RESVG@@"`.
+          RESVG=$(node -p "require('./server/package.json').dependencies['@resvg/resvg-js']" | tr -d '^~')
+          printf 'version=%s\ncommit=%s\nresvg=%s\nbuilt=%s\n' \
+            "$TAG" "$GITHUB_SHA" "$RESVG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > bundle/MANIFEST
+          cat bundle/MANIFEST
+          tar czf "openmasjid-screen-$TAG.tar.gz" -C bundle .
+          sha256sum "openmasjid-screen-$TAG.tar.gz" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Check the bundle is installable before publishing it
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -eu
+          # Unpacked and read back, so a bundle that cannot be installed is never attached to a
+          # release. A masjid finding that out is a screen that stays in its box.
+          rm -rf verify && mkdir verify
+          tar xzf "openmasjid-screen-$TAG.tar.gz" -C verify
+          sh -n verify/install.sh
+          node --check verify/agent.js
+          test -s verify/web/index.html
+          grep -q '@@SERVER@@' verify/install.sh \
+            || { echo 'the installer lost its placeholder: this bundle would not install standalone'; exit 1; }
+          # The other two placeholders have no server to fill them in, so the MANIFEST must.
+          grep -q '^resvg=[0-9]' verify/MANIFEST || { echo 'MANIFEST names no renderer version'; exit 1; }
+          grep -q '^version=.' verify/MANIFEST || { echo 'MANIFEST names no agent version'; exit 1; }
+          echo "bundle verified: $(wc -c < "openmasjid-screen-$TAG.tar.gz") bytes"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" "openmasjid-screen-$TAG.tar.gz" SHA256SUMS --clobber

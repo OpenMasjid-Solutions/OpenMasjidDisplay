@@ -19,6 +19,18 @@ export default defineConfig({
       '/ws': { target: 'ws://localhost:8080', ws: true },
     },
   },
+  // Asset URLs that live INSIDE the JavaScript — an imported image, and the list Vite's preload
+  // helper fetches before a lazy chunk (xterm's stylesheet) — are built at runtime under the
+  // prefix the server injects (`window.__OMD_BASE__`, httpio.ts `pageUnderBase`). As plain
+  // `/assets/…` they reach the OpenMasjidOS dashboard behind the tunnel, not us: the logo went
+  // missing and the Pi terminal failed to load. URLs in the HTML stay absolute, because the
+  // server repoints those itself; no global (a Pi's own panel) means the root, as before.
+  experimental: {
+    renderBuiltUrl(filename, { hostType }) {
+      if (hostType === 'js') return { runtime: `(window.__OMD_BASE__||"")+${JSON.stringify(`/${filename}`)}` };
+      return undefined;
+    },
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

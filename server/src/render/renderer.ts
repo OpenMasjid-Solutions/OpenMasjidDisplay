@@ -17,9 +17,11 @@ import path from 'node:path';
 import { config } from '../config';
 import { makeLog } from '../logger';
 import { dimsFor, activeTicker, tickerTextColor, tickerLayout, bottomBandSplit, TICKER_RED, type Dims } from './svg';
-import { primaryFontFile } from './fonts';
+import { tickerFontFile } from './fonts';
 import { selectEncoder, encoderArgs, encoderPixFmt } from './encoder';
 import { RenderWorker } from './renderPool';
+import { SoundTrack, SOUND_RATE, soundOn, soundEvents, soundPcmFor } from './sound';
+import type { Writable } from 'node:stream';
 import type { Timetable } from '../types';
 
 const log = makeLog('render');
@@ -51,9 +53,6 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x
 
 /** Is the host clock obviously wrong? See CLOCK_FLOOR_MS. Exported so the status feed and
  *  tests can ask the same question the renderer asks. */
-export function clockSuspect(now = Date.now()): boolean {
-  return now < CLOCK_FLOOR_MS;
-}
 
 function safeTicker(tt: Timetable): { text: string; prohibited: boolean } {
   try {
@@ -209,7 +208,10 @@ const STALE_AFTER_MS = 30_000;
  * be set LATER than the release it ships in, or a correct clock would read as suspect on
  * day one.
  */
-export const CLOCK_FLOOR_MS = Date.parse('2026-08-13T00:00:00Z');
+// Re-exported so existing callers of this module are untouched; imported as well because a
+// re-export does not bind the name in this file's own scope, and the render loop calls it.
+import { clockSuspect } from '../clockFloor';
+export { CLOCK_FLOOR_MS, clockSuspect } from '../clockFloor';
 export function renderDimsFor(out: Dims): Dims {
   // Full resolution unless this box has proved it cannot manage it — see noteRenderCost.
   if (!boxTooSlowForFullRes) return out;
@@ -314,7 +316,7 @@ function brFor(tt: Timetable, d: Dims): number {
   return d.height >= 1080 ? tt.bitrate1080 ?? 8000 : tt.bitrate720 ?? 4000;
 }
 
-function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDims: Dims = d, bitrate = 0, scroll: { x: number; w: number } | null = null): string[] {
+export function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDims: Dims = d, bitrate = 0, scroll: { x: number; w: number } | null = null, sound = false): string[] {
   // The display is mostly static high-detail (gradients, glass, crisp text), so a low
   // CBR starved it and it went blocky/banded. Give it a generous bitrate — the content
   // compresses well so this only spends bits where detail actually needs them — and use
@@ -330,7 +332,32 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
   // `fps=${STATIC_FPS}` filter (static content, so there is no motion to stutter).
   const inFps = ticker ? TICKER_FPS : 1;
   const br = bitrate > 0 ? bitrate : d.height >= 1080 ? 8000 : 4000;
-  const buf = br * 2;
+  /**
+   * The HRD buffer, and it is HALF a second rather than two — because two seconds is what let a
+   * single frame hang a decoder box.
+   *
+   * `bufsize` is the most bits the encoder may spend between two points in the stream, so it caps
+   * how big ONE frame is allowed to be. At `br * 2` an I-frame could hold two seconds of bits and
+   * still be "within bitrate" on average — but it has to physically arrive in one frame slot, and
+   * at 8 fps that slot is 125 ms. Measured on a real stream with a photo on screen:
+   *
+   *     I-frames   mean 472 KB   max 737 KB
+   *     P-frames   mean  76 KB   max 449 KB
+   *
+   * 737 KB in 125 ms is a 47 Mbit/s burst out of a stream whose nominal rate is 8. MediaMTX then
+   * logs `reader is too slow, discarding N frames` and drops part of the GOP, and what reaches the
+   * decoder is a TRUNCATED I-frame — `Invalid level prefix`, `concealing 3966 DC errors in I
+   * frame`, `corrupt decoded frame`. A cheap RTSP decoder fed that locks up and has to be power
+   * cycled, which is the fault this was traced from.
+   *
+   * It never showed without a picture: a flat timetable's I-frames are small, so the ceiling was
+   * never reached. An announcement photo is the thing that fills it.
+   *
+   * Half a second bounds the worst frame to ~4× the per-frame share instead of ~16×. The cost is
+   * that a complex photo is compressed harder, which is the right trade: a slightly softer picture
+   * against a screen that needs somebody to walk over and unplug it.
+   */
+  const buf = Math.round(br / 2);
   // A red Iqāmah-change reminder owns the left of the band, so the scroll has to be clipped
   // to what is left of it — which needs a filtergraph (-filter_complex), not a chain (-vf).
   // Only when both are on screen at once; otherwise the plain chain is used unchanged.
@@ -338,17 +365,33 @@ function timetableArgs(d: Dims, target: string, ticker: TickerSpec | null, inDim
   // The x264 branch produces exactly the arguments this pipeline has always used.
   const enc = selectEncoder(FFMPEG);
   const pixFmt = encoderPixFmt(enc);
-  const filter: string[] =
-    ticker && scroll
-      ? ['-filter_complex', timetableVfReserved(d, ticker, scroll, inDims, pixFmt)]
-      : ['-vf', timetableVf(d, ticker, inDims, pixFmt)];
+  const complex = !!(ticker && scroll);
+  /**
+   * With a sound track there are TWO inputs, so which streams reach the output is spelled out
+   * rather than left to ffmpeg's automatic selection.
+   *
+   * Measured, honestly: on ffmpeg 9 the automatic choice is already right in all three filter
+   * forms, maps or no maps. They are here because the image ships a much older ffmpeg that
+   * cannot be tried from a development box, and the failure if its selection differs is a
+   * stream that is silent, or that picks the wrong stream, with nothing in the panel to say so.
+   * Four arguments and a graph label is a cheap way not to find that out from a wall.
+   *
+   * With the sound off the argument list is byte-for-byte what it has always been.
+   */
+  const graph = complex
+    ? timetableVfReserved(d, ticker as TickerSpec, scroll as { x: number; w: number }, inDims, pixFmt) + (sound ? '[vout]' : '')
+    : timetableVf(d, ticker, inDims, pixFmt);
+  const filter: string[] = complex ? ['-filter_complex', graph] : ['-vf', graph];
+  const maps = !sound ? [] : complex ? ['-map', '[vout]', '-map', '1:a:0'] : ['-map', '0:v:0', '-map', '1:a:0'];
   return [
     '-hide_banner', '-loglevel', 'warning',
     '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${inDims.width}x${inDims.height}`, '-framerate', `${inFps}`, '-i', 'pipe:0',
-    ...filter, '-fps_mode', 'cfr',
+    ...(sound ? ['-f', 's16le', '-ar', `${SOUND_RATE}`, '-ac', '1', '-i', 'pipe:3'] : []),
+    ...filter, '-fps_mode', 'cfr', ...maps,
     ...encoderArgs(enc, { level: levelFor(d.height), gop: ofps, profile: 'baseline', x264Params: 'repeat-headers=1:nal-hrd=cbr' }),
     '-b:v', `${br}k`, '-maxrate', `${br}k`, '-bufsize', `${buf}k`,
-    '-an', '-f', 'rtsp', '-rtsp_transport', 'tcp', target,
+    ...(sound ? ['-c:a', 'aac', '-b:a', '64k', '-ar', `${SOUND_RATE}`, '-ac', '1'] : ['-an']),
+    '-f', 'rtsp', '-rtsp_transport', 'tcp', target,
   ];
 }
 
@@ -458,10 +501,14 @@ abstract class FfmpegPipeline {
   protected abstract args(): string[];
   /** Called right after spawn (e.g. to start the frame timer / write frames). */
   protected onSpawned(): void {}
+  /** stdin, stdout, stderr — and a fourth pipe when the pipeline feeds ffmpeg a second input. */
+  protected stdio(): ('pipe' | 'ignore')[] {
+    return ['pipe', 'ignore', 'pipe'];
+  }
 
   protected spawnProc(): void {
     if (this.stopped) return;
-    const proc = spawn(FFMPEG, this.args(), { stdio: ['pipe', 'ignore', 'pipe'] });
+    const proc = spawn(FFMPEG, this.args(), { stdio: this.stdio() });
     this.proc = proc;
     this.startedAt = Date.now();
     // If ffmpeg exits while we're mid-write, the stdin pipe emits EPIPE. Swallow it
@@ -553,6 +600,7 @@ class TimetablePipeline extends FfmpegPipeline {
     this.tickerProhibited = st.prohibited;
     this.tickerColor = tt ? tickerTextColor(tt) : '#ffffff';
     this.tickerSpeed = tt?.tickerSpeed ?? 5;
+    this.soundWanted = !!tt && soundOn(tt);
     // Needs dims + tickerText/prohibited, all set above.
     this.tickerScroll = this.wantScroll(tt);
     // renderDims depends on tickerText (full-res while a ticker animates), so set it last.
@@ -561,7 +609,11 @@ class TimetablePipeline extends FfmpegPipeline {
   }
 
   private tickerSpec(): TickerSpec | null {
-    const font = primaryFontFile();
+    // Per MESSAGE, not once: an Arabic announcement needs a face that has Arabic in it, and the
+    // bold sans this used unconditionally has none — it drew every Arabic character as a tofu box
+    // on every decoder screen, while the same message was correct on a Pi and in a browser.
+    // See tickerFontFile.
+    const font = tickerFontFile(this.tickerText);
     if (!this.tickerText || !font) return null;
     return { text: this.tickerText, textfile: this.tickerFile, fontfile: font, speed: this.tickerSpeed, prohibited: this.tickerProhibited, color: this.tickerColor };
   }
@@ -575,8 +627,24 @@ class TimetablePipeline extends FfmpegPipeline {
     }
   }
 
+  /**
+   * The audio track, and whether this stream has one.
+   *
+   * `soundWanted` is an ffmpeg ARGUMENT (a second input and an audio encoder), so it is in the
+   * same family as the ticker and the bitrate: changing it respawns ffmpeg. That happens when
+   * an admin turns the sound on or off, not when a sound plays — nothing is restarted at the
+   * Adhan, which is the whole reason the track is permanent.
+   */
+  private readonly sound = new SoundTrack();
+  private soundWanted = false;
+  private lastSoundScan = 0;
+
+  protected stdio(): ('pipe' | 'ignore')[] {
+    return this.soundWanted ? ['pipe', 'ignore', 'pipe', 'pipe'] : ['pipe', 'ignore', 'pipe'];
+  }
+
   protected args(): string[] {
-    return timetableArgs(this.dims, this.target(), this.tickerSpec(), this.renderDims, this.bitrate, this.tickerScroll);
+    return timetableArgs(this.dims, this.target(), this.tickerSpec(), this.renderDims, this.bitrate, this.tickerScroll, this.soundWanted);
   }
 
   /** The strip the ticker may scroll inside for the CURRENT timetable, or null when it has the
@@ -607,6 +675,7 @@ class TimetablePipeline extends FfmpegPipeline {
   }
 
   protected override onSpawned(): void {
+    this.attachSound();
     if (!this.looping) {
       this.looping = true;
       this.loop();
@@ -631,6 +700,29 @@ class TimetablePipeline extends FfmpegPipeline {
   private staleLogged = false;
   private failStreakRender = 0;
 
+  /** The audio pipe belongs to THIS ffmpeg: the sample clock starts again with each one, so
+   *  the track is re-attached on every spawn and anything queued against the old one is gone. */
+  private attachSound(): void {
+    const pipe = this.soundWanted ? this.proc?.stdio?.[3] : null;
+    if (pipe && 'write' in pipe) this.sound.attach(pipe as Writable);
+    else this.sound.detach();
+    this.lastSoundScan = 0;
+  }
+
+  /** Queue today's Adhan/Iqāmah moments (asking again for one already queued is ignored), then
+   *  keep the written audio ahead of the wall clock. */
+  private pumpSound(now: number): void {
+    if (!this.soundWanted) return;
+    if (now - this.lastSoundScan >= 10_000) {
+      this.lastSoundScan = now;
+      const tt = this.getTt();
+      if (tt) {
+        for (const e of soundEvents(tt, new Date(now))) this.sound.playAt(e.at, soundPcmFor(tt, e.kind));
+      }
+    }
+    this.sound.pump(now);
+  }
+
   private loop(): void {
     if (this.stopped) {
       this.looping = false;
@@ -646,11 +738,15 @@ class TimetablePipeline extends FfmpegPipeline {
     if (this.stopped) return;
     // Reconcile (respawn checks) + render only ~4×/s — not on every 50 ms ticker frame.
     const now = Date.now();
+    let respawned = false;
     if (now - this.lastCheck >= 240) {
       this.lastCheck = now;
-      if (this.reconcileAndRender()) return; // respawned → skip the write this tick
+      respawned = this.reconcileAndRender();
     }
-    this.writeLatest();
+    // Audio is pumped even on the tick that respawned ffmpeg: the new process has a new, empty
+    // pipe, and letting it run dry stalls the MUX — which would stall the video too.
+    this.pumpSound(now);
+    if (!respawned) this.writeLatest();
   }
 
   /** Respawn checks (ticker text/colour, dims, bitrate, scroll speed) + the
@@ -682,6 +778,14 @@ class TimetablePipeline extends FfmpegPipeline {
     const wantBr = brFor(tt, this.dims);
     if (wantBr !== this.bitrate) {
       this.bitrate = wantBr;
+      this.restartProc();
+      return true;
+    }
+    // Turning the sound on or off adds or removes an input and an encoder, so it is an args
+    // change like any other. A clip being REPLACED is not — the track reads the new file next
+    // time it plays, with no restart.
+    if (soundOn(tt) !== this.soundWanted) {
+      this.soundWanted = soundOn(tt);
       this.restartProc();
       return true;
     }

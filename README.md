@@ -7,6 +7,7 @@
 <h1 align="center"><b>OpenMasjid Display</b></h1>
 
 <p align="center">
+  <a href="#start-here-put-a-screen-on-a-wall">Start here</a> |
   <a href="#what-it-does">Features</a> |
   <a href="#-whatsapp">WhatsApp</a> |
   <a href="#how-it-works">How it works</a> |
@@ -33,15 +34,55 @@ Leave a star if you like the project! ⭐️
 
 ---
 
-OpenMasjid Display turns one small computer (a mini-PC, a Raspberry Pi, or a Proxmox container) into the
-control room for every TV in your masjid. Each screen gets its own network video link (**RTSP**) that you
-point a cheap RTSP-to-HDMI decoder box at **once** — then you decide, from your phone or a computer, what
-each screen shows. No app on the TV, no browser to babysit, nothing to log into at the screen.
+OpenMasjid Display puts prayer times, announcements and camera feeds on the televisions in your masjid,
+and lets you change what each one shows from your phone. No app on the TV, no browser to babysit, nothing
+to log into at the screen.
+
+The smallest version of it is **one Raspberry Pi behind one television**, with no server anywhere. The
+largest is a mini-PC driving every screen in the building, announcing Iqamah changes on WhatsApp and
+publishing your times to your website. It is the same software.
 
 <div align="center">
-<img src="screenshots/1.png" width="49%" alt="A prayer timetable on a masjid screen, photographed from the Raspberry Pi driving it" />
+<img src="screenshots/screen-modern.png" width="49%" alt="The Modern design on a 1080p screen: masjid name, a live clock, the five prayers with Adhan and Iqamah columns, and a ring counting down to the next prayer" />
 <img src="screenshots/3.png" width="49%" alt="The control panel, showing three screens and what each is displaying" />
 </div>
+
+<div align="center">
+<img src="screenshots/screen-simple.png" width="32%" alt="The Simple design in a light theme: a large clock and a plain, high-contrast table of prayer times" />
+<img src="screenshots/screen-arabic.png" width="32%" alt="The Modern design in Arabic, with prayer names, headings and dates in Arabic" />
+<img src="screenshots/screen-hadith.png" width="32%" alt="A hadith shown full-screen while the congregation is praying, in Arabic with an English translation" />
+</div>
+
+<p align="center">
+<sub>Two designs, ten themes, three languages, landscape or portrait. Every screen here was captured
+from the HDMI output of a Raspberry Pi actually running this software — the control panel, top right,
+is a screenshot of the panel itself.</sub>
+</p>
+
+## Start here: put a screen on a wall
+
+|  | **A Raspberry Pi on its own** | **A Display server** | **A decoder box** (legacy) |
+|---|---|---|---|
+| You need | a Pi 4 and a television | OpenMasjidOS on any small computer | a server, plus an RTSP‑to‑HDMI box per TV |
+| Screens | one per Pi | as many as you like | as many as you like |
+| Set up by | running one command, then a browser | the OpenMasjidOS dashboard | the dashboard, plus pasting a link into each box |
+| Cameras | opened **directly**, on your own network | relayed by the server | relayed by the server |
+| Server can be off-site | — there is no server | yes | no — all the video goes through it |
+| WhatsApp, alerts, website widget | no | yes | yes |
+
+**Most masjids starting today want the first column.** On a fresh Raspberry Pi OS Lite:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidDisplay/main/pi.sh | sudo sh
+```
+
+The television shows an address and a setup code; open the address on your phone, type the code, and add
+your prayer times. Nothing else to install — see **[docs/PI_STANDALONE.md](docs/PI_STANDALONE.md)**.
+
+> **Decoder boxes still work and are not going away** — every masjid running them today keeps running
+> unchanged. They are listed as legacy because a Pi costs about the same, opens cameras directly instead
+> of pushing every frame through the server, and can be managed without one. A decoder box is still the
+> simpler choice for a screen that shows nothing but a camera.
 
 ## What it does
 
@@ -352,27 +393,46 @@ Full decoder guidance and troubleshooting: [docs/RTSP_SETUP.md](docs/RTSP_SETUP.
 ## Raspberry Pi screens (beta)
 
 A Raspberry Pi plugged into a television, showing the timetable and playing cameras **by itself**.
-Turn on *Screens that are a web page* in **Settings → Beta features**, then run one command on a
-Pi running Raspberry Pi OS Lite:
+There are two ways to set one up, and the same installer does both.
+
+**On its own — no server at all.** On a fresh Raspberry Pi OS Lite:
 
 ```sh
-curl -fsSL http://<your-display-server>:7860/pi.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidDisplay/main/pi.sh | sudo sh
 ```
 
-The television shows a setup code; type it into **Screens → Raspberry Pi screens**. The command is
-shown there too, already carrying this server's address.
+The television shows an address and a setup code. Open the address in a browser on the same network,
+type the code, set a password, and add your prayer times. The Pi serves the **same control panel** a
+server does, holds its own timetable, and updates itself from GitHub releases — checking each download
+against the published checksum and rolling back if a new version will not start. Add `--channel dev`
+to follow pre-releases. See **[docs/PI_STANDALONE.md](docs/PI_STANDALONE.md)**.
 
-The reason it exists: a Pi opens the camera **directly**, on your own network, so the video never
-passes through the display server. That is what lets the server run somewhere else entirely — in
-another building or in the cloud — while cameras stay smooth. It draws to the screen without a
-desktop or a browser, and it keeps itself up to date afterwards.
+**Managed by a Display server.** Turn on *Screens that are a web page* in **Settings → Beta
+features**, then run the command shown in **Screens → Raspberry Pi screens** — it already carries this
+server's address. The television shows a setup code; type it into that same page. The server then holds
+the timetable and the settings for every screen together. See
+**[docs/PI_SCREENS.md](docs/PI_SCREENS.md)**.
 
-**A Raspberry Pi 4 or newer is required.** The installer checks the board and refuses a Pi 3 or
-earlier rather than installing something that would crash in a restart loop and leave a black screen
-on the wall. 2 GB of RAM is comfortable; a Pi 5 is not needed. An unrecognised board (a Zero 2 W, a
-Compute Module) is allowed through on the assumption that you chose it deliberately.
+The reason a Pi exists at all: it opens the camera **directly**, on your own network, so the video never
+passes through a display server. That is what lets a server run somewhere else entirely — in another
+building or in the cloud — while cameras stay smooth. It draws to the screen without a desktop or a
+browser.
 
-From the dashboard you can also, per screen: **watch what it is showing right now** (a live picture
+<div align="center">
+<img src="screenshots/screen-portrait.png" width="26%" alt="The same timetable in portrait, for a screen mounted on its side" />
+<br/>
+<sub>Turn a screen on its side and set <b>Portrait</b> — the whole layout is rebuilt for it, not letterboxed.</sub>
+</div>
+
+**A board from the Raspberry Pi 4 family is required** — a Pi 4 Model B (2 GB or more), a Pi 400, or a
+Compute Module 4. The installer reads the board name and **refuses anything else** rather than installing
+something that would crash in a restart loop and leave a black screen on the wall. That includes a Pi 3
+or a Zero, which cannot decode a modern camera fast enough, and — for now — a Pi 5, which is refused
+only because this software has not been tested on one. A screen that is already set up is never switched
+off by this: the updater carries the same check, so an unsupported board that is working keeps working
+and simply stops receiving new versions.
+
+From the dashboard, a **server-managed** Pi can also, per screen: **watch what it is showing right now** (a live picture
 read out of the screen's own video memory, about once a second — the only answer to "is that screen
 really showing today's times?" that does not depend on the screen agreeing that it is); **turn the
 television off**, on demand or on a schedule each night; set its **timezone**; force a **resolution**
@@ -387,6 +447,21 @@ and this app together; and open a **terminal** on it.
 > it — 60 seconds to claim, 10 idle minutes, one hour maximum.
 
 See **[docs/PI_SCREENS.md](docs/PI_SCREENS.md)**.
+
+### A 3D-printed case for the Pi
+
+If you have a 3D printer, there's a two-part case designed for a **Raspberry Pi 4** screen in
+[`3D Prints/`](3D%20Prints/):
+
+| File | What it is |
+| ---- | ---------- |
+| [`OMOS_Rpi4ViewerCase.stl`](3D%20Prints/OMOS_Rpi4ViewerCase.stl) | The base the Pi sits in (about 90 × 122 × 21 mm) |
+| [`OMOS_Rpi4ViewerCaseTop.stl`](3D%20Prints/OMOS_Rpi4ViewerCaseTop.stl) | The lid (about 92 × 107 × 13 mm) |
+| [`OMOS_Rpi4ViewerPrint.3mf`](3D%20Prints/OMOS_Rpi4ViewerPrint.3mf) | Both parts laid out on one plate, ready to slice |
+
+The `.3mf` is a Bambu Studio / OrcaSlicer project set up for a Bambu Lab P1S. Its settings are
+a good starting point on any printer: **PLA, 0.2 mm layers, 2 walls, 15% infill, no supports**.
+Use the `.stl` files with any other slicer.
 
 ## Hardware notes (it's meant to be light)
 

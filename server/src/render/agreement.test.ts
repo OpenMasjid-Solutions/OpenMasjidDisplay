@@ -165,3 +165,31 @@ test('the Fabric feed another app reads agrees with the screen too', () => {
     assert.deepEqual(d.jumuah.map((j) => j.iqamah), want.isFriday ? want.jumuah : [], `${d.date} jumuah`);
   }
 });
+
+test('the printable calendar marks the days the Iqamah changes, and only those', () => {
+  // The fixture changes on the 10th (a scheduled change) and the 18th (a CSV day). An Iqamah set
+  // as minutes after the Adhan moves most days with the sun; that is not a change and must not light
+  // up the sheet — which is why this asks `findIqamahChange` rather than comparing columns.
+  const html = renderMonthPrintHtml(fixture(), 2026, 3);
+  const days = [...html.matchAll(/<div class="dnum">(\d+)<span class="chgtag">/g)].map((m) => Number(m[1]));
+  assert.deepEqual(days, [10, 18]);
+  // The changed prayer's time is the one in bold; on the 10th that is Fajr and Isha.
+  const tenth = html.slice(html.indexOf('<div class="dnum">10<'), html.indexOf('<div class="dnum">11<'));
+  assert.match(tenth, /class="pr changed"><span class="pn">Fajr</);
+  assert.match(tenth, /class="pr changed"><span class="pn">Isha</);
+  assert.doesNotMatch(tenth, /class="pr changed"><span class="pn">Dhuhr</);
+});
+
+test('the printable calendar shows sunrise, and Ishraq when the display does', () => {
+  const tt = fixture();
+  const at = (d: number) => buildModel(tt, zonedNoon(2026, 3, d, tt.timezone || undefined));
+  let html = renderMonthPrintHtml(tt, 2026, 3);
+  assert.ok(html.includes(`>${fmtShort(at(12).times.sunrise, '24h')}<`), 'sunrise on the sheet');
+  assert.ok(!html.includes('Ishr'), 'no Ishraq while the display has none');
+
+  tt.ishraqMinutes = 20;
+  html = renderMonthPrintHtml(tt, 2026, 3);
+  const ishraq = at(12).rows.find((r) => r.key === 'ishraq')!;
+  assert.ok(html.includes(`>Ishrāq ${fmtShort(ishraq.adhan, '24h')}<`), "the screen's own Ishraq time");
+  assert.ok(html.includes(`>Sunrise ${fmtShort(at(12).times.sunrise, '24h')}<`), 'beside the sunrise');
+});

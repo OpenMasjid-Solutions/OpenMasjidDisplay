@@ -178,6 +178,24 @@ export interface AdhanPopup {
   seconds: number;
 }
 
+/**
+ * A sound played on this screen's RTSP stream when the Adhan or the Iqāmah arrives.
+ *
+ * Both switches off means the stream carries NO audio track at all, which is the default and
+ * what every screen had before this existed — a television that cannot cope with an audio track
+ * never sees one unless a masjid asked for it.
+ */
+export interface TimetableSound {
+  /** play at each of the five calls (Dhuhr's call included on a Friday) */
+  adhan: boolean;
+  /** play when a congregation lines up — on a Friday that is each Jumu'ah, not Dhuhr */
+  iqamah: boolean;
+  /** each slot's uploaded clip, by stored filename, or '' for the built-in beep. The two may name
+   *  the same file — a timetable from before they were separate plays its one clip at both. */
+  adhanClip: string;
+  iqamahClip: string;
+}
+
 /** Public embeddable web widget: a compact vertical list of just the prayer times +
  *  Jumu'ah (NOT the full TV display), served unauthenticated for this timetable so a
  *  masjid can embed it on their own website. Off by default. */
@@ -238,12 +256,37 @@ export interface Timetable {
   /** Friday khutbah/Jumu'ah times "HH:MM" (one or more) */
   jumuah: string[];
   showSunrise: boolean;
+  /**
+   * Minutes after sunrise to show Ishrāq, or 0 to not show it.
+   *
+   * One number rather than a toggle plus a number: the minutes ARE the setting. Masjids do not
+   * agree on it (15 and 20 are both common, and it is a fiqh question, not a default we get to
+   * pick), so a toggle would have to invent one.
+   */
+  ishraqMinutes: number;
+  /**
+   * The timetable this one takes its TIMES from, or '' for its own.
+   *
+   * One level only — a timetable that is itself linked may not be linked to. Linking copies the
+   * time-defining fields (location, method, Iqāmah, Jumu'ah, offsets) and nothing else: the look
+   * stays per-screen, because the whole point is one masjid's times on several different screens.
+   */
+  linkedTo: string;
   /** element toggles for the on-screen display */
   showCountdown: boolean;
   showDates: boolean;
   showLogo: boolean;
-  /** show seconds on the big clock (HH:MM:SS) */
+  /** show seconds on the big clock */
   showSeconds: boolean;
+  /**
+   * WHERE the seconds go when `showSeconds` is on.
+   *
+   * 'stacked' is the original and the default: two small digits above the AM/PM, beside the
+   * clock. 'inline' sets them in the clock's own face — same font, same size, one more colon
+   * ("6:22:05") — which reads from further away but is about a third wider, so the clock shrinks
+   * to keep its column.
+   */
+  secondsStyle: 'stacked' | 'inline';
   /** show the small footer line (custom note, or the calculation-method note) */
   showFooter: boolean;
   /** show the sun/moon arcing across the sky (and the soft glow it casts on the glass) */
@@ -278,6 +321,8 @@ export interface Timetable {
   adhanPopup?: AdhanPopup;
   /** public embeddable web widget (prayer times only) for this timetable */
   widget?: TimetableWidget;
+  /** a sound on the stream at Adhan / Iqāmah — see TimetableSound */
+  sound: TimetableSound;
   footerNote: string;
   createdAt: string;
 }
@@ -353,6 +398,18 @@ export interface PiDevice {
   model: string;
   agentVersion: string;
   lastSeenAt: string;
+  /**
+   * Whether ROOT on that device has a display-server address it trusts.
+   *
+   * False on a screen adopted from a panel rather than by running this server's installer: the
+   * installer is the only thing that writes `trust.env`, and `trust.env` is the only address root
+   * will fetch a script from or dial a root terminal out to. So on such a screen the Update and
+   * Terminal buttons cannot work, and the panel says so instead of asking and being ignored.
+   *
+   * Optional because a screen running an older agent has never reported it — which must read as
+   * "not known", not as "no". See rootLinked() in pi/index.ts.
+   */
+  rootLinked?: boolean;
   /** The screen this device drives, once adopted. */
   tvId?: string;
   /** What this device should do next, left for it to collect on its own poll. Cleared as soon
