@@ -259,6 +259,34 @@ test('guessing is rate-limited', async () => {
   assert.ok(sawLimit, 'eight digits is only out of reach while guessing is slow');
 });
 
+test('guessing from many addresses is limited too, not only from one', async () => {
+  // A machine on the network can give itself as many IPv6 addresses as it likes; with only a
+  // per-address limit, each new one brought five more free guesses at a code that never changes.
+  const { handler } = panel();
+  const replies = [];
+  for (let i = 0; i < 30; i++) {
+    replies.push(await call(handler, 'POST', '/api/setup', { code: '00000000', password: 'a-good-password' }, '', `fd00::${i + 1}`));
+  }
+  assert.ok(replies.some((r) => r.status === 429), 'thirty addresses each guessed freely');
+  const right = await call(handler, 'POST', '/api/setup', { code: CODE, password: 'a-good-password' }, '', 'fd00::999');
+  assert.equal(right.status, 429, 'and a fresh address is held back too, while the window lasts');
+});
+
+test('guesses sent all at once are limited too, not only one after another', async () => {
+  // The limiter was asked before the body was read, so every request in a burst passed the check
+  // before the first failure was recorded: a hundred guesses at once were all tried, and the right
+  // one after them let in. The real password goes last, after a burst no limit would allow.
+  const { handler } = panel();
+  await claim(handler);
+  const ip = '10.0.0.77';
+  const wrong = Array.from({ length: 40 }, () => call(handler, 'POST', '/api/login', { password: 'not-the-password' }, '', ip));
+  const right = call(handler, 'POST', '/api/login', { password: 'a-good-password' }, '', ip);
+  const replies = await Promise.all([...wrong, right]);
+  const tried = replies.filter((r) => r.status === 401).length;
+  assert.ok(tried <= 10, `${tried} wrong passwords were checked in one burst`);
+  assert.equal(replies[replies.length - 1].status, 429, 'and the right one, sent after them, is not let in');
+});
+
 // ── what the panel boots from ────────────────────────────────────────────────
 
 /** Claim the screen and return the session cookie, so the authenticated routes can be reached. */

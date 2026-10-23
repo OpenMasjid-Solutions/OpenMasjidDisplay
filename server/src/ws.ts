@@ -4,6 +4,7 @@
 import type { IncomingMessage, Server } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { makeLog } from './logger';
+import { fromAnotherSite } from './httpio';
 
 const log = makeLog('ws');
 
@@ -51,6 +52,13 @@ export class WsHub {
             this.routed.handleUpgrade(req, socket, head, (ws) => onOpen(ws));
           });
           if (!handled) socket.destroy();
+          return;
+        }
+        // A WebSocket is not covered by CORS, so a page of another app on this box could open this
+        // one with the admin's cookie and read the live state — refused here instead (httpio).
+        if (fromAnotherSite(req)) {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+          socket.destroy();
           return;
         }
         if (!authed(req)) {

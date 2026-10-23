@@ -109,11 +109,14 @@ Everything below is what CI runs, so running it first saves a round trip:
 
 ```bash
 cd server && npm run build && npm run typecheck:tests && npm test
-cd web    && npm run build && npm audit --audit-level=high
+sh server/assets/pi/update.test.sh        # from the repository root: the Pi self-updater, end to end
+cd web    && npm run build && npm run typecheck:tests && npm test && npm audit --audit-level=high
 ```
 
 - `npm run build` (server) compiles, but **deliberately excludes `*.test.ts`** — the tests are never emitted
   into the image. `npm run typecheck:tests` is what typechecks them; the runner (tsx) strips types without
   checking, so without it a broken test can still pass.
-- `web`'s `npm run build` is `tsc --noEmit && vite build`, so it typechecks as well as bundles.
+- `web`'s `npm run build` is `tsc --noEmit && vite build`, so it typechecks as well as bundles — but not
+  the tests, which that config excludes. `web`'s `npm run typecheck:tests` covers them, for the same reason
+  as the server's.
 - New behaviour wants a test. The server suite is plain `node:test` — no framework to learn.

@@ -305,3 +305,30 @@ test('a caption too long for the platform is trimmed on a word boundary', () => 
   assert.ok(!/wor…$/.test(cut), 'a word must not be sliced in half');
   assert.equal(fitCaption('short'), 'short', 'anything already short is untouched');
 });
+
+test('a second change in the window is not held back behind one already sent', () => {
+  // A week's notice, changes on the 17th and the 19th. Once the 17th had gone, only the soonest
+  // change was ever looked at — so the 19th waited until it was itself the soonest, and went out
+  // with one day's notice instead of seven.
+  const tt = ttWith([
+    { from: '2026-08-17', asr: '17:15' },
+    { from: '2026-08-19', isha: '21:30' },
+  ]);
+  const sent = dbWith([tt], { daysBefore: 7 }, [queued('2026-08-17')]);
+  assert.equal(mustPost(decideAnnounce(sent, NOW)).effectiveFrom, '2026-08-19');
+
+  // One the platform gave up on steps aside the same way…
+  const fails = Array.from({ length: WA_MAX_ATTEMPTS }, (_, i) =>
+    queued('2026-08-17', { outcome: 'failed', at: new Date(NOW - (i + 2) * WA_RETRY_MS).toISOString() }),
+  );
+  assert.equal(mustPost(decideAnnounce(dbWith([tt], { daysBefore: 7 }, fails), NOW)).effectiveFrom, '2026-08-19');
+
+  // …but one still waiting to be retried does not: changes go out in order.
+  const waiting = dbWith([tt], { daysBefore: 7 }, [queued('2026-08-17', { outcome: 'failed' })]);
+  const d = decideAnnounce(waiting, NOW);
+  assert.equal(d.act, 'skip');
+
+  // And with both handled, the reason given is still the honest one.
+  const both = decideAnnounce(dbWith([tt], { daysBefore: 7 }, [queued('2026-08-17'), queued('2026-08-19')]), NOW);
+  assert.deepEqual(both, { act: 'skip', why: 'This change has already been sent to the group.' });
+});

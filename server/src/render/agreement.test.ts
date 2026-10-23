@@ -103,7 +103,7 @@ test('the printable calendar floors the minute, like every other clock here', ()
   const fn = src.slice(src.indexOf('function fmt('));
   const body = fn.slice(0, fn.indexOf(String.fromCharCode(10) + '}'));
   assert.ok(!body.includes('Math.round'), 'print must not round the minute — the screens floor');
-  assert.match(body, /Math\.floor\(hours \* 60\)/, 'same expression as fmtClock');
+  assert.match(body, /Math\.floor\(hours \* 60 \+ CLOCK_EPS\)/, 'same expression as fmtClock, epsilon included');
 });
 
 test('the printable calendar has no computation of its own left to drift', () => {
@@ -192,4 +192,23 @@ test('the printable calendar shows sunrise, and Ishraq when the display does', (
   const ishraq = at(12).rows.find((r) => r.key === 'ishraq')!;
   assert.ok(html.includes(`>Ishrāq ${fmtShort(ishraq.adhan, '24h')}<`), "the screen's own Ishraq time");
   assert.ok(html.includes(`>Sunrise ${fmtShort(at(12).times.sunrise, '24h')}<`), 'beside the sunrise');
+});
+
+test('a fixed time prints, and reaches the phone, as the minute it was set to', () => {
+  // 16:20 is 16.3333… hours, which floors to 16:19 without the screen's epsilon. 24 of the day's
+  // 1,440 minutes did that, on the printed calendar and in the feed Companion reads.
+  const { hhmm } = require('../fabricTimetable') as typeof import('../fabricTimetable');
+  const { parseHHMM } = require('../prayer/engine') as typeof import('../prayer/engine');
+  const wrong: string[] = [];
+  for (let m = 0; m < 1440; m++) {
+    const want = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    if (hhmm(parseHHMM(want)) !== want) wrong.push(want);
+  }
+  assert.deepEqual(wrong, [], 'the feed moved these a minute early');
+
+  const tt = fixture();
+  tt.iqamah.asr = { mode: 'fixed', fixed: '16:20' };
+  tt.iqamahSchedule = [];
+  tt.iqamahYear = {};
+  assert.ok(renderMonthPrintHtml(tt, 2026, 3).includes(' / 16:20<'), 'the printed calendar moved it too');
 });

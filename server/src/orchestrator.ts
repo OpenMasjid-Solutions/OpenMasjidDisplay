@@ -190,12 +190,11 @@ export class Orchestrator {
         const key = JSON.stringify(conf);
         if (configured.has(name)) {
           // Only patch (which reloads MediaMTX) when the config actually changed.
-          if (this.applied.get(name) !== key) {
-            await patchPath(name, conf);
-            this.applied.set(name, key);
-          }
-        } else {
-          await addPath(name, conf);
+          // Recorded as applied only when MediaMTX ACCEPTED it. A refused patch used to be marked
+          // done anyway, so no later reconcile retried it and the screen stayed on its old content
+          // until something else changed.
+          if (this.applied.get(name) !== key && (await patchPath(name, conf))) this.applied.set(name, key);
+        } else if (await addPath(name, conf)) {
           this.applied.set(name, key);
         }
       }

@@ -16,6 +16,11 @@ body {
 button { font: inherit; color: inherit; cursor: pointer; }
 a { color: var(--color-primary); text-decoration: none; }
 :focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; border-radius: 4px; }
+/* A file input behind a button-styled label. Visually hidden rather than `hidden`: display:none
+   took every upload out of the keyboard order, since the label itself cannot take focus. The ring
+   goes on the label, which is the thing that looks like the button. */
+.file-pick { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip-path: inset(50%); }
+label:has(> .file-pick:focus-visible) { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 h1, h2, h3, p { margin: 0; }
 
 /* ── Ambient scene ──────────────────────────────────────────────────────── */

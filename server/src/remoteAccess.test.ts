@@ -212,7 +212,7 @@ test('the admin API answers under the prefix — JSON, behind the session', asyn
 });
 
 /** A WebSocket handshake, reporting the status line. */
-function upgrade(rawPath: string, cookie?: string): Promise<string> {
+function upgrade(rawPath: string, cookie?: string, site?: string): Promise<string> {
   return new Promise((resolve) => {
     const sock = net.connect(port, '127.0.0.1', () => {
       sock.write(
@@ -220,6 +220,7 @@ function upgrade(rawPath: string, cookie?: string): Promise<string> {
           'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n' +
           'cf-ray: 8a1b2c3d4e5f-LHR\r\nx-forwarded-proto: https\r\n' +
           (cookie ? `Cookie: ${cookie}\r\n` : '') +
+          (site ? `Sec-Fetch-Site: ${site}\r\n` : '') +
           '\r\n',
       );
     });
@@ -239,6 +240,25 @@ test('the live socket connects under the prefix, and only when signed in', async
   const cookie = await signInFromOutside();
   assert.match(await upgrade('/display/ws', cookie), / 101 /, 'live updates would never arrive from outside');
   assert.match(await upgrade('/display/ws'), / 401 /);
+});
+
+test('a page of another app on the box cannot drive the panel with the admin cookie', async () => {
+  // Another port on the same host is the same SITE, so SameSite=Lax sends the cookie with its
+  // requests. The browser labels them, and the label is what is checked.
+  const cookie = await signInFromOutside();
+  for (const site of ['same-site', 'cross-site']) {
+    const post = await call('POST', '/display/api/schedules', { ...TUNNEL, cookie, 'sec-fetch-site': site }, {});
+    assert.equal(post.status, 403, `${site}: a change was accepted`);
+    assert.match(await upgrade('/display/ws', cookie, site), / 403 /, `${site}: the live state could be read`);
+  }
+  // This app's own pages, a typed address and anything that is not a browser are unaffected.
+  for (const site of ['same-origin', 'none', undefined]) {
+    const post = await call('POST', '/display/api/schedules', { ...TUNNEL, cookie, ...(site ? { 'sec-fetch-site': site } : {}) }, {});
+    assert.notEqual(post.status, 403, `${site ?? 'no header'}: refused`);
+    assert.match(await upgrade('/display/ws', cookie, site), / 101 /, `${site ?? 'no header'}: socket refused`);
+  }
+  // Reading is not a change, and a cross-site read is already blocked by the browser.
+  assert.equal((await call('GET', '/display/api/state', { ...TUNNEL, cookie, 'sec-fetch-site': 'same-site' })).status, 200);
 });
 
 test('password sign-in and first-run setup are refused from outside — in every spelling', async () => {
@@ -330,4 +350,19 @@ test('session cookies take the prefix as their Path, and nothing else', () => {
   }
   assert.match(auth.setVolunteerCookieHeader(tok, true, '/display'), /; Path=\/display;/);
   assert.ok(auth.clearVolunteerCookieHeader(true, '/display').every((c) => c.includes('; Path=/display;')));
+});
+
+test('the dashboard never shows a waiting screen’s pairing code', async () => {
+  // Typing the code off the television is the proof that whoever adds a screen can see it.
+  // Printed in the list beside the box it goes into, any device that reached /pi/enrol could be
+  // adopted by somebody who never looked at a screen.
+  const enrol = await call('POST', '/pi/enrol', {}, { hostname: 'hall-pi', ip: '10.0.0.40', model: 'Raspberry Pi 4' });
+  assert.equal(enrol.status, 200, enrol.body);
+  const code = (JSON.parse(enrol.body) as { code?: string }).code;
+  assert.ok(code, 'the device itself is given its code, to draw on the television');
+  const cookie = await signInFromOutside();
+  const list = await call('GET', '/display/api/pi/devices', { ...TUNNEL, cookie });
+  assert.equal(list.status, 200);
+  assert.ok(list.body.includes('hall-pi'), 'the waiting screen is listed');
+  assert.ok(!list.body.includes(code!), 'but not its code');
 });

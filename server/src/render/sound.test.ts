@@ -120,6 +120,49 @@ test('a clip lands at the sample its moment falls on', () => {
   assert.ok(Math.abs(s.loud[0] - 3 * SOUND_RATE) <= 1, `at ${(s.loud[0] / SOUND_RATE).toFixed(4)}s, not 3s`);
 });
 
+test('the track knows while a clip is sounding, so a respawn can wait for it', () => {
+  // A ticker change respawns ffmpeg, and the ticker flips back from the red prohibited text a
+  // second after the Dhuhr Adhan — which cut the Adhan off a second in, every day.
+  const t = new SoundTrack();
+  const t0 = 1_000_000;
+  t.attach(new Sink(), t0);
+  const secs = beepPcm().length / 2 / SOUND_RATE;
+  t.playAt(t0 + 3000, beepPcm());
+  for (let ms = 0; ms <= 3000; ms += 250) t.pump(t0 + ms);
+  assert.equal(t.playing(t0 + 2900), false, 'not before it starts');
+  assert.equal(t.playing(t0 + 3100), true, 'while it plays');
+  assert.equal(t.playing(t0 + 3000 + secs * 1000 - 50), true, 'to its last moment');
+  assert.equal(t.playing(t0 + 3000 + secs * 1000 + 50), false, 'and not after');
+});
+
+test('a moment the timetable no longer has is dropped from the queue', () => {
+  // Queued hours ahead: an Iqamah sound switched off, or an Iqamah moved, went on sounding at
+  // its old time for the rest of the day.
+  const s = new Sink();
+  const t = new SoundTrack();
+  const t0 = 1_000_000;
+  t.attach(s, t0);
+  t.playAt(t0 + 3000, beepPcm());
+  t.playAt(t0 + 6000, beepPcm());
+  t.retain(new Set([t0 + 6000]));
+  for (let ms = 0; ms <= 9000; ms += 250) t.pump(t0 + ms);
+  assert.equal(s.loud.length, 1, 'only the moment still wanted played');
+  assert.ok(Math.abs(s.loud[0] - 6 * SOUND_RATE) <= 1);
+});
+
+test('the sound is chosen when it plays, not when it was queued', () => {
+  // A clip replaced in the morning went on playing the old one until the next day.
+  const t = new SoundTrack();
+  const t0 = 1_000_000;
+  const s = new Sink();
+  t.attach(s, t0);
+  let clip: Buffer = Buffer.alloc(200, 0); // silence: the "old" clip
+  t.playAt(t0 + 3000, () => clip);
+  clip = beepPcm(); // replaced before the moment
+  for (let ms = 0; ms <= 5000; ms += 250) t.pump(t0 + ms);
+  assert.equal(s.loud.length, 1, 'the replacement is what sounded');
+});
+
 test('the same moment asked for twice plays once', () => {
   // The renderer re-scans the day every ten seconds and offers every moment again each time.
   const s = new Sink();

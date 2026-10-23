@@ -746,8 +746,8 @@ export const PI_COMMANDS = [
   // privilege: the agent is already in the video group, because drawing is its job.
   'screenshot',
   // A full interactive terminal, dialled OUT by the device to a session the panel minted — see
-  // piShell.ts. Same account and same sandbox as 'shell'; the difference is that the bytes flow
-  // both ways over a socket the DEVICE opened, so a keystroke does not wait for the next poll.
+  // piShell.ts. A ROOT shell, unlike 'shell' (CLAUDE.md §4): root starts it from the control
+  // spool's `shell-session` verb, and the bytes flow both ways over a socket the DEVICE opened.
   'shell-session',
   // One line, run by the AGENT as its own unprivileged user — deliberately NOT through the root
   // control spool. That spool matches a verb out of a fixed set with a filter that keeps only

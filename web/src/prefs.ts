@@ -186,6 +186,14 @@ function appearancePatch(p: OmosAppearance): Partial<Prefs> {
   return out;
 }
 
+function sameHost(url: string): boolean {
+  try {
+    return new URL(url, location.href).hostname === location.hostname;
+  } catch {
+    return false;
+  }
+}
+
 /** Read the `#omos=…` appearance fragment OpenMasjidOS adds when it opens us
  *  (base64url JSON). Applied once, then the hash is cleared. */
 function readOmosFragment(): OmosAppearance | null {
@@ -244,7 +252,13 @@ export const prefsStore = {
     const omos = readOmosFragment();
     if (omos) {
       // Opened from OpenMasjidOS → adopt its look and (re)enable following.
-      state = { ...state, ...appearancePatch(omos), followOmos: true };
+      // Not the wallpaper picture unless it is on this box (or inline). The fragment comes from
+      // whatever link opened the panel, and a picture named there would be fetched from an
+      // outsider's server every time the panel opens. The platform's own appearance sync below
+      // still brings its wallpaper, wherever that lives.
+      const pic = omos.wallpaperImage;
+      const ours = typeof pic === 'string' && (pic.startsWith('data:image/') || sameHost(pic));
+      state = { ...state, ...appearancePatch(ours ? omos : { ...omos, wallpaperImage: undefined }), followOmos: true };
       persist();
     }
     // applyTheme applies the accent too — it has to, because the accent's text form depends on

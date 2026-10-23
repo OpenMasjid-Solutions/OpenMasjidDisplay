@@ -167,6 +167,25 @@ function scheduledToday(tt: Timetable): Partial<Record<(typeof SCHEDULED_PRAYERS
   return out;
 }
 
+/**
+ * The "Iqamah times" list after the schedule changes under it, from `before` to `after`.
+ *
+ * A fixed time still showing what the OLD schedule gave today (or the stored rule, where no change
+ * applied) moves to what the NEW one gives; one the admin has typed over is theirs and stays. Left
+ * alone, the next "Save changes" read the stale time as an edit and wrote it back over the change.
+ */
+export function followSchedule(form: IqamahConfig, tt: Timetable, before: IqamahScheduleEntry[], after: IqamahScheduleEntry[]): IqamahConfig {
+  const was = scheduledToday({ ...tt, iqamahSchedule: before });
+  const now = scheduledToday({ ...tt, iqamahSchedule: after });
+  const out = { ...form };
+  for (const k of SCHEDULED_PRAYERS) {
+    const base = tt.iqamah[k];
+    if (base.mode !== 'fixed' || out[k].mode !== 'fixed') continue;
+    if (out[k].fixed === (was[k] ?? base.fixed)) out[k] = { ...out[k], fixed: now[k] ?? base.fixed };
+  }
+  return out;
+}
+
 /** Form (with string lat/long) → a timetable body for save/preview. */
 function formBody(f: Form): Partial<Timetable> {
   return {
@@ -218,6 +237,12 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const themeGold = state.themes.find((t) => t.id === f.themeId)?.palette.gold ?? '#D4AF37';
 
   const save = async () => {
+    // An emptied time box sends '' (so does one Backspace while typing). The server used to keep a
+    // blank fixed Iqamah as midnight — 12:00 AM on every screen — and to drop a blank Jumu'ah
+    // without a word. Say which one is empty instead of saving it.
+    const blank = (['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const).find((k) => f.iqamah[k].mode === 'fixed' && !f.iqamah[k].fixed);
+    if (blank) return toast(`${PRAYER_TITLE[blank]}'s fixed Iqamah time is empty. Enter a time, or choose “Minutes after Adhan”.`, 'error');
+    if (f.jumuah.some((t) => !t)) return toast("A Jumu'ah time is empty. Enter it, or remove it.", 'error');
     setBusy(true);
     try {
       const body = formBody(f);
@@ -371,9 +396,22 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
   const saveIqSchedule = async (next: IqamahScheduleEntry[]): Promise<IqamahScheduleEntry[]> => {
     if (!tt) return next;
     const r = await api.saveIqamahSchedule(tt.id, next);
+    /**
+     * The "Iqamah times" list shows a fixed time as the schedule has it today (`toForm`). One still
+     * showing the OLD schedule's answer has to move with the schedule: left alone, the next "Save
+     * changes" read it as an edit and wrote it back over the change just made — or, with the change
+     * removed, stored it as the prayer's own time for good. A time the admin has typed over is
+     * theirs, and is left as it is.
+     */
+    setF((p) => ({ ...p, iqamah: followSchedule(p.iqamah, tt, iqSchedule, r.schedule) }));
     setIqSchedule(r.schedule);
     return r.schedule; // the server-cleaned list — the editor re-syncs to it (drops empty rows)
   };
+  // A schedule saved somewhere else while this editor is open — another tab, another admin, a
+  // WhatsApp change — arrives as a new `tt`. Saving the whole list from the copy taken when the
+  // editor opened would delete it, so the editor follows the stored list.
+  const storedSchedule = JSON.stringify(tt?.iqamahSchedule ?? []);
+  useEffect(() => setIqSchedule(JSON.parse(storedSchedule)), [storedSchedule]);
   // The downloadable poster for the next scheduled change.
   //
   // Fetched rather than linked with a plain <a download>: the endpoint answers 404 + JSON
@@ -767,7 +805,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             </p>
             <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
               <label className="btn btn--primary btn--sm" style={{ cursor: 'pointer' }}>
-                <input type="file" accept=".csv,text/csv" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) importCsv(file); e.target.value = ''; }} />
+                <input type="file" accept=".csv,text/csv" className="file-pick" onChange={(e) => { const file = e.target.files?.[0]; if (file) importCsv(file); e.target.value = ''; }} />
                 Import CSV
               </label>
               <a className="btn btn--ghost btn--sm" href={api.iqamahCsvUrl(tt.id, 'template')}>Download example</a>
@@ -904,7 +942,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
               <span className="muted" style={{ fontSize: '0.88rem' }}>{f.backgroundImage ? 'Custom image set.' : 'Using the themed scene.'}</span>
               <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
-                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickBackground(file); e.target.value = ''; }} />
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="file-pick" onChange={(e) => { const file = e.target.files?.[0]; if (file) pickBackground(file); e.target.value = ''; }} />
                 {f.backgroundImage ? 'Replace image' : 'Upload image'}
               </label>
               {f.backgroundImage && <button type="button" className="btn btn--ghost btn--sm" onClick={clearBackground}>Remove</button>}
@@ -920,7 +958,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
             <div className="row" style={{ gap: '0.6rem', flexWrap: 'wrap' }}>
               <span className="muted" style={{ fontSize: '0.88rem' }}>{f.logoImage ? 'Custom logo set.' : 'Using the built-in mark.'}</span>
               <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
-                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickLogo(file); e.target.value = ''; }} />
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" className="file-pick" onChange={(e) => { const file = e.target.files?.[0]; if (file) pickLogo(file); e.target.value = ''; }} />
                 {f.logoImage ? 'Replace logo' : 'Upload logo'}
               </label>
               {f.logoImage && <button type="button" className="btn btn--ghost btn--sm" onClick={clearLogo}>Remove</button>}
@@ -1034,7 +1072,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
                         {playing === k ? 'Stop' : 'Play'}
                       </button>
                       <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer' }}>
-                        <input type="file" accept="audio/*" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) pickSound(k, file); e.target.value = ''; }} />
+                        <input type="file" accept="audio/*" className="file-pick" onChange={(e) => { const file = e.target.files?.[0]; if (file) pickSound(k, file); e.target.value = ''; }} />
                         {clip ? 'Replace sound' : 'Upload a sound'}
                       </label>
                       {clip && <button type="button" className="btn btn--ghost btn--sm" onClick={() => clearSound(k)}>Use the beep</button>}
@@ -1176,7 +1214,7 @@ export function TimetableEditor({ state, tt, onClose, onSaved }: { state: AppSta
                 </div>
               ))}
               <label className="ann-add" style={{ cursor: 'pointer' }}>
-                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) addAnnImage(file); e.target.value = ''; }} />
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="file-pick" onChange={(e) => { const file = e.target.files?.[0]; if (file) addAnnImage(file); e.target.value = ''; }} />
                 <IconPlus size={18} />
               </label>
             </div>
@@ -1524,7 +1562,7 @@ function IqamahRow({ name, rule, onChange, disabled }: { name: string; rule: Iqa
   return (
     <div className="list-row" style={disabled ? { opacity: 0.45, pointerEvents: 'none' } : undefined} aria-disabled={disabled}>
       <div className="list-row__main"><div className="list-row__title">{PRAYER_TITLE[name]}</div></div>
-      <select className="select" style={{ width: 'auto' }} disabled={disabled} value={rule.mode} onChange={(e) => onChange({ mode: e.target.value as IqamahRule['mode'], offset: 10, fixed: '13:30' })}>
+      <select className="select" style={{ width: 'auto' }} disabled={disabled} value={rule.mode} onChange={(e) => onChange({ ...rule, mode: e.target.value as IqamahRule['mode'], offset: rule.offset ?? 10, fixed: rule.fixed ?? '13:30' })}>
         <option value="offset">Minutes after Adhan</option>
         <option value="fixed">Fixed time</option>
         <option value="none">Don't show</option>
@@ -1657,6 +1695,17 @@ function IqamahScheduleEditor({ schedule, onSave, timezone, baseJumuah }: { sche
   };
 
   const save = async () => {
+    // The server keeps one change per date and drops one with no date — silently, so "saved" was
+    // said over a change that never took effect. New rows start on today, which is how two came to
+    // share a date.
+    const dates = new Set<string>();
+    for (const r of rows) {
+      if (!PR.some((p) => r[p]) && !r.jumuah?.length) continue; // an empty row is just dropped
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(r.from)) return toast('A change has no date. Choose the day it starts.', 'error');
+      if (dates.has(r.from)) return toast(`Two changes start on ${r.from}. Put them in one change, or move one to another day.`, 'error');
+      if (r.jumuah?.some((t) => !t)) return toast("A Jumu'ah time in a change is empty. Enter it, or remove it.", 'error');
+      dates.add(r.from);
+    }
     setBusy(true);
     try {
       // Re-sync straight from the server's cleaned result: if it dropped an empty row, the

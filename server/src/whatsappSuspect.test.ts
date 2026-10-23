@@ -304,3 +304,13 @@ test('the marking happens inside the store update, not beside it', () => {
     'and it must not mutate live state from outside store.update',
   );
 });
+
+test("'today' is the masjid's date, not the UTC one", () => {
+  // 21:00 in New York on the 20th is 01:00 UTC on the 21st. A notice for a change taking effect on
+  // the 20th is still for TODAY there, and must be re-announced — judged on the UTC date it was
+  // already in the past, so it was dropped.
+  const evening = Date.parse('2026-08-21T01:00:00Z');
+  const win = [{ from: evening - 3_600_000, to: evening, ids: ['m1'], truncated: false }];
+  const e = entry({ effectiveFrom: '2026-08-20' });
+  assert.deepEqual(markSuspectEntries([e], win, evening, '2026-08-20'), { pending: 1, stale: 0 });
+});

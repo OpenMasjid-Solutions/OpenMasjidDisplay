@@ -11,7 +11,7 @@
  * run on a Raspberry Pi alongside the render loop).
  */
 import { zonedNoon } from './prayer/engine';
-import { buildModel, findIqamahChange } from './render/svg';
+import { buildModel, findIqamahChange, CLOCK_EPS } from './render/svg';
 import { logoDataUri } from './render/background';
 import type { Timetable } from './types';
 
@@ -30,7 +30,8 @@ const pad2 = (n: number) => String(n).padStart(2, '0');
  */
 function fmt(hours: number | null, timeFormat: string): string {
   if (hours == null || !Number.isFinite(hours)) return '—';
-  let total = Math.floor(hours * 60);
+  // With the screen's epsilon: a fixed 16:20 is 16.3333… hours, and without it that floors to 16:19.
+  let total = Math.floor(hours * 60 + CLOCK_EPS);
   total = ((total % 1440) + 1440) % 1440;
   const h = Math.floor(total / 60);
   const m = total % 60;

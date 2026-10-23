@@ -44,13 +44,14 @@ test('normalizeIqamahSchedule: cleans times/dates, sorts, dedups, drops empties'
     { from: '2026-03-01', dhuhr: '13:15', jumuah: ['2:30 pm', '1:30 pm', '1:30 pm'] }, // sorted+deduped
     { from: 'not-a-date', fajr: '05:00' }, // dropped (bad date)
     { from: '2026-09-01' }, // dropped (sets nothing)
-    { from: '2026-03-01', asr: '16:00' }, // dropped (duplicate date of the 03-01 above)
+    { from: '2026-03-01', asr: '16:00', dhuhr: '12:00' }, // same date as the 03-01 above: merged, the first row winning
   ]);
   assert.equal(out.length, 2);
   assert.equal(out[0].from, '2026-03-01'); // sorted ascending
   assert.deepEqual(out[0].jumuah, ['13:30', '14:30']);
   assert.equal(out[0].dhuhr, '13:15');
-  assert.equal(out[0].asr, undefined); // the duplicate 03-01 entry was dropped, not merged
+  assert.equal(out[0].asr, '16:00', 'a second row for the same date is merged — it used to vanish');
+  assert.equal(out[0].dhuhr, '13:15', 'and where both set a time, the first one stands');
   assert.equal(out[1].from, '2026-06-01');
   assert.equal(out[1].fajr, '05:00');
   assert.equal(out[1].isha, '21:15');

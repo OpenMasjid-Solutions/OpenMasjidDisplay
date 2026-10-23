@@ -85,3 +85,10 @@ test('an absent whatsapp block keeps the current settings rather than wiping the
   const s = normSettings({ defaultQuality: '720p' }, base);
   assert.deepEqual(s.whatsapp, base.whatsapp);
 });
+
+test('an emptied fixed Iqamah time keeps the stored one instead of becoming midnight', () => {
+  const base = normTimetable({ iqamah: { fajr: { mode: 'fixed', fixed: '06:10' }, isha: { mode: 'offset', offset: 10 } } });
+  const saved = normTimetable({ ...base, iqamah: { ...base.iqamah, fajr: { mode: 'fixed', fixed: '' }, isha: { mode: 'fixed', fixed: '' } } }, base);
+  assert.deepEqual(saved.iqamah.fajr, { mode: 'fixed', fixed: '06:10' }, 'not 00:00');
+  assert.deepEqual(saved.iqamah.isha, { mode: 'offset', offset: 10 }, 'nothing stored to keep: the rule stays as it was');
+});

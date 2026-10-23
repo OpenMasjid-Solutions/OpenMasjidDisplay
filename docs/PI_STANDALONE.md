@@ -82,7 +82,7 @@ network, something like `http://192.168.1.42`.
 asked for the setup code from the television and for a password to create. That password is how
 you get back in.
 
-**6. Add your prayer times.** **Timetables → Add timetable**. You can calculate them, type them
+**6. Add your prayer times.** **Timetables → New timetable**. You can calculate them, type them
 in, or upload a CSV. The television updates within a few seconds.
 
 That is it. There is nothing else to install and nothing to sign up for.
@@ -100,17 +100,18 @@ serves, so anything you learn here carries over if you add a server later.
 
 | | |
 |---|---|
-| **Timetables** | prayer times — calculated, typed, or uploaded. Iqamah schedules, Jumu'ah, Ramadan. |
+| **Timetables** | prayer times — calculated, typed, or uploaded. Iqamah schedules, Jumu'ah, the masjid name and logo. |
 | **Screens** | this screen: its design, orientation, language, what it is showing right now |
 | **Sources** | cameras (RTSP) and the HDMI input, if you have a capture device |
-| **Schedules** | what to show and when — the timetable in the day, a camera at Fajr, anything you like |
-| **Settings** | name, logo, wallpaper, theme, Wi-Fi, the volunteer PIN, time zone |
+| **Schedule** | what to show and when — the timetable in the day, a camera at Fajr, anything you like |
+| **Settings** | wallpaper, theme, Wi-Fi, the volunteer PIN, the schedule time zone, and a Display server to join |
 
 ### The volunteer page
 
-Set a **PIN** in **Settings → Volunteer page** and anybody with the PIN can open
-`http://<pi-address>/volunteer` on their phone to adjust today's Iqamah times — without the
-password and without being able to change anything else. This is the page for whoever opens the
+Set a **PIN** in **Settings → Volunteer page (mobile)** and anybody with the PIN can open
+`http://<pi-address>/volunteer` on their phone to switch what the screen is showing, or report an
+incorrectly parked car — without the password and without being able to change anything else.
+This is the page for whoever opens the
 masjid.
 
 ### Wi-Fi
@@ -216,8 +217,8 @@ sudo journalctl -u openmasjid-screen -n 100 --no-pager
 ## Growing into a server
 
 If you later add OpenMasjidOS and a Display server, this screen can join it. **Run the server's
-own install command on the Pi** — the one shown in the dashboard under **Screens → Raspberry Pi
-screens**:
+own install command on the Pi** — the one shown in the dashboard under **Screens → Add screen →
+Raspberry Pi**:
 
 ```sh
 curl -fsSL http://<your-display-server>:7860/pi.sh | sudo sh
@@ -226,6 +227,12 @@ curl -fsSL http://<your-display-server>:7860/pi.sh | sudo sh
 The television then shows a setup code; type it into that same page and the server takes over
 the timetable and the settings. The Pi keeps drawing the screen itself and keeps opening its
 cameras directly, exactly as before.
+
+It can also join without SSH or a keyboard: on the server, **Screens → Add screen → Raspberry Pi →
+The screen is already running on its own**, with the screen's address and password; or on the
+screen, **Settings → Display server**, which works even when the server is in another building. A
+screen joined either of those ways cannot be updated or given a terminal from the dashboard until
+the server's command above has been run on it once — see [PI_ADOPTION.md](PI_ADOPTION.md).
 
 **Nothing is thrown away.** The screen keeps its local timetables, its settings and its password
 on disk, untouched, and keeps the same identity so the server sees one screen rather than a

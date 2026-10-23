@@ -10,6 +10,38 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
+## 0.72.0
+
+A security and reliability update. There is nothing to do after updating.
+
+### Security
+- **The video server only accepts video from Display itself.** Before, anyone on the masjid's
+  network who knew a timetable's address could send their own picture to every decoder-box screen
+  showing it.
+- **Passwords, volunteer PINs and a new screen's setup code can no longer be guessed faster** by
+  sending the guesses all at once, and a setup code can no longer be guessed by switching addresses.
+- **Other apps on the same OpenMasjidOS box can no longer use your sign-in** to change Display's
+  settings or watch its live updates.
+- **A new screen's pairing code is read off the television only.** The dashboard no longer shows it,
+  because typing it from the screen is what proves you can see that screen.
+
+### Fixed
+- **Iqamah times stay as you set them.** Saving a timetable after editing the schedule no longer puts
+  the old time back, a cleared fixed time is no longer saved as midnight, and the schedule tells you
+  when it cannot save a change instead of quietly losing it.
+- **The Iqamah CSV template matches the screens on every day of the year**, and a file with a date
+  that cannot be read is refused instead of being imported on the wrong dates.
+- **The Adhan sound is no longer cut off at Dhuhr**, and turning a sound off, moving an Iqamah or
+  uploading a new sound now takes effect the same day.
+- **Back-to-back Iqamah changes each get their full WhatsApp notice**, instead of the second waiting
+  behind the first.
+- **The printed calendar and the Companion app show fixed times to the minute.**
+- **The one-command Raspberry Pi install works again** — each release now carries the screen bundle it
+  downloads.
+- In the control panel: clicking a setting's name no longer changes it, upload buttons work from the
+  keyboard, the logo shows when the panel is opened from outside the masjid, and the volunteer page
+  asks for the PIN again when its session ends.
+
 ## 0.71.0
 
 A security update first: Display now runs on a patched Node.js. The same release lets a Raspberry

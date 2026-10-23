@@ -134,3 +134,29 @@ export function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Re
     req.on('error', reject);
   });
 }
+
+/**
+ * Did the browser itself say this request came from another SITE?
+ *
+ * `SameSite=Lax` cookies do not stop it: every other app on the same OpenMasjidOS box is the same
+ * "site" on a different port, so a page there could post to this panel with the admin's cookie —
+ * repoint cameras, send the WhatsApp announcement again and again — or open the live-state socket
+ * and read it. Browsers label every request with `Sec-Fetch-Site`; only `same-origin` (this app's own
+ * pages) and `none` (typed or bookmarked) are ours. A request without the header is not from a
+ * browser — the platform, a device, a script — and is left to its own authentication.
+ */
+export function fromAnotherSite(req: IncomingMessage): boolean {
+  const site = req.headers['sec-fetch-site'];
+  return site === 'same-site' || site === 'cross-site';
+}
+
+/**
+ * A request path fit for the log: a screen's or a device's token cut out of it.
+ *
+ * `/s/<token>/…` and `/pi/<token>/…` carry the credential IN the path, so the catch-all error line
+ * — `POST /pi/<token>/seen` — wrote it to the log, and the journal is uploaded and shown in a page.
+ * One fault on a polling route would have logged every screen's token on every poll.
+ */
+export function pathForLog(pathname: string): string {
+  return pathname.replace(/\/(s|pi)\/[A-Za-z0-9_-]{16,64}(?=\/|$)/, '/$1/<token>');
+}

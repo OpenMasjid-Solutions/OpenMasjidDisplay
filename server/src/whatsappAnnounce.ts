@@ -67,6 +67,7 @@ import {
   type WhatsAppOutcome,
 } from './fabric';
 import { makeLog } from './logger';
+import { localParts } from './prayer/engine';
 
 const log = makeLog('whatsapp');
 
@@ -188,66 +189,83 @@ export function decideAnnounce(db: DB, nowMs: number, manual = false): AnnounceD
   }
 
   const now = new Date(nowMs);
-  // minDays 0, not 1: a change taking effect TODAY is still worth announcing, and it is the
-  // case a last-minute entry lands in. The poster's own detector, reused — there is no second
-  // opinion anywhere about what counts as a change.
-  const change = manual
-    ? findIqamahChange(tt, now, { minDays: 1, maxDays: MANUAL_LOOKAHEAD_DAYS }) ??
-      findIqamahChange(tt, now, { minDays: -MANUAL_LOOKAHEAD_DAYS, maxDays: 0, preferLatest: true })
-    : findIqamahChange(tt, now, { minDays: 0, maxDays: wa.daysBefore });
-  if (!change) {
-    return {
-      act: 'skip',
-      why: manual
-        ? 'There are no Iqamah changes to announce.'
-        : `No Iqamah change falls in the next ${wa.daysBefore} day${wa.daysBefore === 1 ? '' : 's'}.`,
-    };
+  if (manual) {
+    const change =
+      findIqamahChange(tt, now, { minDays: 1, maxDays: MANUAL_LOOKAHEAD_DAYS }) ??
+      findIqamahChange(tt, now, { minDays: -MANUAL_LOOKAHEAD_DAYS, maxDays: 0, preferLatest: true });
+    if (!change) return { act: 'skip', why: 'There are no Iqamah changes to announce.' };
+    // "Send now" is the admin overriding all of this on purpose — including to correct a notice
+    // that already went out — so it skips the dedupe and the backoff.
+    return { act: 'post', target: { tt, change, effectiveFrom: dateKey(change), groupId: wa.groupId } };
   }
 
-  const effectiveFrom = dateKey(change);
-  const target: AnnounceTarget = { tt, change, effectiveFrom, groupId: wa.groupId };
-  // "Send now" is the admin overriding all of this on purpose — including to correct a notice
-  // that already went out — so it skips the dedupe and the backoff.
-  if (manual) return { act: 'post', target };
-
-  const mine = (db.whatsappLog ?? []).filter(
-    (e) => e.event === 'iqamah-change' && e.recipient === wa.groupId && e.effectiveFrom === effectiveFrom,
-  );
-  // BOTH of these block a re-announce, and `sent` being in the list is load-bearing rather
-  // than tidy. Outcomes used to be only queued-or-failed, so "already handled" and "outcome is
-  // queued" were the same test; now that a queued entry can be updated to `sent`, a check for
-  // `queued` alone would stop matching the moment the platform confirmed delivery — and the
-  // next tick would cheerfully announce the change to the group a second time. Success turning
-  // into a duplicate is the exact shape of bug worth spelling out at the site.
-  //
-  // The one exception is a `sent` the PLATFORM has since disowned — see WhatsAppLogEntry.suspect.
-  // There the report of success is the thing that turned out to be wrong, so treating it as handled
-  // is what would strand the notice. It rejoins the ordinary paced path from here: nothing about the
-  // backoff, the attempt budget or the one-message-per-change rule is bypassed.
-  const handled = (e: WhatsAppLogEntry) =>
-    e.outcome === 'queued' || (e.outcome === 'sent' && e.suspect !== 'pending');
-  if (mine.some(handled)) {
-    return { act: 'skip', why: 'This change has already been sent to the group.' };
+  /**
+   * Every change in the window, soonest first — not only the soonest.
+   *
+   * Only the soonest used to be looked at, so once it had been sent every later change in the
+   * window waited behind it: with a week's notice and changes on the 1st and the 3rd, the 3rd went
+   * out on the 2nd, one day ahead instead of seven. A change already handled, or given up on, now
+   * steps aside for the next one. One still waiting out its retry delay does NOT — changes go out
+   * in order, and it is next.
+   *
+   * minDays 0, not 1: a change taking effect TODAY is still worth announcing, and it is the case a
+   * last-minute entry lands in. The poster's own detector, reused — there is no second opinion
+   * anywhere about what counts as a change.
+   */
+  let fromDay = 0;
+  let passed = '';
+  for (;;) {
+    const change = findIqamahChange(tt, now, { minDays: fromDay, maxDays: wa.daysBefore });
+    if (!change) {
+      return {
+        act: 'skip',
+        why: passed || `No Iqamah change falls in the next ${wa.daysBefore} day${wa.daysBefore === 1 ? '' : 's'}.`,
+      };
+    }
+    fromDay = change.daysUntil + 1;
+    const effectiveFrom = dateKey(change);
+    const mine = (db.whatsappLog ?? []).filter(
+      (e) => e.event === 'iqamah-change' && e.recipient === wa.groupId && e.effectiveFrom === effectiveFrom,
+    );
+    // BOTH of these block a re-announce, and `sent` being in the list is load-bearing rather
+    // than tidy. Outcomes used to be only queued-or-failed, so "already handled" and "outcome is
+    // queued" were the same test; now that a queued entry can be updated to `sent`, a check for
+    // `queued` alone would stop matching the moment the platform confirmed delivery — and the
+    // next tick would cheerfully announce the change to the group a second time. Success turning
+    // into a duplicate is the exact shape of bug worth spelling out at the site.
+    //
+    // The one exception is a `sent` the PLATFORM has since disowned — see WhatsAppLogEntry.suspect.
+    // There the report of success is the thing that turned out to be wrong, so treating it as handled
+    // is what would strand the notice. It rejoins the ordinary paced path from here: nothing about the
+    // backoff, the attempt budget or the one-message-per-change rule is bypassed.
+    const handled = (e: WhatsAppLogEntry) =>
+      e.outcome === 'queued' || (e.outcome === 'sent' && e.suspect !== 'pending');
+    if (mine.some(handled)) {
+      passed = 'This change has already been sent to the group.';
+      continue;
+    }
+    // Only the SCHEDULED attempts count against the budget. A "Send now" that failed is an
+    // admin retrying by hand, and five of those would otherwise permanently disable the
+    // automatic post for that change — punishing the person for trying.
+    //
+    // `expired` counts as a failure because it is one: the platform gave up on the message. It
+    // differs from `failed` only in whose patience ran out.
+    const failures = mine.filter((e) => (e.outcome === 'failed' || e.outcome === 'expired') && !e.manual);
+    if (failures.length >= WA_MAX_ATTEMPTS) {
+      passed = `Gave up after ${WA_MAX_ATTEMPTS} failed attempts.`;
+      continue;
+    }
+    // From when we LEARNED it failed, not from when it was queued. A message accepted at nine and
+    // reported failed at half past is a failure at half past; backing off from the earlier time
+    // would retry immediately and, if the cause is still there, burn the whole budget in minutes.
+    const failedAt = (e: WhatsAppLogEntry) => Date.parse(e.settledAt ?? e.at) || 0;
+    const lastFailedAt = failures.reduce((mx, e) => Math.max(mx, failedAt(e)), 0);
+    if (lastFailedAt && nowMs - lastFailedAt < WA_RETRY_MS) {
+      return { act: 'skip', why: 'Waiting before retrying the last failed post.' };
+    }
+    const target: AnnounceTarget = { tt, change, effectiveFrom, groupId: wa.groupId };
+    return { act: 'post', target };
   }
-  // Only the SCHEDULED attempts count against the budget. A "Send now" that failed is an
-  // admin retrying by hand, and five of those would otherwise permanently disable the
-  // automatic post for that change — punishing the person for trying.
-  //
-  // `expired` counts as a failure because it is one: the platform gave up on the message. It
-  // differs from `failed` only in whose patience ran out.
-  const failures = mine.filter((e) => (e.outcome === 'failed' || e.outcome === 'expired') && !e.manual);
-  if (failures.length >= WA_MAX_ATTEMPTS) {
-    return { act: 'skip', why: `Gave up after ${WA_MAX_ATTEMPTS} failed attempts.` };
-  }
-  // From when we LEARNED it failed, not from when it was queued. A message accepted at nine and
-  // reported failed at half past is a failure at half past; backing off from the earlier time
-  // would retry immediately and, if the cause is still there, burn the whole budget in minutes.
-  const failedAt = (e: WhatsAppLogEntry) => Date.parse(e.settledAt ?? e.at) || 0;
-  const lastFailedAt = failures.reduce((mx, e) => Math.max(mx, failedAt(e)), 0);
-  if (lastFailedAt && nowMs - lastFailedAt < WA_RETRY_MS) {
-    return { act: 'skip', why: 'Waiting before retrying the last failed post.' };
-  }
-  return { act: 'post', target };
 }
 
 /** The message a target would produce. Separate so the UI can show a preview of exactly what
@@ -561,7 +579,10 @@ export class WhatsAppAnnouncer {
     // is idempotent: an entry that already carries a verdict is skipped.
     let marked = { pending: 0, stale: 0 };
     this.store.update((db) => {
-      marked = markSuspectEntries(db.whatsappLog ?? [], windows, now);
+      const tt = announceTimetable(db);
+      const p = localParts(new Date(now), tt?.timezone || undefined);
+      const today = `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+      marked = markSuspectEntries(db.whatsappLog ?? [], windows, now, today);
     });
     if (!marked.pending && !marked.stale) return;
     if (marked.pending) {
@@ -621,10 +642,12 @@ export function markSuspectEntries(
   entries: WhatsAppLogEntry[],
   windows: { from: number; to: number; ids?: string[]; truncated?: boolean; cause?: string }[],
   nowMs: number,
+  // The MASJID's date. The UTC date is tomorrow there every evening west of Greenwich, which judged a
+  // lost notice for a change taking effect today as already stale, and never sent it again.
+  today: string = new Date(nowMs).toISOString().slice(0, 10),
 ): { pending: number; stale: number } {
   let pending = 0;
   let stale = 0;
-  const today = new Date(nowMs).toISOString().slice(0, 10);
   for (const e of entries) {
     // Only ever a `sent` we have not already judged. A queued entry is still going to get a real
     // verdict, and a failed one is already being retried by the ordinary path.
