@@ -150,6 +150,9 @@ to match the room it hangs in, and design them in a **live editor** with a previ
   background, rotating through a **built-in library** (turn individual ones off) plus **any you add yourself**,
   in Arabic and/or English.
 - **Or blank the screen entirely** during salah, if you'd rather nothing be a distraction at all.
+- **A sound at the Adhan and the Iqamah** — each its own: the built-in long beep, or a recording you
+  upload (MP3, M4A, WAV or OGG, up to 5 MB and three minutes). It travels on the screen's video stream,
+  so it plays on decoder-box screens with the television's volume up; Pi and browser screens stay silent.
 - **Prohibited-time (zawāl) notice** before the Dhuhr Adhan — full-screen, or as a red message along the bottom.
 
 **Announcements**
@@ -178,7 +181,8 @@ add one from your phone. Both are **off until you turn them on** in Settings →
 - It posts the **announcement image** above, with a short caption naming what moved. On an older OpenMasjidOS
   that can't send pictures it sends the same notice as text instead, and the page tells you which you'll get.
 - Each change is announced **once**. If you edit a time afterwards, **Send now** posts the correction.
-- There's a **preview of the exact message** before anything is sent, and a log of what's been queued.
+- There's a **preview of the exact message** before anything is sent, and a log of what's been queued and
+  what became of it.
 
 **Adding a change from WhatsApp**
 
@@ -187,10 +191,12 @@ the date, then a numbered list of prayers, then the time for each. Send **save**
 Nothing is written until you save, and the whole change is read back to you first. Useful when a screen needs
 fixing and you're nowhere near a computer.
 
-> **Messages are queued, not sent.** OpenMasjidOS spaces every message out to protect the masjid's number from
-> being blocked by WhatsApp, so delivery is a few minutes away — longer inside the quiet hours set there. The app
-> will never tell you a message arrived, because it cannot know. WhatsApp is also an unofficial channel: nothing
-> here is ever used for anything that has to work, and alerts still go by email and webhook.
+> **Messages are queued, not sent.** OpenMasjidOS sends them from one queue shared by every app, and holds them
+> while the masjid's WhatsApp link is down until an admin re-links the phone — so a message can take a while to
+> go out. The log shows when one was handed to WhatsApp; the app will never tell you a message arrived, because it
+> cannot know. To protect the masjid's number from being blocked, Display keeps itself to one approved group and
+> one message per change. WhatsApp is also an unofficial channel: nothing here is ever used for anything that has
+> to work, and alerts still go by email and webhook.
 
 Which events go out and to whom is **this app's setting**, not the platform's — OpenMasjidOS's alerts screen only
 covers its own alerts, because those go to the admin while these go to the congregation.
@@ -206,7 +212,7 @@ mode, a smart TV, or a spare laptop. It shows exactly what your other screens sh
   there is essentially nothing on the wire.
 - **Works over the internet.** The link rides your OpenMasjidOS remote access, so a screen in another
   building — or a display you host in the cloud — needs nothing extra.
-- **Identical to a normal screen**, because it is drawn by the *same* renderer: all three layouts, the
+- **Identical to a normal screen**, because it is drawn by the *same* renderer: both layouts, the
   countdown, the Adhan pop-up, the Iqamah countdown, hadith during salah, the prohibited-time notice,
   the Iqamah-change reminder, the ticker and the announcement slideshow.
 - It dims itself and shows a red bar if it loses contact with the server, or if the screen's own clock
@@ -301,7 +307,7 @@ didn't arrive (notifications not turned on, permission not granted, platform add
   automatically instead of a LAN one.
 - **WhatsApp** — post an Iqamah change to a group, and run the "add a scheduled Iqamah change" command by
   messaging the masjid's number ([above](#-whatsapp)). The app never sees the gateway, its key or the linked
-  number: the platform owns the connection and paces every message.
+  number: the platform owns the connection, and Display paces itself — one group, one message per change.
 
 ## How it works
 
@@ -363,7 +369,7 @@ To add or update it in the catalog, open a PR to
 ```yaml
   - id: display
     repo: OpenMasjid-Solutions/OpenMasjidDisplay
-    ref: v0.69.0                                   # the release tag, for humans
+    ref: vX.Y.Z                                    # the release tag, for humans
     commit: <40-char SHA of the tagged commit>      # immutable pin — a tag can be moved, a SHA can't
 ```
 
@@ -408,7 +414,7 @@ against the published checksum and rolling back if a new version will not start.
 to follow pre-releases. See **[docs/PI_STANDALONE.md](docs/PI_STANDALONE.md)**.
 
 **Managed by a Display server.** Turn on *Screens that are a web page* in **Settings → Beta
-features**, then run the command shown in **Screens → Raspberry Pi screens** — it already carries this
+features**, then run the command shown in **Screens → Add screen → Raspberry Pi** — it already carries this
 server's address. The television shows a setup code; type it into that same page. The server then holds
 the timetable and the settings for every screen together. See
 **[docs/PI_SCREENS.md](docs/PI_SCREENS.md)**.
@@ -500,16 +506,16 @@ there, it says why and **falls back to libx264** — your screens keep working e
 # server (control plane + renderer) — build, typecheck the tests, run them
 cd server && npm ci && npm run build && npm run typecheck:tests && npm test
 
-# control panel (web) — `npm run build` is `tsc --noEmit && vite build`
-cd web && npm ci && npm run build
+# control panel (web) — `npm run build` is `tsc --noEmit && vite build`; then typecheck and run the tests
+cd web && npm ci && npm run build && npm run typecheck:tests && npm test
 
 # everything together (Docker; also what the App Store runs)
 docker compose up -d
 ```
 
-`typecheck:tests` is separate on purpose: `tsconfig.json` excludes `*.test.ts` so tests never reach the
-image, and the runner (tsx) strips types without checking them — so without it a test that no longer
-compiles still passes.
+Use **Node.js 22** — what the image and CI run. `typecheck:tests` is separate on purpose:
+`tsconfig.json` excludes `*.test.ts` so tests never reach the image, and the runner (tsx) strips types
+without checking them — so without it a test that no longer compiles still passes.
 
 For local development, run the server with `MEDIAMTX_MANAGED=no` (so it won't try to launch the bundled
 MediaMTX) alongside your own `mediamtx`, and `cd web && npm run dev` (proxies `/api` and `/ws` to the

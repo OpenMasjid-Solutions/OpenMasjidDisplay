@@ -105,10 +105,16 @@ export function normContent(v: unknown): ContentRef {
   return id ? { kind, id } : { kind: 'off' };
 }
 
-function normIqamahRule(v: unknown): IqamahRule {
+function normIqamahRule(v: unknown, base: IqamahRule): IqamahRule {
   const o = asObj(v);
   const mode = oneOf(o.mode, ['offset', 'fixed', 'none'] as const, 'offset');
-  if (mode === 'fixed') return { mode, fixed: hhmmOrNull(o.fixed) ?? '00:00' };
+  // A fixed time that is not a time — an emptied box sends '' — keeps the one already stored. It
+  // used to become '00:00', which put 12:00 AM on every screen. With nothing stored to keep, the
+  // rule stays as it was rather than inventing a time.
+  if (mode === 'fixed') {
+    const fixed = hhmmOrNull(o.fixed) ?? (base.mode === 'fixed' ? base.fixed : undefined);
+    return fixed ? { mode, fixed } : base;
+  }
   if (mode === 'none') return { mode };
   return { mode: 'offset', offset: intIn(o.offset, 10, 0, 240) };
 }
@@ -131,15 +137,15 @@ function normLabels(v: unknown, base?: Record<string, string>): Record<string, s
   return Object.keys(out).length ? out : undefined;
 }
 
-function normIqamah(v: unknown): IqamahConfig {
+function normIqamah(v: unknown, base?: IqamahConfig): IqamahConfig {
   const o = asObj(v);
   const d = defaultIqamah();
   return {
-    fajr: o.fajr ? normIqamahRule(o.fajr) : d.fajr,
-    dhuhr: o.dhuhr ? normIqamahRule(o.dhuhr) : d.dhuhr,
-    asr: o.asr ? normIqamahRule(o.asr) : d.asr,
-    maghrib: o.maghrib ? normIqamahRule(o.maghrib) : d.maghrib,
-    isha: o.isha ? normIqamahRule(o.isha) : d.isha,
+    fajr: o.fajr ? normIqamahRule(o.fajr, base?.fajr ?? d.fajr) : d.fajr,
+    dhuhr: o.dhuhr ? normIqamahRule(o.dhuhr, base?.dhuhr ?? d.dhuhr) : d.dhuhr,
+    asr: o.asr ? normIqamahRule(o.asr, base?.asr ?? d.asr) : d.asr,
+    maghrib: o.maghrib ? normIqamahRule(o.maghrib, base?.maghrib ?? d.maghrib) : d.maghrib,
+    isha: o.isha ? normIqamahRule(o.isha, base?.isha ?? d.isha) : d.isha,
   };
 }
 
@@ -357,7 +363,7 @@ export function normTimetable(input: unknown, base?: Timetable): Timetable {
     language: oneOf(o.language, ['en', 'ar', 'ur'] as const, base?.language ?? 'en') as Lang,
     hijriOffset: o.hijriOffset === undefined ? base?.hijriOffset ?? 0 : intIn(o.hijriOffset, 0, -3, 3),
     gregorianOffset: o.gregorianOffset === undefined ? base?.gregorianOffset ?? 0 : intIn(o.gregorianOffset, 0, -3, 3),
-    iqamah: o.iqamah ? normIqamah(o.iqamah) : base?.iqamah ?? defaultIqamah(),
+    iqamah: o.iqamah ? normIqamah(o.iqamah, base?.iqamah) : base?.iqamah ?? defaultIqamah(),
     // iqamahYear (CSV import) and iqamahSchedule (the from-date change schedule) are managed
     // only by their dedicated endpoints — never taken from a normal timetable-save body.
     iqamahYear: base?.iqamahYear,

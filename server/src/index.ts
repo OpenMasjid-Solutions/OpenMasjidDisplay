@@ -21,6 +21,7 @@ import { notify } from './fabric';
 import { WhatsAppAnnouncer } from './whatsappAnnounce';
 import { FabricCommands } from './fabricCommands';
 import { regenerateReportFrames } from './render/reportFrames';
+import { fromAnotherSite } from './httpio';
 
 const log = makeLog('main');
 
@@ -93,7 +94,7 @@ async function main(): Promise<void> {
     // other panel route, also reached under the tunnel's /<basePath> prefix.
     const admin = /^(?:\/[a-z0-9-]{1,80})?\/api\/pi\/shell\/([A-Za-z0-9_-]{16,64})$/.exec(path);
     if (admin) {
-      if (!hasValidSession(req, store.secret)) return false;
+      if (!hasValidSession(req, store.secret) || fromAnotherSite(req)) return false;
       upgrade((ws) => {
         if (!attachShellAdmin(admin[1], ws)) ws.close(1008, 'no such session');
       });

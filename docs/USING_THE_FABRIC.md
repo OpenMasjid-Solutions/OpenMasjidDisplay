@@ -85,7 +85,7 @@ comment in `server/src/auth.ts` before changing anything there.
 ### 6. WhatsApp (implemented — keep it)
 
 `whatsapp: true` lets the app post the **Iqāmah-change notice** to a group the OpenMasjidOS admin
-approved. Three calls, all server→server with the app secret, all failing soft
+approved. These calls, all server→server with the app secret, all failing soft
 (`server/src/fabric.ts`):
 
 ```
@@ -96,7 +96,12 @@ POST ${OPENMASJID_BASE_URL}/api/fabric/whatsapp         → 202 { queued: true, 
        "media": { "data": "<base64>", "mimeType": "image/png", "filename": "…" } }
 GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp/status/<id>
                                                         → { id, state, reason?, at, target }
+GET  ${OPENMASJID_BASE_URL}/api/fabric/whatsapp/suspect → { windows: [{ from, to, count, ids, truncated, cause }] }
 ```
+
+`/suspect` is the platform owning up to `sent` reports it no longer stands behind. `ids` (0.51.1-dev.13+)
+names exactly which of our messages a window covers; a `404` or an `ok: false` body means "could
+not ask", never "nothing wrong".
 
 **Minimum platform versions.** Sending needs OpenMasjidOS **0.51.0+**; the message id, the status
 lookup and a send queue that survives a restart need **0.51.1+**; a per-app outcome history (rather
@@ -140,7 +145,8 @@ The rules that are not ours to bend:
 - **Only approved groups.** The list holds nothing but what the admin put in front of us, approval
   can be withdrawn at any time, and an empty list means hide the feature rather than error. An id we
   were not given is refused with a 403.
-- **Never log a message body.** The log we keep is event + group id + timestamp + the change's date.
+- **Never log a message body.** The log we keep is event + group id + timestamp + the change's date,
+  plus the platform's message id and its verdict.
 
 **The poster goes as an image, when the platform can carry one** (OpenMasjidOS 0.50.5+). Three rules
 here, each of which was a bug waiting to happen:
@@ -182,7 +188,8 @@ rather than a limiter bolted on, which is the point — there is no code path he
   the only shape available here.
 - **One message per change.** The dedupe key is group + the change's effective date, read back out of
   the persisted log, and a `sent` verdict counts as handled just as `queued` does — so a confirmed
-  message cannot become a duplicate.
+  message cannot become a duplicate. The one exception is a `sent` the platform has since disowned
+  through `/suspect`: that is not handled, and it rejoins the ordinary paced path.
 - **Five attempts, thirty minutes apart**, and the wait runs from *the verdict*, not from when the
   message was queued. A permanent refusal stops rather than retrying forever.
 - **One post in flight**, shared by the timer and the admin's "Send now" button.
@@ -204,10 +211,13 @@ The envelope, all of which is load-bearing:
   `omos:platform`. That value can never be an app id — the colon is outside the app-id charset — so
   it identifies the platform by construction rather than by an allow-list. Checking only the secret
   would let anything that ever learned it drive the wizard.
-- **Exact path only, which IS the LAN-only enforcement.** Behind the tunnel this app is served under
-  `/<basePath>/…` and the platform does not strip the prefix, so a tunnelled request arrives as
-  `/display/fabric/commands/run` and does not match. We never register the prefixed form. There is no
-  header to trust for this.
+- **Exact path, AND no forwarding headers — together, the LAN-only enforcement.** Behind the tunnel
+  this app is served under `/<basePath>/…` and the platform does not strip the prefix, so a tunnelled
+  request arrives as `/display/fabric/commands/run` and does not match. We never register the
+  prefixed form. That alone is not quite enough: the router derives the path with `new URL()`, which
+  normalises dot segments, so `/display/../fabric/commands/run` collapses onto the bare path. So the
+  route also refuses any request carrying `x-forwarded-*` or `forwarded` — the platform builds its
+  header set from scratch, so a genuine call never has them, while anything through the tunnel does.
 - **10 s to answer, and we cap the request body at 8 KB** (the platform caps its own at 4 KB, and its
   reply cap is 16 KB). Someone is holding a phone. Reply text is plain, ≤1000 chars.
 - `404 {code:'unknown_command'}` for an id we don't serve, `503 {code:'not_ready'}` before we have a
@@ -372,8 +382,9 @@ authentication:
   Never turn it into an allow-list of apps: a route that refused a caller the platform
   legitimately started using would fail closed and silently.
 
-**Read-only, and asserted rather than intended** — nothing in the module touches `store.update`,
-and a test reads the file to prove it. A provider that can write turns a leaked secret into an
+**Read-only, and asserted rather than intended** — nothing in the module touches `store.update`
+or any fs writer (it reads the disk for the logo, so "read-only" has to mean the disk too), and a
+test reads the file to prove both. A provider that can write turns a leaked secret into an
 attacker repointing a masjid's prayer times.
 
 `days` is capped at **45** server-side. That keeps the answer far inside the broker's 256 KB

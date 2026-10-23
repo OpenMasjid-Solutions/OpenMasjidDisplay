@@ -177,12 +177,13 @@ distro's copy of the same family. `fontPick.test.ts` sets it for exactly this re
 `loadSystemFonts: true`, and both renders ~3× slower (122 ms of font DB instead of 42 ms on a
 desktop) and draws with whatever the host happens to have. That is not a production problem — the
 Dockerfile copies `server/assets/fonts` to `/app/fonts` and installs `fonts-dejavu-core` and
-`fonts-noto-core`, and the Pi installer puts the curated faces in `/usr/share/fonts` — but it is
-the first thing to get wrong when measuring.
+`fonts-noto-core`, a standalone Pi's installer puts its faces in `/usr/share/fonts` from the
+distribution's packages, and a managed Pi is sent the server's own — but it is the first thing to
+get wrong when measuring.
 
 It got this file wrong once: the opening numbers were taken with `loadSystemFonts` and had to be
 thrown away. If a render benchmark reports ~120 ms of font work on a desktop, that is the symptom.
 
 ```sh
-OMD_FONT_DIR=server/assets/fonts npm start      # from the repository root
+cd server && npm run build && OMD_FONT_DIR=assets/fonts npm start   # there is no root package.json
 ```

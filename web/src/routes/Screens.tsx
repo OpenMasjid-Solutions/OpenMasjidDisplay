@@ -132,7 +132,12 @@ export function Screens({ state, refetch }: Props) {
               onResume={() => resume(tv)}
               onEdit={() => setEdit(tv)}
               onDelete={fleet ? () => setConfirm(tv) : undefined}
-              onCopy={(url) => copyText(url).then(() => toast('Link copied.'))}
+              onCopy={(url) =>
+                copyText(url).then(
+                  () => (toast('Link copied.'), true),
+                  () => (toast('Could not copy the link. Select it and copy it yourself.', 'error'), false),
+                )
+              }
             />
           ))}
         </div>
@@ -192,7 +197,8 @@ function ScreenCard({
   onEdit: () => void;
   /** absent where there is nothing to remove — a standalone Pi IS its one screen */
   onDelete?: () => void;
-  onCopy: (url: string) => void;
+  /** Resolves true once the link is really on the clipboard — "Copied" is shown only then. */
+  onCopy: (url: string) => Promise<boolean>;
 }) {
   const [copied, setCopied] = useState(false);
   const [copiedPublic, setCopiedPublic] = useState(false);
@@ -286,7 +292,9 @@ function ScreenCard({
           </div>
           {tv.room && <div className="screen-room">{tv.room}</div>}
         </div>
-        {isPi && (
+        {/* Only with a device to open: a standalone Pi's own screen, or one the server has not heard
+            from yet, has none, and the gear did nothing at all when pressed. */}
+        {isPi && device && (
           <button
             className="icon-btn"
             aria-label="Raspberry Pi settings"
@@ -374,9 +382,11 @@ function ScreenCard({
           <button
             className="btn btn--ghost btn--sm"
             onClick={() => {
-              onCopy(url);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
+              void onCopy(url).then((ok) => {
+                if (!ok) return;
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              });
             }}
           >
             {copied ? <IconCheck size={14} /> : <IconCopy size={14} />} {copied ? 'Copied' : 'Copy link'}
@@ -392,9 +402,11 @@ function ScreenCard({
             <button
               className="btn btn--ghost btn--sm"
               onClick={() => {
-                onCopy(publicScreenUrl);
-                setCopiedPublic(true);
-                setTimeout(() => setCopiedPublic(false), 1500);
+                void onCopy(publicScreenUrl).then((ok) => {
+                  if (!ok) return;
+                  setCopiedPublic(true);
+                  setTimeout(() => setCopiedPublic(false), 1500);
+                });
               }}
             >
               {copiedPublic ? <IconCheck size={14} /> : <IconCopy size={14} />} {copiedPublic ? 'Copied' : 'Copy remote link'}
@@ -618,9 +630,14 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
         <button
           className="btn btn--ghost btn--sm"
           onClick={() => {
-            void copyText(installCmd).then(() => toast('Command copied.'));
-            setCopiedCmd(true);
-            setTimeout(() => setCopiedCmd(false), 1500);
+            void copyText(installCmd).then(
+              () => {
+                toast('Command copied.');
+                setCopiedCmd(true);
+                setTimeout(() => setCopiedCmd(false), 1500);
+              },
+              () => toast('Could not copy the command. Select it and copy it yourself.', 'error'),
+            );
           }}
         >
           {copiedCmd ? <IconCheck size={14} /> : <IconCopy size={14} />} {copiedCmd ? 'Copied' : 'Copy command'}
@@ -649,7 +666,6 @@ function PiSetup({ refetch, onAdopted }: { refetch: () => Promise<void>; onAdopt
             {pending.map((d) => (
               <li key={d.id} className="hint" style={{ display: 'flex', gap: '0.6rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
                 <span className={`status-dot${d.online ? '' : ' status-dot--idle'}`} />
-                <b style={{ fontFamily: 'monospace', fontSize: '1.05rem', letterSpacing: '0.12em', color: 'var(--color-ink)' }}>{d.code}</b>
                 <span>{d.hostname}</span>
                 {d.ip && <span className="muted">· {d.ip}</span>}
                 {d.model && <span className="muted">· {d.model}</span>}
@@ -852,7 +868,7 @@ function TvModal({
         <p className="hint" style={{ marginBlockStart: '-0.4rem', marginBlockEnd: '0.9rem' }}>
           {kind === 'rtsp'
             ? 'This server renders the picture and sends it as video — about 1.5 Mbit/s per screen, continuously.'
-            : 'Almost no network: the page is sent the timetable and draws it locally. It cannot show a camera, because a web page here has no video player.'}
+            : 'Almost no network for a timetable: the page is sent the timetable and draws it locally. A camera plays in the page as video, so it costs about as much as a decoder screen while it is up.'}
         </p>
       )}
 
@@ -864,12 +880,6 @@ function TvModal({
         <Field label="Screen name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Main hall TV" /></Field>
         <Field label="Room (optional)"><input className="input" value={room} onChange={(e) => setRoom(e.target.value)} placeholder="Main hall" /></Field>
       </div>
-      {kind === 'web' && content.kind === 'source' && (
-        <div className="form-error">
-          A browser screen can only show a timetable. Cameras and HDMI sources are video, and this
-          kind of screen has no video player — pick a timetable, or use a decoder box for this screen.
-        </div>
-      )}
       <Field label="Normally shows" hint="What this screen returns to when no schedule or manual choice applies.">
         <ContentPicker options={options} value={content} onChange={setContent} />
       </Field>

@@ -32,7 +32,7 @@ import {
   isSecureRequest,
 } from './auth';
 import { normContent } from './validate';
-import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, pageUnderBase } from './httpio';
+import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, pageUnderBase, fromAnotherSite } from './httpio';
 import { LoginLimiter } from './rateLimit';
 import { rid } from './store';
 import { saveReportImages, removeReportImage, reportImageFile } from './render/background';
@@ -111,6 +111,7 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenSta
   const loginLimiter = new LoginLimiter();
   const enabled = () => store.db.settings.volunteerEnabled && !!store.db.volunteerAuth;
   const authed = (req: IncomingMessage) => hasValidVolunteerSession(req, store.secret);
+  const MAX_REPORTS = 20;
 
   return async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -142,9 +143,13 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenSta
         // one bad actor briefly locking out other remote logins (self-healing, ≤5 min; the LAN
         // port sees real IPs). We deliberately do NOT key on X-Forwarded-For — trusting it is only
         // safe behind the sanitising ingress, and a direct hit could spoof it for fresh buckets.
+        // The body is read BEFORE the limiter is asked. With the read in between, every guess in a
+        // burst passed the check before the first failure was counted — measured: 100 wrong PINs
+        // sent at once were all tried and the right one then let in. Check, verify and record now
+        // run with no await between them, so the limiter sees each failure before the next guess.
+        const body = await readBody(req);
         const wait = loginLimiter.retryAfterMs(req);
         if (wait > 0) return sendJson(res, 429, { error: `Too many attempts. Try again in ${Math.ceil(wait / 1000)}s.` });
-        const body = await readBody(req);
         const pin = String(body.pin ?? '');
         if (store.db.volunteerAuth && verifyPassword(pin, store.db.volunteerAuth)) {
           loginLimiter.succeed(req);
@@ -167,6 +172,10 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenSta
       // ---- Everything below needs the volunteer session + enabled ---------
       if (!enabled()) return sendJson(res, 403, { error: 'The volunteer page is turned off.' });
       if (!authed(req)) return sendJson(res, 401, { error: 'Please enter the PIN.' });
+      // Same rule as the admin panel: a change sent from another site's page is refused (httpio).
+      if (method !== 'GET' && method !== 'HEAD' && fromAnotherSite(req)) {
+        return sendJson(res, 403, { error: 'That request came from another site, so it was refused.' });
+      }
 
       if (pathname === '/api/volunteer/tvs' && method === 'GET') {
         const statuses = orchestrator.getStatuses();
@@ -227,6 +236,13 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenSta
         return sendJson(res, 200, { reports, timetables });
       }
       if (pathname === '/api/volunteer/reports' && method === 'POST') {
+        // A ceiling, checked before the upload is read. Each report carries up to four photos, and
+        // every report added or removed redraws EVERY report's card on the thread that also serves
+        // the panel and feeds the screens — so an unbounded list was a way to freeze the server and
+        // fill its disk from a PIN. Twenty cars at once is far past any real car park.
+        if ((store.db.reports ?? []).length >= MAX_REPORTS) {
+          return sendJson(res, 400, { error: `There are already ${MAX_REPORTS} reports on the screens. Remove one that has been dealt with first.` });
+        }
         const body = await readBody(req, 8_000_000); // room for a client-resized photo
         const plate = str(body.plate, 15);
         const description = str(body.description, 200);

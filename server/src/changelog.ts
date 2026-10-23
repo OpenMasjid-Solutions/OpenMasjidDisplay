@@ -8,8 +8,9 @@
  * be said in the panel. CHANGELOG.md is copied into the image, so this works with no
  * internet.
  *
- * The parsing lives HERE, on the server, rather than in the web bundle: this app's test
- * runner only covers server/, and a changelog parser is not hypothetical code to get wrong
+ * The parsing lives HERE, on the server, rather than in the web bundle: its tests parse the real
+ * CHANGELOG.md, which only the server's test run reads from disk, and a changelog parser is not
+ * hypothetical code to get wrong
  * — OpenMasjid Students shipped a "What's new" that rendered only bullet lines, so every
  * plain paragraph in its notes was silently dropped (fixed in its v0.45.1). The endpoint
  * therefore returns structured releases and the client only formats them.

@@ -10,7 +10,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toForm } from './Timetables';
+import { toForm, followSchedule } from './Timetables';
 import type { AppState, Timetable } from '../types';
 
 /** Dates relative to the real today, so the test means the same thing whenever it runs. */
@@ -48,4 +48,18 @@ test('a change that has not happened yet is not shown', () => {
 test('only fixed times: an offset rule is still an offset', () => {
   const f = toForm(timetable([{ from: day(-1), asr: '17:00' }]), state);
   assert.deepEqual(f.iqamah.asr, { mode: 'offset', offset: 10 });
+});
+
+test("saving the schedule moves a fixed time that was showing the schedule's answer", () => {
+  // Fajr fixed at 06:00, a change in force has it at 06:30. Edit that change to 06:45, or remove
+  // it: the list has to follow, or the next "Save changes" writes 06:30 back over it.
+  const tt = timetable([{ from: day(-3), fajr: '06:30' }]);
+  const shown = toForm(tt, state).iqamah;
+  assert.equal(shown.fajr.fixed, '06:30');
+  const edited = followSchedule(shown, tt, tt.iqamahSchedule!, [{ from: day(-3), fajr: '06:45' }]);
+  assert.equal(edited.fajr.fixed, '06:45', 'the change was edited');
+  const removed = followSchedule(shown, tt, tt.iqamahSchedule!, []);
+  assert.equal(removed.fajr.fixed, '06:00', 'the change was removed: back to the time of its own');
+  const typed = followSchedule({ ...shown, fajr: { mode: 'fixed', fixed: '07:10' } }, tt, tt.iqamahSchedule!, []);
+  assert.equal(typed.fajr.fixed, '07:10', 'a time the admin typed over is theirs');
 });

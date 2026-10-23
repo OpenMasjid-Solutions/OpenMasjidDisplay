@@ -6,7 +6,7 @@
  * what each one shows. Same liquid-glass look as the dashboard.
  */
 import { useEffect, useState } from 'react';
-import { volApi, type VolunteerData, type VolunteerReport } from './api';
+import { volApi, setUnauthHandler, type VolunteerData, type VolunteerReport } from './api';
 import type { ContentRef } from './types';
 import {
   ToastProvider,
@@ -43,6 +43,9 @@ function VolunteerRoot() {
 
   useEffect(() => {
     void refreshSession();
+    // A volunteer session lasts twelve hours. Once it lapses every tap answered "Please sign in."
+    // until someone thought to reload the page; a 401 now goes straight back to the PIN.
+    setUnauthHandler(() => setPhase('pin'));
   }, []);
 
   return (
@@ -352,7 +355,7 @@ function VolReport() {
           {photos.length < MAX_PHOTOS && (
             <label className="btn btn--ghost" style={{ cursor: 'pointer' }}>
               <IconCamera size={16} /> Add photo{photos.length ? 's' : ''}
-              <input type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => { void onPhotos(e.target.files); e.target.value = ''; }} />
+              <input type="file" accept="image/*" capture="environment" multiple className="file-pick" onChange={(e) => { void onPhotos(e.target.files); e.target.value = ''; }} />
             </label>
           )}
         </div>

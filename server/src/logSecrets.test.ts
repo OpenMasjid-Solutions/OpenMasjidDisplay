@@ -24,6 +24,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathForLog } from './httpio';
 
 const SRC = path.join(__dirname);
 
@@ -111,4 +112,15 @@ test('the check can actually see a violation', () => {
     return SECRET.test(`${interpolated} ${unquoted}`);
   });
   assert.equal(flagged, false, 'a sentence that merely mentions a secret must not be flagged');
+});
+
+test("a request path is logged without the screen's or device's token in it", () => {
+  const T = 'Abcdefghijklmnop_1234';
+  assert.equal(pathForLog(`/pi/${T}/seen`), '/pi/<token>/seen');
+  assert.equal(pathForLog(`/display/s/${T}/hls/index.m3u8`), '/display/s/<token>/hls/index.m3u8');
+  assert.equal(pathForLog(`/s/${T}`), '/s/<token>');
+  assert.equal(pathForLog('/api/pi/devices'), '/api/pi/devices', 'an ordinary path is untouched');
+  // And the catch-all in api.ts is what uses it.
+  const api = fs.readFileSync(path.join(SRC, 'api.ts'), 'utf8');
+  assert.match(api, /log\.error\(`\$\{method\} \$\{pathForLog\(pathname\)\}`, err\)/);
 });

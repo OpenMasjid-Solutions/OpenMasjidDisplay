@@ -118,7 +118,21 @@ ENV PORT=8080 \
     # camera in a prayer hall is not worth the CPU on a Raspberry Pi.
     MTX_HLSVARIANT=fmp4 \
     MTX_WEBRTC=no \
-    MTX_SRT=no
+    MTX_SRT=no \
+    # PUBLISH from loopback only. MediaMTX's stock config lets anyone publish to any path and lets
+    # a new publisher take over an existing one, and 8554 is open to the LAN for the screens to
+    # read — so anyone on the network who learnt a timetable's id (the public widget URL carries
+    # it) could push their own video to every screen showing that timetable. Everything that
+    # legitimately publishes is this container's own ffmpeg on 127.0.0.1; cameras and HDMI boxes
+    # are PULLED. These rewrite the stock users in place: the anonymous user (0) keeps read and
+    # playback (its third slot, which was publish, repeats playback), and publish joins the
+    # loopback-only user (1) beside api/metrics/pprof. Verified against 1.19.1: a publish from
+    # another host gets 401, a read from another host still plays. Re-check after a MediaMTX bump —
+    # these are positions in its default list, not names.
+    MTX_AUTHINTERNALUSERS_0_PERMISSIONS_0_ACTION=read \
+    MTX_AUTHINTERNALUSERS_0_PERMISSIONS_1_ACTION=playback \
+    MTX_AUTHINTERNALUSERS_0_PERMISSIONS_2_ACTION=playback \
+    MTX_AUTHINTERNALUSERS_1_PERMISSIONS_3_ACTION=publish
 EXPOSE 8080 8081 8554
 VOLUME ["/data"]
 

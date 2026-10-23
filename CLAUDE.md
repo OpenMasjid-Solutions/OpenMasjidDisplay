@@ -196,13 +196,21 @@ Only when Hasan has said it. In order:
    tag that does not exist, which silently creates one on the default branch instead.
 6. Propose the catalog change in **OpenMasjidAPPS** — §0c below, which is a PR against its `dev`,
    never a push to its `main`.
-7. **Verify it actually shipped.** Both checks, every time — they fail in different ways:
+7. **Verify it actually shipped.** All three checks, every time — they fail in different ways:
 
    ```sh
    gh release view v<version>                                   # notes are live, not a draft
+   gh release view v<version> --json assets --jq '.assets[].name'
+     # must list openmasjid-screen-v<version>.tar.gz and SHA256SUMS — `release-bundle.yml`
+     # attaches them on `release: published`, and every standalone Pi installs and updates from them
    curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidAPPS/main/catalog.json \
      | grep '"display"' -A 30 | grep '"version"'                # what STABLE actually serves
    ```
+
+   The bundle check exists because 0.71.0 first went out without one: the job stopped before
+   building anything, and the standalone install ended with "This release may not carry one yet".
+   If it is missing, re-run *Release bundle* by hand with the tag — it builds from the TAG's tree
+   whichever branch it is started from.
 
    **A merged PR against the catalog's `dev` is not shipped.** `main` moves only when a catalog
    maintainer cuts a release (§0c), so if that second command still reports the old version, your
@@ -371,10 +379,13 @@ answers that.
 
 **OpenMasjidDisplay** is an app for
 [OpenMasjidOS](https://github.com/OpenMasjid-Solutions/OpenMasjidOS) that drives the screens in a
-masjid: prayer timetables, camera feeds, and HDMI output over **RTSP**. It runs as **one Docker
-container** (a `server/` + `web/` split), is configured via the platform, looks and feels like the
-rest of the OpenMasjid family, and is the **reference implementation** that other OpenMasjid apps
-(e.g. OpenMasjidDonations) copy their structure from.
+masjid: prayer timetables, camera feeds, and HDMI output — to decoder boxes over **RTSP**, to a
+browser on any television, and to **Raspberry Pi** screens that draw the timetable and open cameras
+themselves, either managed by a display server or running entirely on their own. The server runs
+as **one Docker container** (a `server/` + `web/` split); the Pi agent runs on the Pi without
+Docker. It is configured via the platform, looks and feels like the rest of the OpenMasjid family,
+and is the **reference implementation** that other OpenMasjid apps (e.g. OpenMasjidDonations) copy
+their structure from.
 
 ---
 
@@ -410,6 +421,11 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full contribution + signing flo
   RTSP/stream handling with a scheme allowlist, least-privilege posture.
 - **`web/`** — React + Vite + TypeScript, styled with the OpenMasjidOS design tokens (dark default,
   WCAG AA, RTL-ready, honors `prefers-reduced-motion`).
+- **`server/src/pi/`** — the Raspberry Pi agent. `npm run build:agent` bundles it into
+  `server/assets/pi/agent.js` (git-ignored), which the server serves at `/pi/agent.js`. The Pi's
+  installer is `server/assets/pi/install.sh`, with the root-owned helpers beside it; `pi.sh` at the
+  repo root is the bootstrap for a standalone screen, fetching the release bundle from GitHub.
+  `docs/PI_ADOPTION.md` and `docs/PI_STANDALONE_DESIGN.md` hold the boundaries.
 - One-container `Dockerfile`; `docker-compose.yml`, `manifest.yaml`, `icon.png`, and `screenshots/`
   follow the OpenMasjidAPPS catalog contract (see
   [`OpenMasjidAPPS/docs/BUILDING_AN_APP.md`](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS)).
@@ -420,14 +436,20 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full contribution + signing flo
 
   ```sh
   cd server && npm run build && npm run typecheck:tests && npm test
-  cd web    && npm run build && npm audit --audit-level=high
+  cd web    && npm run build && npm run typecheck:tests && npm test && npm audit --audit-level=high
+  sh server/assets/pi/update.test.sh   # from the repo root: the Pi self-updater (fails on Windows' MSYS curl; CI is Linux)
   ```
 
   `server/tsconfig.json` **excludes `**/*.test.ts`** so tests never reach `dist/` or the image,
   which means `npm run build` typechecks none of them — and the runner (tsx) strips types without
   checking. `npm run typecheck:tests` (`tsconfig.check.json`) is the only thing that compiles
   them; it caught a live assertion reading a property that isn't on the type the day it was
-  added. `web`'s build is `tsc --noEmit && vite build`, so it typechecks as it bundles.
+  added. `web`'s build is `tsc --noEmit && vite build`, so it typechecks as it bundles — but not
+  its tests, which `web/tsconfig.json` excludes; `web`'s own `typecheck:tests` covers them, and
+  `npm test` runs them under node:test (+ jsdom where a test needs a DOM).
+
+  A new **server** test file must be added to `server/package.json`'s `test` script —
+  `testFileCoverage.test.ts` fails the build otherwise. Web tests are picked up by a glob.
 
 When this file and the actual code disagree on a mechanism, **read the code and follow it**, then fix
 this file.
@@ -476,6 +498,29 @@ this file.
     cookie could be replayed at our API by any of them. Sign-out under the prefix clears both.
   - **The prefix is a plain `/[a-z0-9-]{1,80}` segment** wherever it reaches a page, a cookie or a
     URL — checked again at each, so no request text is ever written into HTML.
+
+  Know the limit of this, too: through the tunnel every OpenMasjid app shares ONE origin, so
+  `Path=/<basePath>` keeps our cookie out of the other apps' SERVERS but not out of script running on
+  their pages — that script can make same-origin requests that carry it. Only an origin per app
+  (a subdomain) closes that, and it is the platform's to do.
+- **A change from another site is refused, and so is the live socket** (`httpio.ts`
+  `fromAnotherSite`, pinned in `remoteAccess.test.ts`). On the LAN every other app on the same
+  OpenMasjidOS box is the same *site* on another port, so `SameSite=Lax` still sends our cookie with
+  its requests. Authenticated non-GET requests and the `/ws` and terminal-viewer upgrades are refused
+  when the browser labels them `same-site` or `cross-site`; no header (the platform, a device) is left
+  to its own authentication. Don't widen it to refuse a missing header — that is every non-browser.
+- **Sign-in limiters read the body FIRST, then check, verify and record with no `await` between**
+  (`/api/login`, `/api/volunteer/login`, the Pi's `/api/login` and `/api/setup`). With the read in the
+  middle, a burst of guesses all passed the check before the first failure counted — measured, a
+  hundred wrong volunteer PINs at once were all tried. The Pi's setup code also has a cap across ALL
+  addresses (20 wrong per 10 minutes), because one machine can mint IPv6 addresses without end.
+- **A waiting screen's pairing code is never shown in the dashboard.** Typing it off the television
+  is the proof that whoever adds a screen can see it; `/api/pi/devices` omits it.
+- **MediaMTX takes PUBLISH from loopback only** (the `MTX_AUTHINTERNALUSERS_*` lines in the
+  Dockerfile). Its stock config lets anyone publish and take over a path, and 8554 is open to the LAN
+  — anyone who learnt a timetable's id could replace every screen's picture. Those overrides are
+  positions in MediaMTX's default list, so `mediamtxConfig.test.ts` fails on any MediaMTX version
+  bump until somebody re-verifies: publish from another host → 401, a read from one → plays.
 - **There are exactly TWO inbound Fabric routes, and they are different trust boundaries** sharing
   the `/fabric/` prefix. That prefix is not a permission. Both are authenticated the same single
   way — by the caller presenting **our own** `OPENMASJID_APP_SECRET` back to us, constant-time

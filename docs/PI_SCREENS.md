@@ -66,7 +66,7 @@ schedule and the settings — kilobytes — and the pictures never leave the mas
 
 ## Setting one up
 
-1. In the dashboard, go to **Screens → Raspberry Pi screens** and copy the command shown. It
+1. In the dashboard, go to **Screens → Add screen → Raspberry Pi** and copy the command shown. It
    already contains this server's address — there is nothing to fill in.
 2. Run it on the Pi:
 
@@ -76,7 +76,7 @@ schedule and the settings — kilobytes — and the pictures never leave the mas
 
 3. The television shows a **setup code**, along with the Pi's own address and whether it can reach
    the server.
-4. Type that code into **Screens → Raspberry Pi screens**, give the screen a name, and it starts
+4. Type that code into **Screens → Add screen → Raspberry Pi**, give the screen a name, and it starts
    showing within a few seconds.
 
 ### If your server is on HTTPS with its own certificate
@@ -137,7 +137,9 @@ and its adoption, and will **not** send you back to the television for a new cod
 | `openmasjid-screen-control.service` | the root dispatcher that acts on them (a **closed set** of verbs) |
 
 Packages installed: `nodejs`, `npm`, `ca-certificates`, `curl`, `openssl`, `fonts-dejavu-core`,
-`fbset`, and `ffmpeg` (installed separately because on a slow board it takes minutes on its own).
+`fbset`, and `ffmpeg` (installed separately because on a slow board it takes minutes on its own),
+plus `fonts-hosny-amiri` and `fonts-noto-core` for Arabic, each best-effort — a package name that
+changed between Raspberry Pi OS releases is a warning, not a failed install.
 
 The agent's account holds three supplementary groups: `video`, `render` and `tty`.
 
@@ -155,9 +157,16 @@ The agent's account holds three supplementary groups: `video`, `render` and `tty
 ## How it behaves
 
 **It never just goes black.** A black television is indistinguishable from a dead Pi, a dead
-television and an unplugged HDMI cable. Waiting to be set up, it shows the code. Switched off, it
-says so. Unable to reach the server, it says which server. Waiting on a camera, it names the
+television and an unplugged HDMI cable. Waiting to be set up, it shows the code — and, if it
+cannot reach the server, which server. Switched off, it says so. Waiting on a camera, it names the
 camera and the last error.
+
+**Losing the server does not blank the wall.** Once a screen is set up, its times are worked out
+on the Pi, so after about 90 seconds without the server it keeps drawing the timetable and adds a
+small **Server connection lost** badge in the top-right corner. (It used to replace the whole
+picture with a full-screen message, which hid times that were still right.) What an outage costs
+is that a change made in the dashboard may not have arrived yet. A camera the Pi is playing
+directly carries no badge — there is nothing of the agent's drawn over it.
 
 **It uses the masjid's clock, not its own.** A Pi has no battery-backed clock, so after a power cut
 its idea of the time is whenever the memory card was last written. Prayer times are computed
@@ -194,7 +203,7 @@ Drawing takes long enough that this screen updates every 2.5s rather than every 
 Setting this timetable to 720p would roughly halve the work.
 ```
 
-**If a Pi 3 feels sluggish, set that timetable to 720p.** On a television across a hall the
+**If a screen feels sluggish, set that timetable to 720p.** On a television across a hall the
 difference is close to invisible, and it roughly halves the work.
 
 **H.265 goes to the hardware decoder; H.264 is decoded in software, on purpose.** That is the
@@ -289,7 +298,7 @@ ffmpeg -hide_banner -devices | grep fbdev
 numbered and announces itself first. If it does stall, the usual cause is that the Pi has just
 booted and is still running its own `unattended-upgrades`, which holds the package lock; the
 installer now names the process holding it and waits, rather than blocking silently. Installing
-ffmpeg is genuinely the slow part on a Pi 3 — several hundred megabytes — and is now its own step
+ffmpeg is genuinely the slow part on a Pi — several hundred megabytes — and is now its own step
 so you can see it happening. If it fails, the timetable still works and you can re-run the
 installer later to add cameras.
 
@@ -300,7 +309,8 @@ certificate* above. Re-running the installer is the fix — older versions gave 
 log says `fonts ready: N face(s)` when that has happened. If it has not, the Pi could not reach
 the server for them.
 
-**The clock updates slowly.** Expected on a Pi 3 at 1080p — see *Performance*.
+**The clock updates slowly.** Expected on a Pi 3 (one set up before the board check) at 1080p — see
+*Performance*.
 
 **Start again.** Press **Forget** in the dashboard: the Pi goes back to showing a fresh setup code
 without being reinstalled, and the screen it was driving is kept.

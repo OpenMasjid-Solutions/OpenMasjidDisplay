@@ -41,7 +41,7 @@ import { makeLog } from './logger';
 import { sendJson } from './httpio';
 import type { Store } from './store';
 import type { Lang, Timetable } from './types';
-import { buildModel, hijri, labels } from './render/svg';
+import { buildModel, hijri, labels, CLOCK_EPS } from './render/svg';
 import { zonedNoon } from './prayer/engine';
 import { sniffImageMime, uploadFilePath } from './render/background';
 import { checkBrokerEnvelope } from './fabricInbound';
@@ -225,7 +225,8 @@ const pad2 = (n: number) => String(n).padStart(2, '0');
  */
 export function hhmm(hours: number | null | undefined): string | null {
   if (hours == null || !Number.isFinite(hours)) return null;
-  let total = Math.floor(hours * 60);
+  // The screen's epsilon (render/svg.ts): without it a fixed 16:20 reached the phone as 16:19.
+  let total = Math.floor(hours * 60 + CLOCK_EPS);
   total = ((total % 1440) + 1440) % 1440;
   return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
 }

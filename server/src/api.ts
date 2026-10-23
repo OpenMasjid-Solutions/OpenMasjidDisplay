@@ -83,9 +83,9 @@ import {
 } from './webScreen';
 import { clockSuspect } from './render/renderer';
 import { fontOptions } from './render/fonts';
-import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE, pageUnderBase } from './httpio';
+import { SECURITY_HEADERS, UPLOAD_HEADERS, sendJson, readJsonBody, BODY_TOO_LARGE, pageUnderBase, fromAnotherSite, pathForLog } from './httpio';
 import { rawPath } from './fabricInbound';
-import { widgetPayload } from './render/svg';
+import { widgetPayload, buildModel } from './render/svg';
 import { renderWidgetHtml } from './widget';
 import { LoginLimiter, RequestLimiter } from './rateLimit';
 import { parseChangelog, readChangelog } from './changelog';
@@ -868,6 +868,13 @@ export function createApi(deps: Deps) {
             return;
           }
           markWebScreenSeen(tv.id, Date.now());
+          // A viewer that goes away mid-segment — hls.js abandons fragments routinely — takes the
+          // upstream request with it, and no transfer outlives a minute. Waiting on 'drain' alone
+          // never returned once the socket had gone, and the fetch had no limit either, so every
+          // abandoned fragment left a request and its connection to MediaMTX open for good.
+          const ctl = new AbortController();
+          const limit = setTimeout(() => ctl.abort(), 60_000);
+          res.once('close', () => ctl.abort());
           try {
             // NOT redirect:'error' here, which is the rule for calls to the PLATFORM — an
             // untrusted remote host that could bounce us at some other internal address.
@@ -875,7 +882,7 @@ export function createApi(deps: Deps) {
             // request with a 302 to ?cookieCheck=1 (its session probe). Refusing that was why
             // every camera reported "unavailable". So: follow exactly one hop, and only if it
             // stays on the same loopback origin — which keeps the SSRF property that mattered.
-            let upstream = await fetch(target, { redirect: 'manual' });
+            let upstream = await fetch(target, { redirect: 'manual', signal: ctl.signal });
             if (upstream.status >= 300 && upstream.status < 400) {
               const loc = upstream.headers.get('location') ?? '';
               const next = new URL(loc, target);
@@ -884,7 +891,7 @@ export function createApi(deps: Deps) {
                 res.end('Stream unavailable.');
                 return;
               }
-              upstream = await fetch(next, { redirect: 'error' });
+              upstream = await fetch(next, { redirect: 'error', signal: ctl.signal });
             }
             if (!upstream.ok || !upstream.body) {
               res.writeHead(upstream.status === 404 ? 404 : 502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
@@ -899,18 +906,36 @@ export function createApi(deps: Deps) {
               'cache-control': /\.m3u8$/.test(sub) ? 'no-store' : 'public, max-age=60',
             });
             const reader = upstream.body.getReader();
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (!res.write(Buffer.from(value))) await new Promise((r) => res.once('drain', r));
+            try {
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (!res.write(Buffer.from(value))) {
+                  // Whichever comes first, and neither listener left behind for the next wait.
+                  await new Promise<void>((r) => {
+                    const on = () => {
+                      res.off('drain', on);
+                      res.off('close', on);
+                      r();
+                    };
+                    res.on('drain', on);
+                    res.on('close', on);
+                  });
+                  if (res.destroyed) break;
+                }
+              }
+            } finally {
+              void reader.cancel().catch(() => {});
             }
-            res.end();
+            if (!res.destroyed) res.end();
           } catch (err) {
             log.debug(`hls proxy failed: ${err instanceof Error ? err.message : err}`);
             if (!res.headersSent) {
               res.writeHead(502, { ...SECURITY_HEADERS, 'content-type': 'text/plain' });
               res.end('Stream unavailable.');
-            } else res.end();
+            } else if (!res.destroyed) res.end();
+          } finally {
+            clearTimeout(limit);
           }
           return;
         }
@@ -1090,9 +1115,13 @@ export function createApi(deps: Deps) {
       }
       if (pathname === '/api/login' && method === 'POST') {
         if (!passwordSignInHere()) return;
+        // The body is read BEFORE the limiter is asked. With the read in between, every guess in a
+        // burst passed the check before the first failure was counted — measured: 100 wrong PINs
+        // sent at once were all tried and the right one then let in. Check, verify and record now
+        // run with no await between them, so the limiter sees each failure before the next guess.
+        const body = await readBody(req);
         const wait = loginLimiter.retryAfterMs(req);
         if (wait > 0) return sendJson(res, 429, { error: `Too many attempts. Try again in ${Math.ceil(wait / 1000)}s.` });
-        const body = await readBody(req);
         if (!store.db.admin) return sendJson(res, 400, { error: 'This panel has not been set up yet.' });
         if (verifyPassword(String(body.password ?? ''), store.db.admin)) {
           loginLimiter.succeed(req);
@@ -1123,6 +1152,10 @@ export function createApi(deps: Deps) {
 
       // ---- Everything else requires auth ----------------------------------
       if (!authed(req)) return sendJson(res, 401, { error: 'Please sign in.' });
+      // A change sent by a page of another app on this box, carrying the admin's cookie. See httpio.
+      if (method !== 'GET' && method !== 'HEAD' && fromAnotherSite(req)) {
+        return sendJson(res, 403, { error: 'That request came from another site, so it was refused.' });
+      }
 
       if (pathname === '/api/state' && method === 'GET') {
         return sendJson(res, 200, statePayload(store, orchestrator));
@@ -1392,7 +1425,7 @@ export function createApi(deps: Deps) {
           const mode = url.searchParams.get('mode');
           const tt = byId(store.db.timetables, id);
           if (!tt) return sendJson(res, 404, { error: 'Timetable not found.' });
-          const csv = mode === 'template' ? templateCsv(tt) : toCsv(tt.iqamahYear);
+          const csv = mode === 'template' ? templateCsv(tt, buildModel) : toCsv(tt.iqamahYear);
           const fname = mode === 'template' ? 'iqamah-template.csv' : 'iqamah-times.csv';
           res.writeHead(200, {
             ...SECURITY_HEADERS,
@@ -1804,7 +1837,10 @@ export function createApi(deps: Deps) {
         return sendJson(res, 200, {
           devices: (store.db.piDevices ?? []).map((d) => ({
             id: d.id,
-            code: d.token ? '' : d.code, // a spent code is never shown again
+            // No code, ever. Typing the code from the television is the proof that whoever adds a
+            // screen can see it; the dashboard printing it beside the box it goes into made that
+            // proof worth nothing — anything that reached /pi/enrol could put a code and a name of
+            // its choosing in that list, and be adopted by somebody who never looked at a screen.
             adopted: !!d.token,
             hostname: d.hostname,
             ip: d.ip,
@@ -2276,7 +2312,7 @@ export function createApi(deps: Deps) {
 
       return sendJson(res, 404, { error: 'Not found.' });
     } catch (err) {
-      log.error(`${method} ${pathname}`, err);
+      log.error(`${method} ${pathForLog(pathname)}`, err);
       if (!res.headersSent) sendJson(res, 400, { error: 'Something went wrong with that request.' });
     }
   };

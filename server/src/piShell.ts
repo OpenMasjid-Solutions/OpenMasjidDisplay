@@ -32,9 +32,11 @@
  *    is refused, so a replayed secret buys nothing.
  *  - **Bounded three ways**: it must be claimed within a minute, dies after ten idle minutes, and
  *    cannot outlive an hour however busy it is.
- *  - **Unprivileged.** The device runs the shell as its own service account, exactly as the one-shot
- *    console does. The root control spool is not involved and must never be: its verb set is what
- *    makes root's side of a screen simple enough to reason about.
+ *  - **Root, deliberately** (CLAUDE.md §4). The device asks for it through the control spool's
+ *    `shell-session` verb, and root starts the shell in a transient unit. That verb carries a session
+ *    id, a one-time secret and a terminal size — never command text — which is what keeps the rest
+ *    of the closed verb set worth anything. It means a stolen dashboard session is root on every
+ *    screen the masjid owns, so everything above is load-bearing.
  *
  * Nothing here logs a byte of the session. Not the keystrokes, not the output, not a truncated
  * sample "for debugging" — a terminal transcript is the one thing in this app most likely to

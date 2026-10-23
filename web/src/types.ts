@@ -223,8 +223,7 @@ export type TvKind = 'rtsp' | 'web' | 'pi';
 /** A Raspberry Pi running the display agent, as the dashboard sees it. */
 export interface PiDeviceInfo {
   id: string;
-  /** the pairing code shown on its screen; empty once adopted, because the code is spent */
-  code: string;
+  // No pairing code: the server never sends it. It is read off the television, which is the point.
   adopted: boolean;
   hostname: string;
   ip: string;

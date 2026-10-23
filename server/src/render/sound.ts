@@ -335,7 +335,12 @@ export class SoundTrack {
   private startWall = 0;
   /** samples written so far — this, divided by the rate, IS the stream's audio clock */
   private written = 0;
-  private queue: { sample: number; pcm: Buffer }[] = [];
+  /** where the last clip written starts and ends, in samples — see `playing` */
+  private clipStart = 0;
+  private clipEnd = 0;
+  /** Each entry's sound is resolved when it is WRITTEN, not when it was queued hours earlier: a
+   *  clip replaced in the morning used to go on playing the old one until the next day. */
+  private queue: { sample: number; at: number; pcm: () => Buffer }[] = [];
   private readonly queued = new Set<number>();
 
   /** Take over a freshly spawned ffmpeg's audio pipe. The sample clock restarts with it. */
@@ -344,20 +349,46 @@ export class SoundTrack {
     this.out = stream;
     this.startWall = now;
     this.written = 0;
+    this.clipStart = this.clipEnd = 0;
     this.queue = [];
     this.queued.clear();
   }
 
   detach(): void {
     this.out = null;
+    this.clipStart = this.clipEnd = 0;
     this.queue = [];
     this.queued.clear();
   }
 
+  /**
+   * Is a clip sounding at `now`? The caller holds back a respawn that can wait — a ticker change —
+   * until it is not: a respawn ends this ffmpeg, and with it the Adhan it was carrying. The ticker
+   * flips back from the red prohibited-time text a second after the Dhuhr Adhan, so that call was
+   * being cut off a second in, every day.
+   */
+  playing(now = Date.now()): boolean {
+    const at = ((now - this.startWall) / 1000) * SOUND_RATE;
+    return !!this.out && at >= this.clipStart && at < this.clipEnd;
+  }
+
+  /**
+   * Forget queued moments the timetable no longer has. Called with every scan's list: a moment is
+   * queued hours ahead, and one that was turned off, or an Iqamah that was moved, otherwise went on
+   * sounding at its old time for the rest of the day.
+   */
+  retain(moments: Set<number>): void {
+    this.queue = this.queue.filter((q) => {
+      if (moments.has(q.at)) return true;
+      this.queued.delete(q.at);
+      return false;
+    });
+  }
+
   /** Scheduled, in sample terms, for a wall-clock moment. Asking twice for the same moment is
    *  what the caller does every scan, so the second ask is ignored rather than stacked. */
-  playAt(at: number, pcm: Buffer): void {
-    if (!this.out || this.queued.has(at) || !pcm.length) return;
+  playAt(at: number, pcm: Buffer | (() => Buffer)): void {
+    if (!this.out || this.queued.has(at) || (typeof pcm !== 'function' && !pcm.length)) return;
     const sample = Math.round(((at - this.startWall) / 1000) * SOUND_RATE);
     /**
      * Its START is behind the audio already written, so it cannot be put where it belongs:
@@ -375,7 +406,7 @@ export class SoundTrack {
      */
     if (sample < this.written) return;
     this.queued.add(at);
-    this.queue.push({ sample, pcm });
+    this.queue.push({ sample, at, pcm: typeof pcm === 'function' ? pcm : () => pcm });
     this.queue.sort((a, b) => a.sample - b.sample);
   }
 
@@ -390,8 +421,11 @@ export class SoundTrack {
     while (this.written < want) {
       const q = this.queue[0];
       if (q && q.sample <= this.written) {
-        s.write(q.pcm);
-        this.written += q.pcm.length / 2;
+        const pcm = q.pcm();
+        s.write(pcm);
+        this.clipStart = this.written;
+        this.written += pcm.length / 2;
+        this.clipEnd = this.written;
         this.queue.shift();
         continue;
       }

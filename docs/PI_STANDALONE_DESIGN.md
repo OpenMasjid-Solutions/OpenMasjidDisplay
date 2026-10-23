@@ -3,9 +3,14 @@
 
 # Raspberry Pi screens: standalone, with optional adoption — design
 
-**Status: draft for review. Nothing in this document is built yet.** It is phase 0 of the work:
-the decisions, the routing check, and — most importantly — the four places where the brief and
-the code disagree. Those are at the top, because three of them change what can be built.
+**Status: decision record.** §0–§10 were written as phase 0, before anything was built: the
+decisions, the routing check, and — most importantly — the four places where the brief and the
+code disagreed. Those are at the top, because three of them changed what could be built. Since
+then standalone screens, the capability-gated panel and adoption have shipped (0.71.0; §11 and
+[PI_ADOPTION.md](PI_ADOPTION.md) say what was actually built — adoption went through
+`POST /api/pi/link` and the installer, and the `/adoption` pairing route planned in §0.2–§0.4 was
+never built). Dual-HDMI mirroring (§7) is still untested with two displays. The `file:line` references
+below point at the code as it was when they were written.
 
 This is a **pre-release (beta)** design. What is deferred is listed at the end.
 

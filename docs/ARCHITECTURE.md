@@ -22,7 +22,7 @@ All state is a single JSON document in the data volume (`/data/db.json`, written
 - **Timetable** — a full-screen prayer display: theme/colours, layout, orientation, quality, location,
   calculation method, Asr madhab, timezone, per-prayer Iqamah rules, Jumu'ah times, and the on-screen
   extras (ticker, announcement slideshow, salah hadith, prohibited-time notice, Iqamah countdown,
-  Iqamah-change reminder, Adhan offsets and pop-up, widget opt-in).
+  Iqamah-change reminder, Adhan offsets and pop-up, Adhan/Iqamah sound, widget opt-in).
 - **Source** — a camera or HDMI encoder: stream URL, and a mode (`direct` relay or `normalize` re-encode).
 - **Screen (TV)** — a physical display with a stable id, a default content, and an optional manual override.
 - **Schedule rule** — a weekly time window that points target screens at some content, with a priority.
@@ -39,6 +39,7 @@ All state is a single JSON document in the data volume (`/data/db.json`, written
 
 Uploaded images (backgrounds, logos, announcement slides, volunteer report photos) are files under
 `/data/uploads`, referenced from the document by filename and inlined into the rendered SVG as `data:` URIs.
+Uploaded Adhan/Iqamah sounds are decoded once on upload and kept as raw audio under `/data/sounds`.
 
 ## What each screen shows (content resolution)
 
@@ -70,8 +71,8 @@ so only `8554/tcp` is published.
 
 Per active timetable, one pipeline runs (`render/renderer.ts`):
 
-1. Once per second, the current state is built into an **SVG** (`render/svg.ts`) — a liquid-glass design
-   honouring the timetable's layout preset (centered / clock-top / split), element toggles, theme/accent,
+1. Once per second, the current state is built into an **SVG** (`render/svg.ts`) — the liquid-glass `modern`
+   design or the flat `simple` one, per the timetable's layout — honouring element toggles, theme/accent,
    and an optional custom background (frosted and inlined as a data: URI by `render/background.ts`).
 2. resvg (`@resvg/resvg-js`, bundled native binary, fonts baked into the image) rasterises it to raw RGBA
    **on a worker thread** (`render/renderWorker.ts`, managed by `render/renderPool.ts`). resvg is synchronous
@@ -91,7 +92,10 @@ Per active timetable, one pipeline runs (`render/renderer.ts`):
    content never respawns ffmpeg.
 3. The RGBA frame is piped to **ffmpeg**, which encodes H.264: `libx264 -preset veryfast -tune zerolatency
    -profile baseline`, one keyframe per second, in-band SPS/PPS (`repeat-headers=1`), CBR at the
-   timetable's configured bitrate cap, `yuv420p`, no audio — then publishes to MediaMTX over RTSP/TCP.
+   timetable's configured bitrate cap, `yuv420p` — then publishes to MediaMTX over RTSP/TCP. There is no
+   audio track unless the timetable's *Play at Adhan* / *Play at Iqamah* is on; then the stream carries a
+   mono AAC track of silence with that moment's sound mixed in (`render/sound.ts` — the uploaded clip for
+   that slot, or the built-in single long beep).
    Output is **8 fps** normally (`STATIC_FPS` — a still frame needs no more, and the 15 it used to be
    was a plausible ratio nobody had measured); **with a scrolling ticker it is 20 fps**
    (`TICKER_FPS`) and the pipeline repeats the last
@@ -235,12 +239,17 @@ behaves exactly as a standalone install. Full contract in [`FABRIC.md`](FABRIC.m
   drafts that expire, and nothing written to the timetable until the admin sends `save`.
 - **WhatsApp** (`whatsapp: true`) — the app posts the Iqāmah-change notice to a group the admin approved,
   via `GET/POST <base>/api/fabric/whatsapp` and `GET .../groups` (`fabric.ts`). The **platform owns the
-  sending**: one paced queue shared by every installed app, because ban risk attaches to the masjid's
-  number rather than to any one app. The app never learns the gateway address, its key, or which number
-  is linked, and a post returns `202 {queued:true}` — accepted for later delivery, never a delivery
-  receipt. `whatsappAnnounce.ts` decides *whether* and *what*: it re-checks the lead-time window every
+  sending**: one queue shared by every installed app. The app never learns the gateway address, its key,
+  or which number is linked, and a post returns `202 {queued:true}` with an `id` — accepted for later
+  delivery, never a delivery receipt. On OpenMasjidOS 0.51.1+ the app asks `GET .../status/<id>` what
+  became of it (`queued`/`sent`/`failed`/`expired`; even `sent` only means handed to WhatsApp), for up
+  to 7 days, because the platform holds messages while the WhatsApp link is down. **Pacing is this
+  app's job**: 0.51.1 removed the platform's quiet hours, caps and cooldowns, and ban risk attaches to
+  the masjid's number, so `whatsappAnnounce.ts` keeps it structural — one approved group, one message
+  per change, one post in flight. It decides *whether* and *what*: it re-checks the lead-time window every
   minute (so a change added on the day still goes out), announces each change exactly once by reading
-  the dedupe key back out of the persisted `whatsappLog`, and gives up after 5 failures. It posts the
+  the dedupe key back out of the persisted `whatsappLog`, and gives up after 5 failures, 30 minutes
+  apart. It posts the
   **poster PNG** when the platform advertises `media` (checked *before* rendering, which is not free on
   a Pi) with a short caption naming what moved; every media failure falls back to the **full** text
   notice, never the caption alone. Both are built from the poster's own `PosterModel`, and the renderer
@@ -254,7 +263,9 @@ is connected and showing the stream (`orchestrator.ts` sets `TvStatus.streamRead
 stops pulling for more than ~90s (debounced so brief content switches / power-cycles don't flap), the
 orchestrator relays an **offline** alert through the Fabric, and a **back-online** one when it resumes. A
 screen that is *lit up but stale* raises the same alert, worded for that fault — wrong times on the wall are
-worse than a blank screen. Screens intentionally set to **Off** are not monitored. The panel shows the badge
+worse than a blank screen. A screen that flaps gets at most one *down* alert per 30 minutes
+(`ALERT_MIN_GAP_MS`) — delayed, never dropped — and every down alert still gets its matching back-online
+one. Screens intentionally set to **Off** are not monitored. The panel shows the badge
 from the same signal. Alerts never affect streaming.
 
 ## Browser screens (beta)

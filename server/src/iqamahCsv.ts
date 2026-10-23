@@ -15,7 +15,7 @@
  * normalised to "HH:MM" 24h.
  */
 import type { IqamahYear, Timetable } from './types';
-import { prayerTimes, iqamahHours, timezoneOffsetHours, localParts } from './prayer/engine';
+import { localParts, zonedNoon } from './prayer/engine';
 
 type PrayerCol = 'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha' | 'jumuah';
 // Columns actually handled in CSV / per-day overrides. Maghrib is excluded on purpose — it's
@@ -111,11 +111,12 @@ export function parseIqamahCsv(text: string): ParsedCsv {
   }
 
   let rows = 0;
+  let badDate = '';
   for (let i = 1; i < lines.length; i++) {
     const cells = splitLine(lines[i]);
     const key = parseMonthDay(cells[dateCol] ?? '');
     if (!key) {
-      if (errors.length < 10) errors.push(`Line ${i + 1}: couldn't read the date "${cells[dateCol] ?? ''}".`);
+      badDate ||= `Line ${i + 1}: couldn't read the date "${cells[dateCol] ?? ''}".`;
       continue;
     }
     const entry: Partial<Record<PrayerCol, string>> = {};
@@ -132,6 +133,21 @@ export function parseIqamahCsv(text: string): ParsedCsv {
       data[key] = entry;
       rows++;
     }
+  }
+  /**
+   * One date that cannot be read and NOTHING is imported.
+   *
+   * It used to skip that row and keep the rest — which is exactly wrong for the commonest cause: a
+   * file written day-first. 13/03 cannot be a month, so it fails; 03/08 can, and was quietly stored
+   * as the 8th of March instead of the 3rd of August. Half a year at the wrong dates is worse than
+   * an import that says why it refused.
+   */
+  if (badDate) {
+    return {
+      data: {},
+      rows: 0,
+      errors: [`${badDate} Nothing was imported. Write dates as 2026-03-13, or with the month's name (13 Mar), so a day can't be read as a month.`],
+    };
   }
   return { data, rows, errors };
 }
@@ -175,26 +191,45 @@ export function toCsv(year: IqamahYear | undefined): string {
   return [head, ...lines].join('\n') + '\n';
 }
 
+/** Floored like the screen's clock (render/svg.ts `fmtClock`, its `CLOCK_EPS` included). It used to
+ *  ROUND, so hundreds of the template's times sat a minute off the board they were taken from. */
 function fmtHHMM(hours: number | null): string {
   if (hours == null || !Number.isFinite(hours)) return '';
-  let total = Math.round(hours * 60);
+  let total = Math.floor(hours * 60 + 1e-6);
   total = ((total % 1440) + 1440) % 1440;
   return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
 }
 
 const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; // leap-year Feb
 
-/** A full-year example/template CSV. When the timetable has a location, every row
- *  is pre-filled with the Iqamah times its rules currently produce — so it doubles
- *  as a ready-to-edit starting point the masjid can tweak and re-upload. */
-export function templateCsv(tt: Timetable): string {
+/** The slice of a render model the template reads. */
+type DayModel = { rows: { key: string; iqamah: number | null }[] };
+
+/**
+ * A full-year example/template CSV. When the timetable has a location, every row is pre-filled with
+ * the Iqamah times its rules give — so it doubles as a ready-to-edit starting point the masjid can
+ * tweak and re-upload.
+ *
+ * Each row is what the SCREEN shows from the rules on that date of THIS year: `buildModel`, the
+ * one implementation the screens, the print and the Companion feed share, with the per-day CSV and
+ * the scheduled changes taken out (they are what the template would replace). It used to compute
+ * its own times for 2024 at noon UTC, without the Adhan delays — so uploaded unchanged it moved
+ * Iqamah an hour around each daylight-saving change (2024's dates, not this year's), shifted a
+ * masjid east of UTC+12 onto the next day's times, and announced "changes" on WhatsApp that were
+ * only the template disagreeing with the rules. `buildModel` is passed in rather than imported:
+ * render/svg.ts already depends on this file, through iqamahSchedule.ts.
+ */
+export function templateCsv(tt: Timetable, buildModel: (tt: Timetable, now: Date) => DayModel, now = new Date()): string {
   // No Maghrib column: it's always the calculated sunset time + its Iqamah offset.
   const head = 'date,fajr,dhuhr,asr,isha,jumuah';
   const lines: string[] = [head];
   const hasLoc = tt.latitude != null && tt.longitude != null;
   const tz = tt.timezone || undefined;
-  const YEAR = 2024; // a leap year, so 02-29 exists
-  const method = tt.method === 'Custom' ? { label: 'Custom', fajr: tt.fajrAngle ?? 18, isha: tt.ishaAngle ?? 17 } : tt.method;
+  const year = localParts(now, tz).year;
+  // 02-29 still needs a row in a year without one; it is filled from the next year that has it.
+  let leap = year;
+  while (!(leap % 4 === 0 && (leap % 100 !== 0 || leap % 400 === 0))) leap++;
+  const rulesOnly: Timetable = { ...tt, iqamahYear: undefined, iqamahSchedule: undefined };
   for (let mo = 1; mo <= 12; mo++) {
     for (let da = 1; da <= DAYS_IN_MONTH[mo - 1]; da++) {
       const key = `${pad2(mo)}-${pad2(da)}`;
@@ -202,13 +237,10 @@ export function templateCsv(tt: Timetable): string {
         lines.push(`${key},,,,,`);
         continue;
       }
-      const noon = new Date(Date.UTC(YEAR, mo - 1, da, 12));
-      const off = timezoneOffsetHours(noon, tz);
-      const parts = localParts(noon, tz);
-      const t = prayerTimes(parts, tt.latitude!, tt.longitude!, off, method, tt.asrMadhab);
-      const iq = (k: keyof typeof tt.iqamah, adhan: number) => fmtHHMM(iqamahHours(adhan, tt.iqamah[k]));
+      const m = buildModel(rulesOnly, zonedNoon(mo === 2 && da === 29 ? leap : year, mo, da, tz));
+      const iq = (k: string) => fmtHHMM(m.rows.find((r) => r.key === k)?.iqamah ?? null);
       // Maghrib is omitted — it always follows the calculated sunset + its Iqamah offset.
-      lines.push([key, iq('fajr', t.fajr), iq('dhuhr', t.dhuhr), iq('asr', t.asr), iq('isha', t.isha), ''].join(','));
+      lines.push([key, iq('fajr'), iq('dhuhr'), iq('asr'), iq('isha'), ''].join(','));
     }
   }
   return lines.join('\n') + '\n';

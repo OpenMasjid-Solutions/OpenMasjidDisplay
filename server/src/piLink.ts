@@ -274,8 +274,15 @@ function askPi(origin: string, path: string, payload: unknown, signal: AbortSign
  * This is the whole authorisation for adopting by address, and it proves two things at once —
  * both of which are needed. That whoever is asking administers that screen, which is the consent;
  * and that the thing at that address is one of OUR panels, which is why no credential of ours is
- * sent until this has succeeded. A stranger's web server cannot produce a 200 with a session
- * cookie from `/api/login` against a password it has never seen.
+ * sent until this has succeeded.
+ *
+ * What it does NOT prove is that the machine at that address is honest. Anything there can accept
+ * any password and answer with a cookie, and is then handed the panel password the admin typed and
+ * a device token for this server. It has to already be on the masjid's network for the address to
+ * reach it (`resolveLinkTarget` refuses anything else), and the admin has to type its address — so
+ * this rests on knowing which machine you mean, the same trust as typing a password into any LAN
+ * address. A challenge the screen answers with a secret it already holds would close it; see
+ * PI_STANDALONE_DESIGN.md §5.
  */
 export async function piPanelSignIn(
   origin: string,

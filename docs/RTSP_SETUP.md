@@ -51,7 +51,7 @@ In **Sources**, add the device's RTSP or secure RTSPS URL, for example:
 - Camera (secure RTSPS): `rtsps://192.168.1.1:7441/abcd1234?enableSrtp`
 - HDMI encoder: `rtsp://192.168.1.81:554/hdmi`
 
-Both `rtsp://` and the secure `rtsps://` are supported (as are `rtmp://` and `rtmps://`). Use **Test link** before saving — it actually
+Both `rtsp://` and the secure `rtsps://` are supported (as are `rtmp://` and `rtmps://`). Use **Test connection** before saving — it actually
 connects and reads a frame, and tells you *why* it failed (wrong port, auth, transport, TLS) instead of
 leaving you to find out at the screen.
 
@@ -79,8 +79,8 @@ Credentials in the URL are stored but never displayed in the panel.
 | **The copied link has the wrong address** | The link mirrors the address you opened the panel with. Open the panel using the server's LAN address (not `localhost`) and copy it again. |
 | **Camera shows on a computer but not on the cheap box** | Switch that source to **Most compatible (re-encode)**. |
 | **Brief freeze when switching** | Expected — the decoder re-reads the new stream. It recovers within a second or two. |
-| **Stream never starts** | Use **Test link** on the source. Avoid `@ : / %` in passwords, or URL-encode them. |
-| **Wrong RTSP port** | The copied link always says `:8554` (the port inside the container). If OpenMasjidOS published RTSP on a different host port, edit the port in the link to match the one the dashboard shows for this app. |
+| **Stream never starts** | Use **Test connection** on the source. Avoid `@ : / %` in passwords, or URL-encode them. |
+| **Wrong RTSP port** | The copied link says `:8554` (the port inside the container) unless the server was started with `RTSP_PUBLIC_PORT` set. If OpenMasjidOS published RTSP on a different host port, edit the port in the link to match the one the dashboard shows for this app; on a standalone `docker compose up` with the port remapped, add `RTSP_PUBLIC_PORT: "<host port>"` to the service's `environment:` instead. |
 | **Screen dimmed with a red bar along the bottom** | Not a decoder fault — the app is telling you the picture is **not current** (the renderer stopped, or this machine's clock is wrong). Check the Screens page, which says which. |
 
 ## Networking notes

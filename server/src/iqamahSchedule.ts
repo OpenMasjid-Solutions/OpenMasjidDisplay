@@ -130,13 +130,13 @@ function normFromDate(v: unknown): string | null {
 export function normalizeIqamahSchedule(input: unknown): IqamahScheduleEntry[] {
   if (!Array.isArray(input)) return [];
   const out: IqamahScheduleEntry[] = [];
-  const seen = new Set<string>();
+  const byDate = new Map<string, IqamahScheduleEntry>();
   for (const raw of input) {
-    if (out.length >= 200) break;
     if (!raw || typeof raw !== 'object') continue;
     const r = raw as Record<string, unknown>;
     const from = normFromDate(r.from);
-    if (!from || seen.has(from)) continue; // one entry per date
+    if (!from) continue;
+    if (out.length >= 200 && !byDate.has(from)) break;
     const entry: IqamahScheduleEntry = { from };
     for (const k of DAILY) {
       const v = r[k];
@@ -156,10 +156,18 @@ export function normalizeIqamahSchedule(input: unknown): IqamahScheduleEntry[] {
     }
     jums.sort();
     if (jums.length) entry.jumuah = jums;
-    if (DAILY.some((k) => entry[k]) || entry.jumuah) {
-      out.push(entry);
-      seen.add(from);
+    if (!DAILY.some((k) => entry[k]) && !entry.jumuah) continue;
+    // One entry per date. A second row for a date that already has one used to be DROPPED — every
+    // time it carried, gone, with "saved" said over it. It is merged instead, the earlier row winning
+    // field by field, which is also the order the WhatsApp wizard relies on (it puts the new one first).
+    const same = byDate.get(from);
+    if (same) {
+      for (const k of DAILY) same[k] ??= entry[k];
+      same.jumuah ??= entry.jumuah;
+      continue;
     }
+    out.push(entry);
+    byDate.set(from, entry);
   }
   out.sort((a, b) => fromNum(a.from) - fromNum(b.from));
   return out;

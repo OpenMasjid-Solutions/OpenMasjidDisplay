@@ -275,7 +275,7 @@ interface ClockText {
  * skips. EPS is smaller than any real sub-second this is ever called with and larger than the
  * round-trip error.
  */
-const CLOCK_EPS = 1e-6;
+export const CLOCK_EPS = 1e-6;
 
 function fmtClock(hours: number, timeFormat: string, withSeconds = false): ClockText {
   let h: number, m: number, s = 0;

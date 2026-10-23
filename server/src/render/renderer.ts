@@ -717,7 +717,10 @@ class TimetablePipeline extends FfmpegPipeline {
       this.lastSoundScan = now;
       const tt = this.getTt();
       if (tt) {
-        for (const e of soundEvents(tt, new Date(now))) this.sound.playAt(e.at, soundPcmFor(tt, e.kind));
+        const events = soundEvents(tt, new Date(now));
+        this.sound.retain(new Set(events.map((e) => e.at)));
+        // The clip is looked up when it is about to play, from the timetable as it is THEN.
+        for (const e of events) this.sound.playAt(e.at, () => soundPcmFor(this.getTt() ?? tt, e.kind));
       }
     }
     this.sound.pump(now);
@@ -759,7 +762,9 @@ class TimetablePipeline extends FfmpegPipeline {
       return true;
     }
     const tk = safeTicker(tt);
-    if (tk.text !== this.tickerText || tk.prohibited !== this.tickerProhibited) {
+    // A ticker change can wait for an Adhan or Iqamah sound to finish (SoundTrack.playing): the
+    // respawn it needs would cut the call off. The old text scrolls on for those seconds instead.
+    if ((tk.text !== this.tickerText || tk.prohibited !== this.tickerProhibited) && !this.sound.playing()) {
       this.tickerText = tk.text;
       this.tickerProhibited = tk.prohibited;
       this.writeTickerFile();

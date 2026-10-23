@@ -43,6 +43,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
+          # No token left in .git/config while `npm ci` runs every dependency's install script. The
+          # upload step brings its own GH_TOKEN; a copy on disk bought nothing but a way for one
+          # compromised build dependency to swap the bundle — and its checksum — that every
+          # standalone screen installs.
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

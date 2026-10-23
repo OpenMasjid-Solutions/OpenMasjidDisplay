@@ -53,6 +53,7 @@ import {
 import { saveSoundClip, setSoundClip, soundWav, SOUND_MAX_UPLOAD_BYTES } from '../render/sound';
 import { copyAsset } from '../render/background';
 import { parseIqamahCsv, toCsv, templateCsv } from '../iqamahCsv';
+import { buildModel } from '../render/svg';
 import { normalizeIqamahSchedule } from '../iqamahSchedule';
 import { renderMonthPrintHtml } from '../print';
 import { localParts } from '../prayer/engine';
@@ -191,6 +192,17 @@ export function createPiPanel(deps: PanelDeps) {
   const { store, readConfig, writeConfig, webDir, screens, device, linkState } = deps;
   const loginLimiter = new LoginLimiter();
   /**
+   * Every wrong setup code, from ANY address, over the last ten minutes.
+   *
+   * The per-address limiter alone does not bound guessing: a machine on the network can give
+   * itself as many IPv6 addresses as it likes, five free guesses each, against a code that never
+   * changes. Twenty wrong codes per ten minutes from everywhere together puts an eight-digit code
+   * decades out of reach, and costs the person reading it off the television nothing.
+   */
+  const wrongSetupCodes: number[] = [];
+  const SETUP_WRONG_MAX = 20;
+  const SETUP_WRONG_WINDOW_MS = 10 * 60_000;
+  /**
    * The volunteer page, served by this same listener.
    *
    * The server runs it on a port of its own so a masjid can share just that address; a screen
@@ -266,14 +278,23 @@ export function createPiPanel(deps: PanelDeps) {
       if (pathname === '/api/setup' && method === 'POST') {
         // Rate-limited like a sign-in, because that is what it is: a guess at a secret. Eight
         // digits is only out of reach while guessing is slow.
+        // The body is read BEFORE the limiter is asked. With the read in between, every guess in a
+        // burst passed the check before the first failure was counted — measured: on the volunteer PIN, 100 wrong guesses
+        // sent at once were all tried and the right one then let in. Check, verify and record now
+        // run with no await between them, so the limiter sees each failure before the next guess.
+        const body = await readBody(req).catch(() => null);
+        if (!body) return sendJson(res, 400, { error: 'That request was too large.' });
         const wait = loginLimiter.retryAfterMs(req);
         if (wait > 0) return sendJson(res, 429, { error: `Too many attempts. Try again in ${Math.ceil(wait / 1000)}s.` });
+        const nowMs = Date.now();
+        while (wrongSetupCodes.length && nowMs - wrongSetupCodes[0] > SETUP_WRONG_WINDOW_MS) wrongSetupCodes.shift();
+        if (wrongSetupCodes.length >= SETUP_WRONG_MAX) {
+          return sendJson(res, 429, { error: 'Too many wrong codes have been tried on this screen. Wait ten minutes, then try again.' });
+        }
         if (store.db.admin) return sendJson(res, 409, { error: 'This screen has already been set up.' });
 
         const cfg = readConfig();
         const code = cfg?.setupCode ?? '';
-        const body = await readBody(req).catch(() => null);
-        if (!body) return sendJson(res, 400, { error: 'That request was too large.' });
 
         // No code on disk means the screen cannot be claimed this way at all. Refusing is the
         // only safe reading: the alternative is an unclaimed panel anyone on the LAN can take.
@@ -283,6 +304,7 @@ export function createPiPanel(deps: PanelDeps) {
         }
         if (!setupCodeMatches(String(body.code ?? ''), code)) {
           loginLimiter.fail(req);
+          wrongSetupCodes.push(nowMs);
           return sendJson(res, 401, { error: 'That code does not match the one on the television.' });
         }
 
@@ -293,7 +315,7 @@ export function createPiPanel(deps: PanelDeps) {
         /**
          * The claim is decided INSIDE the update, not by the check at the top of this route.
          *
-         * That check runs before `await readBody`, and an await yields — so two requests
+         * That check used to run before `await readBody`, and an await yields — so two requests
          * arriving together both passed it and both went on to write an account, the second
          * silently replacing the first, who was left holding a session cookie for a password
          * that no longer worked. Both callers need the right code, so it was never a takeover
@@ -318,10 +340,11 @@ export function createPiPanel(deps: PanelDeps) {
       }
 
       if (pathname === '/api/login' && method === 'POST') {
-        const wait = loginLimiter.retryAfterMs(req);
-        if (wait > 0) return sendJson(res, 429, { error: `Too many attempts. Try again in ${Math.ceil(wait / 1000)}s.` });
+        // Body first, then the limiter, with no await between check and record — see /api/setup.
         const body = await readBody(req).catch(() => null);
         if (!body) return sendJson(res, 400, { error: 'That request was too large.' });
+        const wait = loginLimiter.retryAfterMs(req);
+        if (wait > 0) return sendJson(res, 429, { error: `Too many attempts. Try again in ${Math.ceil(wait / 1000)}s.` });
         if (!store.db.admin) return sendJson(res, 400, { error: 'This screen has not been set up yet.' });
         if (verifyPassword(String(body.password ?? ''), store.db.admin)) {
           loginLimiter.succeed(req);
@@ -650,7 +673,7 @@ export function createPiPanel(deps: PanelDeps) {
           }
           if (method === 'GET') {
             const template = url.searchParams.get('mode') === 'template';
-            const csv = template ? templateCsv(tt) : toCsv(tt.iqamahYear);
+            const csv = template ? templateCsv(tt, buildModel) : toCsv(tt.iqamahYear);
             res.writeHead(200, {
               ...SECURITY_HEADERS,
               'content-type': 'text/csv; charset=utf-8',

@@ -177,10 +177,10 @@ export function SignalBars({ percent, size = 14 }: { percent: number; size?: num
 /** OpenMasjid crescent + dome brand mark. Rendered as a CSS mask painted in
  *  `currentColor`, so it adapts to light/dark themes and stays crisp at any size. */
 export function MasjidMark({ size = 26 }: IP) {
-  // markUrl is a build-time absolute path (/assets/mark-*.png) baked into the JS. On the
-  // volunteer page served behind the OS tunnel under /<basePath>/, that bare path isn't routed
-  // to this app — so prefix it with the injected base (empty everywhere else, so a no-op).
-  const src = ((typeof window !== 'undefined' && window.__OMD_BASE__) || '') + markUrl;
+  // markUrl already carries the tunnel prefix: vite.config.ts `renderBuiltUrl` builds every asset
+  // URL inside the JS under `window.__OMD_BASE__`. Prefixing it again here made it
+  // /display/display/assets/…, and the mark vanished from every page reached from outside.
+  const src = markUrl;
   return (
     <span
       className="masjid-mark"
@@ -292,7 +292,16 @@ export function Help({ text }: { text: string }) {
 // to instead show it as a line under the control (for longer, always-visible notes).
 export function Field({ label, hint, inlineHint, children }: { label: string; hint?: string; inlineHint?: boolean; children: ReactNode }) {
   return (
-    <label className="field">
+    <label
+      className="field"
+      // A label passes a click on its text to its first control. For a text box that is the point
+      // (click "Name", start typing). When the control is a row of choice buttons it PRESSED the
+      // first one: clicking the words "Theme colour" picked the first theme, "Show" switched a
+      // schedule off. So a click that lands on no control does nothing when that control is a button.
+      onClick={(e) => {
+        if (e.currentTarget.control instanceof HTMLButtonElement && !(e.target as Element).closest('button, input, select, textarea, a')) e.preventDefault();
+      }}
+    >
       <span className="label">{label}{hint && !inlineHint && <Help text={hint} />}</span>
       {children}
       {hint && inlineHint && <span className="hint">{hint}</span>}
