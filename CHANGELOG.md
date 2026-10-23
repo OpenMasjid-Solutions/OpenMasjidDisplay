@@ -10,6 +10,8 @@ account menu (top right) → **What's new** shows them with no internet needed.
 condenses it into a `## X.Y.Z` section carrying only what a masjid needs to be told. See
 CLAUDE.md § *The changelog has two audiences*.
 
+## Unreleased
+
 ## 0.71.0
 
 A security update first: Display now runs on a patched Node.js. The same release lets a Raspberry
