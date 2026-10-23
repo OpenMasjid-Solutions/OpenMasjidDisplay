@@ -239,6 +239,9 @@ CLAUDE.md § *The changelog has two audiences*.
   was missed for 0.70.0 and published afterwards; the chain used to stop at the tag.
 
 ### Fixed
+- **Display now runs on Node.js 22.23.4.** Node.js is the software the app runs on, and this
+  release fixes ten security problems published on 21 October, one of them serious. If Stripe emailed you about your Node.js version, this is the update it means.
+  Nothing looks or works any differently.
 - **Display now opens from outside the masjid.** Pressing *Open* on Display in the OpenMasjidOS
   dashboard while away from the masjid showed a blank white page. The whole control panel now works
   there — every page, uploads and downloads, live updates, previews and the Raspberry Pi terminal —
