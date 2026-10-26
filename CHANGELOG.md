@@ -12,6 +12,17 @@ CLAUDE.md § *The changelog has two audiences*.
 
 ## Unreleased
 
+### Fixed
+- **A mistyped Iqamah time no longer takes over the screen.** An Iqamah set outside its prayer's
+  time — a Fajr Iqamah of 6:25 PM, say — made the screen count down hours "until Iqamah" all
+  morning instead of to the next Adhan, and would have run a Fajr countdown, darkened the screen
+  for salah and sounded the Iqamah in the evening. Such a time now drives none of that. It still
+  shows in the prayer table, so it can be seen and corrected.
+- **The panel points out an Iqamah time in the wrong half of the day** — a Fajr Iqamah in the
+  afternoon, or an Asr, Maghrib or Isha Iqamah in the morning — and says which time you probably
+  meant, in **Salah times → Iqamah times** and in scheduled changes.
+- **A volunteer who reaches the 20-report limit is told so**, instead of seeing a network error.
+
 ## 0.72.0
 
 A security and reliability update. There is nothing to do after updating.

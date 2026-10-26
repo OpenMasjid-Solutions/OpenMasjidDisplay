@@ -1558,8 +1558,31 @@ function PrayerPicker({ value, onChange }: { value: string[]; onChange: (v: stri
   );
 }
 
+/**
+ * A fixed Iqamah time in the wrong half of the day for its prayer — the AM/PM slip a phone's time
+ * picker makes easy — as a sentence saying so, or null.
+ *
+ * A masjid's Fajr Iqamah went in as 6:25 PM. The screens now ignore an Iqamah outside its prayer's
+ * time (render/svg.ts `iqamahLive`), but the wrong time still sits on the wall in the table until
+ * somebody notices, so the panel points at it. A warning, never a refusal: these are the halves of
+ * the day a prayer falls in everywhere this app is used, not a rule about any particular masjid.
+ */
+export function ampmSlip(prayer: string, hhmm: string | undefined): string | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm ?? '');
+  if (!m) return null;
+  const h = Number(m[1]);
+  const flip = `${((h + 11) % 12) + 1}:${m[2]} ${h < 12 ? 'PM' : 'AM'}`;
+  const name = PRAYER_TITLE[prayer] ?? prayer;
+  if (prayer === 'fajr') return h >= 12 ? `That is in the afternoon — ${name} is before sunrise. Did you mean ${flip}?` : null;
+  if (prayer === 'isha' && h < 3) return null; // after midnight, where the nights are short
+  const earliest = prayer === 'dhuhr' ? 11 : 12; // Dhuhr can fall just before noon
+  return h < earliest ? `That is in the morning — ${name} is after midday. Did you mean ${flip}?` : null;
+}
+
 function IqamahRow({ name, rule, onChange, disabled }: { name: string; rule: IqamahRule; onChange: (r: IqamahRule) => void; disabled?: boolean }) {
+  const slip = rule.mode === 'fixed' ? ampmSlip(name, rule.fixed) : null;
   return (
+    <>
     <div className="list-row" style={disabled ? { opacity: 0.45, pointerEvents: 'none' } : undefined} aria-disabled={disabled}>
       <div className="list-row__main"><div className="list-row__title">{PRAYER_TITLE[name]}</div></div>
       <select className="select" style={{ width: 'auto' }} disabled={disabled} value={rule.mode} onChange={(e) => onChange({ ...rule, mode: e.target.value as IqamahRule['mode'], offset: rule.offset ?? 10, fixed: rule.fixed ?? '13:30' })}>
@@ -1574,6 +1597,8 @@ function IqamahRow({ name, rule, onChange, disabled }: { name: string; rule: Iqa
         <input className="input" style={{ width: '8rem' }} type="time" disabled={disabled} value={rule.fixed ?? '13:30'} onChange={(e) => onChange({ mode: 'fixed', fixed: e.target.value })} />
       )}
     </div>
+    {slip && <p className="form-error" role="alert">{slip}</p>}
+    </>
   );
 }
 
@@ -1751,6 +1776,7 @@ function IqamahScheduleEditor({ schedule, onSave, timezone, baseJumuah }: { sche
               <label key={pr} className="field" style={{ margin: 0 }}>
                 <span className="label">{PRAYER_TITLE[pr]}</span>
                 <input type="time" className="input" value={r[pr] ?? ''} onChange={(e) => setTime(i, pr, e.target.value)} />
+                {ampmSlip(pr, r[pr]) && <span className="form-error" role="alert">{ampmSlip(pr, r[pr])}</span>}
               </label>
             ))}
           </div>

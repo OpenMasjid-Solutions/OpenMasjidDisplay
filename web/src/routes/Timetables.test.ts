@@ -10,7 +10,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toForm, followSchedule } from './Timetables';
+import { toForm, followSchedule, ampmSlip } from './Timetables';
 import type { AppState, Timetable } from '../types';
 
 /** Dates relative to the real today, so the test means the same thing whenever it runs. */
@@ -62,4 +62,16 @@ test("saving the schedule moves a fixed time that was showing the schedule's ans
   assert.equal(removed.fajr.fixed, '06:00', 'the change was removed: back to the time of its own');
   const typed = followSchedule({ ...shown, fajr: { mode: 'fixed', fixed: '07:10' } }, tt, tt.iqamahSchedule!, []);
   assert.equal(typed.fajr.fixed, '07:10', 'a time the admin typed over is theirs');
+});
+
+test('a fixed Iqamah in the wrong half of the day is pointed out', () => {
+  // A masjid's Fajr Iqamah went in as 6:25 PM and sat on the wall all morning.
+  assert.match(ampmSlip('fajr', '18:25')!, /Did you mean 6:25 AM\?/);
+  assert.match(ampmSlip('dhuhr', '01:30')!, /Did you mean 1:30 PM\?/);
+  assert.match(ampmSlip('asr', '04:45')!, /Did you mean 4:45 PM\?/);
+  assert.match(ampmSlip('isha', '07:35')!, /Did you mean 7:35 PM\?/);
+  // …and nothing a masjid can really mean is.
+  for (const [p, t] of [['fajr', '06:25'], ['fajr', '00:45'], ['dhuhr', '11:55'], ['dhuhr', '13:30'], ['asr', '16:45'], ['maghrib', '18:10'], ['isha', '20:00'], ['isha', '00:30'], ['fajr', '']] as const) {
+    assert.equal(ampmSlip(p, t), null, `${p} ${t}`);
+  }
 });

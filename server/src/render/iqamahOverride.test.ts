@@ -184,3 +184,26 @@ test('Friday: a Jumu\'ah after Asr does NOT hijack the ring (regression)', () =>
   assert.equal(m.nextJumuah, null);
   assert.equal(m.nextKey, 'maghrib');
 });
+
+test('an Iqamah outside its own prayer’s time drives nothing — a Fajr Iqamah typed as 6:25 PM', () => {
+  // Seen on a masjid's wall at 6:49 AM: Fajr's Adhan had passed and its "Iqamah" was 6:25 PM, so
+  // the screen counted down 11 hours 35 minutes "until Iqamah" instead of to Dhuhr's Adhan.
+  const tz = 'America/New_York';
+  const tt = normTimetable({ masjidName: 'Test', latitude: 40.2415, longitude: -75.2838, method: 'ISNA', asrMadhab: 'Standard', timezone: tz });
+  tt.iqamah = { ...tt.iqamah, fajr: { mode: 'fixed', fixed: '18:25' } };
+  const morning = new Date('2026-10-26T06:49:44-04:00');
+  const m = buildModel(tt, morning);
+  const dhuhr = m.rows.find((r) => r.key === 'dhuhr')!;
+  assert.equal(m.countdownToIqamah, false, 'not counting down to an Iqamah eleven hours away');
+  assert.equal(m.nextKey, 'dhuhr', 'the next thing is Dhuhr');
+  assert.equal(m.nextHours, dhuhr.adhan, "…and it is Dhuhr's Adhan");
+  assert.ok(!m.jamaah.some((j) => j.key === 'fajr'), 'no Fajr jamaah at 6:25 PM: no countdown, no blackout, no sound');
+  assert.equal(m.rows.find((r) => r.key === 'fajr')!.iqamah, 18 + 25 / 60, 'the table still shows what was set, so it can be put right');
+
+  // And a Fajr Iqamah where it belongs still holds the morning exactly as before.
+  tt.iqamah = { ...tt.iqamah, fajr: { mode: 'fixed', fixed: '06:25' } };
+  const before = buildModel(tt, new Date('2026-10-26T06:15:00-04:00'));
+  assert.equal(before.countdownToIqamah, true);
+  assert.equal(before.nextKey, 'fajr');
+  assert.ok(buildModel(tt, morning).jamaah.some((j) => j.key === 'fajr'));
+});

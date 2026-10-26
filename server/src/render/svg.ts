@@ -877,9 +877,22 @@ export function buildModel(tt: Timetable, now: Date): Model {
   // THAT prayer stays the focus — count down to its Iqāmah, and don't promote the next
   // prayer yet. Only once the Iqāmah passes does the upcoming prayer become "next".
   let countdownToIqamah = false;
-  const inWindow = rows.find(
-    (r) => r.adhan != null && r.iqamah != null && r.adhan <= nowHours && nowHours < r.iqamah,
-  );
+  /**
+   * An Iqāmah counts only while its OWN prayer's time lasts: from its Adhan to the next prayer's.
+   *
+   * A Fajr Iqāmah set to 6:25 PM — an AM/PM slip, and nothing on a phone's time picker stops one —
+   * held the whole morning: at 6:49 AM the screen counted down eleven and a half hours "until
+   * Iqāmah" instead of to Dhuhr's Adhan, and at 6:25 PM it would have run a Fajr Iqāmah countdown,
+   * blacked out for a Fajr salah and sounded the Iqāmah. The time still shows in the table, where
+   * the admin can see it and put it right; it just drives nothing that a congregation acts on.
+   */
+  const nextAdhanAfter: Record<string, number> = {};
+  order.forEach((k, i) => {
+    nextAdhanAfter[k] = i + 1 < order.length ? eff[order[i + 1]] : tomorrowFajr + (ao.fajr ?? 0) / 60 + 24;
+  });
+  const iqamahLive = (r: Row): boolean =>
+    r.adhan != null && r.iqamah != null && r.iqamah >= r.adhan && r.iqamah < (nextAdhanAfter[r.key] ?? Infinity);
+  const inWindow = rows.find((r) => iqamahLive(r) && r.adhan! <= nowHours && nowHours < r.iqamah!);
   if (inWindow) {
     nextKey = inWindow.key;
     nextHours = inWindow.iqamah!;
@@ -918,6 +931,7 @@ export function buildModel(tt: Timetable, now: Date): Model {
   const jamaah: Jamaah[] = [];
   for (const r of rows) {
     if (r.adhan == null || r.iqamah == null) continue; // Sunrise has no jamā'ah
+    if (!iqamahLive(r)) continue; // an Iqāmah outside its prayer's time — see iqamahLive
     if (isFriday && r.key === 'dhuhr' && jumuah.length) continue;
     jamaah.push({ key: r.key, at: r.iqamah, adhan: r.adhan });
   }

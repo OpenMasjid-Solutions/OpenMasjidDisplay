@@ -236,14 +236,16 @@ export function createVolunteerApi(deps: { store: Store; orchestrator: ScreenSta
         return sendJson(res, 200, { reports, timetables });
       }
       if (pathname === '/api/volunteer/reports' && method === 'POST') {
-        // A ceiling, checked before the upload is read. Each report carries up to four photos, and
-        // every report added or removed redraws EVERY report's card on the thread that also serves
-        // the panel and feeds the screens — so an unbounded list was a way to freeze the server and
-        // fill its disk from a PIN. Twenty cars at once is far past any real car park.
+        const body = await readBody(req, 8_000_000); // room for a client-resized photo
+        // A ceiling. Each report carries up to four photos, and every report added or removed redraws
+        // EVERY report's card on the thread that also serves the panel and feeds the screens — so an
+        // unbounded list was a way to freeze the server and fill its disk from a PIN. Twenty cars at
+        // once is far past any real car park. Checked AFTER the body is read: answering while a photo
+        // is still uploading can reset the connection, and the volunteer sees a network error
+        // instead of this sentence. The read is bounded already; drawing the cards was the cost.
         if ((store.db.reports ?? []).length >= MAX_REPORTS) {
           return sendJson(res, 400, { error: `There are already ${MAX_REPORTS} reports on the screens. Remove one that has been dealt with first.` });
         }
-        const body = await readBody(req, 8_000_000); // room for a client-resized photo
         const plate = str(body.plate, 15);
         const description = str(body.description, 200);
         const location = str(body.location, 120);
