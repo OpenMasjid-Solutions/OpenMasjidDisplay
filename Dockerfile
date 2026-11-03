@@ -11,7 +11,7 @@
 # Taken from the official multi-arch image, pinned by version. This stage has no
 # --platform override, so it is pulled for the TARGET architecture — the arm64
 # build gets the arm64 binary, the amd64 build gets the amd64 one.
-FROM bluenviron/mediamtx:1.19.1@sha256:61ebddaa43a6da78d4c6e98b9f9c12066856ffd85893656f5c000d870b88bbe4 AS mediamtx
+FROM bluenviron/mediamtx:1.21.3@sha256:59e43552f3be43695b70c19424dc2a42fcec18075f88d91561a24ac5d70a586c AS mediamtx
 
 # ---- Build the web control panel (Vite → static files) --------------------
 FROM --platform=$BUILDPLATFORM node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS web
