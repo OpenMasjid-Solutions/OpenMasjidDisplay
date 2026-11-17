@@ -3121,12 +3121,25 @@ export function findIqamahChange(
       const ov = overrideStr(c.y, c.mo, c.da, key);
       const ovH = ov ? parseHHMM(ov) : null;
       if (ovH == null) continue; // only a deliberate override can be a "change"
-      const ruleH = ruleIq(c.y, c.mo, c.da, key); // vs the rule for the SAME date (DST/drift-safe)
-      const beforeH = effIq(py, pmo, pda, key); // vs the effective time the day before (onset only)
-      if (ruleH == null) continue;
-      const dRule = Math.abs(Math.round(ovH * 60) - Math.round(ruleH * 60));
-      const dBefore = beforeH == null ? dRule : Math.abs(Math.round(ovH * 60) - Math.round(beforeH * 60));
-      if (dRule >= 2 && dBefore >= 2) changed.push({ key, hours: ovH });
+      const mins = (a: number, b: number) => Math.abs(Math.round(a * 60) - Math.round(b * 60));
+      // vs the effective time the day before: only the ONSET of a change counts
+      const beforeH = effIq(py, pmo, pda, key);
+      if (beforeH != null && mins(ovH, beforeH) < 2) continue;
+      /**
+       * vs the rule for the SAME date — but only for a "minutes after Adhan" rule.
+       *
+       * That comparison exists because such a rule moves with the sun and jumps an hour at a clock
+       * change, so an override that merely matches it (an unedited CSV template row) must not read
+       * as a change. A FIXED time does neither, and applying the test to it hid real changes: a
+       * masjid whose Fajr rule said 6:00 moved Fajr from a scheduled 5:45 back to 6:00, the screens
+       * changed, and the reminder and the WhatsApp post named only the Asr change beside it. A
+       * "Don't show" rule has no time to compare, which skipped any scheduled Iqamah for it outright.
+       */
+      if (tt.iqamah[key]?.mode === 'offset') {
+        const ruleH = ruleIq(c.y, c.mo, c.da, key);
+        if (ruleH == null || mins(ovH, ruleH) < 2) continue;
+      }
+      changed.push({ key, hours: ovH });
     }
     if (!changed.length) continue;
     return { year: c.y, month: c.mo, day: c.da, daysUntil: c.daysUntil, changed };

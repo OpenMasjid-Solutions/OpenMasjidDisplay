@@ -13,6 +13,10 @@ CLAUDE.md § *The changelog has two audiences*.
 ## Unreleased
 
 ### Fixed
+- **A scheduled change now names every prayer it moves.** When a change set a prayer back to the
+  time its own fixed Iqamah rule already gave — say Fajr from 5:45 back to 6:00 — the screens moved
+  it, but the reminder along the bottom, the WhatsApp post and the announcement picture left that
+  prayer out and named only the others. A prayer set to "Don't show" was left out the same way.
 - **A mistyped Iqamah time no longer takes over the screen.** An Iqamah set outside its prayer's
   time — a Fajr Iqamah of 6:25 PM, say — made the screen count down hours "until Iqamah" all
   morning instead of to the next Adhan, and would have run a Fajr countdown, darkened the screen

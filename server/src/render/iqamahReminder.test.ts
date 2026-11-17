@@ -13,7 +13,7 @@ import assert from 'node:assert';
 import test from 'node:test';
 import { normTimetable } from '../validate';
 import { normalizeIqamahSchedule } from '../iqamahSchedule';
-import { bottomBandSplit, iqamahNoticeText, tickerLayout, renderDisplaySvg, dimsFor, approxWidth, TICKER_RED } from './svg';
+import { bottomBandSplit, iqamahNoticeText, tickerLayout, renderDisplaySvg, dimsFor, approxWidth, TICKER_RED, findIqamahChange } from './svg';
 import { timetableVf, timetableVfReserved, type TickerSpec } from './renderer';
 import type { Timetable } from '../types';
 
@@ -321,4 +321,21 @@ for (const bad of [
 test('a prohibited ticker keeps its red inside the reserved graph too', () => {
   const g = timetableVfReserved({ width: W, height: H }, { ...spec('x'), prohibited: true }, { x: 400, w: 800 });
   assert.ok(g.includes(TICKER_RED.replace('#', '0x')), 'prohibited text must stay red');
+});
+
+test('a change back to the time a FIXED rule already gives is still announced', () => {
+  // Seen on a masjid's wall: Fajr's rule was a fixed 6:00, a change had moved it to 5:45, and a
+  // change from the 18th set Fajr 6:00 and Asr 3:15. The screens moved Fajr — but the reminder
+  // said only "From tomorrow, Asr will be at 3:15 PM", because 6:00 matched the rule.
+  const tt = normTimetable({ latitude: 40.2415, longitude: -75.2838, timezone: 'America/New_York', method: 'ISNA', asrMadhab: 'Hanafi' });
+  tt.iqamah = { ...tt.iqamah, fajr: { mode: 'fixed', fixed: '06:00' }, asr: { mode: 'fixed', fixed: '16:00' }, isha: { mode: 'none' } };
+  tt.iqamahSchedule = normalizeIqamahSchedule([
+    { from: '2026-11-01', fajr: '05:45', asr: '15:30' },
+    { from: '2026-11-18', fajr: '06:00', asr: '15:15', isha: '19:20' },
+  ]);
+  const c = findIqamahChange(tt, new Date('2026-11-17T20:58:00Z'), { minDays: 1, maxDays: 7 });
+  assert.deepEqual(c?.changed.map((x) => x.key), ['fajr', 'asr', 'isha'], 'Fajr, and an Isha whose rule shows nothing, are changes too');
+  assert.match(iqamahNoticeText({ ...tt, iqamahChangeNotice: { enabled: true, daysBefore: 7 } }, new Date('2026-11-17T20:58:00Z')), /Fajr/);
+  // Unchanged from the day before is still not a change, fixed rule or not.
+  assert.equal(findIqamahChange(tt, new Date('2026-11-18T20:58:00Z'), { minDays: 1, maxDays: 7 }), null);
 });
